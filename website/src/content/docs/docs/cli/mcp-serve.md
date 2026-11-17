@@ -4,8 +4,9 @@ description: "Alias for `forgeplan serve` - starts the Forgeplan MCP server on s
 ---
 
 `forgeplan mcp serve` is a thin alias for [`forgeplan serve`](/docs/cli/serve/). Both
-commands start the same MCP server (stdio transport, 73 tools, one workspace) and exit
-on Ctrl-C. The alias exists so the `mcp` namespace is internally consistent - once you
+commands start the same stdio MCP server (73 tools in the released 0.38.0
+snapshot). It runs until the connection ends or the process is interrupted.
+The alias exists so the `mcp` namespace is internally consistent - once you
 have run `forgeplan mcp install`, the obvious follow-up to debug it is `forgeplan mcp serve`.
 
 For the full reference (tools exposed, transport details, troubleshooting, client config
@@ -21,8 +22,9 @@ examples), see [`forgeplan serve`](/docs/cli/serve/).
 
 - For day-to-day agent work - the MCP client (Claude Code, Cursor, Windsurf) launches
   the server for you. Manual invocation is rare.
-- To configure the server - there is nothing to configure on the command line. The
-  server reads `./.forgeplan/`.
+- To configure tools through runtime flags — there are none. Startup searches
+  for a workspace from the launch directory; supported tools may override it
+  through their `workspace` input or `FORGEPLAN_WORKSPACE`.
 
 ## Usage
 
@@ -43,8 +45,10 @@ forgeplan serve
   -V, --version  Print version
 ```
 
-No runtime options - the server picks up the workspace from `./.forgeplan/` and the LLM
-provider from `.forgeplan/config.yaml`.
+No runtime options. The launch directory seeds the default workspace; this is
+not a single-workspace isolation boundary. Workspace-aware tools can route
+individual calls to other workspaces. Provider settings come from configuration
+when an LLM operation needs them; starting the server does not call an LLM.
 
 ## Examples
 
@@ -65,8 +69,9 @@ for an interactive tool-list dump.
 RUST_LOG=debug forgeplan mcp serve
 ```
 
-`RUST_LOG=debug` surfaces the rmcp dispatch trace - useful when a new tool is registered
-but the client claims it does not exist.
+The CLI entrypoint does not install a tracing subscriber, so `RUST_LOG=debug`
+alone is not a reliable way to obtain rmcp dispatch logs in 0.38.0.
+Use a protocol inspector to inspect initialization and `tools/list`.
 
 ## How it fits the workflow
 

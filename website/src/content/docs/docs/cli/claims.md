@@ -5,7 +5,7 @@ description: "List live claims in the workspace - who is working on what right n
 
 `forgeplan claims` lists every active claim in the workspace - which agent is currently working on which artifact, and how soon their claim expires. Claims are sorted by time-to-expiry, soonest first, so the most urgent slots appear at the top. Expired claims are skipped (treated as released).
 
-Read-only and lock-free: an orchestrator can poll this once per second without slowing down agents that are writing claims. If a claim file is corrupt or oversized, it is silently skipped and counted under `skipped` in the output - `forgeplan health` can then surface it for cleanup.
+The listing is read-only and lock-free. Malformed or oversized claim files are skipped and counted under `skipped`; use `forgeplan health` to investigate. Claims are advisory coordination records, not write locks: their existence does not prevent another command from editing an artifact, and a live claim does not prove that its agent is still running.
 
 Mirrors [`forgeplan_claims`](/docs/mcp/forgeplan_claims/) on the MCP side.
 
@@ -44,13 +44,7 @@ forgeplan claims [OPTIONS]
 forgeplan claims
 ```
 
-Prints a table of live claims sorted by expiry. Typical output:
-
-```text
-ID        agent      expires_in   note
-PRD-057   worker-1   12m          implementing FR-003
-RFC-012   worker-2   58m          -
-```
+Prints a table sorted by expiry with columns `ID`, `AGENT`, `EXPIRES IN`, and `NOTE`, followed by the active count and any skipped-file warning. Missing notes are blank. Displayed IDs and agent names may be truncated; use JSON for complete values.
 
 ### Example 2: JSON output for orchestrator polling
 
@@ -59,6 +53,8 @@ forgeplan claims --json | jq '.claims[] | select(.agent_id == "worker-1")'
 ```
 
 Filters the active claims down to a specific worker. Useful in a dispatcher script that needs to decide whether to redispatch new work to that worker.
+
+JSON contains `count`, `skipped`, `claims`, `_next_action`, and `hints`. Each claim has `id`, `agent_id`, `claimed_at`, `expires_at`, and nullable `note`; timestamps use RFC 3339. The command needs a workspace. An empty listing or skipped-file count does not itself cause a nonzero exit.
 
 ### Example 3: Detect corrupt claim files
 

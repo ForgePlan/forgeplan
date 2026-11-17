@@ -1,16 +1,9 @@
 ---
 title: forgeplan remember
-description: "Сохраните запись памяти (факт, соглашение, процедуру, наблюдение, ограничение) для последующего вызова"
+description: "Сохраняет короткую локальную запись для последующего recall; --list показывает записи, --forget удаляет выбранную. Это память ядра Forgeplan, не Hindsight: команда не настраивает банк и не обращается к серверу Hindsight."
 ---
 
-Зафиксируйте краткую запись памяти - факт, соглашение, процедуру, наблюдение или
-ограничение - в журнал решений Forgeplan. Записи памяти - это легковесные,
-локальные заметки, которые вы можете позже найти с помощью
-[`recall`](/docs/cli/recall/) или преобразовать в полноценный артефакт (Note, Problem,
-ADR) с помощью [`promote`](/docs/cli/promote/).
-
-Представьте это как рабочую память для проекта: то, что вы не хотите потерять,
-но что ещё не готово стать PRD или ADR.
+Сохраняет короткую локальную запись для последующего `recall`; `--list` показывает записи, `--forget` удаляет выбранную. Это память ядра Forgeplan, не Hindsight: команда не настраивает банк и не обращается к серверу Hindsight.
 
 ## Использование
 
@@ -21,98 +14,48 @@ forgeplan remember [OPTIONS] [TEXT]
 ## Аргументы
 
 ```text
-  [TEXT]  Текст для запоминания (опустите для --list или --forget)
+  [TEXT]  Text to remember (omit for --list or --forget)
 ```
 
 ## Опции
 
 ```text
-  -c, --category <CATEGORY>  Тип записи памяти: fact | convention | procedure | observation | constraint
-      --list                 Перечислить все записи памяти
-      --forget <FORGET>      Забыть (удалить) запись памяти по ID
-  -h, --help                 Вывести справку
-  -V, --version              Вывести версию
+  -c, --category <CATEGORY>  Memory category: fact, convention, procedure, insight
+      --list                 List all memories
+      --forget <FORGET>      Forget (delete) a memory by ID
+  -h, --help                 Print help
+  -V, --version              Print version
 ```
 
-## Пять типов
+## Категории и хранение
 
-Каждая запись памяти имеет один тип, который определяет, как вы её ищете и как
-`promote` позже преобразует её в полноценный артефакт.
-
-| Тип            | Когда использовать                                           | Преобразуется в |
-|----------------|--------------------------------------------------------------|-----------------|
-| `fact`         | Фундаментальная истина о проекте ("мы используем BGE-M3 для эмбеддингов") | Note            |
-| `convention`   | Соглашение команды ("PR всегда сливаются в dev, а не в main") | Note / RFC      |
-| `procedure`    | Повторяемая инструкция ("всегда `git pull` перед созданием новой ветки") | Note            |
-| `observation`  | Что-то, что вы заметили, но ещё не объяснили                 | ProblemCard     |
-| `constraint`   | Жёсткое ограничение или требование ("бинарный файл должен быть менее 50 МБ") | ADR / RFC       |
+Документированные категории: `fact` (по умолчанию), `convention`, `procedure`, `insight`. Используйте `--category`, не `--kind`. Идентификатор образуется из текста с префиксом `mem-`; копируйте фактически возвращённый ID. Markdown хранится в `.forgeplan/memory/` и индексируется в LanceDB. Записи создаются со статусом `active` без `valid_until`; автоматический срок действия не назначается.
 
 ## Примеры
 
-Запишите процедуру во время спринта:
-
 ```bash
-forgeplan remember \
-  "always pull dev before creating feature branch" \
-  --kind procedure
-```
-
-Запишите наблюдение, которое может потребовать исследования:
-
-```bash
-forgeplan remember \
-  "watch daemon drops events on nfs mounts" \
-  --kind observation
-```
-
-Запишите командное соглашение:
-
-```bash
-forgeplan remember \
-  "release branches merge with merge-commit, not squash" \
-  --kind convention
-```
-
-Перечислите всё, что вы зафиксировали:
-
-```bash
+forgeplan remember "always pull dev before creating a feature branch" --category procedure
+forgeplan remember "watch drops events on NFS mounts" --category insight
+forgeplan remember "release branches use merge commits" --category convention
 forgeplan remember --list
+forgeplan recall "branch workflow" --category procedure
 ```
 
-Забудьте запись памяти по её ID:
+## Рабочий процесс
 
-```bash
-forgeplan remember --forget MEM-012
-```
+Сохраните факт, найдите его через `recall`, затем выполните `promote MEMORY_ID --kind note`, когда нужен артефакт. Замените `MEMORY_ID` значением из `remember --list`. Целевой тип задаётся явно; категория не выбирает его автоматически. `remember --forget MEMORY_ID` удаляет запись. После прямого изменения markdown выполните `reindex`.
 
-## Типичный рабочий процесс
-
-```text
-заметить что-либо → remember → recall позже → promote в артефакт
-```
-
-1.  **Во время работы** - заметьте факт, соглашение или неожиданность. Зафиксируйте это
-    немедленно с помощью `remember`, чтобы контекст не был потерян.
-2.  **Позже** - [`forgeplan recall "keyword"`](/docs/cli/recall/) выводит
-    соответствующие записи памяти, когда вы начинаете связанную работу.
-3.  **Когда запись созреет** - [`forgeplan promote MEM-XXX`](/docs/cli/promote/)
-    преобразует запись памяти в полноценный Note, ProblemCard или ADR, сохраняя
-    исходную фиксацию в качестве доказательства.
-
-Это легковесный конец спектра артефактов Forgeplan: вам не нужно
-валидировать, оценивать или активировать запись памяти - просто зафиксируйте её и двигайтесь дальше.
-
-## Хранение
-
-Записи памяти хранятся в `.forgeplan/memory/` как файлы markdown (отслеживаемые Git) и
-индексируются в LanceDB, как и любой другой артефакт. На них распространяются те же
-правила "источника истины": редактируйте через CLI или редактируйте markdown и запустите
-[`reindex`](/docs/cli/reindex/).
+`--forget` проверяет существование ID и тип `memory`, затем удаляет проекцию
+и запись без запроса подтверждения и без квитанции отмены.
+Удаляйте только нужную запись. Если задан и `--list`, приоритет у списка;
+иначе `--forget` имеет приоритет над текстом. Категория сохраняется как
+передана, не ограничивается документированными именами.
+ID из текста — не новая последовательность; одинаковые начала могут конфликтовать.
 
 ## См. также
 
-- [Обзор CLI](/docs/cli/)
-- [`forgeplan recall`](/docs/cli/recall/) - поиск и извлечение записей памяти
-- [`forgeplan promote`](/docs/cli/promote/) - преобразование записи памяти в артефакт
-- [`forgeplan journal`](/docs/cli/journal/) - полный журнал решений с R_eff
-- [`forgeplan new note`](/docs/cli/new/) - сразу создать Note, если запись памяти уже созрела
+- [Обзор CLI](/ru/docs/cli/)
+- [`forgeplan recall`](/ru/docs/cli/recall/) - поиск и извлечение записей памяти
+- [`forgeplan promote`](/ru/docs/cli/promote/) - преобразование записи памяти в артефакт
+- [`forgeplan journal`](/ru/docs/cli/journal/) - полный журнал решений с R_eff
+- [`forgeplan new note`](/ru/docs/cli/new/) - сразу создать Note, если запись памяти уже созрела

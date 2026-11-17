@@ -4,6 +4,8 @@
 
 > Practical guide. No fluff. Only rules and examples.
 
+Current instructions target **Forgeplan 0.38.0** and the public marketplace pinned in [Versioned sources](FORGEPLAN-GUIDE.md#versioned-sources). Distinguish the binary's minimum checks from agent-workflow policy; dated/example session transcripts below are not runtime guarantees.
+
 ---
 
 ## Rule #1: Don't Create Artifacts for the Sake of Artifacts
@@ -38,12 +40,12 @@ No, or not sure     -> Ask the second question below
 > **"How many people does this affect?"**
 
 ```
-Only me         -> Standard (Brief/PRD -> RFC)
+Only me         -> Standard (PRD -> RFC)
 The team        -> Deep (PRD -> Spec -> RFC -> ADR)
 Multiple teams  -> Critical (Epic -> PRD[] -> ...)
 ```
 
-That's the entire routing. Don't overcomplicate it.
+These are risk heuristics, not the router's complete algorithm. Use `forgeplan route "task" --level 0` for offline keyword routing. Default CLI routing may call a configured LLM. Core routes Tactical/Standard/Deep; `critical` parses as Deep, while marketplace policy treats Critical separately.
 
 ---
 
@@ -52,22 +54,22 @@ That's the entire routing. Don't overcomplicate it.
 ### Tactical -- "just do it"
 ```
 Situation: bug fix, small edit, obvious decision
-Create: nothing. At most -- a Note (3-5 sentences, auto-expires in 90 days)
+Create: nothing, or a short Note. Expiry requires a configured valid_until; there is no universal 90-day auto-expiry.
 Example: "Change button color to #3B82F6"
 ```
 
 ### Standard -- "think and document"
 ```
 Situation: feature taking 1-3 days, 2+ approaches exist
-Create: Brief (lightweight PRD) -> RFC
-Example: "Add OAuth2 login"
+Create: PRD -> RFC
+Example: "Add report export" (OAuth2/security may require Deep)
 
 Steps:
-1. Copy templates/brief/_TEMPLATE.md -> docs/prds/BRIEF-001-oauth2.md
-2. Fill in: Problem, Solution, Requirements (3-5 items)
-3. Copy templates/rfc/_TEMPLATE.md -> docs/rfcs/RFC-001-oauth2-design.md
-4. Fill in: Design, Phases, Implementation Plan
-5. Do it
+1. Run forgeplan new prd "Report export"; use the returned ID/slug
+2. Fill Problem, Goals, Non-Goals, Functional Requirements, Target Users, Related Artifacts
+3. Run forgeplan new rfc "Report export design"
+4. Fill Summary, Motivation, Proposed Direction; document options and phases too
+5. Update bodies with forgeplan update <ID> --body @<body-file>, validate, then follow the applicable gates
 ```
 
 ### Deep -- "think it through seriously"
@@ -84,6 +86,8 @@ Steps:
 5. Do it by phases from the RFC
 ```
 
+For the published marketplace methodology, add SOL before design (Options, Comparison, Recommendation, Risks & trade-offs) and REFRESH at cycle close. The core CLI's Deep pipeline still lists only PRD → Spec → RFC → ADR.
+
 ### Critical -- "strategy"
 ```
 Situation: cross-team initiative, quarterly roadmap
@@ -98,6 +102,8 @@ Steps:
 5. ADR: key decisions (event-driven vs REST, etc.)
 ```
 
+Critical is an orchestration policy, not a fourth core `Mode`: retain its intended gate tier in the workflow and do not assume a distinct Critical route. The published methodology uses SOL per workstream and a closing REFRESH.
+
 ---
 
 ## Rule #4: Which Artifact for What
@@ -106,11 +112,11 @@ Remember 5 questions -- each maps to its own artifact:
 
 | Question | Artifact | File |
 |----------|----------|------|
-| **WHAT** are we building and why? | PRD / Brief | `docs/prds/PRD-001-*.md` |
-| **HOW EXACTLY** does it work? (API, data model) | Spec | `docs/specs/SPEC-001-*.md` |
-| **HOW** are we building it architecturally? | RFC | `docs/rfcs/RFC-001-*.md` |
-| **WHY** did we choose this? | ADR | `docs/adrs/ADR-001-*.md` |
-| **GROUPING** a large initiative? | Epic | `docs/epics/EPIC-001-*.md` |
+| **WHAT** are we building and why? | PRD; a raw brief can be a Note | `.forgeplan/prds/` |
+| **HOW EXACTLY** does it work? | Spec: structural or behavioral contract | `.forgeplan/specs/` |
+| **HOW** are we building it architecturally? | RFC | `.forgeplan/rfcs/` |
+| **WHY** did we choose this? | ADR | `.forgeplan/adrs/` |
+| **GROUPING** a large initiative? | Epic | `.forgeplan/epics/` |
 
 ### When a Specific Artifact is NOT Needed:
 
@@ -124,10 +130,10 @@ Remember 5 questions -- each maps to its own artifact:
 
 ## Rule #5: How to Fill Templates
 
-### Minimum (required for all):
-1. **YAML frontmatter** -- id, title, status, depth, created
-2. **First section** -- Problem/Context/Vision (depends on type)
-3. **Related Artifacts** -- links to related documents
+### Minimum depends on kind and depth:
+1. Let `forgeplan new` allocate identity and metadata. Use its returned ID/slug, not a manually numbered copy.
+2. Fill the kind-specific sections listed in [the 0.38 validation table](FORGEPLAN-GUIDE.md#rules-by-depth); `forgeplan validate <ID> --json` reports actual MUST/SHOULD/COULD findings.
+3. Record real graph links with `forgeplan link`; a Markdown table is readable context, not a graph mutation.
 
 ### Golden Rule of Filling:
 > **Write for a person 6 months from now (that's you).**
@@ -140,7 +146,7 @@ Remember 5 questions -- each maps to its own artifact:
 FR-001: Implement caching
 
 # Good: [Actor] can [capability]
-FR-001: User can receive API responses within 200ms due to Redis caching
+FR-001: User can receive API responses within 200ms
 ```
 
 ```markdown
@@ -164,20 +170,19 @@ FR-003: User can persist and query structured data with ACID guarantees
 ## Rule #6: Links Between Artifacts
 
 ### How to link:
-In the "Related Artifacts" section of each document:
+Use actual returned IDs (the IDs below are examples):
 
-```markdown
-| Artifact | Relation |
-|----------|----------|
-| EPIC-001 | parent |
-| PRD-001  | based_on |
-| ADR-001  | informs |
+```bash
+forgeplan link RFC-001 PRD-001 --relation based_on
+forgeplan link EVID-001 PRD-001 --relation informs
 ```
+
+Keep the body's Related Artifacts table consistent, but use CLI/MCP for canonical links.
 
 ### Link types:
 | Relation | Meaning | Example |
 |----------|---------|---------|
-| `parent` | Belongs to | PRD-001 -> EPIC-001 |
+| `contradicts` | Conflicts with | ADR-003 -> ADR-001 |
 | `based_on` | Based on | RFC-001 -> PRD-001 |
 | `informs` | Influences | ADR-001 -> PRD-001 |
 | `supersedes` | Replaces | ADR-005 -> ADR-002 |
@@ -185,7 +190,7 @@ In the "Related Artifacts" section of each document:
 
 ### Direction Rule:
 **The child references the parent**, not the other way around:
-- PRD points to Epic (parent)
+- PRD can name its Epic through `parent_epic` metadata; `parent` is not a `link --relation` value
 - RFC points to PRD (based_on)
 - ADR points to RFC (informs)
 
@@ -198,7 +203,7 @@ In the "Related Artifacts" section of each document:
 Ask yourself:
 1. What must be true if this decision is correct?
 2. What is the strongest argument AGAINST?
-3. Is all evidence from this session? (-> CL1, penalty 0.4)
+3. Are the evidence sources genuinely independent and applicable? Session count does not automatically set CL.
 4. What could go wrong with less than 10% probability?
 5. Where is the weakest link?
 
@@ -208,7 +213,7 @@ Ask yourself:
 
 Rule: independent review follows the core protocol in [`QUALITY-GATES.md` §2 — Adversarial Review](./QUALITY-GATES.md#2-adversarial-review-protocol). Zero real defects is permitted only when the seven D1 conditions, mandatory rounds and all preserved gates are satisfied on the current complete candidate; the reviewer never invents findings to manufacture a non-zero count.
 
-**When**: Deep+ artifacts. Not needed for tactical/standard.
+**When**: Deep+ under this core protocol. The published `/forge-cycle` also requires adversarial review and guardian at **Standard+**; a workflow can be stricter than this conceptual checklist.
 
 ### R_eff Scoring -- for decisions with evidence:
 
@@ -221,30 +226,26 @@ R_eff = min(evidence_scores). Trust = weakest link. The min ranges over current 
 ## Rule #8: Lifecycle -- What to Do with Artifacts After Creation
 
 ### Updating:
-- Change status as you progress (Draft -> Review -> Approved -> ...)
-- Update the `updated` date in frontmatter
-- Fill in progress bars in RFC (checkboxes -> percentage)
+- Use `forgeplan update <ID> --body @<body-file>` for content and progress checkboxes.
+- Status values are `draft`, `active`, `stale`, `superseded`, `deprecated`, not Review/Approved/Implemented/Closed.
+- `phase` (`shape` through `done`) is advisory; it is not status or a completion certificate.
 
 ### Closing:
-- PRD: Implemented -> Closed (when the feature is in production)
-- RFC: all phases checked -> status: Implemented
-- ADR: never "closes" -- lives until valid_until expires
+- Check acceptance criteria, actual verification and applicable reviewer evidence before activation.
+- For implementation work, checked RFC phases alone do not prove delivery. The orchestrator runs review and activation after gates pass.
+- `update --status active|superseded|deprecated` is rejected; use the lifecycle commands.
 
 ### Superseding (replacement):
-```markdown
-# In the new ADR:
-| Artifact | Relation |
-|----------|----------|
-| ADR-002 | supersedes |
-
-# In the old ADR -- change status:
-status: Superseded
+```bash
+forgeplan supersede ADR-002 --by ADR-003
 ```
 
+This is an active → superseded transition with a successor link. Deprecated/superseded are terminal; do not rewrite their status to revive them.
+
 ### Stale (valid_until expired):
-1. Create a RefreshReport: `docs/refresh/REF-001-review-adr-002.md`
-2. Evaluate: is it still relevant?
-3. Either reaffirm (update valid_until), or supersede with a new ADR
+1. Inspect `forgeplan stale`; expiry detection does not imply a background status rewrite.
+2. Re-evaluate evidence/context. For a persisted stale record, use `forgeplan renew <ID> --reason "..." --until YYYY-MM-DD`. An expired record still stored as active cannot be renewed in place by that command; `forgeplan reopen <ID> --reason "..."` accepts active/stale, creates a new draft and deprecates the old record.
+3. REFRESH records the reassessment; merely creating it neither renews nor replaces the decision.
 
 ---
 
@@ -252,8 +253,8 @@ status: Superseded
 
 ```
 your-project/
-├── docs/
-│   ├── prds/           <- PRD and Brief
+├── .forgeplan/       <- canonical artifact Markdown; LanceDB is a rebuildable index
+│   ├── prds/           <- PRDs (a raw brief is a Note, not a Brief kind)
 │   ├── epics/          <- Epics
 │   ├── specs/          <- Specifications
 │   ├── rfcs/           <- RFCs
@@ -266,7 +267,7 @@ your-project/
 └── ...
 ```
 
-You don't need to create all folders. Create them as needed. No problems? No folder.
+`forgeplan init`/`new` manage this workspace. Prefer CLI/MCP mutations so files, links and index stay aligned. After external file changes or a merge, `forgeplan reindex` rebuilds from Markdown; `scan-import` discovers/imports other documents and is not a sync repair.
 
 ---
 
@@ -292,7 +293,7 @@ TASK ARRIVES
     |
     |-- Trivial? -> Do it. No documents.
     |
-    |-- 1-3 days? -> Brief -> RFC -> Do it.
+    |-- Standard? -> PRD -> RFC -> Validate/gate -> Implement -> Evidence/review.
     |
     |-- 1-2 weeks? -> PRD -> Spec -> RFC -> ADR -> Do it by phases.
     |
@@ -321,33 +322,33 @@ SOMETHING BROKE / BECAME STALE
 
 **Step 1**: Depth? -> 3-5 days, library choice exists -> **Standard**
 
-**Step 2**: Create Brief
+**Step 2**: Create PRD (`forgeplan new prd "PDF export"`). Sketch:
 ```
-docs/prds/BRIEF-001-pdf-export.md
+.forgeplan/prds/<returned-id>-*.md
 - Problem: Clients are requesting PDF reports
-- Solution: Generate PDF from markdown artifacts
+- Goals / Non-Goals / Target Users / Related Artifacts: fill before validation
 - Requirements: FR-001: User can export any artifact as PDF
 - Scope: In: single artifact export. Out: batch export, custom styles
 ```
 
 **Step 3**: Create RFC
 ```
-docs/rfcs/RFC-001-pdf-export-design.md
+.forgeplan/rfcs/<returned-id>-*.md
 - Design: pulldown-cmark -> HTML -> wkhtmltopdf/weasyprint
 - Phases: Phase 1: basic export, Phase 2: styled templates
 ```
 
 **Step 4**: Need an ADR? -> There's a choice (wkhtmltopdf vs weasyprint vs browser-based) -> Yes
 ```
-docs/adrs/ADR-001-pdf-library.md
+.forgeplan/adrs/<returned-id>-*.md
 - Decision: weasyprint (pure Python, CSS-based)
 - Alternative: wkhtmltopdf (binary dependency, deprecated)
 - Alternative: Headless Chrome (heavy, 200MB)
 ```
 
-**Step 5**: Work through phases from the RFC. Close the RFC when all phases are checked.
+**Step 5**: Implement the phases, run the project's verification, record/link evidence and complete the applicable independent review. Then the orchestrator runs `review` and `activate`.
 
-Done. Three documents, full audit trail, less than 1 hour on documentation.
+The sketch is not a complete artifact body; use the validator and the gates below before treating it as accepted.
 
 ---
 
@@ -355,7 +356,7 @@ Done. Three documents, full audit trail, less than 1 hour on documentation.
 
 ### What It Is
 
-`/forge-cycle` is a command for AI agents (Claude Code) that launches a **full FPF-aligned development cycle** from idea to PR. One command replaces 8 manual steps.
+`/forge-cycle` is the published `forgeplan-workflow` **prompt contract**, not a CLI subcommand or an automatically chained program. The orchestrator performs dispatches/MCP calls explicitly. The phase labels below are a reading aid; the published command has additional stages and prerequisites.
 
 ### When to Use
 
@@ -363,9 +364,9 @@ Done. Three documents, full audit trail, less than 1 hour on documentation.
 |-----------|---------|
 | Specific feature from TODO | `/forge-cycle PRD-016` |
 | New task without PRD | `/forge-cycle "add PDF export"` |
-| Next task from backlog | `/forge-cycle` (picks up P0 from TODO.md) |
+| Next task from backlog | `/forge-cycle` (orchestrator inspects the backlog; `health` is not a P0 task picker) |
 
-### How It Works (8 phases)
+### How It Works (phase summary)
 
 ```
 /forge-cycle "Add report export to PDF"
@@ -376,7 +377,7 @@ Done. Three documents, full audit trail, less than 1 hour on documentation.
 ```bash
 forgeplan health       # blind spots, orphans
 forgeplan stale        # expired evidence
-forgeplan fpf          # explore/investigate/exploit suggestions
+forgeplan fpf dashboard # explore/investigate/exploit suggestions
 ```
 
 The agent records observations:
@@ -395,13 +396,13 @@ SESSION_GOAL: PRD-016
 #### Phase 1: ROUTE -- what depth?
 
 ```bash
-forgeplan route "add PDF export"
-# -> Depth: Standard, Pipeline: PRD -> RFC
+forgeplan route "new feature: PDF export" --level 0
+# Keyword routing recommends Standard, Pipeline: PRD -> RFC
 ```
 
 - **Tactical** -> jump to Phase 3 (Build), no PRD
-- **Standard** -> PRD + validate -> Sprint -> Build
-- **Deep** -> PRD + RFC + validate -> Sprint -> Build
+- **Standard** -> PRD + RFC, validation, ADI evidence, recorded depth, pre-build gate -> Build
+- **Deep/Critical policy** -> design artifacts, decomposition, ADI, recorded depth, estimate, pre-build gate -> Build
 
 #### Phase 2: SPRINT -- wave plan
 
@@ -409,13 +410,13 @@ forgeplan route "add PDF export"
 /sprint PRD-016 -- wave-based implementation plan
 ```
 
-Auto-approve in yolo mode if: LOC < 2000, waves <= 5, no file conflicts.
+Before build, run `/gate-check <ID>`. It merges project threshold keys over shipped defaults; a FAIL stops build. Standard MUST: zero validation errors. Deep adds linked ADI EVID with ≥3 `### Hypothesis` sections; Critical also requires an active informing ADR. Numeric scores are SHOULD, not shipped MUST thresholds. Override requires user insistence plus `--force --reason`, recorded by the skill as a linked Note.
 
 #### Phase 3: BUILD -- implementation
 
 ```
-/team-up Implement PRD-016
-Skills: rust-expert, m01-ownership, m06-error-handling
+Implement the approved scope with the configured project/marketplace agents.
+Run the project's actual test/build/lint commands; language-specific skills are not supplied by the binary.
 ```
 
 **On conflicts** (which approach to choose?) -- FPF auto-resolve:
@@ -425,13 +426,13 @@ Skills: rust-expert, m01-ownership, m06-error-handling
 3. **Induction**: WLNK (weakest failure mode) + Reversibility (what's easier to revert)
 4. **Choice**: max(reversibility) + max(WLNK strength)
 
-Asks the user **only** if the decision is irreversible (DB schema, public API).
+Ask the user when requirements cannot be resolved from tools/artifacts, depth changes need confirmation, a gate override is requested, or permissions require it—not only for irreversible decisions.
 
 #### Phase 4: AUDIT -- adversarial review
 
 ```
-/audit PRD-016
-Skills: rust-expert, m06-error-handling (minimum 2)
+Dispatch independent reviewers for the current artifact and implementation.
+The published cycle's Standard+ review and guardian are distinct from forgeplan review.
 ```
 
 The reviewer follows the core protocol in [`QUALITY-GATES.md` §2 — Adversarial Review](./QUALITY-GATES.md#2-adversarial-review-protocol): active counterexample search, mandatory rounds, structured severity/state reporting, no manufactured non-zero count, HIGH/Critical unresolved = BLOCKER.
@@ -446,13 +447,13 @@ The reviewer follows the core protocol in [`QUALITY-GATES.md` §2 — Adversaria
 
 ```bash
 forgeplan new evidence "Implementation verified: PRD-016"
-# Body: verdict: supports, congruence_level: 3, evidence_type: test
+# Fill the new EVID body with actual scope/commands/results and standalone verdict, congruence_level, evidence_type
 forgeplan link EVID-XXX PRD-016 --relation informs
 forgeplan score PRD-016      # R_eff > 0
-forgeplan activate PRD-016   # draft -> active
+# After the post-build/guardian gates described below: forgeplan review, then activate.
 ```
 
-Evidence **must** reference the observation from Phase 0.
+Link the evidence to the claim it actually checks. For code claims, record real `base_sha`, `result_sha`, `changed_paths`; provenance checks can warn/block according to project configuration (default warn). Deep+ then runs `/gate-check <ID> --post-build` (new linked evidence since pre-build), before guardian. Guardian emits a verdict/EVID but never activates; the orchestrator activates only after the required chain passes.
 
 #### Phase 7: COMMIT -- finalization
 
@@ -462,14 +463,14 @@ git push      # feature branch
 gh pr create  # PR with test plan
 ```
 
-+ `memory_retain` -- hindsight report for future sessions.
+Hindsight retention is optional and separately configured; a CLI Note is not a remote memory write. Commit/push/PR permissions remain those of the host/project.
 
 #### Phase 8: NEXT -- next iteration
 
 ```bash
 forgeplan health    # new state
-# -> shows next P0 task
-# -> /forge-cycle "next task"
+# -> inspect the new state and select the next task from the actual backlog
+# -> Deep+ /wrap records reconciliation output in a REFRESH after commit
 ```
 
 ---
@@ -478,7 +479,7 @@ forgeplan health    # new state
 
 **Problem**: you start a tactical task (fix bug), along the way drift into strategy (let's redesign everything). Tactics unfinished, strategy half-started.
 
-**How it works**: Phase 0 locks the session type. If the agent detects a switch -- it warns:
+The agent records scope explicitly and reports drift. This is workflow discipline, not a filesystem lock or guaranteed CLI warning:
 
 ```
 WARNING: SCOPE DRIFT DETECTED
@@ -499,6 +500,8 @@ Options:
 - **Bookmark** when switching -> `forgeplan new note "Session bookmark: PRD-016, Phase 3 done, remaining: Phase 4-7"`
 
 ### Example: Tactical Session
+
+The two transcripts below are **historical illustrative sessions**, retained with their counts, IDs and phase labels. They do not specify current routing, automatic command execution or current memory permissions.
 
 ```
 /forge-cycle PRD-016
@@ -543,14 +546,45 @@ Cycle complete. 1 PROB + 6 PRDs created. Research done.
 
 ### Yolo Mode
 
-In yolo mode, automatically:
-- Sprint plans with LOC < 2000 -> auto-approve
-- Conflicts -> FPF auto-resolve (reversible + WLNK)
-- Audit < 5 findings -> auto-fix
-- Evidence + activate -> auto if R_eff > 0
+Autonomous execution is bounded by the host/project permissions and the installed workflow. LOC < 2000, fewer than five findings or R_eff > 0 do **not** independently authorize approval, activation or publication.
 
-Asks the user **only**:
-- Irreversible decision (DB schema, public API)
-- R_eff = 0 after evidence
-- cargo test fails after 2nd attempt
-- PR creation
+- Keep the recorded depth under unattended `/autorun`; report calibration suggestions rather than silently escalating.
+- Do not `--force` a failed gate on the user's behalf.
+- Distinguish authoring, independent review, guardian verdict and orchestrator activation.
+- If a required reviewer/tool cannot run, report the missing gate, not a fabricated PASS.
+
+## Parallel work: claims are coordination, not access control
+
+```bash
+forgeplan claims --json
+forgeplan dispatch --agents 2 --json
+forgeplan claim PRD-016 --agent worker-1 --ttl-minutes 30
+# Work only in the assigned file/artifact scope; renew with the same identity before TTL expires.
+forgeplan release PRD-016 --agent worker-1
+```
+
+Use actual artifact IDs. Default TTL is 30 minutes (1–1440 permitted). A different live holder prevents a second claim, but the claim does not prevent writes; workspace locks serialize supported mutations. `dispatch` proposes buckets from links/file-overlap and claims—it does not spawn agents or guarantee disjoint edits. Keep file ownership explicit. Only the orchestrator should use force-release for a confirmed abandoned claim. CLI agent strings must not contain `/` or `\`; published older slash-shaped shell examples are not valid CLI 0.38 identities.
+
+## Memory versus Notes
+
+- **Note**: versioned project record/bookmark in `.forgeplan/notes`, linked into the decision graph.
+- **Local memory**: `forgeplan remember "text" --category insight` / `forgeplan recall "query"`; not the old two-positional key/value API. This is separate from Hindsight.
+- **Hindsight (`fpl-hsmem` 3.7.0)**: optional remote cross-session retrieval. Requires explicit `.hindsight.json` with `url`, `banks`, `defaultBank`, and banks already present on an API >=0.10.2 and <0.11.0 server. Hooks default off; project config alone does not authorize transcript capture. BankGate is client safety, not server authorization. Without memory, continue from artifacts; do not invent recall results.
+
+## Source references and smoke examples
+
+- [Core status/depth types](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-core/src/artifact/types.rs#L484-L531), [update restrictions](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-cli/src/commands/update.rs#L53-L101), [claims](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-core/src/claim/mod.rs#L1-L42).
+- [Published gate thresholds](https://github.com/ForgePlan/marketplace/blob/b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7/plugins/fpl-skills/templates/quality-gates.yaml#L116-L188), [cycle depth confirmation](https://github.com/ForgePlan/marketplace/blob/b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7/plugins/forgeplan-workflow/commands/forge-cycle.md#L488-L573), [Hindsight opt-in](https://github.com/ForgePlan/marketplace/blob/b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7/plugins/fpl-hsmem/README.md#L7-L49).
+
+Suggested checks in a disposable initialized workspace, using IDs returned by creation (not executed for this documentation update):
+
+```bash
+forgeplan route "security authentication" --level 0
+forgeplan get PRD-001 --json
+forgeplan validate PRD-001 --json
+forgeplan score PRD-001 --json
+forgeplan review PRD-001
+forgeplan claims --json
+```
+
+Expect Deep for the keyword example; inspect all validation findings and the score's weakest link. A review failure on missing evidence/template content is expected for an unfilled PRD, not a reason to force activation.

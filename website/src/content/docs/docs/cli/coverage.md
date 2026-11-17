@@ -1,27 +1,9 @@
 ---
 title: forgeplan coverage
-description: "Show decision coverage per code module - which parts of the codebase have no linked ADR/PRD."
+description: "Scan the codebase and report which source modules are covered by artifact Affected Files sections. This measures documented decision coverage, not test coverage or proof that the implementation matches a decision."
 ---
 
-`forgeplan coverage` cross-references the modules discovered by `forgeplan scan`
-against the `Affected Files` sections in every artifact, and reports which modules
-have **no** documented decision. Uncovered modules are blind spots: code you are
-running without any documented reasoning behind it.
-
-This is the "do we know why this exists?" view of the project. Paired with `drift`
-(do ADRs still match code?) it gives you a complete codebase ⟷ artifacts reconciliation.
-
-## When to use
-
-- Architecture review: "which modules are entirely undocumented?"
-- After a refactor that split or merged modules - rescan, recompute coverage.
-- Onboarding: show a new teammate which files have ADRs they should read first.
-- Backfilling legacy: use `--backfill` to auto-insert `Affected Files` sections on artifacts that pre-date the module link requirement.
-
-## When NOT to use
-
-- Before running `forgeplan scan` - coverage needs a module inventory first.
-- On tiny projects with 1–2 files - the signal is low.
+Scan the codebase and report which source modules are covered by artifact Affected Files sections. This measures documented decision coverage, not test coverage or proof that the implementation matches a decision.
 
 ## Usage
 
@@ -39,71 +21,31 @@ forgeplan coverage [OPTIONS]
 
 ## Examples
 
-### Standard coverage report
-
 ```bash
-forgeplan scan         # refresh module list
 forgeplan coverage
-```
-
-Output:
-
-```text
-Decision coverage
-─────────────────
-covered (5):
-  crates/forgeplan-core/src/scoring      ADR-001, PRD-005
-  crates/forgeplan-core/src/lifecycle    ADR-005
-  crates/forgeplan-core/src/db           ADR-002, ADR-003
-  crates/forgeplan-core/src/search       PRD-039, RFC-006
-  crates/forgeplan-cli/src/commands      RFC-001
-
-uncovered (3) ⚠ blind spots:
-  crates/forgeplan-core/src/fpf
-  crates/forgeplan-core/src/routing
-  crates/forgeplan-mcp/src/transport
-
-overall coverage: 62% (5 of 8 modules)
-```
-
-### Backfill legacy artifacts
-
-```bash
 forgeplan coverage --backfill
+forgeplan drift
 ```
 
-Adds a placeholder `## Affected Files` section to artifacts that don't have one,
-making them visible to coverage and drift going forward. You'll still need to fill
-the list by hand, but the structure is ready.
+## Backfill and interpretation
 
-### Focus on uncovered modules
+Only active PRD/RFC/ADR bodies contribute decision paths. `--backfill` updates
+stored bodies missing both `## Affected Files` and `## Affected Scope`; it appends
+the fixed example paths `crates/forgeplan-core/src/**` and
+`crates/forgeplan-cli/src/**`, not inferred project paths. Those examples can
+inflate coverage in a matching repository, so replace them with real scope.
+In 0.38.0 this backfill does not render Markdown projections; do not assume
+the body update is durable across a later file-to-store sync.
 
-```bash
-forgeplan coverage --json | jq '.uncovered[]'
-```
+The normal report lists uncovered modules, covered modules with decision IDs,
+and a percentage. Matching strips limited trailing patterns (`/*`, `/**`,
+`/*.rs`), then checks whether either path string contains the other. This is
+a symmetric substring heuristic, not prefix/boundary matching or a general
+glob engine, and does not prove a decision governs every file. No healthy percentage is enforced.
 
-Produces a flat list you can feed into a backlog generator: "write an ADR for each
-uncovered module."
+## CLI and MCP differences
 
-## Output interpretation
-
-| Section   | Meaning                                                            |
-|-----------|--------------------------------------------------------------------|
-| covered   | module → list of artifacts declaring it in `Affected Files`        |
-| uncovered | module with zero artifact references - document reasoning!        |
-| overall   | percentage of scanned modules with at least one decision           |
-
-A healthy project sits above 70% coverage. Below 50% means you're coding by instinct.
-100% is usually over-documentation - some utility modules don't need ADRs.
-
-## How it fits the workflow
-
-```
-scan → coverage → spot uncovered module → forgeplan new adr → link affected files → re-run
-```
-
-Coverage is the "what should I document next?" tool. It turns architecture review
-from vibes into a prioritized list.
+`coverage` scans modules itself; `scan` is useful for inspection but is not required first. CLI 0.38.0 has no `--json` option for coverage. For a structured integration, use the separately documented `forgeplan_coverage` MCP tool and its own schema.
 
 ## See also
 

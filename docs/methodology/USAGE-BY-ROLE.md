@@ -2,6 +2,11 @@
 
 # ForgePlan — Usage Guide by Role
 
+Examples target Forgeplan **0.38.0**. IDs below illustrate an empty workspace;
+use the IDs returned by `new`. These are suggested responsibilities, not
+access-control rules. Fill bodies with `forgeplan update ID --body @file.md`
+or MCP, not by editing the `.forgeplan/` projection.
+
 ## Quick Start by Role
 
 ### Human: Product Manager / Product Owner
@@ -9,13 +14,13 @@
 ```
 Your flow:
   1. forgeplan new prd "User Authentication"    ← Describe WHAT and WHY
-  2. forgeplan new epic "Auth System" --prd 1   ← Group into an initiative
-  3. Fill in: Problem, Users, Goals, Metrics
-  4. forgeplan validate --type prd              ← Completeness check
+  2. forgeplan new epic "Auth System"          ← Group into an initiative
+  3. Fill Problem, Target Users, Goals, FR; relate PRD/Epic via CLI/MCP links
+  4. forgeplan validate PRD-001                ← Check this PRD (omit ID for all)
   5. forgeplan status                           ← Dashboard
 
 Artifacts: PRD, Epic
-Don't touch: RFC, ADR, Spec (that's for engineers)
+Coordinate RFC, ADR and Spec changes with engineers.
 ```
 
 ### Human: Tech Lead / Architect
@@ -23,25 +28,29 @@ Don't touch: RFC, ADR, Spec (that's for engineers)
 ```
 Your flow:
   1. Read PRD → understand WHAT is needed
-  2. forgeplan new spec "OAuth2 API" --prd 1    ← Formal contracts
-  3. forgeplan new rfc "Auth Architecture" --prd 1  ← Architecture
-  4. forgeplan new adr "Choose Passport.js" --rfc 1 ← Decision + rationale
-  5. forgeplan score                            ← R_eff across all artifacts
+  2. forgeplan new spec "OAuth2 API"            ← Formal contracts
+  3. forgeplan new rfc "Auth Architecture"      ← Architecture
+  4. forgeplan new adr "Choose an auth library" ← Decision + rationale
+  5. forgeplan score --all                     ← Active decision artifacts
   6. forgeplan coverage                         ← Blind modules
 
 Artifacts: Spec, RFC, ADR
 Read: PRD (from PM)
-Don't touch: PRD (only comment)
+Coordinate requirement changes with the PM; new has no --prd or --rfc option.
 ```
+
+Create explicit dependencies after creation, for example
+`forgeplan link RFC-001 PRD-001 --relation based_on` and
+`forgeplan link ADR-001 RFC-001 --relation based_on`.
 
 ### Human: Developer
 
 ```
 Your flow:
   1. forgeplan status                           ← What's in progress?
-  2. forgeplan context src/auth/                ← Which decisions cover this?
+  2. forgeplan context ADR-001                 ← Context for an artifact ID
   3. Code according to ADR
-  4. forgeplan drift                            ← Did my changes violate a decision?
+  4. forgeplan drift                           ← Changed affected files, not proof of violation
   5. forgeplan new note "Edge case found"       ← Note for the future
 
 Artifacts: Notes
@@ -52,17 +61,26 @@ Read: ADR (what was decided), Spec (contracts), RFC (why it's done this way)
 
 ```
 Your flow:
-  1. forgeplan context {changed_files}          ← Which decisions are affected?
-  2. forgeplan drift                            ← Any violations?
-  3. forgeplan score                            ← R_eff < 0.5 = worth checking
-  4. forgeplan validate                         ← Are all artifacts complete?
+  1. forgeplan search "authentication"         ← Find relevant decisions
+  2. forgeplan context ADR-001                 ← Read artifact, graph, validation, score
+  3. forgeplan score ADR-001                   ← Inspect the weakest evidence
+  4. forgeplan validate                        ← Check all artifacts
 
 Check: drift, coverage, R_eff scores
 ```
 
+Use `forgeplan drift` to find files changed since a decision; a reviewer must
+determine whether those changes violate it. `context` accepts an artifact ID,
+not paths, topics or a list of changed files.
+
 ---
 
 ## AI Agent Flows
+
+`/research`, `/sprint` and `/audit` below come from the separately installed
+`fpl-skills` **1.75.1** plugin. `/forge-cycle` comes from
+`forgeplan-workflow` **1.23.1**. The public catalog **1.187.1** has **23 plugins**;
+CLI installation and `setup-skill` do not install this whole harness.
 
 ### Agent: Research / Discovery
 
@@ -71,13 +89,19 @@ Trigger: user says "research", "investigate", "what do we have"
 
 Flow:
   1. forgeplan status → check current artifacts
-  2. forgeplan context {topic} → what's already decided on the topic
-  3. /research or /deep-research → investigate
-  4. Result → memory_retain() + forgeplan new note
+  2. forgeplan search "authentication" → find existing decisions by topic
+  3. /research → investigate with the installed skill
+  4. Result → forgeplan new note; retain distilled lessons only if memory is configured and authorized
 
 Rule: NEVER create PRD/RFC/ADR without user request.
 Only Notes and Research reports.
 ```
+
+Hindsight is optional (`fpl-hsmem` **3.7.0**). Configure explicit `url`,
+`banks` and `defaultBank` in project `.hindsight.json`; banks must exist on the
+server. Recall/retain hooks default off. Check the selected bank and privacy
+settings before a permitted `memory_retain`; it is not key-value storage or
+the same store as `forgeplan remember`/`recall`.
 
 ### Agent: Architecture / Design
 
@@ -105,11 +129,11 @@ Agent NEVER records an ADR without human approval.
 Trigger: user says "implement", "build", /sprint
 
 Flow:
-  1. forgeplan context {scope} → which ADRs cover the work area
-  2. Read ADR → follow decisions
+  1. forgeplan search "authentication" → find decisions for the scope
+  2. forgeplan context ADR-001 → read the selected decision
   3. Code according to Spec (contracts)
-  4. After coding: forgeplan drift → check for decision violations
-  5. If drift → notify user
+  4. After coding: forgeplan drift → identify affected-file changes
+  5. Review any actual deviation and notify the user
 
 Rule: code MUST conform to ADR. If deviation is needed →
 new RFC → new ADR → only then change code.
@@ -121,12 +145,12 @@ new RFC → new ADR → only then change code.
 Trigger: /audit, code review, PR
 
 Flow:
-  1. forgeplan context {changed_files}
-  2. For each file: is there a covering ADR?
-     - No → mark as "blind module"
-     - Yes → verify conformance
-  3. forgeplan score → R_eff for affected artifacts
-  4. forgeplan drift → any violations?
+  1. forgeplan search "authentication" → find relevant artifacts
+  2. For each changed file, inspect coverage and the actual ADR:
+     - No covering decision → report a coverage gap
+     - Decision exists → verify conformance
+  3. forgeplan score ADR-001 → inspect evidence for the selected artifact
+  4. forgeplan drift → inspect changed affected files, not an automatic verdict
   5. Report: compliance + gaps + drift
 
 Rule: Adversarial Review — follow [`QUALITY-GATES.md` §2](./QUALITY-GATES.md#2-adversarial-review-protocol). Zero real defects is permitted only when D1.1-D1.7, mandatory rounds and preserved gates are satisfied on the current complete candidate; the reviewer never invents findings to manufacture a non-zero count and never accepts risk on the owner's behalf; unresolved HIGH / Critical means BLOCKER.
@@ -138,21 +162,23 @@ Full protocol: [`QUALITY-GATES.md` §2](./QUALITY-GATES.md#2-adversarial-review-
 
 ## Depth Calibration — When to Use What
 
-| Complexity | Depth | Artifacts | Example |
-|------------|-------|-----------|---------|
-| **Tactical** | 1 call | Note | Quick fix, typo, config change |
-| **Standard** | Frame → Explore → Decide | ADR | Library choice, API design |
-| **Deep** | Full ADI + Evidence | PRD → RFC → ADR | New feature, architectural decision |
-| **Critical** | Formal verification | Epic → PRD → Spec → RFC → ADR | Migration, security, compliance |
+| Depth | Core artifact pipeline | Typical use |
+|---|---|---|
+| **Tactical** | None required; Note optional | Small reversible fix |
+| **Standard** | PRD → RFC | Feature requiring requirements and design |
+| **Deep** | PRD → Spec → RFC → ADR | Architectural/security-sensitive work |
+| **Critical (methodology)** | Epic and multiple linked decision chains as needed | Cross-team or high-consequence work |
 
 ### Routing Rules (for the agent)
 
-```
-IF task < 1 file AND reversible in 1 hour → Tactical (Note)
-IF task < 5 files AND reversible in 1 day → Standard (ADR)
-IF task > 5 files OR new module → Deep (PRD → RFC → ADR)
-IF task involves security OR data OR infrastructure → Critical (full cycle)
-```
+Run `forgeplan route "task description"` rather than guessing depth from a
+file count. The core rule fallback takes the highest minimum depth among
+matched signals; with no signals it defaults to Tactical. LLM routing requires
+a configured provider and may propose a different pipeline. The core also
+accepts `critical` in `update --depth`, interpreting it as Deep despite the
+shorter list in help. There is no separate Critical core pipeline; the extra
+review requirements are methodology policy. Generated reasoning and routing
+do not replace independent review or verification.
 
 ## Related Documents
 

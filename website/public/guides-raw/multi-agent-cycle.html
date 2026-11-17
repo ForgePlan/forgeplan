@@ -178,31 +178,31 @@
   <p class="eyebrow">Цикл многоагентной работы · теория</p>
   <h1>Multi-agent · dispatch · claim · release</h1>
   <p class="lead">
-    Один агент за раз - это потолок. Когда нужно сделать пять PRD, пройти ревью на трёх ADR
-    и собрать evidence по двум направлениям, последовательная работа становится
-    бутылочным горлышком. Forgeplan даёт три примитива - <b class="k">dispatch</b>,
-    <b class="k">claim</b>, <b class="k">release</b> - которые превращают одну сессию в команду
-    из 2-5 параллельных agent'ов, работающих в одном репо без конфликтов.
+    Когда нужно сделать пять PRD, пройти ревью на трёх ADR
+    и собрать evidence по двум направлениям, один агент становится
+    узким местом: всё приходится делать последовательно. Forgeplan даёт три примитива:
+    <b class="k">dispatch</b>, <b class="k">claim</b>, <b class="k">release</b>. С ними в одной сессии можно
+    организовать команду из 2-5 параллельных агентов, работающих в одном репозитории без конфликтов.
   </p>
 
   <!-- MINI-PIPELINE -->
   <div class="pipeline">
     <div class="pipe-box">
       <div class="step-tag">01 · dispatch</div>
-      <div class="step-title">Planner делит работу</div>
-      <div class="step-desc">Конфликт-free buckets · JSON-ответ</div>
+      <div class="step-title">Планировщик делит работу</div>
+      <div class="step-desc">Группы без конфликтов · JSON-ответ</div>
     </div>
     <div class="pipe-arrow">→</div>
     <div class="pipe-box">
       <div class="step-tag">02 · claim</div>
-      <div class="step-title">Agent берёт под себя</div>
+      <div class="step-title">Агент берёт артефакт в работу</div>
       <div class="step-desc">TTL · WIP=1 · exclusive ownership</div>
     </div>
     <div class="pipe-arrow">→</div>
     <div class="pipe-box">
       <div class="step-tag">03 · release</div>
-      <div class="step-title">Возвращает в pool</div>
-      <div class="step-desc">Порядок работы завершён · готов следующий claim</div>
+      <div class="step-title">Возвращает в общий пул</div>
+      <div class="step-desc">Работа завершена · можно брать следующий артефакт</div>
     </div>
   </div>
 
@@ -214,13 +214,13 @@
     <p class="analogy">
       В операционной четверо людей работают параллельно. Хирург режет. Анестезиолог следит за
       жизненными показателями. Ассистент держит крюки и подаёт инструменты. Операционная
-      сестра - стерильность и инструментальный стол. Никто не лезет на чужое поле - иначе
-      коллизия, ошибка, иногда смерть пациента.
+      сестра отвечает за стерильность и инструментальный стол. Никто не лезет на чужое поле,
+      иначе столкновение, ошибка, иногда смерть пациента.
     </p>
     <p class="analogy">
       Один человек, даже самый опытный, не может одновременно резать и следить за наркозом.
-      То же с агентами в репо: один Claude Code не может одновременно писать PRD и
-      проводить adversarial review этого же PRD - это <b class="k">та же сессия</b>, она
+      То же с агентами в репозитории: один Claude Code не может одновременно писать PRD и
+      проводить adversarial review этого же PRD. Это <b class="k">та же сессия</b>, в которой модель
       защищает свой предыдущий ответ.
     </p>
 
@@ -254,10 +254,10 @@
     <div class="insight">
       <div class="insight-tag">Параллельность ≠ хаос</div>
       <p>
-        Без координации параллельные агенты столкнутся: двое claim'ят один артефакт, evidence
-        пишется одновременно в одно место, activate срабатывает дважды. <code>dispatch</code> +
+        Без координации параллельные агенты столкнутся: двое берут один артефакт, evidence
+        записывается одновременно в одно место, activate срабатывает дважды. <code>dispatch</code> +
         <code>claim</code> + <code>release</code> - это не «фича», это <b class="k">обязательный
-        протокол</b>, без которого многоагентная работа разваливается за один сессионный заход.
+        протокол</b>, без которого многоагентная работа разваливается за одну сессию.
       </p>
     </div>
   </div>
@@ -269,27 +269,27 @@
     <h3 class="concept-h">Каждый примитив отвечает за один аспект многоагентной работы</h3>
     <p class="analogy">
       Это не «три отдельные команды», которые нужно помнить. Это <b class="k">три фазы одного
-      цикла</b>: planner режет работу на конфликт-free куски (dispatch), worker берёт один
-      под себя с TTL (claim), после завершения возвращает (release). Цикл повторяется.
+      цикла</b>: планировщик делит работу на части без конфликтов (dispatch), исполнитель берёт одну
+      с ограничением по времени TTL (claim), а после завершения освобождает её (release). Цикл повторяется.
     </p>
 
     <div class="prim-grid">
       <div class="prim-card">
         <div class="pc-tag">01 · planner</div>
         <div class="pc-cmd">forgeplan dispatch --agents N</div>
-        <div class="pc-desc">Возвращает план: какие артефакты разделить между N agent'ами так, чтобы они не пересекались. JSON-ответ с группами файлов и их owner'ом.</div>
+        <div class="pc-desc">Возвращает план распределения артефактов между N агентами так, чтобы их работа не пересекалась. JSON-ответ содержит группы файлов и владельца каждой группы.</div>
         <div class="pc-when">когда - в начале параллельной волны</div>
       </div>
       <div class="prim-card">
         <div class="pc-tag">02 · worker</div>
         <div class="pc-cmd">forgeplan claim &lt;id&gt; --agent &lt;name&gt; --ttl-minutes 30</div>
-        <div class="pc-desc">Берёт артефакт под себя с истечением через N минут. Другие agent'ы видят claim и не трогают. Если TTL вышел и release не было - claim авто-снимается.</div>
+        <div class="pc-desc">Закрепляет артефакт за агентом на N минут. Другие агенты видят claim и не трогают артефакт. Если TTL истёк, а release не было, claim снимается автоматически.</div>
         <div class="pc-when">когда - перед началом работы над артефактом</div>
       </div>
       <div class="prim-card">
         <div class="pc-tag">03 · worker</div>
         <div class="pc-cmd">forgeplan release &lt;id&gt;</div>
-        <div class="pc-desc">Возвращает артефакт в общий pool. После release другой agent (или вы сами) может его claim'ить. Если работа не завершена и TTL близок - продлеваем claim, не release.</div>
+        <div class="pc-desc">Возвращает артефакт в общий пул. После release другой агент (или вы сами) может взять его через claim. Если работа не завершена, а TTL подходит к концу, продлеваем claim, не освобождая артефакт.</div>
         <div class="pc-when">когда - после завершения работы над артефактом</div>
       </div>
     </div>
@@ -334,9 +334,9 @@
         </div>
       </div>
       <div class="bw-note">
-        Buckets конфликт-free: ни один артефакт не в двух bucket'ах. Внутри bucket'а порядок -
-        по зависимостям DAG (parent перед child). Planner смотрит <code>related_artifacts</code>
-        и не разделяет связанные узлы по разным worker'ам.
+        Группы не конфликтуют: ни один артефакт не входит в две группы. Внутри каждой порядок задан
+        зависимостями DAG (parent перед child). Планировщик смотрит <code>related_artifacts</code>
+        и не распределяет связанные узлы между разными исполнителями.
       </div>
     </div>
 
@@ -362,15 +362,15 @@
   </div>
 
   <!-- CONCEPT 03 · WIP=1 + ADVERSARIAL PATTERN -->
-  <h2>03 · WIP=1 hard limit и pattern адверсариального ревью</h2>
+  <h2>03 · Жёсткий лимит WIP=1 и адверсариальное ревью</h2>
   <div class="concept">
     <div class="concept-tag">Концепция 03 · правила и анти-паттерны</div>
-    <h3 class="concept-h">Один agent - один claim в каждый момент. И adversarial review - всегда чистая сессия</h3>
+    <h3 class="concept-h">У агента только один claim в каждый момент. Для adversarial review всегда нужна чистая сессия</h3>
     <p class="analogy">
       В операционной у каждого участника бригады <b class="k">одно поле</b> в каждый момент.
-      Анестезиолог не может одновременно следить за наркозом и помогать держать крюк - иначе
-      одно из двух будет сделано плохо. То же с агентами: WIP=1 (Work-In-Progress = 1) -
-      <code>claim</code> не пускает второй активный claim того же агента.
+      Анестезиолог не может одновременно следить за наркозом и помогать держать крюк:
+      одно из двух будет сделано плохо. То же с агентами: при WIP=1 (Work-In-Progress = 1)
+      <code>claim</code> не позволяет одному агенту взять второй активный claim.
     </p>
 
     <h3 style="margin: 24px 0 12px; font-size: 16px;">Live claims · текущее состояние</h3>
@@ -418,61 +418,61 @@
     </div>
 
     <p style="margin-top: 18px;">
-      Когда <code>worker-2</code> попробует claim'ить PRD-056 - получит ошибку: уже занят
+      Когда <code>worker-2</code> попробует взять через claim PRD-056, получит ошибку: артефакт уже занят
       <code>worker-3</code>. CLI вернёт <code>Or:</code> с альтернативой (другая задача из
-      bucket'а worker-2) или <code>Wait:</code> до release. Это и есть <b class="k">WIP=1
-      hard limit</b>: ни один artifact не работает с двумя agent'ами одновременно.
+      группы worker-2) или <code>Wait:</code> до release. Так действует <b class="k">жёсткий лимит
+      WIP=1</b>: с одним артефактом не работают два агента одновременно.
     </p>
 
     <div class="insight">
-      <div class="insight-tag">Adversarial review - обязательно отдельный agent</div>
+      <div class="insight-tag">Для adversarial review обязательно нужен отдельный агент</div>
       <p>
-        Когда <code>worker-1</code> закончил PRD-054 - adversarial review запускает
-        <code>reviewer</code> в <b class="k">чистой сессии</b>, с пустым контекстом. Не та же
-        worker-1, не orchestrator. Это hard rule из BMAD: в той же сессии модель защищает свой
-        предыдущий ответ. Multi-agent протокол даёт естественный способ соблюсти правило -
-        для review всегда отдельный agent.
+        Когда <code>worker-1</code> закончил PRD-054, adversarial review запускает
+        <code>reviewer</code> в <b class="k">чистой сессии</b>, с пустым контекстом. Этим не занимается
+        ни worker-1, ни оркестратор. Это жёсткое правило BMAD: в той же сессии модель
+        защищает свой предыдущий ответ. Многоагентный протокол позволяет соблюсти правило:
+        для ревью всегда выделяют отдельного агента.
       </p>
     </div>
   </div>
 
   <!-- WORKED EXAMPLE -->
   <h2>Полный цикл на одной волне · 3 worker'а + reviewer</h2>
-  <p>Параллельная разработка трёх фич: OAuth, email digest, search v2. Orchestrator (вы) делит работу через dispatch, три worker'а ведут PRD, reviewer проводит adversarial review.</p>
+  <p>Параллельная разработка трёх фич: OAuth, email digest, search v2. Оркестратор (вы) делит работу через dispatch, три исполнителя ведут PRD, reviewer проводит adversarial review.</p>
   <div class="worked">
     <div class="worked-step">
       <div class="step-num">01 · dispatch</div>
       <div class="step-content">
         <h4><code>forgeplan dispatch --agents 3 --json</code></h4>
-        <p>Planner возвращает 3 bucket'а: worker-1 (OAuth, 4 артефакта), worker-2 (digest, 3 артефакта), worker-3 (search, 3 артефакта). Buckets конфликт-free, проверены по DAG.</p>
+        <p>Планировщик возвращает 3 группы: worker-1 (OAuth, 4 артефакта), worker-2 (digest, 3 артефакта), worker-3 (search, 3 артефакта). Группы не конфликтуют, зависимости проверены по DAG.</p>
       </div>
     </div>
     <div class="worked-step">
       <div class="step-num">02 · claim ×3</div>
       <div class="step-content">
         <h4>Каждый worker в своей сессии Claude Code → <code>claim --ttl-minutes 30</code></h4>
-        <p>worker-1 claim'ит PRD-054. worker-2 - PRD-055. worker-3 - PRD-056. <code>forgeplan claims</code> показывает 3 активных claim'а. WIP=1 у каждого worker'а соблюдён.</p>
+        <p>worker-1 берёт через claim PRD-054, worker-2 берёт PRD-055, а worker-3 берёт PRD-056. <code>forgeplan claims</code> показывает 3 активных claim. У каждого исполнителя соблюдён WIP=1.</p>
       </div>
     </div>
     <div class="worked-step">
       <div class="step-num">03 · work</div>
       <div class="step-content">
         <h4>Параллельная работа в 3 сессиях · drafting, evidence, validate</h4>
-        <p>Каждый worker отвечает за свой bucket. Если TTL подходит к концу, а работа не закончена - <code>forgeplan claim &lt;id&gt; --ttl-minutes 30</code>. Если worker свободен раньше - release и claim следующий артефакт из bucket'а.</p>
+        <p>Каждый исполнитель отвечает за свою группу. Если TTL подходит к концу, а работа не закончена, продлевает срок: <code>forgeplan claim &lt;id&gt; --ttl-minutes 30</code>. Если освободился раньше, выполняет release и берёт через claim следующий артефакт из группы.</p>
       </div>
     </div>
     <div class="worked-step crit">
       <div class="step-num">04 · adversarial</div>
       <div class="step-content">
         <h4>Каждый завершённый PRD → reviewer claim'ит в чистой сессии</h4>
-        <p>reviewer открывает PRD-054, в новой Claude Code сессии без контекста worker-1, запускает adversarial review. Находит 5-7 проблем, 2 реальные. Возвращает worker-1 с правками. Цикл повторяется.</p>
+        <p>reviewer открывает PRD-054 в новой сессии Claude Code без контекста worker-1 и запускает adversarial review. Находит 5-7 проблем, 2 реальные. Возвращает PRD worker-1 с правками. Цикл повторяется.</p>
       </div>
     </div>
     <div class="worked-step">
       <div class="step-num">05 · release</div>
       <div class="step-content">
-        <h4>Порядок работы завершён → <code>release</code> возвращает в pool</h4>
-        <p>После activate каждого PRD worker делает release. Orchestrator видит, что bucket опустел, запускает следующую волну dispatch или закрывает сессию.</p>
+        <h4>Работа завершена → <code>release</code> возвращает артефакт в общий пул</h4>
+        <p>После activate каждого PRD исполнитель делает release. Оркестратор видит, что группа опустела, и запускает следующую волну dispatch или закрывает сессию.</p>
       </div>
     </div>
   </div>

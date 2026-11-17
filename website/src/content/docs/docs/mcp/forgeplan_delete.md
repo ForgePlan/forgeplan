@@ -3,7 +3,7 @@ title: forgeplan_delete
 description: "Delete an artifact from LanceDB and remove its markdown projection file."
 ---
 
-Permanently removes an artifact from the workspace - both the LanceDB row and the markdown file on disk. This is destructive and unrecoverable (without an export backup), so agents should strongly prefer lifecycle transitions (`supersede`, `deprecate`) over deletion. Only call `forgeplan_delete` when the user explicitly asks to remove a typo, a test artifact, or a duplicate.
+Soft-deletes an artifact: captures a receipt in `.forgeplan/trash/`, attempts to move its Markdown projection there, then removes the store record. The receipt supports recovery through [`forgeplan_restore`](/docs/mcp/forgeplan_restore/) or [`forgeplan_undo_last`](/docs/mcp/forgeplan_undo_last/), while it remains available (normally within 30 days) and collision checks permit recovery. This is still destructive. Prefer lifecycle transitions for retirement, and delete only an explicitly selected unwanted artifact.
 
 **Category**: Editing Artifacts
 
@@ -17,38 +17,35 @@ Agents should NEVER call this to "retire" an active decision - use `forgeplan_su
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
-| `id` | `string` | yes | Artifact ID to delete. |
+| `id` | `string` | yes | Artifact ID to delete |
+| `workspace` | `string \| null` | no | Optional explicit workspace directory for this call. When set, the MCP server resolves the `.forgeplan/` projection from this path instead of the server's startup CWD. Use this when the calling agent is running in a git worktree separate from the MCP server's launch directory. PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. Schema default: `null`. |
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::DeleteParams`_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
 
-A confirmation object with the removed ID and the path of the markdown file that was unlinked. If the artifact had inbound links from other artifacts, the MCP server may refuse the delete and return an error listing the dependents so the agent can resolve them first.
+The confirmation contains `id`, `title`, `message`, `receipt_id`, the workspace trace (`resolved_workspace`, `resolved_via`) and `_next_action`. It does not return `deleted` or `removed_path`.
 
-Example response shape:
+## Guards and side effects
 
-```json
-{
-  "ok": true,
-  "deleted": "NOTE-099",
-  "removed_path": ".forgeplan/notes/note-099-test.md"
-}
-```
+- The target must exist, but no lifecycle-status gate prevents deletion of an active decision. The MCP call has no `yes` flag or interactive confirmation: obtain explicit consent for the selected ID before calling.
+- The handler holds the workspace write lock. Receipt capture happens before store mutation; if writing the receipt fails, the deletion aborts.
+- **0.38.0 limitation:** moving a missing/unmovable projection is best-effort inside receipt capture. The row can be deleted even if the original Markdown file remains. Success is not proof that the projection disappeared.
+- The post-capture helper deletes the artifact row, not all graph relations or dependent projections. Do not assume incoming references or dependent scores were cleaned up. Inspect the graph and retain an export for longer-term backup.
+- An error after receipt creation can follow partial side effects. Inspect the current row, projection and receipt before retrying or applying recovery.
 
 ## Example invocation
 
-```json
-{ "id": "NOTE-099" }
-```
-
-With typical agent context:
-
-> User says "that PROB-099 was a mistake, nuke it". Agent confirms with the user, then deletes.
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
 
 ```json
-{ "id": "PROB-099" }
+{
+  "id": "NOTE-001"
+}
 ```
 
 ## Typical sequence
@@ -62,6 +59,6 @@ With typical agent context:
 ## See also
 
 - [MCP overview](/docs/mcp/)
-- [`forgeplan_deprecate`](/docs/mcp/forgeplan_deprecate/) - reversible retirement
+- [`forgeplan_restore`](/docs/mcp/forgeplan_restore/) - recover a specific artifact from its receipt
 - [`forgeplan_supersede`](/docs/mcp/forgeplan_supersede/) - replacement with history
 - [`forgeplan_export`](/docs/mcp/forgeplan_export/) - back up before destructive ops

@@ -172,12 +172,12 @@
   <p class="eyebrow">Цикл жизни артефакта · теория</p>
   <h1>Lifecycle · от draft до terminal</h1>
   <p class="lead">
-    Артефакт - не статичный документ, который пишется один раз и забывается. Он эволюционирует:
-    draft становится validated planом, активное решение через год заменяется лучшим, бенчмарк
-    устаревает и требует пересмотра. Без управления жизненным циклом - зомби-документы,
-    устаревшие спеки, которым никто не доверяет, но никто не удаляет.
-    <b class="k">Lifecycle</b> даёт каждому артефакту явный статус и явные правила перехода -
-    так что вы всегда знаете: это current? validated? replaced? нужно ли ему ещё доверять?
+    Артефакт меняется после создания:
+    черновик становится проверенным планом, активное решение через год заменяется лучшим, бенчмарк
+    устаревает и требует пересмотра. Без управления жизненным циклом копятся зомби-документы:
+    устаревшие спецификации, которым никто не доверяет, но которые никто не удаляет.
+    <b class="k">Lifecycle</b> задаёт каждому артефакту явный статус и правила перехода.
+    По ним видно, актуален ли документ, проверен ли он, заменён ли и стоит ли ему ещё доверять.
   </p>
 
   <!-- MINI-PIPELINE -->
@@ -207,14 +207,14 @@
     <div class="concept-tag">Концепция 01 · аналогия паспорта с визой</div>
     <h3 class="concept-h">Каждый артефакт всегда находится в одном из пяти состояний</h3>
     <p class="analogy">
-      Паспорт сам по себе - это draft: документ есть, но без визы пересечь границу нельзя.
-      Активная виза - это active. Виза с истёкшим сроком - stale: не invalid, но требует
-      переоформления. Аннулированная виза - superseded или deprecated в зависимости от причины:
-      заменили на новую (supersede) или просто закрыли страну для въезда (deprecate).
+      Паспорт сам по себе похож на draft: документ есть, но без визы пересечь границу нельзя.
+      Действующая виза соответствует active. Виза с истёкшим сроком соответствует stale:
+      она не аннулирована, но требует переоформления. Аннулированная виза соответствует superseded
+      или deprecated: её заменили на новую (supersede) или просто закрыли страну для въезда (deprecate).
     </p>
     <p class="analogy">
-      Система журналирования фиксирует это явно - у каждого артефакта в frontmatter поле <code>status:</code>
-      строго одно из пяти значений. Никаких «не помним», никаких «вроде закрыли».
+      В журнале это фиксируется явно: в поле <code>status:</code> во frontmatter каждого артефакта
+      стоит строго одно из пяти значений. Никаких «не помним», никаких «вроде закрыли».
     </p>
 
     <div class="states-grid">
@@ -319,21 +319,21 @@
         <text x="595" y="270" fill="#a3a3a3" font-family="JetBrains Mono, monospace" font-size="10" letter-spacing="1.5">reopen</text>
       </svg>
       <div class="sm-legend">
-        <span class="item"><span class="sw" style="background: var(--accent)"></span>транзишн, требующий действия</span>
-        <span class="item"><span class="sw" style="background: var(--text-3)"></span>транзишн в терминальное состояние</span>
+        <span class="item"><span class="sw" style="background: var(--accent)"></span>переход, требующий действия</span>
+        <span class="item"><span class="sw" style="background: var(--text-3)"></span>переход в терминальное состояние</span>
         <span class="item"><span class="sw" style="background: var(--warn); border-radius: 0; width: 14px; height: 0; border-top: 1.5px dashed var(--warn);"></span>auto-transition (по TTL)</span>
       </div>
     </div>
 
     <div class="insight">
-      <div class="insight-tag">Terminal - буквально terminal</div>
+      <div class="insight-tag">Terminal: возврата нет</div>
       <p>
         Из <span class="s-super">superseded</span> и <span class="s-dep">deprecated</span> нет
-        выхода. Это не «временно убрали, потом вернём» - это <b class="k">точка истории</b>.
+        выхода. Эти статусы фиксируют <b class="k">точку истории</b> и не означают «временно убрали, потом вернём».
         Если решение нужно вернуть (например, выбирали JWT → переходили на sessions → опять
-        нужен JWT) - создаётся новый артефакт <code>ADR-003</code>, который supersede'ит
-        <code>ADR-002</code>. Старый <code>ADR-001</code> остаётся superseded - это сохраняет
-        реальный timeline решений.
+        нужен JWT), создают новый артефакт <code>ADR-003</code>, который заменяет
+        <code>ADR-002</code>. Старый <code>ADR-001</code> остаётся superseded. Так сохраняется
+        реальная последовательность решений.
       </p>
     </div>
   </div>
@@ -341,18 +341,18 @@
   <!-- CONCEPT 02 · TRANSITIONS DECISION TREE -->
   <h2>02 · Шесть переходов · какой когда</h2>
   <div class="concept">
-    <div class="concept-tag">Концепция 02 · decision tree переходов</div>
+    <div class="concept-tag">Концепция 02 · дерево выбора переходов</div>
     <h3 class="concept-h">Не «как переименовать» - а «какой transition отражает реальность»</h3>
     <p class="analogy">
-      Каждый переход - это семантическое утверждение, а не просто смена строки в frontmatter.
-      Выбор не «как мне удобнее назвать», а «что на самом деле произошло с решением».
+      Каждый переход сообщает, что произошло с решением. Он меняет смысл статуса, а не просто строку
+      во frontmatter. Выбирайте переход по тому, что случилось, а не по удобству названия.
     </p>
 
     <div class="tree-wrap">
-      <div class="tree-head">decision tree · какой transition применять</div>
+      <div class="tree-head">дерево выбора · какой переход применять</div>
       <div class="tree-row">
         <span class="tr-cmd">activate</span>
-        <span class="tr-when">Артефакт готов, validated, можно строить от него</span>
+        <span class="tr-when">Артефакт готов и проверен, можно работать по нему</span>
         <span class="tr-flow">draft → active</span>
         <span class="tr-example">«зелёный свет» - план одобрен и пошёл в работу</span>
       </div>
@@ -364,19 +364,19 @@
       </div>
       <div class="tree-row">
         <span class="tr-cmd">deprecate</span>
-        <span class="tr-when">Артефакт больше не релевантен совсем</span>
+        <span class="tr-when">Артефакт полностью потерял актуальность</span>
         <span class="tr-flow">active → deprecated</span>
         <span class="tr-example">Фича отменена, модуль удалён, контекст изменился</span>
       </div>
       <div class="tree-row">
         <span class="tr-cmd">renew</span>
-        <span class="tr-when">Stale-артефакт всё ещё валиден после re-evaluation</span>
+        <span class="tr-when">Stale-артефакт проверили повторно, он всё ещё актуален</span>
         <span class="tr-flow">stale → active</span>
         <span class="tr-example">ADR про LanceDB через год - пересмотрели, всё ещё лучший выбор</span>
       </div>
       <div class="tree-row">
         <span class="tr-cmd">reopen</span>
-        <span class="tr-when">Stale-артефакт нужно переосмыслить заново</span>
+        <span class="tr-when">Stale-артефакт нужно пересмотреть заново</span>
         <span class="tr-flow">stale → deprecated + new draft</span>
         <span class="tr-example">Старый deprecated, новый draft создаётся с lineage</span>
       </div>
@@ -416,11 +416,11 @@ reopen PRD-001 --reason <span style="color: #ff8a5b">"Needs major revision"</spa
     <div class="insight">
       <div class="insight-tag">Validation gates по типу артефакта</div>
       <p>
-        PRD, RFC, ADR, Epic, Spec требуют проверки перед активацией -
+        Для активации PRD, RFC, ADR, Epic, Spec нужна проверка:
         30+ правил на тип артефакта (MUST-секции, отсутствие implementation leakage,
         information density, measurability, traceability). Note и Problem могут активироваться
-        без validation gate - они быстрые captures, и формальные правила здесь только мешали бы
-        фиксировать сигнал.
+        без validation gate: они нужны, чтобы быстро зафиксировать наблюдение,
+        а формальные правила здесь только мешали бы.
       </p>
     </div>
   </div>
@@ -431,25 +431,25 @@ reopen PRD-001 --reason <span style="color: #ff8a5b">"Needs major revision"</spa
     <div class="concept-tag">Концепция 03 · забытое состояние</div>
     <h3 class="concept-h">Stale не значит «неверно». Stale значит «никто не проверил, что всё ещё верно»</h3>
     <p class="analogy">
-      Большинство команд игнорируют stale - и это самая опасная ошибка. Когда дата
-      <code>valid_until</code> у артефакта истекает, он автоматически становится stale. Это не
-      «он сломался» - это сигнал, что <b class="k">контекст мог измениться, а решение
-      зафиксировано на старых данных</b>.
+      Большинство команд игнорируют stale, и это самая опасная ошибка. Когда срок
+      <code>valid_until</code> у артефакта истекает, он автоматически становится stale. Это сигнал
+      о том, что <b class="k">контекст мог измениться, а решение
+      зафиксировано на старых данных</b>, а не о том, что «он сломался».
     </p>
 
     <div class="stale-story">
-      <div class="ss-tag">⚡ типичный пример</div>
+      <div class="ss-tag">типичный пример</div>
       <p>
         Вы создали ADR полгода назад: выбрали LanceDB, потому что у него тогда был лучший
         Rust SDK. Поставили <code>valid_until: 180 дней</code>. Сейчас он stale. Может быть,
-        LanceDB всё ещё лучший вариант - а может быть, появился более зрелый конкурент.
-        Статус stale заставляет вас явно переоценить, вместо тихого допущения «оно ещё работает».
+        LanceDB всё ещё лучший вариант, а может быть, появился более зрелый конкурент.
+        Статус stale заставляет явно пересмотреть выбор, а не молча допускать, что «оно ещё работает».
       </p>
       <p>
-        Без stale-состояния это решение продолжало бы быть active, R_eff его evidence считался
+        Без состояния stale это решение оставалось бы active, оценка R_eff его доказательств считалась
         бы по 6-месячному бенчмарку, и вы бы спокойно жили в иллюзии «всё проверено и работает».
         Через год команда упирается в проблему, начинает гадать «почему мы выбрали LanceDB», и
-        выясняется, что evidence давно нерелевантен.
+        выясняется, что доказательства давно потеряли актуальность.
       </p>
     </div>
 
@@ -463,17 +463,17 @@ reopen PRD-001 --reason <span style="color: #ff8a5b">"Needs major revision"</spa
       <div class="st-step aging">
         <div class="stm-tag">02 · истечение</div>
         <div class="stm-title">active → stale (auto)</div>
-        <div class="stm-desc">valid_until прошёл. Артефакт переходит в stale без вашего действия. Оценка evidence → 0.1.</div>
+        <div class="stm-desc">Срок valid_until истёк. Артефакт переходит в stale автоматически. Оценка evidence → 0.1.</div>
       </div>
       <div class="st-step choice">
         <div class="stm-tag">03 · выбор</div>
         <div class="stm-title">renew или reopen</div>
-        <div class="stm-desc">Пересмотр обязателен. <code>renew</code> - всё ещё лучший выбор. <code>reopen</code> - нужен новый разбор.</div>
+        <div class="stm-desc">Пересмотр обязателен. <code>renew</code>: выбор всё ещё лучший. <code>reopen</code>: нужен новый разбор.</div>
       </div>
       <div class="st-step terminal">
         <div class="stm-tag">04 · итог</div>
         <div class="stm-title">active → или → deprecated + new</div>
-        <div class="stm-desc">После renew - продлеваем valid_until. После reopen - старое уходит в deprecated, начинается новый draft с lineage.</div>
+        <div class="stm-desc">После renew продлеваем valid_until. После reopen старый артефакт переходит в deprecated, создаётся новый draft со связью с предшественником (lineage).</div>
       </div>
     </div>
 
@@ -490,12 +490,12 @@ reopen ADR-001 --reason <span style="color: #ff8a5b">"New alternatives available
     </div>
 
     <div class="insight">
-      <div class="insight-tag">Связь со scoring</div>
+      <div class="insight-tag">Связь с оценкой доверия</div>
       <p>
-        Когда evidence становится stale, его оценка падает до 0.1 (а не до 0 - «решение было,
-        контекст мог измениться»). Это значит, что R_eff = min(scores) у всего связанного
-        артефакта тоже падает до 0.1 - <b class="k">тихий сигнал</b>, который виден в
-        health-дашборде системы. Игнорировать его = молчаливо принимать риск.
+        Когда evidence становится stale, его оценка падает до 0.1 (а не до 0: «решение было,
+        контекст мог измениться»). Поэтому R_eff = min(scores) у всего связанного
+        артефакта тоже падает до 0.1. Этот <b class="k">тихий сигнал</b> виден
+        в health-дашборде системы. Игнорируя его, вы молчаливо принимаете риск.
       </p>
     </div>
   </div>
@@ -515,7 +515,7 @@ reopen ADR-001 --reason <span style="color: #ff8a5b">"New alternatives available
       <div class="step-num">М 0.5 · active</div>
       <div class="step-content">
         <h4>Validation pass → артефакт активирован</h4>
-        <p>3 quality gates прошли, evidence линкован (бенчмарк CL2), R_eff = 0.7. <code>status: active</code>, <code>valid_until: 2026-12-01</code>. Файл immutable.</p>
+        <p>3 проверки качества пройдены, доказательства привязаны (бенчмарк CL2), R_eff = 0.7. <code>status: active</code>, <code>valid_until: 2026-12-01</code>. Файл неизменяем.</p>
       </div>
     </div>
     <div class="worked-step crit">
@@ -529,7 +529,7 @@ reopen ADR-001 --reason <span style="color: #ff8a5b">"New alternatives available
       <div class="step-num">М 12 · renew</div>
       <div class="step-content">
         <h4>Re-evaluation → продлено до 2027-06-30</h4>
-        <p>Перезамерили на новой версии LanceDB. Те же тренды - выбор валиден. Renew продлевает <code>valid_until</code>, статус возвращается в active, evidence актуализируется.</p>
+        <p>Повторили замер на новой версии LanceDB. Тенденции те же, выбор по-прежнему обоснован. Renew продлевает <code>valid_until</code>, статус возвращается в active, доказательства обновляются.</p>
       </div>
     </div>
     <div class="worked-step">

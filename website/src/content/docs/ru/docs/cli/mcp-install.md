@@ -24,7 +24,7 @@ description: "Smart-merge Forgeplan into Claude Code, Cursor, or Windsurf MCP co
 
 ## Когда НЕ использовать
 
-- Для пер-tool конфигурации - настраивать нечего, сервер читает `./.forgeplan/`.
+- Для настройки отдельных инструментов — команда пишет запись запуска, не настройки пространства. Сервер ищет `.forgeplan/` от рабочего каталога запуска.
 - Для HTTP / сетевого MCP - Forgeplan поставляется только со stdio.
 - Чтобы удалить Forgeplan из клиента - отредактируйте файл конфигурации вручную;
   `install` только добавляет.
@@ -38,18 +38,31 @@ forgeplan mcp install [OPTIONS] --client <CLIENT>
 ## Опции
 
 ```text
-  -c, --client <CLIENT>          Target client: claude, cursor, or windsurf
-  -s, --scope <SCOPE>            Config scope: user (global) or project (local) [default: user]
-      --binary-path <PATH>       Override binary path (default: detected from current_exe)
-      --use-name <NAME>          Use short name instead of absolute path: forgeplan or fpl
-      --dry-run                  Print proposed change without writing
-  -h, --help                     Print help
-  -V, --version                  Print version
+  -c, --client <CLIENT>
+          Target client: claude, cursor, or windsurf
+
+  -s, --scope <SCOPE>
+          Config scope: user (global) or project (local). Default: user
+          
+          [default: user]
+
+      --binary-path <BINARY_PATH>
+          Override binary path (default: detected from current_exe)
+
+      --use-name <USE_NAME>
+          Use short name instead of absolute path: forgeplan or fpl. Requires PATH to include the binary's directory at MCP launch time. macOS GUI apps may not inherit shell PATH — use absolute path (the default) for maximum portability
+
+      --dry-run
+          Print proposed change without writing
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
 ```
 
-`--binary-path` и `--use-name` взаимоисключающи. По умолчанию команда разрешает
-работающий бинарник в стабильный, не-версионированный путь (например,
-`/opt/homebrew/bin/forgeplan`, а не Cellar-локацию), чтобы `brew upgrade` не ломал запись.
+`--binary-path` и `--use-name` взаимоисключающи. Автоопределение предпочитает путь из PATH, только если он разрешается в запущенный бинарник; иначе использует `current_exe`. Стабильный путь Homebrew вроде `/opt/homebrew/bin/forgeplan` предпочтителен, но не гарантирован. Изучите выбранный путь после установки.
 
 ## Примеры
 
@@ -78,8 +91,7 @@ forgeplan mcp install --client cursor --scope project
 forgeplan mcp install --client windsurf --dry-run
 ```
 
-Печатает смерженный JSON без изменений на файловой системе. Просмотрите diff,
-затем перезапустите без `--dry-run`, когда всё устроит.
+Печатает подписанный построчный diff текущего и предлагаемого JSON, не записывая конфиг и не создавая его каталоги. Это не самостоятельный документ объединённого JSON. Для применения повторите те же client/scope/path без `--dry-run`: общая подсказка `forgeplan mcp install` не содержит обязательного флага клиента.
 
 ### Пример 4: Использовать короткое имя вместо абсолютного пути
 
@@ -105,18 +117,16 @@ shell PATH, поэтому короткие имена ломаются, есл�
 
 ## Поведение умного слияния
 
-- Заменяет `command`, `args` и transport для записи `forgeplan`.
+- Заменяет `command` и `args` (`["serve"]`). Удаляет `transport` и `type`, только если значение равно `"stdio"`; явные HTTP/SSE и прочие неизвестные поля сохраняются.
 - **Сохраняет** существующий блок `env` для записи (project-specific API-ключи и т. д.).
 - Оставляет все остальные серверы в `mcpServers` нетронутыми.
 - Идемпотентно - повторный запуск с теми же флагами ничего не делает.
+- Отклоняет некорректный JSON, root или `mcpServers` не объектного типа и конфигурацию по симлинку, а не перезаписывает их молча. Явный `--binary-path` должен быть абсолютным путём к существующему исполняемому обычному файлу.
 
 ## Место в рабочем процессе
 
 `mcp install` - мост между «бинарник на диске» и «агент может вызывать инструменты
-Forgeplan». После успеха перезапустите клиента, и поверхность методологии
-(Shape → Validate → Code → Evidence → Activate) станет доступна через
-инструменты `mcp__forgeplan__*`. После рестарта вызовите `forgeplan health`, чтобы
-убедиться, что сервер стартует без ошибок.
+Forgeplan». После успеха перезапустите клиента и проверьте, что он обнаружил инструменты Forgeplan в нужном проекте. Отдельный CLI-вызов `forgeplan health` проверяет пространство, а не успешность запуска сервера клиентом. Для самой установки записи LLM/модель не нужны; требования отдельных инструментов различаются.
 
 ## См. также
 

@@ -5,8 +5,8 @@ description: "Show artifact hierarchy as ASCII tree - decomposition view"
 
 Render the artifact hierarchy as an ASCII tree. Use this to understand how
 work is decomposed: Epic → PRD → RFC → ADR, plus attached Specs, Evidence,
-and Notes. Parent/child relationships come from the `parent` frontmatter
-field and typed [`forgeplan link`](/docs/cli/link/) edges.
+and Notes. The first eligible typed relation selects a parent (source is the child,
+target is the parent); `parent_epic` is a fallback when no relation selected one.
 
 ## When to use
 
@@ -64,21 +64,33 @@ forgeplan tree EPIC-003 --depth 1
 
 ## Output interpretation
 
-The tree uses standard box-drawing characters. A typical fragment:
+Text output places `PROGRESS`, `R_EFF`, `STATUS`, and `KIND` columns to the left of the tree, followed by `<ID> "<title>"`. The progress bar visualizes the stored R_eff; it is not task-checkbox completion. Evidence, Note, and Refresh rows show dots instead of a score bar.
 
-```
-EPIC-003 [active]  Search, Discovery, Intelligence
-├── PRD-039 [active]  BM25 production search
-│   ├── RFC-004 [active]  Layered search architecture
-│   │   └── ADR-007 [active]  Choose bm25 crate v2.3.2
-│   └── EVID-018 [active]  Benchmark results
-└── PRD-040 [active]  Scoring intelligence
-    └── RFC-005 [draft]   Graph expansion
+Illustrative JSON for an explicitly selected root (invented values, not an executed run):
+
+```json
+{
+  "id": "EPIC-003",
+  "title": "Search, Discovery, Intelligence",
+  "kind": "epic",
+  "status": "active",
+  "r_eff": 0.5,
+  "children": [
+    {
+      "id": "PRD-039",
+      "title": "BM25 production search",
+      "kind": "prd",
+      "status": "draft",
+      "r_eff": 0.0,
+      "children": []
+    }
+  ]
+}
 ```
 
-Each node shows: `<ID> [<status>]  <title>`. Children are indented under
-their parent. A child linked to multiple parents appears under each - that
-is expected and reveals shared dependencies.
+`--json` without an ID returns an array of root nodes; with an ID it returns one node. The hint goes to stderr. At the depth limit, `children` is empty. Default depth is 99, not literally unlimited. JSON `kind` is derived from the ID prefix, while text uses the stored kind.
+
+Eligible relation types are `based_on`, `refines`, `informs`, `belongs_to`, and `child_of`. Each child is placed under only the first parent encountered, not under every linked parent; use `graph` to inspect all edges. Cycles can hide a component from the root forest, so `tree` is not a cycle validator. Text mode rejects an unknown explicit ID; JSON mode instead builds a placeholder node with empty title and `status: "unknown"`.
 
 Orphans (artifacts without a parent) appear at the top level - if you see
 a `PRD-007` floating next to `EPIC-003`, it is a candidate for either

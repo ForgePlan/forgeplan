@@ -4,6 +4,8 @@
 
 > Практический гайд. Без воды. Только правила и примеры.
 
+Инструкции сверены с **Forgeplan 0.38.0** и публичным маркетплейсом из раздела [источников](FORGEPLAN-GUIDE.ru.md#зафиксированные-источники). Минимальные проверки бинаря и политика агентов — разные вещи; исторические/учебные записи сессий ниже не гарантируют поведение runtime.
+
 ---
 
 ## Правило #1: Не создавай артефакты ради артефактов
@@ -38,12 +40,12 @@
 > **"Сколько людей это затрагивает?"**
 
 ```
-Только я   → Standard (Brief/PRD → RFC)
+Только я   → Standard (PRD → RFC)
 Команда    → Deep (PRD → Spec → RFC → ADR)
 Несколько команд → Critical (Epic → PRD[] → ...)
 ```
 
-Вот и весь routing. Не усложняй.
+Это эвристики риска, не полный алгоритм роутера. `forgeplan route "task" --level 0` выбирает глубину локально по ключевым словам. Без флага CLI может вызвать настроенную LLM. Ядро выдаёт Tactical/Standard/Deep; `critical` разбирается как Deep, хотя политика маркетплейса различает Critical.
 
 ---
 
@@ -52,22 +54,22 @@
 ### Tactical — "просто сделай"
 ```
 Ситуация: баг-фикс, мелкая правка, очевидное решение
-Создавай: ничего. Максимум — Note (3-5 предложений, auto-expires 90 дней)
+Создавай: ничего или короткую Note. Срок задаётся через valid_until; общего автоистечения через 90 дней нет.
 Пример: "Поменять цвет кнопки на #3B82F6"
 ```
 
 ### Standard — "подумай и запиши"
 ```
 Ситуация: фича на 1-3 дня, есть 2+ подхода
-Создавай: Brief (лёгкий PRD) → RFC
-Пример: "Добавить OAuth2 login"
+Создавай: PRD → RFC
+Пример: "Добавить экспорт отчёта" (OAuth2/security может потребовать Deep)
 
 Шаги:
-1. Скопируй templates/brief/_TEMPLATE.md → docs/prds/BRIEF-001-oauth2.md
-2. Заполни: Problem, Solution, Requirements (3-5 штук)
-3. Скопируй templates/rfc/_TEMPLATE.md → docs/rfcs/RFC-001-oauth2-design.md
-4. Заполни: Design, Phases, Implementation Plan
-5. Делай
+1. Выполни forgeplan new prd "Report export"; используй возвращённый ID/slug
+2. Заполни Problem, Goals, Non-Goals, Functional Requirements, Target Users, Related Artifacts
+3. Выполни forgeplan new rfc "Report export design"
+4. Заполни Summary, Motivation, Proposed Direction; также опиши варианты и фазы
+5. Обнови тела через forgeplan update <ID> --body @<body-file>, проверь validate и пройди применимые gates
 ```
 
 ### Deep — "продумай серьёзно"
@@ -84,6 +86,8 @@
 5. Делай по фазам из RFC
 ```
 
+Опубликованная методология маркетплейса добавляет SOL до проектирования (Options, Comparison, Recommendation, Risks & trade-offs) и REFRESH при завершении цикла. Конвейер Deep в CLI ядра по-прежнему содержит только PRD → Spec → RFC → ADR.
+
 ### Critical — "стратегия"
 ```
 Ситуация: кросс-командная инициатива, квартальный roadmap
@@ -98,6 +102,8 @@
 5. ADR: ключевые решения (event-driven vs REST, etc.)
 ```
 
+Critical — политика оркестрации, не четвёртый `Mode` ядра: сохраняйте этот уровень проверок в процессе, не рассчитывая на отдельный Critical-маршрут. Опубликованная методология использует SOL по направлениям и завершающий REFRESH.
+
 ---
 
 ## Правило #4: Какой артефакт для чего
@@ -106,11 +112,11 @@
 
 | Вопрос | Артефакт | Файл |
 |--------|----------|------|
-| **ЧТО** строим и зачем? | PRD / Brief | `docs/prds/PRD-001-*.md` |
-| **КАК ТОЧНО** работает? (API, data model) | Spec | `docs/specs/SPEC-001-*.md` |
-| **КАК СТРОИМ** архитектурно? | RFC | `docs/rfcs/RFC-001-*.md` |
-| **ПОЧЕМУ** выбрали именно это? | ADR | `docs/adrs/ADR-001-*.md` |
-| **ГРУППИРОВКА** большой инициативы? | Epic | `docs/epics/EPIC-001-*.md` |
+| **ЧТО** строим и зачем? | PRD; сырой brief может быть Note | `.forgeplan/prds/` |
+| **КАК ТОЧНО** работает? | Spec: структурный или поведенческий контракт | `.forgeplan/specs/` |
+| **КАК СТРОИМ** архитектурно? | RFC | `.forgeplan/rfcs/` |
+| **ПОЧЕМУ** выбрали именно это? | ADR | `.forgeplan/adrs/` |
+| **ГРУППИРОВКА** большой инициативы? | Epic | `.forgeplan/epics/` |
 
 ### Когда НЕ нужен конкретный артефакт:
 
@@ -124,10 +130,10 @@
 
 ## Правило #5: Как заполнять шаблоны
 
-### Минимум (обязательно для всех):
-1. **YAML frontmatter** — id, title, status, depth, created
-2. **Первая секция** — Problem/Context/Vision (зависит от типа)
-3. **Related Artifacts** — ссылки на связанные документы
+### Минимум зависит от типа и глубины:
+1. `forgeplan new` назначает идентификатор и метаданные. Используйте возвращённый ID/slug, не вручную пронумерованную копию.
+2. Заполните секции из [таблицы валидации 0.38](FORGEPLAN-GUIDE.ru.md#правила-по-depth); `forgeplan validate <ID> --json` покажет реальные MUST/SHOULD/COULD-находки.
+3. Создавайте связи графа через `forgeplan link`; Markdown-таблица — пояснение для читателя, не операция над графом.
 
 ### Золотое правило заполнения:
 > **Пиши для человека через 6 месяцев (это ты сам).**
@@ -140,7 +146,7 @@
 FR-001: Реализовать кэширование
 
 # ✅ ХОРОШО: [Actor] can [capability]
-FR-001: User can receive API responses within 200ms due to Redis caching
+FR-001: User can receive API responses within 200ms
 ```
 
 ```markdown
@@ -164,20 +170,19 @@ FR-003: User can persist and query structured data with ACID guarantees
 ## Правило #6: Связи между артефактами
 
 ### Как связывать:
-В секции "Related Artifacts" каждого документа:
+Используйте реальные возвращённые ID (ниже примеры):
 
-```markdown
-| Artifact | Relation |
-|----------|----------|
-| EPIC-001 | parent |
-| PRD-001  | based_on |
-| ADR-001  | informs |
+```bash
+forgeplan link RFC-001 PRD-001 --relation based_on
+forgeplan link EVID-001 PRD-001 --relation informs
 ```
+
+Поддерживайте таблицу Related Artifacts в теле, но канонические связи меняйте через CLI/MCP.
 
 ### Типы связей:
 | Relation | Значение | Пример |
 |----------|---------|--------|
-| `parent` | Входит в | PRD-001 → EPIC-001 |
+| `contradicts` | Противоречит | ADR-003 → ADR-001 |
 | `based_on` | Основано на | RFC-001 → PRD-001 |
 | `informs` | Влияет на | ADR-001 → PRD-001 |
 | `supersedes` | Заменяет | ADR-005 → ADR-002 |
@@ -185,7 +190,7 @@ FR-003: User can persist and query structured data with ACID guarantees
 
 ### Правило направления:
 **Ребёнок ссылается на родителя**, не наоборот:
-- PRD указывает на Epic (parent)
+- PRD может указать Epic через метаданные `parent_epic`; `parent` не является значением `link --relation`
 - RFC указывает на PRD (based_on)
 - ADR указывает на RFC (informs)
 
@@ -198,7 +203,7 @@ FR-003: User can persist and query structured data with ACID guarantees
 Задай себе:
 1. Что должно быть истинным, если это решение верно?
 2. Какой самый сильный аргумент ПРОТИВ?
-3. Все ли доказательства из этой сессии? (→ CL1, penalty 0.4)
+3. Независимы ли источники доказательств и применимы ли они? Число сессий само по себе не задаёт CL.
 4. Что пойдёт не так с вероятностью <10%?
 5. Где самое слабое звено?
 
@@ -208,7 +213,7 @@ FR-003: User can persist and query structured data with ACID guarantees
 
 Правило: независимое ревью следует core-протоколу в [`QUALITY-GATES.ru.md` §2 — Adversarial Review](./QUALITY-GATES.ru.md#2-adversarial-review-protocol). Ноль реальных дефектов допустим только когда выполнены семь условий D1, обязательные раунды и все сохранённые gates на текущем полном candidate; ревьюер не выдумывает находки ради ненулевого счётчика.
 
-**Когда**: Deep+ артефакты. Не нужно для tactical/standard.
+**Когда**: Deep+ по этому core-протоколу. Опубликованный `/forge-cycle` требует adversarial review и guardian уже на **Standard+**; процесс может быть строже концептуального списка.
 
 ### R_eff Scoring — для решений с evidence:
 
@@ -221,30 +226,26 @@ R_eff = min(evidence_scores). Trust = самое слабое звено. Min и
 ## Правило #8: Lifecycle — что делать с артефактами после создания
 
 ### Обновление:
-- Меняешь status по мере прогресса (Draft → Review → Approved → ...)
-- Обновляешь `updated` дату в frontmatter
-- Заполняешь Progress bars в RFC (checkboxes → процент)
+- Содержимое и флажки прогресса меняйте через `forgeplan update <ID> --body @<body-file>`.
+- Значения статуса: `draft`, `active`, `stale`, `superseded`, `deprecated`, не Review/Approved/Implemented/Closed.
+- `phase` (от `shape` до `done`) — рекомендация, не статус и не свидетельство готовности.
 
 ### Закрытие:
-- PRD: Implemented → Closed (когда фича в проде)
-- RFC: все фазы ✅ → status: Implemented
-- ADR: не "закрывается" — живёт пока valid_until не истечёт
+- До активации проверьте критерии приёмки, реальные результаты проверок и доказательства требуемых ревьюеров.
+- Выполненные фазы RFC сами по себе не доказывают поставку. После всех gates оркестратор выполняет review и activate.
+- `update --status active|superseded|deprecated` отклоняется; используйте lifecycle-команды.
 
 ### Superseding (замена):
-```markdown
-# В новом ADR:
-| Artifact | Relation |
-|----------|----------|
-| ADR-002 | supersedes |
-
-# В старом ADR — поменяй status:
-status: Superseded
+```bash
+forgeplan supersede ADR-002 --by ADR-003
 ```
 
+Это переход active → superseded со связью с заменой. Deprecated/superseded — терминальные статусы; не переписывайте их, чтобы оживить запись.
+
 ### Stale (истёк valid_until):
-1. Создай RefreshReport: `docs/refresh/REF-001-review-adr-002.md`
-2. Оцени: всё ещё актуально?
-3. Либо reaffirm (обнови valid_until), либо supersede новым ADR
+1. Посмотрите `forgeplan stale`; обнаружение истечения не означает фонового переписывания статуса.
+2. Перепроверьте доказательства/контекст. Для сохранённого stale используйте `forgeplan renew <ID> --reason "..." --until YYYY-MM-DD`. Просроченную запись, всё ещё сохранённую как active, эта команда не продлит на месте; `forgeplan reopen <ID> --reason "..."` принимает active/stale, создаёт новый draft и помечает старую запись deprecated.
+3. REFRESH сохраняет переоценку; само его создание не продлевает и не заменяет решение.
 
 ---
 
@@ -252,8 +253,8 @@ status: Superseded
 
 ```
 твой-проект/
-├── docs/
-│   ├── prds/           ← PRD и Brief
+├── .forgeplan/       ← канонические Markdown-артефакты; LanceDB — перестраиваемый индекс
+│   ├── prds/           ← PRD (сырой brief — Note, не отдельный тип Brief)
 │   ├── epics/          ← Epics
 │   ├── specs/          ← Specifications
 │   ├── rfcs/           ← RFCs
@@ -266,7 +267,7 @@ status: Superseded
 └── ...
 ```
 
-Можешь не создавать все папки. Создавай по мере необходимости. Нет problems? Нет папки.
+Рабочей областью управляют `forgeplan init`/`new`. Предпочитайте CLI/MCP, чтобы файлы, связи и индекс оставались согласованы. После внешней правки или merge `forgeplan reindex` перестраивает индекс из Markdown; `scan-import` ищет/импортирует другие документы, а не чинит синхронизацию.
 
 ---
 
@@ -292,7 +293,7 @@ status: Superseded
     │
     ├── Тривиально? → Делай. Без документов.
     │
-    ├── 1-3 дня? → Brief → RFC → Делай.
+    ├── Standard? → PRD → RFC → Validate/gate → Реализация → Evidence/review.
     │
     ├── 1-2 недели? → PRD → Spec → RFC → ADR → Делай по фазам.
     │
@@ -321,33 +322,33 @@ status: Superseded
 
 **Шаг 1**: Depth? → 3-5 дней, есть выбор библиотек → **Standard**
 
-**Шаг 2**: Создаю Brief
+**Шаг 2**: Создаю PRD (`forgeplan new prd "PDF export"`). Эскиз:
 ```
-docs/prds/BRIEF-001-pdf-export.md
+.forgeplan/prds/<returned-id>-*.md
 - Problem: Клиенты просят PDF-отчёты
-- Solution: Генерация PDF из markdown-артефактов
+- Goals / Non-Goals / Target Users / Related Artifacts: заполнить до валидации
 - Requirements: FR-001: User can export any artifact as PDF
 - Scope: In: single artifact export. Out: batch export, custom styles
 ```
 
 **Шаг 3**: Создаю RFC
 ```
-docs/rfcs/RFC-001-pdf-export-design.md
+.forgeplan/rfcs/<returned-id>-*.md
 - Design: pulldown-cmark → HTML → wkhtmltopdf/weasyprint
 - Phases: Phase 1: basic export, Phase 2: styled templates
 ```
 
 **Шаг 4**: Нужен ADR? → Есть выбор (wkhtmltopdf vs weasyprint vs browser-based) → Да
 ```
-docs/adrs/ADR-001-pdf-library.md
+.forgeplan/adrs/<returned-id>-*.md
 - Decision: weasyprint (pure Python, CSS-based)
 - Alternative: wkhtmltopdf (binary dependency, deprecated)
 - Alternative: Headless Chrome (heavy, 200MB)
 ```
 
-**Шаг 5**: Делаю по фазам из RFC. Закрываю RFC когда все фазы ✅.
+**Шаг 5**: Реализую фазы, выполняю проверки проекта, сохраняю/связываю доказательства и прохожу требуемое независимое ревью. Затем оркестратор выполняет `review` и `activate`.
 
-Готово. Три документа, полный audit trail, < 1 часа на документацию.
+Эскиз — не готовое тело артефакта; до принятия используйте валидатор и проверки ниже.
 
 ---
 
@@ -355,7 +356,7 @@ docs/adrs/ADR-001-pdf-library.md
 
 ### Что это
 
-`/forge-cycle` — команда для AI агентов (Claude Code), которая запускает **полный FPF-aligned цикл разработки** от идеи до PR. Одна команда заменяет 8 ручных шагов.
+`/forge-cycle` — опубликованный **контракт промпта** плагина `forgeplan-workflow`, не подкоманда CLI и не автоматически связанная программа. Оркестратор явно выполняет делегирование/MCP-вызовы. Фазы ниже помогают чтению; у опубликованной команды есть дополнительные этапы и условия.
 
 ### Когда использовать
 
@@ -363,9 +364,9 @@ docs/adrs/ADR-001-pdf-library.md
 |----------|---------|
 | Конкретная фича из TODO | `/forge-cycle PRD-016` |
 | Новая задача без PRD | `/forge-cycle "добавить экспорт в PDF"` |
-| Следующая задача из backlog | `/forge-cycle` (подхватит P0 из TODO.md) |
+| Следующая задача из backlog | `/forge-cycle` (оркестратор читает backlog; `health` не выбирает P0-задачу) |
 
-### Как работает (8 фаз)
+### Как работает (сводка фаз)
 
 ```
 /forge-cycle "Добавить экспорт отчётов в PDF"
@@ -376,7 +377,7 @@ docs/adrs/ADR-001-pdf-library.md
 ```bash
 forgeplan health       # blind spots, orphans
 forgeplan stale        # expired evidence
-forgeplan fpf          # explore/investigate/exploit suggestions
+forgeplan fpf dashboard # explore/investigate/exploit suggestions
 ```
 
 Агент фиксирует наблюдение:
@@ -395,13 +396,13 @@ SESSION_GOAL: PRD-016
 #### Phase 1: ROUTE — какой depth?
 
 ```bash
-forgeplan route "добавить экспорт в PDF"
-# → Depth: Standard, Pipeline: PRD → RFC
+forgeplan route "new feature: PDF export" --level 0
+# Правила по ключевым словам рекомендуют Standard, Pipeline: PRD → RFC
 ```
 
 - **Tactical** → сразу к Phase 3 (Build), без PRD
-- **Standard** → PRD + validate → Sprint → Build
-- **Deep** → PRD + RFC + validate → Sprint → Build
+- **Standard** → PRD + RFC, валидация, ADI-доказательства, зафиксированная глубина, pre-build gate → Build
+- **Deep/Critical policy** → артефакты проекта, декомпозиция, ADI, зафиксированная глубина, оценка, pre-build gate → Build
 
 #### Phase 2: SPRINT — план волн
 
@@ -409,13 +410,13 @@ forgeplan route "добавить экспорт в PDF"
 /sprint PRD-016 — wave-based implementation plan
 ```
 
-Auto-approve в yolo mode если: LOC < 2000, waves <= 5, нет file conflicts.
+До реализации выполните `/gate-check <ID>`. Он накладывает ключи проекта на опубликованные пороги; FAIL останавливает Build. Standard MUST: ноль ошибок валидации. Deep добавляет связанный ADI EVID с ≥3 секциями `### Hypothesis`; Critical — действующий ADR со связью informs. Числовые оценки — SHOULD, не опубликованные MUST-пороги. Обход требует настойчивого запроса пользователя и `--force --reason`; скилл сохраняет связанную Note.
 
 #### Phase 3: BUILD — реализация
 
 ```
-/team-up Implement PRD-016
-Skills: rust-expert, m01-ownership, m06-error-handling
+Реализовать согласованный объём с настроенными агентами проекта/маркетплейса.
+Выполнить реальные test/build/lint-команды проекта; языковые скиллы бинарь не поставляет.
 ```
 
 **При конфликтах** (какой подход выбрать?) — FPF auto-resolve:
@@ -425,13 +426,13 @@ Skills: rust-expert, m01-ownership, m06-error-handling
 3. **Induction**: WLNK (самый слабый failure mode) + Reversibility (что проще откатить)
 4. **Выбор**: max(reversibility) + max(WLNK strength)
 
-Спрашивает юзера **только** если решение необратимо (DB schema, public API).
+Обратитесь к пользователю, если требования не удаётся уточнить по инструментам/артефактам, нужно подтвердить смену глубины, запрошен обход gate или этого требуют разрешения, — не только при необратимом решении.
 
 #### Phase 4: AUDIT — adversarial review
 
 ```
-/audit PRD-016
-Skills: rust-expert, m06-error-handling (minimum 2)
+Делегировать независимым ревьюерам проверку текущего артефакта и реализации.
+Standard+ review и guardian опубликованного цикла — не forgeplan review.
 ```
 
 Ревьюер следует core-протоколу в [`QUALITY-GATES.ru.md` §2 — Adversarial Review](./QUALITY-GATES.ru.md#2-adversarial-review-protocol): активный поиск контрпримеров, обязательные раунды, структурированная отчётность по severity/state, ноль — не повод для re-spawn, неразрешённые HIGH/Critical = BLOCKER.
@@ -446,13 +447,13 @@ Skills: rust-expert, m06-error-handling (minimum 2)
 
 ```bash
 forgeplan new evidence "Implementation verified: PRD-016"
-# Body: verdict: supports, congruence_level: 3, evidence_type: test
+# Заполнить новый EVID реальным объёмом/командами/результатами и отдельными строками verdict, congruence_level, evidence_type
 forgeplan link EVID-XXX PRD-016 --relation informs
 forgeplan score PRD-016      # R_eff > 0
-forgeplan activate PRD-016   # draft → active
+# После описанных ниже post-build/guardian gates: forgeplan review, затем activate.
 ```
 
-Evidence **обязательно** ссылается на наблюдение из Phase 0.
+Свяжите доказательства с реально проверяемым утверждением. Для утверждений о коде сохраните настоящие `base_sha`, `result_sha`, `changed_paths`; проверка происхождения предупреждает/блокирует по конфигурации (по умолчанию warn). Затем Deep+ выполняет `/gate-check <ID> --post-build` (новое связанное доказательство после pre-build), до guardian. Guardian выдаёт вердикт/EVID, но не активирует; оркестратор активирует после прохождения всей требуемой цепочки.
 
 #### Phase 7: COMMIT — фиксация
 
@@ -462,14 +463,14 @@ git push      # feature branch
 gh pr create  # PR с test plan
 ```
 
-+ `memory_retain` — hindsight отчёт для будущих сессий.
+Сохранение в Hindsight необязательно и настраивается отдельно; CLI Note — не запись в удалённую память. Полномочия на commit/push/PR определяются средой/проектом.
 
 #### Phase 8: NEXT — следующая итерация
 
 ```bash
 forgeplan health    # новое состояние
-# → показывает next P0 task
-# → /forge-cycle "next task"
+# → изучить новое состояние и выбрать задачу из настоящего backlog
+# → Deep+ /wrap сохраняет результаты согласования в REFRESH после коммита
 ```
 
 ---
@@ -478,7 +479,7 @@ forgeplan health    # новое состояние
 
 **Проблема**: начинаешь тактическую задачу (fix bug), по дороге уходишь в стратегию (а давай пере-спроектируем всё). Тактика не доделана, стратегия не доначата.
 
-**Как работает**: Phase 0 фиксирует тип сессии. Если агент замечает переключение — предупреждает:
+Агент явно фиксирует объём и сообщает об отклонении. Это дисциплина процесса, не блокировка файлов и не гарантированное предупреждение CLI:
 
 ```
 ⚠️ SCOPE DRIFT DETECTED
@@ -499,6 +500,8 @@ forgeplan health    # новое состояние
 - **Bookmark** при переключении → `forgeplan new note "Session bookmark: PRD-016, Phase 3 done, remaining: Phase 4-7"`
 
 ### Пример: тактическая сессия
+
+Две записи ниже — **исторические учебные сессии**, сохранённые с их числами, ID и фазами. Они не задают современный routing, автоматическое исполнение команд или текущие разрешения памяти.
 
 ```
 /forge-cycle PRD-016
@@ -543,14 +546,45 @@ forgeplan health    # новое состояние
 
 ### Yolo Mode
 
-В yolo mode автоматически:
-- Sprint plans с LOC < 2000 → auto-approve
-- Конфликты → FPF auto-resolve (reversible + WLNK)
-- Audit < 5 findings → auto-fix
-- Evidence + activate → auto если R_eff > 0
+Автономная работа ограничена полномочиями среды/проекта и установленным процессом. LOC < 2000, менее пяти находок или R_eff > 0 сами по себе **не** разрешают одобрение, активацию или публикацию.
 
-Спрашивает юзера **только**:
-- Необратимое решение (DB schema, public API)
-- R_eff = 0 после evidence
-- cargo test fails после 2-й попытки
-- PR creation
+- В unattended `/autorun` сохраняйте записанную глубину; сообщайте рекомендации calibrate, не повышайте уровень молча.
+- Не выполняйте `--force` после FAIL от имени пользователя.
+- Различайте авторство, независимое ревью, вердикт guardian и активацию оркестратором.
+- Если обязательный ревьюер/инструмент недоступен, сообщите о непройденной проверке, не выдумывайте PASS.
+
+## Параллельная работа: claims — координация, не контроль доступа
+
+```bash
+forgeplan claims --json
+forgeplan dispatch --agents 2 --json
+forgeplan claim PRD-016 --agent worker-1 --ttl-minutes 30
+# Работать только в назначенных файлах/артефактах; продлевать той же идентичностью до истечения TTL.
+forgeplan release PRD-016 --agent worker-1
+```
+
+Используйте реальные ID. TTL по умолчанию 30 минут (допустимо 1–1440). Другой действующий владелец не даст создать второй claim, но claim не запрещает запись; workspace locks сериализуют поддерживаемые изменения. `dispatch` предлагает группы по связям/пересечению файлов и claims, но не запускает агентов и не гарантирует отсутствие конфликтов. Явно назначайте владельцев файлов. Force-release оставьте оркестратору для подтверждённого брошенного claim. CLI-имена агентов не допускают `/` и `\`; старые shell-примеры с такими именами невалидны для CLI 0.38.
+
+## Память и Notes
+
+- **Note**: версионируемая запись/закладка проекта в `.forgeplan/notes`, связанная с графом решений.
+- **Локальная память**: `forgeplan remember "text" --category insight` / `forgeplan recall "query"`, не старый API с двумя позиционными key/value. Это отдельный от Hindsight механизм.
+- **Hindsight (`fpl-hsmem` 3.7.0)**: необязательный удалённый поиск между сессиями. Нужен явный `.hindsight.json` с `url`, `banks`, `defaultBank` и уже существующими банками на сервере API >=0.10.2 и <0.11.0. Хуки по умолчанию выключены; один конфиг проекта не разрешает сохранять переписку. BankGate — защита клиента, не авторизация сервера. Без памяти продолжайте по артефактам, не выдумывая результаты recall.
+
+## Источники и примеры smoke-проверок
+
+- [Статусы/глубина ядра](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-core/src/artifact/types.rs#L484-L531), [ограничения update](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-cli/src/commands/update.rs#L53-L101), [claims](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-core/src/claim/mod.rs#L1-L42).
+- [Опубликованные пороги gate](https://github.com/ForgePlan/marketplace/blob/b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7/plugins/fpl-skills/templates/quality-gates.yaml#L116-L188), [подтверждение глубины в цикле](https://github.com/ForgePlan/marketplace/blob/b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7/plugins/forgeplan-workflow/commands/forge-cycle.md#L488-L573), [подключение Hindsight](https://github.com/ForgePlan/marketplace/blob/b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7/plugins/fpl-hsmem/README.md#L7-L49).
+
+Предлагаемые проверки в одноразовой инициализированной области с ID, возвращёнными при создании (не запускались при обновлении документации):
+
+```bash
+forgeplan route "security authentication" --level 0
+forgeplan get PRD-001 --json
+forgeplan validate PRD-001 --json
+forgeplan score PRD-001 --json
+forgeplan review PRD-001
+forgeplan claims --json
+```
+
+Для примера с ключевыми словами ожидается Deep; изучите все findings и слабое звено score. Отказ review из-за отсутствия доказательств/незаполненного шаблона ожидаем для пустого PRD, а не повод принудительно активировать.

@@ -1,9 +1,9 @@
 ---
 title: forgeplan_contradictions
-description: "Issue #287 Phase C - detect cross-artifact contradictions (v1: hypothesis_duplicate via Jaccard ≥ 0.6 on titles). Three other classes (invariant_conflict, glossary_divergence, scenario_vs_invariant) require LLM judgement and are deferred - buckets included in response with empty arrays + limitations list."
+description: "Detect duplicate hypothesis titles using Jaccard ≥ 0.6. Returns contradictions and limitations; invariant conflicts, glossary divergence and scenario-versus-invariant checks remain deferred, with no separate result buckets."
 ---
 
-Issue #287 Phase C - detect cross-artifact contradictions (v1: hypothesis_duplicate via Jaccard >= 0.6 on titles). Three other classes (invariant_conflict, glossary_divergence, scenario_vs_invariant) require LLM judgement and are deferred - buckets included in response with empty arrays + limitations list.
+Detect duplicate hypothesis titles using Jaccard similarity >= 0.6. The other three named classes require LLM judgement and remain unimplemented in this core handler. They are listed in `limitations`; there are no separate empty-array buckets for them.
 
 Read the description literally before you trust the answer: **v1 detects exactly one class**. The response is honest about the other three, but honesty here means a `limitations` array, not a detection. Treating this tool as "contradiction detection" and assuming the other three names are covered is the one mistake this page exists to prevent.
 
@@ -15,7 +15,7 @@ Read the description literally before you trust the answer: **v1 detects exactly
 
 Two `HYP-` artifacts whose **titles** are lexically near-identical.
 
-- Tokenisation: lowercase the title, map every non-alphanumeric ASCII character to a space, split on whitespace. Punctuation and case are therefore irrelevant.
+- Tokenisation retains ASCII letters/digits only, lowercases ASCII, and splits on other characters. Non-ASCII letters (including Cyrillic) are discarded, not morphologically normalised.
 - Score: Jaccard similarity `|A ∩ B| / |A ∪ B|` over the two token sets.
 - Threshold: `>= 0.6` (`HYPOTHESIS_DUPLICATE_JACCARD_THRESHOLD` in `crates/forgeplan-core/src/brownfield.rs`). Two empty or fully disjoint titles score `0.0` and are never flagged.
 - Severity: `high` at `>= 0.85`, otherwise `medium`.
@@ -31,7 +31,7 @@ These three names exist in the report as constants and are listed in `limitation
 | `glossary_divergence` | deferred | LLM judgement over GLOS- definitions |
 | `scenario_vs_invariant` | deferred | LLM judgement across SCEN- and INV- text |
 
-They ship with the marketplace brownfield plugin (#79). Until then, an empty `contradictions` array means "no duplicate hypothesis titles", not "this workspace is internally consistent".
+Installing a marketplace pack does not change this Rust handler's scope. An empty `contradictions` array means no title duplicates were emitted by this heuristic (or the cap skipped the pass), not that the workspace is internally consistent.
 
 ### One more limit: the DoS cap
 
@@ -39,17 +39,17 @@ The detector is O(N²) over hypotheses, so it short-circuits above `CONTRADICTIO
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
-| `workspace` | `string` | no | Resolve the workspace from this directory instead of the MCP server's startup CWD. Absolute or tilde-expanded. Useful when the agent runs in a git worktree separate from the server. |
+| `workspace` | `string \| null` | no | Optional explicit workspace directory for this call. When set, the MCP server resolves the `.forgeplan/` projection from this path instead of the server's startup CWD. Use this when the calling agent is running in a git worktree separate from the MCP server's launch directory. PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. Schema default: `null`. |
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::ContradictionsParams` (the shared DTOs live in `crates/forgeplan-mcp/src/types.rs`)_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
 
-There is no filter for severity, kind or artifact id - the tool always reports every duplicate pair it finds.
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
 
-Two top-level keys plus the protocol hint:
+Success is JSON in MCP `content[0].text` with two report keys plus `_next_action`. Illustrative values:
 
 ```json
 {
@@ -81,23 +81,17 @@ Field notes (shapes taken from `Contradiction` and `ContradictionsReport`):
 
 ## Example invocation
 
-Whole workspace:
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
 
 ```json
 {}
-```
-
-Against a worktree:
-
-```json
-{ "workspace": "~/work/forgeplan-feature-branch" }
 ```
 
 ## Typical sequence
 
 1. `forgeplan_contradictions` - collect duplicate-title pairs after a discovery ingest.
 2. `forgeplan_get` both sides of each pair and decide: same claim (merge) or genuinely different (sharpen the wording).
-3. Merge by superseding the redundant hypothesis, then re-run to confirm the pair is gone.
+3. Record the resolution and distinguish genuinely different titles. Superseding a hypothesis does not remove it from this detector: all hypothesis records are compared regardless of lifecycle status, so re-running can still report the pair.
 4. Only then promote the surviving hypotheses with [`forgeplan_hypothesis_promote`](/docs/mcp/forgeplan_hypothesis_promote/) - promoting duplicates first means the same claim gets triangulated twice.
 
 ## Safety notes
@@ -107,6 +101,7 @@ Against a worktree:
 - Bounded work: at most 1000 hypotheses enter the pass, so a workspace stuffed with hypothesis stubs cannot stall the server.
 - Lexical, not semantic: two differently-worded titles making the same claim will not be flagged, and two similar titles making different claims will be. The signal is a prompt to look, not a verdict.
 - No LLM call and no network access.
+- Workspace, lock, and snapshot-read failures return plain-text MCP tool errors (`isError: true`), not a successful empty report.
 - There is no CLI equivalent - this is an MCP-only surface. The same findings reach the terminal through [`forgeplan anomalies`](/docs/cli/anomalies/) as the `hypothesis_duplicate` kind.
 
 ## See also

@@ -4,6 +4,8 @@
 
 > Курс для разработчиков. Простым языком. От "что это" до "как пользоваться каждый день".
 
+**Граница версий:** текущие инструкции — для CLI/MCP **0.38.0** и опубликованного маркетплейса **1.187.1**, не чернового плагина 2.0.1. Обе ревизии закреплены в [источниках](FORGEPLAN-GUIDE.ru.md#зафиксированные-источники). Shell-примеры предполагают инициализированную область; заменяйте учебные ID на ID/slug, возвращённые `new`.
+
 ---
 
 ## Глава 1: Зачем Forgeplan
@@ -38,7 +40,7 @@ Forgeplan — это **база знаний проекта**, не таск-т�
 
 ## Глава 2: 10 артефактов — что есть что
 
-Артефакт = структурированный документ в базе. У каждого свой тип и назначение.
+Артефакт — структурированный Markdown-документ в `.forgeplan/`; LanceDB индексирует его для запросов. Меняйте артефакты через CLI/MCP, сохраняя согласованность файла и индекса. `reindex` перестраивает индекс из Markdown; `scan-import` импортирует другие документы, а не чинит индекс.
 
 ### Основные 5 (используешь постоянно)
 
@@ -97,6 +99,8 @@ forgeplan new epic "Система авторизации v2"
 | **Spec** | Контракт API/данных | Есть API или data model changes | "POST /auth/login — request/response schema" |
 | **Refresh** | Переоценка решения | Прошло время, нужно проверить актуальность | "JWT всё ещё лучший выбор через 6 месяцев?" |
 
+Это десять распространённых типов процесса решений, не весь список 0.38. В ядре есть также локальный `memory` и шесть brownfield-типов: `use_case`, `glossary`, `invariant`, `scenario`, `hypothesis`, `domain_model`. Сырой product Brief — это Note, не отдельный тип Brief. Hindsight — необязательный внешний сервис, не другое имя Note или локальной памяти.
+
 ### Иерархия
 
 ```
@@ -130,6 +134,8 @@ Draft → Active → Superseded или Deprecated
 | **Superseded** | Заменён новым | `forgeplan supersede PRD-001 --by PRD-002` |
 | **Deprecated** | Устарел | `forgeplan deprecate PRD-001 --reason "..."` |
 
+Ядро поддерживает также `stale`. Истёкший срок виден в `forgeplan stale` и влияет на оценку, но отчёт не записывает новый статус. Используйте `renew <ID> --reason "..." --until YYYY-MM-DD` для перепроверенных stale-записей. Релиз 0.38 также принимает draft через общую проверку перехода без гейтов активации и допускает прошлые даты ([#547](https://github.com/ForgePlan/forgeplan/issues/547)); это не разрешённый способ активировать черновик. `reopen <ID> --reason "..."` создаёт новый draft и помечает старый active/stale как deprecated. Используйте lifecycle-команды, не `update --status active|superseded|deprecated`. Рекомендательные фазы артефакта и сессии существуют отдельно.
+
 ### DerivedStatus (вычисляемый)
 
 Forgeplan автоматически определяет "насколько проработан" артефакт:
@@ -137,10 +143,10 @@ Forgeplan автоматически определяет "насколько п
 | DerivedStatus | Что значит |
 |--------------|------------|
 | **STUB** | Создан, но пустой — ничего не заполнено |
-| **FRAMED** | Заполнены основные секции (Problem, Goals) |
-| **VALIDATED** | Прошёл `forgeplan validate` без ошибок |
-| **EVIDENCED** | Привязаны доказательства (Evidence) |
-| **ACTIVATED** | Полный цикл: заполнен + валидирован + подтверждён + активирован |
+| **SHAPED** | Присутствуют основные заголовки типа (эвристика, не полная валидация) |
+| **VALIDATED** | Ноль MUST-ошибок валидации; предупреждения могут остаться |
+| **EVIDENCED** | Есть связанные доказательства и R_eff > 0 |
+| **ACTIVATED** | Lifecycle-статус active, superseded или deprecated; это не доказательство всех инженерных проверок |
 
 ### Правило: Supersede, не удаляй
 
@@ -152,7 +158,7 @@ forgeplan supersede ADR-001 --by ADR-002
 ```
 
 ### Anti-pattern
-Не активируй артефакт без кода и evidence. Active PRD без реализации = ложное обещание.
+В цикле реализации не активируйте до готовности обещанного поведения и доказательств. Бинарь проверяет структуру/связи, не факт тестирования кода. Ревью только решения должно явно ограничивать свой объём.
 
 ---
 
@@ -176,25 +182,28 @@ forgeplan supersede ADR-001 --by ADR-002
 forgeplan route "описание задачи"
 ```
 
-Роутер ответит:
+Ядро использует эти конвейеры (строка Critical — политика оркестрации маркетплейса, не отдельный маршрут ядра):
 
 | Depth | Что создавать | Пример |
 |-------|--------------|--------|
 | **Tactical** | Ничего или Note | Фикс опечатки |
 | **Standard** | PRD → RFC | Фича на 1-3 дня |
 | **Deep** | PRD → Spec → RFC → ADR | Новый модуль, 1-2 недели |
-| **Critical** | Epic → PRD[] → RFC[] → ADR[] | Кросс-команда, стратегия |
+| **Critical (политика маркетплейса)** | Epic + согласованные Deep-направления | Кросс-команда, стратегия |
+
+`--level 0` включает локальные правила по словам. По умолчанию CLI может вызвать настроенную LLM; `critical` в ядре разбирается как Deep. Опубликованная методология добавляет SOL до проектирования и REFRESH при завершении Deep/Critical. Опубликованный `/forge-cycle` строже пятишаговой схемы: Standard+ включает ADI-доказательства, pre-build `/gate-check`, независимое ревью и guardian; Deep+ — также post-build gate.
 
 ### Пример полного цикла
 
 ```bash
 # 1. Route
-forgeplan route "Добавить кеширование в API"
-# → Depth: Standard, Pipeline: PRD → RFC
+forgeplan route "feature: add caching to API" --level 0
+# Прочитайте рекомендацию; длительность работы сама по себе не определяет глубину.
 
 # 2. Shape
 forgeplan new prd "API Caching Layer"
 # Заполнить: Problem, Goals, Non-Goals, Target Users, FR
+# Используйте forgeplan update <returned-ID> --body @<body-file>, затем validate.
 
 # 3. Validate
 forgeplan validate PRD-001
@@ -205,9 +214,11 @@ forgeplan validate PRD-001
 
 # 5. Evidence
 forgeplan new evidence "Cache hit rate benchmark — 95% on production data"
+# Заполните возвращённый EVID через update --body @<evidence-file>: реальный объём/результаты
+# и отдельные строки verdict, congruence_level, evidence_type до создания связи.
 forgeplan link EVID-001 PRD-001 --relation informs
 
-# 6. Activate
+# 6. После проверок проекта и требуемого независимого ревью/guardian
 forgeplan activate PRD-001
 ```
 
@@ -221,14 +232,14 @@ forgeplan activate PRD-001
 
 ### Evidence = факт, не мнение
 
-Evidence — это **измеримое подтверждение** что решение работает:
+Evidence сохраняет наблюдения, относящиеся к утверждению и указанному объёму, а не общее доказательство корректности:
 
 | Тип | Пример | Что доказывает |
 |-----|--------|---------------|
-| **test** | "427 тестов pass" | Код работает |
-| **benchmark** | "P99 latency < 50ms" | Производительность ОК |
-| **measurement** | "Coverage 85%" | Покрытие достаточное |
-| **audit** | "4 агента: 0 critical issues" | Код качественный |
+| **test** | "427 тестов pass" | Эти проверки прошли в записанной среде; изучите покрытие |
+| **benchmark** | "P99 latency < 50ms" | Производительность при указанной нагрузке/настройке |
+| **measurement** | "Coverage 85%" | Измеренное покрытие, не универсальный вердикт достаточности |
+| **audit** | "4 агента: 0 critical issues" | Результат ревью в реально проверенном объёме |
 
 ### Structured Fields (обязательные)
 
@@ -237,10 +248,12 @@ Evidence — это **измеримое подтверждение** что р�
 ```markdown
 ## Structured Fields
 
-verdict: supports          # supports / weakens / refutes
-congruence_level: 3        # 0-3 (3=best)
-evidence_type: test        # test / benchmark / measurement / audit
+verdict: supports
+congruence_level: 3
+evidence_type: test
 ```
+
+Пишите значения отдельными строками, **без inline-комментариев `#`**: парсер их не удаляет. Допустимые значения объяснены в таблице ниже.
 
 | Поле | Что значит | Значения |
 |------|-----------|----------|
@@ -252,24 +265,26 @@ evidence_type: test        # test / benchmark / measurement / audit
 
 **R_eff = min(evidence_scores)** — доверие к решению = его самое слабое доказательство.
 
-Не среднее, а **минимум**. Как цепь — прочность определяется слабым звеном.
+Не среднее, а **минимум**. CLI вычитает штрафы контекста и типа из оценки вердикта каждого свежего учитываемого пакета, затем берёт минимум собственных доказательств и рекурсивных зависимостей. В примере нет более слабой зависимости:
 
 ```
-Evidence 1: supports, CL3 → score = 1.0
-Evidence 2: supports, CL2 → score = 0.9
-Evidence 3: weakens, CL1  → score = 0.2
+Evidence 1: supports, CL3, test        → max(0, 1.0 - 0.0 - 0.0) = 1.0
+Evidence 2: supports, CL2, benchmark   → max(0, 1.0 - 0.1 - 0.1) = 0.8
+Evidence 3: weakens, CL1, measurement  → max(0, 0.5 - 0.4 - 0.0) = 0.1
 
-R_eff = min(1.0, 0.9, 0.2) = 0.2 (AT RISK!)
+R_eff = min(1.0, 0.8, 0.1) = 0.1 (AT RISK!)
 ```
 
-Одно слабое доказательство портит весь score.
+Участвуют текущие доказательства: терминальные (`superseded`/`deprecated`) исключаются, draft учитываются. Свежий `refutes` даёт 0; истёкшее учитываемое доказательство — 0.1. Граф может унаследовать более слабую зависимость: читайте `weakest_link`, не одно число.
+
+Рекурсивная формула для свежего доказательства: `max(0, verdict_score − CL_penalty − type_penalty)`. Штраф типа: test/measurement = 0, benchmark = 0.1, audit = 0.2. При истечении срока возвращается 0.1 до вычитаний. Зависимости могут дополнительно снизить результат: `based_on`/`informs` вычитают 0.1 из рекурсивной оценки зависимости, `refines` — 0. Плоская совместимая helper-функция `r_eff()` учитывает только verdict/CL и истечение срока, без типа и зависимостей. Это не пользовательский алгоритм CLI. См. [рекурсивный расчёт релиза](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-core/src/scoring/reff.rs#L232-L254) и [агрегацию зависимостей](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-core/src/scoring/reff.rs#L470-L499).
 
 ### Проверка R_eff
 
 ```bash
 forgeplan score PRD-001
-# → R_eff: 0.85 — Adequate
-# → Weakest link: EVID-003 (CL1 penalty)
+# Для примера выше без более слабой зависимости: R_eff = 0.10
+# Минимум собственных доказательств: EVID-003 (weakens, CL1, measurement); изучите и рекурсивные факторы.
 ```
 
 ### Что влияет на R_eff
@@ -277,13 +292,14 @@ forgeplan score PRD-001
 | Фактор | Эффект | Пример |
 |--------|--------|--------|
 | **CL penalty** | CL3=0, CL2=0.1, CL1=0.4, CL0=0.9 | CL0 отнимает 0.9 от score |
+| **Штраф типа (рекурсивный расчёт)** | test/measurement=0, benchmark=0.1, audit=0.2 | supports/CL3/benchmark получает 0.9 |
 | **verdict: weakens** | Снижает score | "Тесты частично проходят" |
 | **verdict: refutes** | Score → ~0 | "Бенчмарк показал деградацию" |
 | **expired valid_until** | Score → 0.1 (stale) | Evidence устарело |
 | **Нет evidence** | R_eff = 0.0 | Решение без доказательств |
 
 ### Anti-pattern
-- Evidence без structured fields → R_eff parser не найдёт данные → CL0 penalty
+- Нет корректного verdict или объявления контекста → CL0; без одного лишь типа выбирается measurement. При наличии `source_tier` и CL берётся меньшее соответствие контекста.
 - "Всё работает" без тестов → R_eff = 0, health кричит "blind spot"
 
 ---
@@ -302,60 +318,43 @@ F-G-R — это **3D оценка** качества артефакта (не �
 
 ### Formality — "Всё ли заполнено?"
 
-Проверяет: есть ли обязательные секции (Problem, Goals, Non-Goals, FR).
-
-```
-PRD без Problem секции → F = 0.2 (плохо)
-PRD со всеми секциями → F = 0.8 (хорошо)
-```
+Formality — доля пройденных правил валидатора, не только наличие одной секции. Включает MUST, SHOULD и COULD, поэтому структурно валидный артефакт не обязательно получает 1.0.
 
 **Как поднять F**: заполни все MUST секции.
 
 ### Granularity — "Достаточно ли деталей?"
 
-Считает: сколько FR (functional requirements), сколько чекбоксов, плотность текста.
-
-```
-PRD с 2 FR → G = 0.3 (мало деталей)
-PRD с 10 FR и чекбоксами → G = 0.8 (детально)
-```
+Granularity проверяет пять признаков: содержательные Problem/Motivation, Goals, флажки, Related/Dependencies и общую длину тела. Это не число FR и не универсальная для всех типов мера корректности.
 
 **Как поднять G**: добавь конкретные FR в формате `[Actor] can [capability]`.
 
 ### Reliability — "Есть ли доказательства?"
 
-Зависит от R_eff (evidence scores) + количества связей + наличия review.
-
-```
-PRD без evidence → R = 0.0 (ненадёжно)
-PRD с 3 evidence, R_eff=0.85 → R = 0.8 (надёжно)
-```
+Reliability сочетает R_eff, прибавку за число связей и свежесть с настраиваемыми весами. Она не проверяет независимость ревьюера. Даже без доказательств результат может быть ненулевым за счёт этих прибавок.
 
 **Как поднять R**: создай Evidence, привяжи, получи R_eff > 0.
 
 ### Проверка F-G-R
 
 ```bash
-forgeplan score PRD-001
-# → Quality (F-G-R):
-#     Formality:    0.80 (B)
-#     Granularity:  0.60 (C)
-#     Reliability:  0.85 (B)
-#     Overall:      0.75 (B)
+forgeplan fgr PRD-001 --json
+forgeplan score PRD-001 --json   # включает fgr, доказательства и слабое звено
 ```
 
 ### Грейды
 
-| Score | Грейд | Значение |
-|-------|-------|----------|
-| 0.9+ | A | Отличное качество |
-| 0.7-0.89 | B | Хорошее |
-| 0.5-0.69 | C | Среднее — нужна доработка |
-| 0.3-0.49 | D | Слабое — серьёзные пробелы |
-| <0.3 | F | Плохое — артефакт = заглушка |
+| Общая оценка | Грейд |
+|--------------|-------|
+| > 0.8 | A |
+| > 0.6 и ≤ 0.8 | B |
+| > 0.4 и ≤ 0.6 | C |
+| > 0.2 и ≤ 0.4 | D |
+| ≤ 0.2 | F |
+
+Общая оценка — среднее геометрическое `(F × G × R)^(1/3)`, не арифметическое. Грейды описывают эвристику, а не независимый вердикт приёмки.
 
 ### Anti-pattern
-Не гонись за A по всем трём. Для тактической задачи D по Granularity — нормально. F-G-R показывает картину, а не ставит оценку.
+Не гонись за A по всем трём. Эвристические грейды описывают признаки документа, не корректность; опубликованный `/gate-check` считает числовые оценки SHOULD.
 
 ---
 
@@ -409,16 +408,17 @@ forgeplan coverage            # Какой код покрыт решениям�
 1. forgeplan health                          ← Где я?
 2. forgeplan route "что делаю"               ← Какой depth?
 3. forgeplan new prd "Title"                 ← Shape
-4. (заполнить Problem, Goals, FR)
+4. (заполнить все обязательные секции типа/глубины через update --body @file)
 5. forgeplan validate PRD-001                ← Validate
 6. (писать код)                              ← Code
 7. forgeplan new evidence "Proof"            ← Evidence
+   (заполнить реальные объём/результаты и поля доказательства через update)
 8. forgeplan link EVID-001 PRD-001 --relation informs
 9. forgeplan score PRD-001                   ← Check R_eff
 10. forgeplan activate PRD-001               ← Activate
 ```
 
-**Работа не закончена, пока**: PRD заполнен + validate PASS + evidence создан + R_eff > 0 + activated.
+Для реализации схема завершается только после реальных проверок проекта, требуемых независимых ревью/guardian, связанных доказательств и активации. R_eff > 0 не даёт полномочий и не доказывает готовность; у Tactical-работы артефакта может не быть.
 
 ---
 
@@ -468,7 +468,7 @@ forgeplan score PRD-001     # Пересчитать и сохранить R_eff
 
 После массовых изменений (новые evidence, новые links) — прогоните score для всех:
 ```bash
-for id in $(forgeplan list --json | jq -r '.[].id'); do forgeplan score "$id" > /dev/null; done
+forgeplan score --all   # обновляет активные решения; draft оценивайте отдельно по ID
 ```
 
 ### R_eff и зависимости
@@ -484,17 +484,9 @@ R_eff считает **weakest link** по всему дереву зависи�
 
 ### Enforcement Hooks (для AI-агентов)
 
-5 hooks в `.claude/hooks/` автоматически проверяют правила:
+Хуки — конфигурация среды/проекта, а не пять защит, устанавливаемых бинарём. `setup-skill` записывает только встроенные инструкции `/forge`. `setup` может установить git-хуки синхронизации индекса после merge/checkout; они не обеспечивают ревью кода, покрытие тестами или права shell-команд.
 
-| Hook | Когда | Что проверяет |
-|------|-------|---------------|
-| `forge-safety-hook.sh` | Любая bash команда | Блокирует `git push --force`, `rm -rf` |
-| `pr-todo-check.sh` | `gh pr create` | Все P0 в TODO.md должны быть `[x]` |
-| `commit-test-check.sh` | `git commit` | Новые `pub fn` должны иметь тесты |
-| `pre-code-check.sh` | Edit/Write в `crates/` | Должен существовать active PRD |
-| `pre-commit-health.sh` | `git commit` | Предупреждает о blind spots |
-
-При блокировке hook объясняет что сделать чтобы продолжить.
+Если проект использует дополнительные защитные/commit-хуки, прочитайте их определения и разрешения среды. Не считайте их установленными в новом проекте и не обходите промптом. Требование pre-code-хука об «active PRD» конфликтовало бы с принципом доказательств до активации в этом цикле; согласуйте политику проекта, а не активируйте заглушку.
 
 ---
 
@@ -506,12 +498,12 @@ R_eff считает **weakest link** по всему дереву зависи�
 
 | Термин | Полное название | Что значит простыми словами |
 |--------|----------------|---------------------------|
-| **Artifact** (артефакт) | Артефакт | Структурированный документ в базе. Как файл в Git, но с метаданными и связями. Типы: PRD, RFC, ADR, Epic, Note и др. |
+| **Artifact** (артефакт) | Артефакт | Канонический Markdown в `.forgeplan/`, индексируемый для запросов, с метаданными и связями графа. |
 | **R_eff** | Effective Reliability | "Насколько мы доверяем решению". Число 0-1. Считается как **min** (не average!) всех evidence scores. Слабое звено определяет всё. |
 | **Depth** (глубина) | Глубина проработки | Сколько документации создавать: **Tactical** (ничего, просто делай) → **Standard** (PRD+RFC) → **Deep** (PRD+Spec+RFC+ADR) → **Critical** (Epic+всё) |
 | **Blind spot** (слепое пятно) | Слепая зона | Активный артефакт без evidence. Решение которому "доверяем" без доказательств. `forgeplan health` показывает их. |
 | **ADI cycle** | Цикл рассуждения | Abduction (придумай 3 варианта) → Deduction (продумай последствия) → Induction (проверь на фактах). Как научный метод. |
-| **Forge Cycle** | Цикл ковки | Полный цикл разработки: Observe→Route→Shape→Sprint→Build→Audit→Fix→Evidence→Commit→Next. Одна команда `/forge-cycle`. |
+| **Forge Cycle** | Цикл разработки | Опубликованный контракт промпта маркетплейса. Оркестратор выполняет этапы и проверки; бинарь не связывает slash-команды автоматически. |
 
 ---
 
@@ -519,29 +511,31 @@ R_eff считает **weakest link** по всему дереву зависи�
 
 ### Зачем
 
-Вместо 8 ручных шагов — одна команда. Агент автоматически проходит весь путь от наблюдения до PR.
+`/forge-cycle` — контракт оркестратора из `forgeplan-workflow` 1.23.1. В среде нужны требуемые скиллы/агенты и разрешения инструментов; вложенные `/sprint`, `/team-up`, `/audit` — смысловые обозначения, не автоматические вызовы.
 
 ### Запуск
 
 ```bash
 /forge-cycle PRD-016                     # конкретный PRD
 /forge-cycle "добавить OAuth2 auth"      # новая задача (создаст PRD)
-/forge-cycle                             # возьмёт P0 из TODO.md
+/forge-cycle                             # изучить настоящий backlog перед выбором работы
 ```
 
-### 8 фаз
+### Сводка фаз (не полный список опубликованных этапов)
 
 ```
-Phase 0: OBSERVE    ← forgeplan health + stale + fpf
+Phase 0: OBSERVE    ← forgeplan health + forgeplan stale + forgeplan fpf dashboard
 Phase 1: ROUTE      ← forgeplan route → depth + pipeline
 Phase 2: SPRINT     ← /sprint → wave-based plan
-Phase 3: BUILD      ← /team-up → код с Rust skills
+Phase 3: BUILD      ← настроенные агенты проекта/специалисты
 Phase 4: AUDIT      ← /audit → adversarial review (см. [`QUALITY-GATES.ru.md` §2](./QUALITY-GATES.ru.md#2-adversarial-review-protocol))
 Phase 5: FIXES      ← /team-up → починка findings
-Phase 6: EVIDENCE   ← forgeplan new evidence + score + activate
-Phase 7: COMMIT     ← git commit + PR + hindsight
+Phase 6: EVIDENCE   ← реальные доказательства + gates + активация оркестратором
+Phase 7: COMMIT     ← разрешённый commit/PR; необязательная настроенная память
 Phase 8: NEXT       ← forgeplan health → следующая задача
 ```
+
+Опубликованный цикл включает также Brief Note, декомпозицию, подтверждённую записанную глубину, `/estimate`, pre/post-build `/gate-check`, guardian, запись поставки после merge и Deep+ `/wrap`. Подробности и роли — в [HOW-TO-USE](HOW-TO-USE.ru.md). PASS по порогам не заменяет независимое ревью; guardian выдаёт вердикт, оркестратор активирует. Рекомендательные маркеры двигаются в shape/code/evidence/done, но не обеспечивают порядок.
 
 ### FPF auto-resolve — как агент принимает решения
 
@@ -555,7 +549,7 @@ Phase 8: NEXT       ← forgeplan health → следующая задача
 5. ДОКУМЕНТ   — // FPF: chose X over Y because [причина]
 ```
 
-**Агент спрашивает юзера ТОЛЬКО если** решение необратимо (DB schema, public API, cross-PRD impact).
+Агент обращается к пользователю также при неразрешимых по источникам требованиях, необходимости подтвердить смену глубины, запросе обхода и требованиях разрешений среды/проекта. «Обратимо» — не общее разрешение.
 
 ---
 
@@ -569,7 +563,7 @@ Phase 8: NEXT       ← forgeplan health → следующая задача
 
 ### Решение: Scope Lock
 
-Phase 0 `/forge-cycle` фиксирует тип сессии:
+Scope Lock — явное соглашение, поддерживаемое оркестратором, не файловая блокировка CLI. Здесь tactical-сессия означает объём реализации, а не Tactical-глубину артефакта.
 
 | Тип | Когда | Что делаем | Чего НЕ делаем |
 |-----|-------|-----------|---------------|
@@ -612,6 +606,8 @@ forgeplan new note "Session bookmark: PRD-016"
 5. **Стратегическое решение готово** → bookmark → tactical сессия для реализации
 
 ### Пример: правильное поведение
+
+Ниже историческая учебная последовательность сессий. Реплика о нерекурсивном scoring сохранена как диалог, не как утверждение о текущем поведении 0.38:
 
 ```
 Сессия 1 (tactical): /forge-cycle PRD-016
@@ -697,11 +693,11 @@ forgeplan score PRD-001    ← теперь R_eff > 0
 
 **Что это**: Code → Commit → PR. Без `forgeplan new evidence` и `forgeplan activate`.
 
-**Почему плохо**: Код есть, но методология не знает об этом. `forgeplan health` показывает blind spot. R_eff=0. В следующей сессии агент не видит что задача закрыта.
+**Почему плохо**: Без связанного результата проверки будущая сессия не узнает, что проверяли, в какой среде и с каким результатом. У draft-решения может быть R_eff=0 без попадания в активные blind spots.
 
-**Как правильно**: Phase 6 в `/forge-cycle` обязателен. Даже если "очевидно что работает" — создай evidence.
+**Как правильно**: В Standard+ цикле реализации сохраните реальные результаты, пройдите gates и оставьте активацию оркестратору. Не создавайте выдуманные доказательства для Tactical-правки без артефакта.
 
-**Простыми словами**: без evidence работа не засчитана. Это как сдать экзамен без ведомости.
+**Простыми словами**: сохраняйте проверяемый результат, а не одно заявление об успехе.
 
 ---
 
@@ -766,7 +762,7 @@ forgeplan route "описание задачи"
 
 **Что это**: Создал evidence, написал в body "тесты прошли, всё работает".
 
-**Почему плохо**: Parser ищет `verdict:`, `congruence_level:`, `evidence_type:` как plain text. Без них — **CL0 по умолчанию**, penalty 0.9. R_eff будет 0.1 вместо 1.0.
+**Почему плохо**: Без распознанного verdict и корректного CL/source tier версия 0.38 снижает контекст до CL0 (supports получает 0.1). Без одного лишь `evidence_type` выбирается measurement. Пишите поля отдельными строками, не только таблицей или комментарием.
 
 **Как правильно**:
 ```markdown
@@ -777,7 +773,7 @@ congruence_level: 3
 evidence_type: test
 ```
 
-**Простыми словами**: без magic-слов система не видит твоё evidence. Три строчки — и R_eff взлетает.
+**Простыми словами**: поля делают утверждение машиночитаемым, но не делают само наблюдение истинным.
 
 ---
 
@@ -785,9 +781,9 @@ evidence_type: test
 
 **Что это**: `git commit` на main без PR и review.
 
-**Почему плохо**: Нет review, нет audit trail, нельзя откатить без force push.
+**Почему плохо**: Обходит принятую в проекте политику ревью веток. Опубликованный коммит обычно можно отменить новым `git revert`; force push не требуется.
 
-**Как правильно**: Feature branch → PR → squash merge.
+**Как правильно**: Feature branch → PR → установленная в репозитории политика merge.
 
 ```bash
 git checkout dev && git pull
@@ -815,3 +811,11 @@ gh pr create --base dev
 | 8 | Rubber stamp | Нет покрытия / нет доказательств проверки | «0 audit findings» записано без объёма или рассмотренных артефактов | Показать объём, критерии, рассмотренные артефакты, доказательства; re-pin по §2 |
 | 9 | No structured fields | Нет magic-слов | R_eff=0.1 при evidence | Добавить verdict+CL+type |
 | 10 | Direct commit | Прямой коммит | Нет PR | Feature branch + PR |
+
+## Источники
+
+- [Приоритет вычисляемых статусов](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-core/src/status/derived.rs#L1-L78) и [формулы/грейды F-G-R](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-core/src/scoring/fgr.rs#L23-L164).
+- [Разбор доказательств](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-core/src/scoring/evidence.rs#L57-L204) и [формула/истечение/терминальные статусы](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-core/src/scoring/reff.rs#L55-L119).
+- [Исполнение опубликованного цикла](https://github.com/ForgePlan/marketplace/blob/b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7/plugins/forgeplan-workflow/commands/forge-cycle.md#L12-L69) и [условия wrap](https://github.com/ForgePlan/marketplace/blob/b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7/plugins/forgeplan-workflow/commands/forge-cycle.md#L1240-L1275).
+
+**Claims и параллельная работа**, **Notes и локальная/Hindsight-память**, а также **не запущенные smoke-примеры** приведены в [HOW-TO-USE](HOW-TO-USE.ru.md). Эти границы действуют во всех описанных циклах.

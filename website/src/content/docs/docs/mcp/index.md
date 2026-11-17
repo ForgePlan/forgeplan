@@ -13,6 +13,86 @@ forgeplan serve
 
 Configure your agent (Claude Code, Cursor, etc.) to connect, then invoke any of the tools listed below.
 
+## Contract source
+
+This reference uses the **Forgeplan 0.38.0** runtime `tools/list` response, not Rust handler signatures. Each tool's `inputSchema` supplies the JSON keys, types and required fields. Fields such as `workspace` are optional where listed and are not accepted by every tool. Start the server in the intended project directory when a tool has no workspace argument.
+
+Tool descriptions below are runtime metadata, not proof of execution. In 0.38.0 both `forgeplan_interview_packet_*` handlers remain `not_implemented` even after installing the marketplace pack. `forgeplan_discover_complete` returns a session summary and asks the caller to run health separately. See the curated tool pages for these implementation limits.
+
+Successful tool payloads are usually JSON encoded in MCP text content, not a universal `ok: true` envelope. Handler refusals use MCP error results (`isError: true`) with text; invalid parameters can instead be JSON-RPC errors. Workspace trace fields are returned only by handlers that add them.
+
+`_next_action` and other hints are advisory text, not commands to execute automatically or consent to destructive operations. Some 0.38.0 hints mix CLI syntax with MCP names or mention unregistered tools. Use the registered tool name and JSON arguments in this reference, or check the release CLI help; do not automatically force a transition, overwrite data, or delete a conflicting artifact because a hint suggests it.
+
+### Capture tools/list without API keys
+
+Listing tool schemas does not invoke an LLM or require provider credentials. With the release binary on PATH, this Python standard-library example starts a server in a temporary directory, performs MCP initialization, captures the tool list and stops the child process. It does not call any workspace or generation tool.
+
+```python
+import json
+import subprocess
+import tempfile
+from pathlib import Path
+
+output = Path("tools-list.json").resolve()
+with tempfile.TemporaryDirectory() as directory:
+    server = subprocess.Popen(
+        ["forgeplan", "serve"], cwd=directory,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    )
+    def send(message):
+        server.stdin.write(json.dumps(message) + "\n")
+        server.stdin.flush()
+
+    def receive(request_id):
+        for line in server.stdout:
+            message = json.loads(line)
+            if message.get("id") == request_id:
+                if "error" in message:
+                    raise RuntimeError(message["error"])
+                return message["result"]
+        raise RuntimeError("MCP server closed before replying")
+
+    try:
+        send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2024-11-05", "capabilities": {},
+            "clientInfo": {"name": "docs-snapshot", "version": "1.0"},
+        }})
+        initialized = receive(1)
+        send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        tools = []
+        cursor = None
+        request_id = 2
+        while True:
+            send({"jsonrpc": "2.0", "id": request_id, "method": "tools/list",
+                  "params": {} if cursor is None else {"cursor": cursor}})
+            listing = receive(request_id)
+            request_id += 1
+            tools.extend(listing["tools"])
+            cursor = listing.get("nextCursor")
+            if not cursor:
+                break
+        capture = {"source": {"version": initialized["serverInfo"]["version"],
+                              "initialize": initialized}, "tools": tools}
+        output.write_text(json.dumps(capture, indent=2) + "\n", encoding="utf-8")
+    finally:
+        server.terminate()
+        server.wait()
+```
+
+Regenerate the English contract sections from the repository root:
+
+```bash
+node website/scripts/generate-mcp-docs.mjs --schema-file tools-list.json
+```
+
+The input is `{ "source": { "version": "0.38.0" }, "tools": [...] }`. The version must be SemVer, including optional prerelease/build identifiers (for example `0.39.0-rc.1`). Invalid/empty captures and unsupported schema keywords are rejected before any output changes. The generator supports the captured input-schema subset, not arbitrary JSON Schema: unknown assertions (including `minProperties`, `dependentRequired` and `exclusiveMinimum`) fail closed; `format` is an annotation, not an extra validation rule.
+
+By default, a capture that omits an existing tool page is rejected as potentially incomplete. Only for a deliberately removed tool, use `--schema-file tools-list.json --prune` to permit deletion of omitted English pages. An empty capture is rejected even with `--prune`. Unchanged pages are not rewritten.
+
+Input tables and primary invocation examples are regenerated; authored frontmatter, curated usage, return descriptions and see-also links are retained. New-page titles/descriptions fall back to runtime metadata and need source review. Review the curated sections and the Russian translation when updating the capture. Generation is not verification of tool behavior.
+
+## Tool catalogue
+
 ### Workspace & Data
 
 | Tool | Description |
@@ -26,7 +106,7 @@ Configure your agent (Claude Code, Cursor, etc.) to connect, then invoke any of 
 | Tool | Description |
 |---|---|
 | [`forgeplan_capture`](/docs/mcp/forgeplan_capture/) | Capture a decision from conversation into a Note or ADR artifact. Auto-detects type: simple decisions become Notes, architectural decisions become ADRs. Requires LLM provider. |
-| [`forgeplan_generate`](/docs/mcp/forgeplan_generate/) | Generate an artifact using AI from a natural language description. Requires LLM provider configured in .forgeplan/config.yaml. Supports OpenAI, Claude, Gemini, Ollama, and any OpenAI-compatible endpoint. |
+| [`forgeplan_generate`](/docs/mcp/forgeplan_generate/) | Generate an artifact using AI from a natural language description. Requires an LLM provider in .forgeplan/config.yaml. Supports OpenAI-compatible HTTP providers, Claude, Gemini, Ollama, and explicit subscription-authenticated local CLI providers. |
 | [`forgeplan_new`](/docs/mcp/forgeplan_new/) | Create a new artifact from template. Generates a sequential ID (e.g., PRD-001), renders the template, stores in LanceDB, and writes a markdown projection. |
 
 ### Reading Artifacts
@@ -114,7 +194,7 @@ Configure your agent (Claude Code, Cursor, etc.) to connect, then invoke any of 
 
 | Tool | Description |
 |---|---|
-| [`forgeplan_activity`](/docs/mcp/forgeplan_activity/) | Query the activity log - append-only JSONL record of every MCP tool invocation at .forgeplan/logs/tools-YYYY-MM-DD.jsonl. Use this to reconstruct what the agent did over a time window, attribute LLM-token spend, or audit destructive operations. Params: since_hours (default 24, max 720), tool (comma-separated names to filter), status (ok/tool_err/ rpc_err), limit (default 500, max 5000 - keeps most recent). |
+| [`forgeplan_activity`](/docs/mcp/forgeplan_activity/) | Query the activity log - append-only JSONL record of every MCP tool invocation at .forgeplan/logs/tools-YYYY-MM-DD.jsonl. Use this to reconstruct what the agent did over a time window, attribute LLM-token spend, or audit destructive operations. Params: since_hours (default 24, max 720), tool (comma-separated names to filter), status (ok/tool_err/rpc_err), limit (default 500, max 5000 - keeps most recent). |
 | [`forgeplan_activity_stats`](/docs/mcp/forgeplan_activity_stats/) | Aggregate statistics from the activity log grouped by tool name: count, error count, p50/p95 duration, total time. Use to attribute LLM-token spend and identify slow tools. Params: since_hours (default 24, max 720). |
 | [`forgeplan_anomalies`](/docs/mcp/forgeplan_anomalies/) | Issue #289 - detect pipeline anomalies (stuck drafts, orphan links, mis-typed based_on, missing MUST sections, expired evidence, cycles, duplicates, etc.). Returns structured list with severity + tier + suggested_resolution so orchestrators (`/forge-cycle`, `/forge-cleanup`) can dispatch auto/adi/user tiers without re-classifying. |
 | [`forgeplan_claim`](/docs/mcp/forgeplan_claim/) | Claim an artifact for exclusive work. Writes .forgeplan/claims/<id>.yaml with the caller's agent identity, timestamp, and TTL. Fails if a live claim by a different agent exists - same-agent calls renew the TTL. Advisory: other tools do not block on claims, but orchestrators should use `forgeplan_claims --active` to avoid double-assigning work. |

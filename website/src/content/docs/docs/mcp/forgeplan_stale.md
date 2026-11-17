@@ -14,36 +14,35 @@ Detect artifacts whose `valid_until` date has passed. These are "stale" - the de
 - **Session start** - complements `forgeplan_health` by showing per-item expiry.
 - **After a long absence** - many artifacts may have drifted past `valid_until` while you were away.
 
-Stale ≠ invalid - the artifact still exists, but its R_eff contribution is penalised (CL0, weight 0.1 in the scoring formula) until it's renewed.
+Stale is derived freshness, not a stored lifecycle transition. This report does not change status, renew anything, or recompute the score cache. Expired evidence scores 0.1 in the evidence scorer; that is an expiry override, not a CL0 assignment or multiplicative weight.
 
 ## Input parameters
 
-_No input parameters. Call this tool with an empty object `{}`._
+_No declared input fields. Call this tool with an empty object `{}`._
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
+
+Success is JSON in MCP `content[0].text`: `stale`, `total`, and `_next_action`. Each item contains only `id`, `title`, `valid_until`, `days_expired`; no `kind` or `linked_to`.
+
+The store includes dates strictly before today's UTC date, across all kinds/statuses. Missing or unparseable expiry dates are skipped. The store accepts date-only and RFC 3339 values, but this handler calculates `days_expired` from date-only values; an included RFC 3339 expiry can therefore report zero days. Records are sorted by the stored `valid_until` string. A missing workspace is a plain-text tool error; store failures can be JSON-RPC errors.
+
+Illustrative response assuming UTC date 2026-04-11:
 
 ```json
 {
   "stale": [
-    {
-      "id": "EVID-047",
-      "kind": "evidence",
-      "valid_until": "2026-03-30",
-      "days_expired": 12,
-      "linked_to": ["PRD-039", "RFC-006"]
-    },
-    {
-      "id": "ADR-003",
-      "kind": "adr",
-      "valid_until": "2026-04-01",
-      "days_expired": 10
-    }
+    {"id": "EVID-047", "title": "Auth tests", "valid_until": "2026-03-30", "days_expired": 12}
   ],
-  "total_stale": 2
+  "total": 1,
+  "_next_action": "1 stale artifact(s). Inspect first: `forgeplan_get EVID-047`."
 }
 ```
 
 ## Example invocation
+
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
 
 ```json
 {}
@@ -54,7 +53,7 @@ _No input parameters. Call this tool with an empty object `{}`._
 1. `forgeplan_stale` - list expired artifacts.
 2. For each: decide renew vs reopen vs deprecate.
 3. `forgeplan_renew` to extend `valid_until` (if the decision is still sound).
-4. `forgeplan_reopen` to create a new draft while deprecating the stale one.
+4. Alternatively, `forgeplan_reopen` to create a lineage-linked draft from an eligible stale active lifecycle artifact.
 5. `forgeplan_decay` - see R_eff impact from remaining stale evidence.
 
 ## CLI equivalent

@@ -1,10 +1,11 @@
 ---
 title: MCP Setup - One-Command Install
-description: Connect Forgeplan as an MCP server to Claude Code, Cursor, or Windsurf in 30 seconds.
+description: Register Forgeplan as an MCP server for Claude Code, Cursor or Windsurf.
 ---
 
-After `brew install forgeplan`, hooking it up to your AI agent is **one command**.
-No JSON editing, no copy-paste. Smart-merge preserves your existing config.
+After `brew install forgeplan/tap/forgeplan`, register the binary with your
+AI client using one command. No JSON editing is needed; smart-merge
+preserves your existing config.
 
 ## Quick install
 
@@ -21,7 +22,10 @@ forgeplan mcp install --client cursor
 forgeplan mcp install --client windsurf
 ```
 
-Restart the client. Done - all 47 `forgeplan_*` MCP tools are now available.
+Restart the client and approve the server if prompted. The published
+Forgeplan 0.38.0 stdio server exposes **73 tools**. Registration does not
+install marketplace skills or agents, initialize a workspace, or configure
+an LLM provider.
 
 ## What it does
 
@@ -32,15 +36,14 @@ The command writes a `forgeplan` entry into your client's MCP config:
   "mcpServers": {
     "forgeplan": {
       "command": "/opt/homebrew/bin/forgeplan",
-      "args": ["serve"],
-      "transport": "stdio"
+      "args": ["serve"]
     }
   }
 }
 ```
 
 It's **smart-merge**:
-- Replaces `command` / `args` / `transport` (so upgrading the `forgeplan` binary works cleanly)
+- Replaces `command` / `args` and removes legacy `transport: "stdio"` and `type: "stdio"` fields
 - **Preserves your `env`** (API keys, `RUST_LOG`, custom paths)
 - Leaves other MCP servers in the file untouched
 - Idempotent - safe to re-run
@@ -71,10 +74,9 @@ forgeplan mcp install --client claude --use-name forgeplan # writes "forgeplan"
 ```
 
 :::caution
-**macOS GUI applications** (Claude Code Mac app, Cursor app) get only the
-system default `$PATH` - `/opt/homebrew/bin` is **not** in it. Short names
-fail silently in those clients. Stick with the default (absolute path)
-unless you've configured `launchctl setenv PATH ...` system-wide.
+**macOS GUI applications** may not inherit your shell's `$PATH`. A short name
+can therefore fail to start the server. Keep the default absolute path unless
+you have verified the client's launch environment.
 :::
 
 ### Custom binary
@@ -110,7 +112,23 @@ forgeplan init -y
 #    Ask the AI agent: "use forgeplan_health to check the project"
 ```
 
-If the agent reports back a healthy project status, MCP is working.
+A successful `forgeplan_health` response confirms that the tool call reached
+the server; its verdict may still report project issues. Confirm that it
+describes the intended project, not just that the verdict is `healthy`.
+
+### Workspace selection
+
+`forgeplan serve` starts in the client's launch directory. Project-scoped MCP
+registration chooses a config file, not a workspace binding. Launch the client
+from the intended project and initialize that workspace. Some 0.38.0 tools
+accept an explicit `workspace` argument for worktrees, but `forgeplan_health`
+and `forgeplan_init` do not. Do not assume the agent's current shell directory
+changes the directory of an already-running MCP server.
+
+The model and LLM are separate prerequisites. Artifact reads, validation and
+health need no LLM; `forgeplan_reason` does. Semantic search needs the model
+and artifact vectors. See [Installation](/docs/getting-started/installation/)
+and [Configuration](/docs/getting-started/configuration/).
 
 ## Config paths per client
 
@@ -151,15 +169,16 @@ After install, the agent calls a `forgeplan_*` tool and gets:
 Workspace not initialized. Call forgeplan_init first.
 ```
 
-Run `forgeplan init -y` in your project directory, or ask the agent to call
-`forgeplan_init` via MCP - it will use whatever directory the agent's
-working in.
+Run `forgeplan init -y` in the intended project, then ensure the MCP server
+was launched for that project. `forgeplan_init` initializes relative to the
+server's startup directory, not an arbitrary agent shell directory.
 
 ### Re-run after `brew upgrade`
 
-`forgeplan mcp install` is idempotent - re-run it after any version bump to
-refresh the config. The detected binary path will pick up the new version
-automatically.
+Re-run `forgeplan mcp install` if the binary location changed or the config
+still points into a versioned Cellar directory. Detection prefers the stable
+PATH entry when it resolves to the running binary. Restart the client to
+replace an already-running server process after upgrading.
 
 ## Manual setup (if you prefer)
 
@@ -176,4 +195,5 @@ If you'd rather edit the JSON yourself, here's the minimal entry:
 }
 ```
 
-The `transport: "stdio"` field is optional (most clients default to stdio).
+Do not add `transport: "stdio"`. The 0.38.0 installer omits it and removes
+that legacy value from existing entries; `serve` uses stdio by default.

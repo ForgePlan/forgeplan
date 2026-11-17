@@ -1,22 +1,9 @@
 ---
 title: forgeplan scan-import
-description: "Scan the filesystem for markdown docs and import them as Forgeplan artifacts - brownfield onboarding and index rebuild"
+description: "Import existing external Markdown documents as Forgeplan artifacts for brownfield onboarding. This is not the index-rebuild command: default project discovery excludes .forgeplan/, and existing artifact bodies are skipped rather than refreshed. Use reindex for a fresh checkout or edits to workspace Markdown."
 ---
 
-`forgeplan scan-import` walks the filesystem (standard doc directories by default, or a custom `--path`), detects markdown files that look like Forgeplan artifacts, and imports them into the LanceDB index. It is the primary tool for two scenarios: onboarding a legacy project that already has docs, and rebuilding the derived index from tracked markdown after a fresh `git clone`.
-
-## When to use
-
-- **Brownfield onboarding.** You have existing RFCs, PRDs, or ADRs in markdown and want to bring them under Forgeplan methodology without rewriting them.
-- **Fresh git clone.** `.forgeplan/{adrs,prds,rfcs,...}` is tracked in git but `.forgeplan/lance/` is not - `scan-import` rebuilds the index from the tracked markdown.
-- **After bulk external edits.** If you edited markdown directly (outside `forgeplan update`), `scan-import` re-syncs the LanceDB index to match.
-- **Index recovery.** `rm -rf .forgeplan/lance && forgeplan scan-import` is the safe way to nuke and rebuild the derived layer without touching artifacts.
-
-## When NOT to use
-
-- To restore a backup - use [`forgeplan import`](/docs/cli/import/) with a JSON file. `scan-import` only reads markdown and cannot reconstruct scoring history or decay state.
-- To create new artifacts - use `forgeplan new <kind>`. `scan-import` is for discovering existing files.
-- To repair schema mismatches - use [`forgeplan migrate`](/docs/cli/migrate/). `scan-import` assumes the schema is already current.
+Import existing external Markdown documents as Forgeplan artifacts for brownfield onboarding. This is not the index-rebuild command: default project discovery excludes `.forgeplan/`, and existing artifact bodies are skipped rather than refreshed. Use `reindex` for a fresh checkout or edits to workspace Markdown.
 
 ## Usage
 
@@ -33,71 +20,42 @@ forgeplan scan-import [OPTIONS]
   -V, --version      Print version
 ```
 
+## Discovery and preview
+
+The default scan reads standard documentation directories and selected root-level Markdown files, not every directory in the repository. `--path` changes the scan root and must resolve inside the project; the same standard-directory/root-file discovery rules still apply. Symlinks, oversized files, and excluded directories are skipped. Detection uses frontmatter, filename, or content; undetected files are reported unknown, not guaranteed to become Notes.
+
 ## Examples
 
-### Example 1: Rebuild index after git clone
-
 ```bash
-git clone <repo> && cd <repo>
-forgeplan init -y
-forgeplan scan-import
-forgeplan list
-```
-
-The standard "fresh clone" recipe. `.forgeplan/lance/` is gitignored, so every new checkout needs an `init` + `scan-import` to recreate the derived index from tracked markdown.
-
-### Example 2: Dry run before committing to import
-
-```bash
+# In a workspace initialized for an existing project:
 forgeplan scan-import --dry-run
-```
-
-Prints the list of files that would be imported, their detected artifact kind, and any parse warnings - without touching LanceDB. Use this on unfamiliar legacy repos before the real run.
-
-### Example 3: Brownfield onboarding with custom path
-
-```bash
-forgeplan init -y
+forgeplan scan-import --path docs/architecture --dry-run
+# Review the detected sources before a real import:
 forgeplan scan-import --path docs/architecture
 forgeplan list
 forgeplan health
+# Different task: refresh tracked .forgeplan Markdown after a clone/edit:
+forgeplan reindex
 ```
 
-Points the scanner at a non-standard directory. Useful when legacy docs live under `docs/`, `architecture/`, or `decisions/` instead of `.forgeplan/`.
+## Existing artifacts and projections
 
-### Example 4: Full index rebuild without reinit
+A real import creates a workspace Markdown projection and a LanceDB record, preserving supported source frontmatter such as author, tags, and links. When an ID already exists, the record is reported skipped and its body is not updated. A missing projection can be repaired on retry; that exception is not a general refresh of existing artifacts. Repeated import therefore does not reconcile manual body edits. `init --scan` runs this onboarding import after initialization.
 
-```bash
-rm -rf .forgeplan/lance
-forgeplan scan-import
-forgeplan health
-```
+## Limits of dry-run and success
 
-Safe because markdown is the source of truth (ADR-003). The LanceDB folder is derived and always rebuildable. Do NOT `rm -rf .forgeplan/` - only the `lance/` subfolder.
+`--dry-run` previews detected entries without writing imported artifacts; it returns before the existing-ID skip check, so preview counts are not a promise that all entries will actually be imported. Read the real run’s imported/skipped/unknown/failed counts and warnings: per-file failures can be reported without a failing process exit. Import does not prove completeness or evidence quality. Validate the chosen artifacts and inspect health afterward.
 
-## How it fits the workflow
+## Recovery is reindex, not deletion
 
-`scan-import` is the bridge between raw markdown and the Forgeplan index. Typical placements:
-
-- **Session start after clone**: `forgeplan init -y` → `forgeplan scan-import` → `forgeplan health`
-- **Brownfield setup**: `forgeplan init -y --scan` is equivalent to running `init` and `scan-import` together
-- **Recovery**: `rm -rf .forgeplan/lance && forgeplan scan-import` after any index corruption
-
-Because markdown is authoritative (ADR-003), this command is idempotent and safe to run repeatedly. It will not duplicate artifacts - re-running reconciles the index with the filesystem.
-
-## Safety notes
-
-- **Only `.forgeplan/lance/` is safe to delete.** Never `rm -rf .forgeplan/` without an export first. The markdown subfolders (`adrs/`, `prds/`, etc.) are the source of truth and are not rebuildable from LanceDB.
-- **`--dry-run` first on unfamiliar repos.** Scanning can surface files you didn't intend to import (`README.md`, `CHANGELOG.md`, etc.). Preview before committing.
-- **Direct markdown edits work, but require scan-import to sync.** The recommended path is still `forgeplan update`, which keeps both layers in sync automatically.
-- **Scan respects frontmatter.** Files without valid Forgeplan YAML frontmatter (kind, id, status) may be skipped or imported as generic Notes depending on detection heuristics.
-- **No scoring history is recovered.** `scan-import` rebuilds identity and relations, but evidence decay and historical R_eff values come back only via [`forgeplan import`](/docs/cli/import/) from a JSON export.
+For `.forgeplan/` Markdown already tracked in the repository, run `forgeplan reindex`; do not delete the index and then run scan-import. Neither scanner nor an export/import pair recreates full change history. Use `import` only for a supported export bundle and keep separate backups of configuration and other local state.
 
 ## See also
 
 - [`forgeplan init`](/docs/cli/init/) - create the workspace shell before scanning; `init --scan` combines both steps
-- [`forgeplan import`](/docs/cli/import/) - restore full state including scoring (needs JSON, not markdown)
+- [`forgeplan import`](/docs/cli/import/) - read a supported export bundle, not full workspace history
 - [`forgeplan export`](/docs/cli/export/) - safety backup before any destructive operation
 - [`forgeplan migrate`](/docs/cli/migrate/) - apply schema changes without touching content
 - [`forgeplan health`](/docs/cli/health/) - verify the index matches expectations after scan
 - [ADR-003](/docs/methodology/overview/) - why markdown is the source of truth
+- [`forgeplan reindex`](/docs/cli/reindex/) — recover the index from workspace Markdown

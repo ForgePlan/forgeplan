@@ -1,9 +1,9 @@
 ---
 title: forgeplan_discover_finding
-description: "Report a single discovery finding into an active brownfield session. ForgePlan creates an artifact (note / prd / rfc / problem / evidence) with the finding content, tags it with the source tier, and links it to the session. MCP-only - no CLI equivalent - the protocol is intentionally agent-driven."
+description: "Report a discovery finding. The agent calls this after analyzing a file/module/git-log during a phase. ForgePlan creates an artifact (note/prd/rfc/problem/evidence) with the finding content, tags it with the source tier, and links it to the discovery session."
 ---
 
-Appends a single **finding** to an active discovery session. After `forgeplan_discover_start` returns the protocol, the agent walks through each phase (detect / structure / code / git / tests / docs), reads files in the prescribed tier order, and calls this tool once per observation worth capturing. ForgePlan materialises each finding as a real artifact (note / prd / rfc / problem / evidence) so they survive the session and remain queryable.
+Appends a single **finding** to a discovery session. After `forgeplan_discover_start` returns the protocol, the agent walks through each phase (detect / structure / code / git / tests / docs / synthesize), reads files in the prescribed tier order, and calls this tool once per observation worth capturing. Forgeplan creates a real draft artifact so the finding survives the session and remains queryable. The commonly used kinds are `note`, `prd`, `rfc`, `problem` and `evidence`; the handler uses the general artifact-kind parser rather than restricting it to those five.
 
 **Category**: Brownfield Discovery
 
@@ -22,52 +22,66 @@ Every finding **must** carry the tier it came from so downstream synthesis can w
 
 | Tier | Source class | Typical kind |
 |------|--------------|--------------|
-| 1 | Source code | `note`, `rfc`, `evidence` |
-| 2 | Git history | `note`, `evidence` |
-| 3 | Tests | `evidence` |
-| 4 | Documentation | `note`, `problem` (if drifted) |
+| 1 | Code, git history, manifests | `note`, `rfc`, `problem`, `evidence` |
+| 2 | Tests, JSDoc comments, CI configuration | `evidence`, `note` |
+| 3 | Documentation | `note`, `problem` (if drifted) |
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
-| `session_id` | `string` | yes | The session handle returned by `forgeplan_discover_start`. |
-| `phase` | `string` | yes | One of `detect`, `structure`, `code`, `git`, `tests`, `docs`, `synthesize`. |
-| `tier` | `integer` | yes | Source tier `1`, `2`, `3`, or `4` (see table above). |
-| `kind` | `string` | yes | Artifact kind to create: `note` / `prd` / `rfc` / `problem` / `evidence`. |
-| `title` | `string` | yes | Short, specific title for the finding (used as the artifact title). |
-| `body` | `string` | yes | Markdown body. Include: what you observed, where (file:line), and why it matters. |
-| `source_files` | `string[]` | no (default: `[]`) | Paths that informed the finding. Recorded so reviewers can retrace. |
+| `body` | `string` | yes | Artifact body (markdown) |
+| `kind` | `string` | yes | Artifact kind to create (note / prd / rfc / problem / evidence) |
+| `phase` | `string` | yes | Phase (detect / structure / code / git / tests / docs / synthesize) |
+| `session_id` | `string` | yes | Session ID returned by discover_start |
+| `source_files` | `array<string>` | no | Source file paths that informed this finding Schema default: `[]`. |
+| `tier` | `integer` | yes | Source tier (1, 2, or 3) `format`: `uint8`. `minimum`: `0`. `maximum`: `255`. |
+| `title` | `string` | yes | Artifact title |
+| `workspace` | `string \| null` | no | Optional explicit workspace directory for this call. When set, the MCP server resolves the `.forgeplan/` projection from this path instead of the server's startup CWD. Use this when the calling agent is running in a git worktree separate from the MCP server's launch directory. PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. Schema default: `null`. |
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::DiscoverFindingParams`_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
 
-The created artifact's ID plus confirmation that it's been linked to the discovery session:
+The response identifies `artifact_id`, `session_id`, `phase`, `tier`, `total_findings`, `session_status` and `artifact_status`. The created artifact's `artifact_status` is always `draft`; session activity does not activate it. `status` is a deprecated session-status alias explained by `_field_warnings`.
 
-```json
-{
-  "artifact_id": "NOTE-087",
-  "session_id": "discover-legacy-billing-service-2026-04-11T10:15:00Z",
-  "phase": "code",
-  "tier": 1,
-  "linked": true
-}
-```
+The artifact receives `discover-session=<session_id>`, `source=tier<N>` and `phase=<phase>` tags; tier 3 also adds `source=legacy-doc`. These are tags associating the finding with the session, not a typed relation to a session artifact. `_next_action` points to session completion once all phases are done.
 
-The artifact is tagged with `discover:<session_id>` and `tier:<n>` so `forgeplan_discover_complete` can group findings for the synthesis step.
+`body` may be inline Markdown or `@path` expanded from a local file. Non-empty
+`source_files` are appended to the artifact body under `## Source Files`; they
+are caller-supplied references, not files the discovery tool investigates.
+The artifact is created at `standard` depth, without an evidence pack or
+`valid_until` being inferred from `kind`. An evidence-kind finding alone therefore
+does not prove or score the observation.
+
+The first finding changes a `started` session to `active`. Phase order and session
+completion are not guards: the released handler also accepts findings after
+completion without reopening the session. Follow the protocol as caller policy,
+and start a new session for a new investigation rather than relying on that gap.
+
+Success is JSON inside MCP text content, without workspace trace fields.
+Unknown phases, tiers outside 1–3, missing sessions, invalid kinds, ID allocation
+and persistence failures are tool errors. Workspace resolution or `@path` expansion
+can fail at JSON-RPC level. Creation precedes session saving: a save failure can
+leave an artifact already created, so inspect the workspace before retrying.
 
 ## Example invocation
 
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
+
 ```json
 {
-  "session_id": "discover-legacy-billing-service-2026-04-11T10:15:00Z",
+  "session_id": "disc-20261023-120000",
   "phase": "code",
   "tier": 1,
   "kind": "note",
-  "title": "Billing engine uses two overlapping retry layers",
-  "body": "`src/billing/retry.rs` and `src/http/client.rs` both implement exponential backoff. The outer layer wraps the inner, producing effective delays of retry_inner × retry_outer on transient failures. Likely accidental - worth a RFC before any reliability work.",
-  "source_files": ["src/billing/retry.rs", "src/http/client.rs"]
+  "title": "Billing entry point",
+  "body": "The billing module handles invoice creation.",
+  "source_files": [
+    "src/billing.rs"
+  ]
 }
 ```
 
@@ -77,7 +91,7 @@ The artifact is tagged with `discover:<session_id>` and `tier:<n>` so `forgeplan
 discover_start → (many) discover_finding → discover_complete
 ```
 
-Agents typically produce 10–40 findings across a discovery session. There is no hard cap; emit one finding per concrete observation rather than batching multiple concerns into one.
+Emit one finding per concrete observation. Use the actual handle returned by `forgeplan_discover_start`, not a guessed project-name-based session ID.
 
 ## CLI equivalent
 
@@ -87,5 +101,5 @@ None - intentional. Discovery findings only flow through the MCP path.
 
 - [MCP overview](/docs/mcp/)
 - [`forgeplan_discover_start`](/docs/mcp/forgeplan_discover_start/) - protocol that sourced this tool
-- [`forgeplan_discover_complete`](/docs/mcp/forgeplan_discover_complete/) - synthesise findings into proposals
+- [`forgeplan_discover_complete`](/docs/mcp/forgeplan_discover_complete/) - finish the session and inspect counts
 - [`forgeplan_new`](/docs/mcp/forgeplan_new/) - alternative for creating artifacts outside a session

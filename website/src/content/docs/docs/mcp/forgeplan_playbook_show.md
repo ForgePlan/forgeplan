@@ -7,10 +7,20 @@ Show full details of a single playbook (resolved by name or path). Returns the p
 
 **Category**: Other
 
+## Example invocation
+
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
+
+```json
+{
+  "target": "brownfield-code"
+}
+```
+
 ## What it does
 
 1. Resolves `target`: a path-like string (it contains `/`, `\`, or ends in `.yaml` / `.yml`) is canonicalized and confined to an allowed root; anything else is treated as a bare name and looked up through the same discovery pass that [`forgeplan_playbook_list`](/docs/mcp/forgeplan_playbook_list/) performs.
-2. Reads the file under a 1 MiB size cap and a 256-character YAML nesting cap.
+2. Reads the file under a 1 MiB size cap and a heuristic cap of 256 `{` / `[` opening characters in total, not recursive YAML depth.
 3. Parses it with the SPEC-003 loader, which rejects an empty `steps` array, `requires:` entries naming steps that do not exist, cycles in the `requires:` graph, `mapping:` without `produces_at:`, and an unsupported `schema_version`. A `produces_at:` without `mapping:` is a warning, not an error, and the playbook still loads.
 4. Returns the parsed playbook plus the redacted source path.
 
@@ -18,11 +28,13 @@ This is the read surface for playbook structure. It executes nothing.
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
-| `target` | `string` | yes | Playbook name, or a path to the YAML file. A bare name is matched against discovered playbooks; a path-like value (contains `/` or `\`, or ends in `.yaml` / `.yml`) must resolve inside an allowed root. |
+| `target` | `string` | yes | Playbook name (matches discovery results) or path to a YAML file. |
 
-_Schema source: `crates/forgeplan-mcp/src/types.rs::PlaybookShowParams`_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
 
@@ -48,17 +60,26 @@ _Schema source: `crates/forgeplan-mcp/src/types.rs::PlaybookShowParams`_
 
 | Field | Type | Description |
 |---|---|---|
-| `id` | `string` | Unique within the playbook. |
+| `id` | `string` | Step identifier. Use unique values; this loader does not reject duplicate IDs. |
 | `delegate_to` | `object` | One of five variants, tagged on `type`: `plugin` (`name`, `target`), `agent` (`name`), `skill` (`name`, optional `pack`), `command` (`command` argv array), `forgeplan_core` (`target` of `ingest`, `new`, `validate`, `activate`, or `search`). |
-| `input` | `object` | Free-form parameters passed to the delegate. Shape is owned by the delegate, not by the playbook schema. |
+| `input` | `JSON value` | Optional free-form YAML value serialized to JSON; it is not restricted to an object by the playbook type. Individual dispatchers may require a mapping. |
 | `produces_at` | `string` | Optional workspace-relative output path. |
-| `mapping` | `string` | Optional SPEC-004 mapping name used to ingest `produces_at`. Requires `produces_at`. |
+| `mapping` | `string` | Optional mapping metadata; the loader requires `produces_at` alongside it. This field alone does not make the executor ingest output: use an explicit core `ingest` step. |
 | `requires` | `array` | Step IDs that must complete first. Defines the DAG. |
 | `fallback_hint` | `string` | Install hint printed when the delegate is missing. |
 | `on_error` | `string` | `abort` (default) or `continue`. |
-| `timeout_seconds` | `number` | Optional per-step timeout override. Dispatcher defaults apply when omitted (300s general, 600s plugin, 180s command and skill). |
+| `timeout_seconds` | `number` | Optional override used by subprocess dispatchers: plugin 600s, agent 300s, command 180s when omitted. The marker-only skill dispatcher does not enforce a timeout. |
 | `budget_usd` | `number` | Optional per-step USD cap, translated to `--max-budget-usd` for `claude --print` delegates. |
 | `allowed_tools` | `array` | Optional tool allowlist for `claude --print` delegates, translated to `--allowedTools`. |
+
+Absent optional fields are omitted, not emitted as `null`. `on_error` is emitted
+with its default `abort`. Top-level `requires` describes prerequisites but does
+not attest to installation or an active agent. In particular, the 0.38.0 skill
+dispatcher does not validate or load skills. No `workspace` input or workspace
+trace is available on this read endpoint.
+
+The hint uses the parsed playbook name. If you supplied a path outside discovery
+roots, retain that path for the next call rather than assuming the name is discoverable.
 
 ## Examples
 
@@ -74,7 +95,7 @@ Show a file by path. A bare name is looked up through discovery, so a playbook t
 { "target": "marketplace/playbooks/brownfield-code.yaml" }
 ```
 
-The response is the full parsed playbook (captured against the shipped `brownfield-code` playbook, description and step fields trimmed here):
+Illustrative response excerpt with description and steps shortened. This is not a complete serialized playbook or an executed capture:
 
 ```json
 {
@@ -126,6 +147,10 @@ The response is the full parsed playbook (captured against the shipped `brownfie
 | Name not discovered, or path outside the allowed roots | `playbook target <target> not resolvable` | `List discoverable playbooks: forgeplan_playbook_list` |
 | Read failed, file over 1 MiB, or nesting over the cap | `cannot read playbook: file exceeds the 1048576-byte size limit` (or the nesting / io-error variant) | `Verify the file is well-formed and below 1 MiB.` |
 | Loader rejected the YAML | `playbook parse error: <kind>` | `Validate to see structured findings: forgeplan_playbook_validate file="<path>"` |
+
+Success is JSON in MCP text content. These failures instead return plain-text
+tool errors (`isError: true`) with an `_next_action:` line. There is no common
+JSON error payload shared with `forgeplan_playbook_validate`.
 
 ## Safety notes
 

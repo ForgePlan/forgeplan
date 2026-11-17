@@ -5,6 +5,40 @@
 > Три системы как единый организм. Каждая делает то, что умеет лучше всех.
 > Данные живут в одном месте, ссылки — везде.
 
+## Область применения и настройка
+
+Это опциональная схема интеграции, не встроенный сервис Forgeplan.
+Пользовательские CLI/MCP-примеры относятся к **0.38.0**; в исходниках этой
+ветки пока **0.37.0**. Публичный каталог marketplace **1.187.1** содержит
+**23 плагина**. Устанавливайте нужные проекту:
+
+- `forgeplan-workflow` **1.23.1** предоставляет `/forge-cycle` и `/forge-audit`.
+- `fpl-skills` **1.75.1** — `/smith`, `/research`, `/sprint`, `/audit`,
+  `/build`, `/briefing`. Это инструкции агенту, не команды ядра CLI.
+- `forgeplan-orchestra` **3.6.0** — `/session`, `/sync`, `task-cycle`
+  и интеграцию с платформой. Orchestra MCP подключается отдельно.
+  Вызов `/forgeplan-orchestra:sync` позволяет избежать конфликта имён.
+- `fpl-hsmem` **3.7.0** — опциональная память. В проектном `.hindsight.json`
+  явно задаются `url`, `banks`, `defaultBank`; банки уже существуют
+  на совместимом сервере Hindsight API (>=0.10.2, <0.11.0).
+  Хуки recall/retain по умолчанию выключены; наличие committed-конфига
+  не означает согласия на их включение. BankGate — клиентская защита,
+  не серверная авторизация.
+
+`forgeplan setup-skill` устанавливает только справочный `/forge`, не эти
+плагины. `forgeplan remember`/`recall` хранит простые локальные артефакты,
+не key-value записи Hindsight. В память передают краткие выводы в разрешённый
+банк, а не автоматически копируют переписку и полные документы.
+
+Конфигурации, вместимость, время настройки, имена статусов и сценарии ниже —
+примеры рабочего процесса, не измеренные лимиты и не автоматическое поведение
+ядра. Команды CLI буквальны; строки `Orch:` и вызовы без объектов аргументов —
+псевдокод. Перед записью определите сервер/identity проекта и UID полей/опций,
+прочитайте описание, чат и чек-листы задачи; проверяйте `failed`,
+`failedFields`, `warning` в ответах. Изменение assignee, owner, due date,
+отправка сообщений и удаление требуют применимого явного разрешения.
+
+
 ---
 
 ## Оглавление
@@ -81,13 +115,13 @@
 |---------|---------|------------|---------------------|
 | **Forgeplan** | Артефакты, валидация, R_eff, evidence, lifecycle, depth, quality gates | Task tracking, assignees, due dates, коммуникация | Что делать, зачем, какого качества |
 | **Orchestra** | Задачи, статусы, assignees, due dates, чек-листы, сообщения, проекты | Валидация артефактов, R_eff scoring, evidence chain | Кто делает, когда, в каком статусе |
-| **Claude Code** | Skills, hooks, plugins, memory, agents, git workflow | Хранение данных (делегирует BC1 и BC2) | Как делать, контекст между сессиями |
+| **Claude Code** | Skills, hooks, plugins, агенты, git workflow | Хранение артефактов/задач; опциональная память принадлежит Hindsight | Как выполнить настроенный процесс |
 
 ### Что НЕ дублируем в Orchestra
 
 | Данные | Живёт в | Почему не дублируем |
 |--------|---------|---------------------|
-| Содержимое артефакта | Forgeplan (LanceDB + .md) | Orchestra ≠ документооборот |
+| Содержимое артефакта | Markdown Forgeplan (LanceDB — производный индекс) | Одно каноническое тело артефакта |
 | R_eff score | Forgeplan | Вычисляемое, устаревает мгновенно |
 | Validation results | Forgeplan | Динамическое |
 | Evidence chain | Forgeplan (links) | Граф зависимостей в Forgeplan |
@@ -152,7 +186,12 @@
 
 ### Правило синхронизации
 
-Если один обновлён — второй должен быть обновлён тоже. AI agent при обновлении Status автоматически обновляет Phase, и наоборот. При конфликте — Status побеждает (Orchestra = source of truth для execution state).
+В этой схеме агент обновляет оба поля при реальном переходе работы на другую
+стадию. Ядро Forgeplan не синхронизирует Orchestra. `/forgeplan-orchestra:sync`
+сравнивает системы, показывает diff и ждёт подтверждения перед записью.
+Конфликт разрешается по фактическому состоянию работы, не скрытой сменой
+lifecycle под поле трекера. `Blocked` — статус, не фаза:
+при блокировке сохраняйте прежнюю Phase.
 
 ---
 
@@ -224,15 +263,15 @@ Workspace: ForgePlan
   forgeplan route "задача" → depth
   forgeplan new prd "Title" → артефакт
   → Orch: создать задачу с fields
-  /sprint или /wave → реализация
+  /sprint → реализация
   → Orch: Status=Doing
   /audit → review
   → Orch: Status=Review
-  forgeplan activate → done
+  forgeplan review ID, затем forgeplan activate ID при готовности
   → Orch: Status=Done
 
 Конец дня:
-  Проверить /orch status
+  Запросить задачи в проектной доске Orchestra
 ```
 
 #### Saved Views
@@ -527,8 +566,8 @@ create_entity: Channel "Standup"
 
 ```
 1. Проверить CLAUDE.md содержит Session Start Protocol
-2. Проверить memory содержит unified workflow architecture
-3. Проверить /sync-tasks работает с новым workspace
+2. Если Hindsight включён, проверить разрешённый банк на существующий контекст процесса
+3. Проверить, что /forgeplan-orchestra:sync находит закреплённый сервер/workspace проекта
 4. Первый /briefing → убедиться что видит задачи
 ```
 
@@ -549,16 +588,16 @@ create_entity: Channel "Standup"
 forgeplan list --status active    # → список active артефактов
 forgeplan list --status draft     # → список draft артефактов
 
-# Для каждого active артефакта:
-→ Orch: create task "[ID] Title"
-  Fields: Artifact=ID, Type=kind, Phase=Done, Status=Done
+# Для каждого active артефакта проверить, действительно ли связанная работа завершена:
+→ Orch: создать отсутствующую задачу, только если нужна
+  Fields: Artifact=ID, Type=kind; Phase/Status — по реальному состоянию работы
 
 # Для каждого draft артефакта:
 → Orch: create task "[ID] Title"
   Fields: Artifact=ID, Type=kind, Phase=текущая, Status=текущий
 
 # 4. Verify
-/orch status → должен показать все артефакты
+Запросить доску Orchestra → сравнить задачи со списком артефактов
 forgeplan health → сравнить с Orchestra
 ```
 
@@ -604,7 +643,7 @@ forgeplan health → сравнить с Orchestra
 4. Создать "Backlog" и "Operations"
 5. Распределить задачи по проектам (move_entity)
 6. Начать использовать Assignee field
-7. Обновить /sync-tasks routing rules
+7. Обновить проектные правила маршрутизации задач и настройку /forgeplan-orchestra:sync
 ```
 
 **Effort**: 30 минут. **Risk**: Low — fields сохраняются, задачи перемещаются.
@@ -633,7 +672,7 @@ forgeplan health → сравнить с Orchestra
 **Что делать**:
 ```
 1. Объединить sub-projects в project root
-2. Удалить пустые sub-projects
+2. Перечислить пустые sub-projects; архивировать/удалять только с явным разрешением
 3. Вернуться к Sprint field вместо sub-projects
 4. Channels можно оставить или архивировать
 ```
@@ -644,21 +683,22 @@ forgeplan health → сравнить с Orchestra
 
 ```
 1. Объединить все area projects в один "Development"
-2. Удалить пустые projects
-3. Убрать Assignee (всё = я)
+2. Перечислить пустые projects; архивировать/удалять только с явным разрешением
+3. Не менять assignees без запроса пользователя
 ```
 
 ---
 
 ## 9. Session Start Protocol
 
-**ОБЯЗАТЕЛЬНО при каждом новом чате Claude Code.**
+Применяйте протокол в рабочих сессиях, если проект принял эту интеграцию.
+Бинарь Forgeplan не устанавливает и не запускает его автоматически.
 
 ```
 STEP 1: CONTEXT RESTORE
 ├── CLAUDE.md загружается автоматически
-├── memory_recall("Forgeplan") — Hindsight
-└── Auto-memory (MEMORY.md) — загружается автоматически
+├── Если Hindsight настроен: memory_get_current_bank, затем целевой memory_recall
+└── Auto-memory хоста (MEMORY.md), если поддерживается и включена
 
 STEP 2: PROJECT HEALTH (параллельно)
 ├── forgeplan health
@@ -731,14 +771,15 @@ STEP 4: RECOMMEND
    Orch: Phase=Validate, Status=To Do
 
 4. CODE
-   /sprint или /wave для реализации
+   /sprint для реализации
    Orch: Phase=Code, Status=Doing
    Orch: Branch=feat/xxx
    Orch: добавить Checklist с FR items из PRD
 
 5. AUDIT + EVIDENCE
-   /audit → 5-agent review
+   /audit → независимое ревью специалистов (минимум 4 ревьюера в fpl-skills)
    forgeplan new evidence "..."        → EVID-XXX
+   forgeplan update EVID-XXX --body @evidence.md
    forgeplan link EVID-XXX PRD-XXX --relation informs
    Orch: Phase=Evidence, Status=Review
 
@@ -751,6 +792,16 @@ STEP 4: RECOMMEND
    git commit + git push + gh pr create
    Orch: Branch field обновлён
 ```
+
+Подготовьте `evidence.md` из реальных проверок: `verdict`,
+`congruence_level`, `evidence_type` под `## Structured Fields`, шаги
+воспроизведения и, где требуется, git-delta provenance. Один заголовок
+не даёт высокий score. `score`, `review`, `activate` выполняются отдельно
+от проверки результата; сгенерированные рассуждения и наличие связи
+не доказывают работоспособность кода. Тело меняйте через `update --body`
+или MCP, не прямой правкой проекции; lifecycle — отдельными командами,
+не `update --status active|superseded|deprecated`.
+
 
 ### Tactical tasks (без артефакта)
 
@@ -773,20 +824,20 @@ forgeplan route "fix typo" → Tactical
 | Перед задачей | `forgeplan route "описание"` → depth |
 | Создание | `forgeplan new ...` + задача в Orch с fields |
 | Работа | Двигай Status в Orchestra по мере прогресса |
-| Код | `/sprint` или `/wave` для AI-assisted dev |
-| Финиш | `forgeplan activate` + Orch: Status=Done |
-| Конец дня | `/orch status` → всё ли актуально |
+| Код | `/sprint` для разработки с AI |
+| Финиш | Проверить evidence и готовность, активировать артефакт, затем закрыть действительно завершённую работу в трекере |
+| Конец дня | Запросить доску и проверить соответствие полей реальности |
 
 ### Для PM / Tech Lead
 
 | Когда | Что делать |
 |-------|-----------|
-| Обзор | `/orch projects` + `forgeplan health` — полная картина |
+| Обзор | Запросы проектов/задач Orchestra + `forgeplan health` |
 | Планирование | Создавай задачи с Artifact, Sprint, Priority fields |
 | Приоритеты | Priority + Sprint fields в Orchestra |
-| Качество | `forgeplan validate` + `forgeplan score` для R_eff |
-| Коммуникация | `/orch msg` для обсуждений в контексте задачи |
-| Sprint planning | Создать задачи для next sprint, назначить Assignee |
+| Качество | `forgeplan validate` + `forgeplan score ID` или `forgeplan score --all` |
+| Коммуникация | Сообщение в чат задачи только по явному запросу/разрешению |
+| Sprint planning | Создать задачи следующего спринта; менять assignee только по явному запросу |
 | Retro | `forgeplan health` → что сделано, что blind spot |
 
 ### Для QA
@@ -812,7 +863,7 @@ forgeplan route "fix typo" → Tactical
 | **НИКОГДА** | Не `send_message` без явного запроса (safety rule) |
 | **НИКОГДА** | Не `delete_entity` без подтверждения (destructive) |
 
-### Для Sub-агентов (TeamCreate teammates)
+### Для Sub-агентов (если хост поддерживает команды агентов)
 
 | Правило | Описание |
 |---------|----------|
@@ -831,7 +882,7 @@ forgeplan route "fix typo" → Tactical
 **Импакт**: Средний (два источника правды → confusion)
 **Митигации**:
 - Session Start Protocol проверяет оба → детектит drift
-- `/sync-tasks` enhanced — показывает diff
+- `/forgeplan-orchestra:sync` показывает diff перед предложением правок
 - Будущее: Hook на `forgeplan activate` → auto-mark Done в Orch
 
 ### R2: Field Bloat (СРЕДНИЙ)
@@ -844,7 +895,7 @@ forgeplan route "fix typo" → Tactical
 **Описание**: Два параллельных трекинга стадии, один обновлён а другой нет.
 **Вероятность**: Высокая
 **Импакт**: Средний (AI принимает решения на stale data)
-**Митигация**: Чёткий маппинг (§4). AI обновляет оба при любом изменении. При конфликте Status побеждает.
+**Митигация**: Маппинг §4 — соглашение процесса. Поля меняются по реальной работе; при Status=Blocked Phase сохраняется.
 
 ### R4: AI создаёт дубли (СРЕДНИЙ)
 **Описание**: AI agent создаёт задачу для артефакта который уже трекается.
@@ -882,7 +933,7 @@ forgeplan route "fix typo" → Tactical
 
 | Bottleneck | Описание | Влияние | Решение |
 |-----------|----------|---------|---------|
-| **Manual dual-create** | Создать артефакт + задачу = 2 действия | Friction на каждую задачу | Auto-sync в `/forge-cycle`. AI создаёт оба |
+| **Manual dual-create** | Создать артефакт + задачу = 2 действия | Дополнительный шаг | Разрешённый агент создаёт оба; `/forgeplan-orchestra:sync` предлагает отсутствующие связи/задачи |
 | **Phase update** | Забыть обновить Phase field | Stale data для AI | AI обновляет при смене Status |
 | **Sprint transition** | Перенос незакрытых задач | Overhead каждые 1-2 недели | A/B: change Sprint field. C: move to new sub-project |
 | **Cross-area deps** | Задача блокирует другую area | Visibility gap | Orchestra Relations + `forgeplan blocked` |
@@ -896,14 +947,14 @@ forgeplan route "fix typo" → Tactical
 | Anti-pattern | Почему плохо | Правильно |
 |-------------|-------------|-----------|
 | Дублировать PRD content в Orchestra description | Два источника правды, drift | Только Artifact ID в field |
-| Трекать R_eff в Orchestra field | Устаревает мгновенно | `forgeplan score` по запросу |
+| Трекать R_eff в Orchestra field | Устаревает мгновенно | `forgeplan score ID` по запросу |
 | Создавать Standard+ задачу без артефакта | Работа без обоснования | Route → Shape → Task |
 | `send_message` без запроса пользователя | Safety violation, spam | Только по явной просьбе |
 | Sub-agents обновляют Orchestra | Race conditions, конфликты | Только main agent |
 | Игнорировать Session Start Protocol | Потеря контекста, дубли | ВСЕГДА выполнять |
 | Проект на каждую задачу | Overhead, потеря обзора | Проект = area, не задача |
 | Sprint field + Sprint sub-project одновременно | Confusion: где правда? | Выбрать одно по конфигурации |
-| Перемещать задачи между projects без причины | Теряется history | Move только при migration |
+| Перемещать задачи между projects без причины | Может менять scope/доступ и запутать учёт | Только согласованная реорганизация с проверкой результата |
 | Архивировать вместо Done | Задача исчезает из views | Done = видна, Archived = скрыта |
 
 ---
@@ -923,42 +974,46 @@ forgeplan blocked             # граф зависимостей
 ```
 
 ### Orchestra (задачи)
-```bash
-/orch status                  # обзор workspace
-/orch create "Task name"      # новая задача (interactive)
-/orch task <uid>              # детали задачи
-/orch msg <uid> "message"     # сообщение в чат задачи
-/orch today                   # задачи на сегодня
-/orch overdue                 # просроченные задачи
-/briefing                     # утренний брифинг
-/sync-tasks                   # синхронизация
+
+Используйте имена инструментов настроенного сервера; runtime-префикс зависит от проекта:
+
+```text
+get_workspace_overview        # обзор workspace
+query_entities                # текущие, просроченные или спринтовые задачи
+search_entities               # найти задачу перед созданием
+get_entity                    # описание и поля задачи
+read_messages                 # чат; читать страницы до нужной глубины истории
+list_fields                   # получить UID полей и опций
+update_entity                 # установить поля через эти UID
+/forgeplan-orchestra:session  # опциональный сценарий начала сессии
+/forgeplan-orchestra:sync     # сравнить, предложить, подтвердить, применить
 ```
 
 ### Claude Code (execution)
-```bash
-/forge-cycle                  # полный цикл (route → PR)
-/sprint                       # wave-based sprint с research
-/wave                         # быстрые waves из контекста
-/build path/to/reports/       # реализация из research
-/audit                        # 5-agent code review
-/commands                     # список всех команд
-/research "вопрос"            # быстрый поиск (5 агентов)
-/deep-research "тема"         # глубокое исследование
+
+```text
+/forge-cycle                  # forgeplan-workflow: полный цикл артефакта
+/sprint                       # fpl-skills: реализация волнами
+/build path/to/reports/       # fpl-skills: готовые IMPLEMENTATION-PLAN.md + SUMMARY.md
+/audit                        # fpl-skills: независимое ревью, 4+ специалистов
+/research "вопрос"            # fpl-skills: изучить перед выбором подхода
+/briefing                     # fpl-skills: контекст рабочего дня
 ```
 
 ### MCP tools (для AI agents)
 
 ```
 # Orchestra
-mcp__orch__get_workspace_overview()     — обзор workspace
-mcp__orch__query_entities()             — поиск с фильтрами
-mcp__orch__create_entity()              — создать задачу/проект
-mcp__orch__set_fields()                 — обновить fields
-mcp__orch__manage_field()               — создать/изменить field definition
-mcp__orch__search_entities()            — поиск по имени
-mcp__orch__get_entity()                 — детали entity
-mcp__orch__read_messages()              — прочитать сообщения
-mcp__orch__get_checklists()             — чек-листы задачи
+get_workspace_overview()                — обзор workspace
+query_entities()                       — поиск с фильтрами
+create_entity()                        — создать задачу/проект
+update_entity(fields=[...])            — значения полей с полученными UID
+list_fields()                          — определения полей и опций
+manage_field()                         — создать/изменить определение поля
+search_entities()                      — поиск по имени
+get_entity()                           — данные entity
+read_messages()                        — одна страница; продолжить при необходимости
+get_checklists()                       — чек-листы задачи
 
 # Forgeplan
 forgeplan_health()                      — состояние проекта
@@ -975,6 +1030,10 @@ forgeplan_link()                        — связать артефакты
 ---
 
 ## 16. Playbook: сценарии ежедневной работы
+
+Это условные разговоры, не сохранённый вывод команд. Маршрутизация,
+score и результат валидации зависят от реальной задачи и тела артефакта.
+
 
 ### Начало дня
 
@@ -1056,7 +1115,7 @@ AI: Sprint=Sprint 10, Status=Backlog
 Ты: "Начинаем Sprint 10"
 
 AI: 1. Проверяет незакрытые задачи Sprint 9:
-       /orch query → Sprint=Sprint 9, Status≠Done
+       query_entities → Sprint=Sprint 9, Status≠Done
        "2 задачи не закрыты: [RFC-003] и [PROB-023]"
 
     2. Спрашивает: "Переносим в Sprint 10 или закрываем?"
@@ -1064,7 +1123,9 @@ AI: 1. Проверяет незакрытые задачи Sprint 9:
 
     3. AI обновляет:
        RFC-003: Sprint → Sprint 10
-       PROB-023: Status → Done (или forgeplan deprecate)
+       Задача PROB-023: зафиксировать отмену по настроенному процессу проекта,
+       а не Done для невыполненной работы; сначала узнать настоящий UID статуса.
+       Связанный артефакт отдельно вывести из действия с причиной, если lifecycle это допускает.
 
     4. forgeplan health → что ready для Sprint 10?
        "4 задачи в Backlog с Sprint 10:
@@ -1080,13 +1141,14 @@ AI: 1. Проверяет незакрытые задачи Sprint 9:
 ```
 AI: код написан, тесты проходят
 
-AI: /audit → 5-agent review
+AI: /audit → независимое ревью специалистов
     Findings: 2 LOW, 0 HIGH
     Фиксит LOW findings
 
 AI: forgeplan new evidence "Tests pass, 15 new tests, audit clean"
+    forgeplan update EVID-XXX --body @evidence.md
     forgeplan link EVID-XXX PRD-XXX --relation informs
-    forgeplan score PRD-XXX → R_eff = 1.00
+    forgeplan score PRD-XXX → проверить фактический score, включая слабые/опровергающие evidence
 
 AI: forgeplan review PRD-XXX → PASSED
     forgeplan activate PRD-XXX → active
@@ -1096,7 +1158,7 @@ AI: Orch: Phase=Done, Status=Done ✓
 AI: git commit + git push + gh pr create
     Orch: Branch=feat/xxx
 
-AI: "PRD-XXX завершён. R_eff=1.00, activated, PR создан."
+AI: отдельно сообщает выполненную работу, реальный score, состояние активации и PR
 ```
 
 ### Конфликт: задача блокирует другую
@@ -1104,9 +1166,9 @@ AI: "PRD-XXX завершён. R_eff=1.00, activated, PR создан."
 ```
 Ты: "Не могу делать PRD-025 пока RFC-005 не готов"
 
-AI: forgeplan link PRD-025 RFC-005 --relation blocked-by
-    Orch: добавляет relation между задачами
-    PRD-025 Status → Backlog (blocked)
+AI: forgeplan link PRD-025 RFC-005 --relation based_on
+    Orch: добавляет связь между задачами
+    Status задачи PRD-025 → Blocked; сохранить прежнюю Phase
 
     forgeplan blocked → показывает граф зависимостей
 
@@ -1136,12 +1198,12 @@ AI: создаёт задачу:
 ```
 Ты: "Напиши в чат задачи PRD-021 что я начал работу"
 
-AI: mcp__orch__send_message(chatUid=задача, message="Начата работа...")
+AI: send_message(entityUid=задача, message="Начата работа...")
     ← ТОЛЬКО по явному запросу!
 
 Ты: "Что писали в чате PROB-021?"
-AI: mcp__orch__read_messages(entityUid=задача)
-    → Показывает историю
+AI: read_messages(entityUid=задача), затем старые страницы по необходимости
+    → Показывает нужную историю
 ```
 
 ### Конец дня
@@ -1174,9 +1236,9 @@ AI: Orch: query Sprint=Sprint 9
      Не завершены: 1 (перенесена в Sprint 10)
      Время: 2 недели"
 
-    forgeplan health:
-    "Activated: 3 новых (PRD-021, PROB-021, RFC-004)
-     R_eff avg: 0.85
+    Отдельно запрашивает реальный статус артефактов и их score:
+    "Activated: PRD-021, PROB-021, RFC-004
+     R_eff: показать score каждого решения, не среднее доверие
      Blind spots: 1 (RFC-003)"
 
     "Рекомендация для Sprint 10: закрыть blind spot RFC-003,
@@ -1191,10 +1253,10 @@ AI: Orch: query Sprint=Sprint 9
 | Standard+ задача | Писать код без PRD | Нет обоснования | Shape → Validate → Code |
 | Задача готова | `forgeplan activate` без evidence | R_eff = 0, blind spot | Создать evidence первым |
 | Нужно обсудить | `send_message` самовольно | Safety rule Orchestra | Только по запросу юзера |
-| Задача не нужна | `delete_entity` | Destructive | Status=Done или deprecate |
+| Задача не нужна | Удалить без разрешения или назвать незавершённую работу Done | Потеря истории / ложное завершение | Зафиксировать отмену по правилам проекта; подходящий артефакт вывести из действия с причиной |
 | Спринт закончился | Удалять старые задачи | Теряется history | Done или Archive |
-| Merge конфликт | `git push --force` | Blocked hook | Resolve конфликт |
-| Тесты падают | Коммитить | `commit-test-check` hook | Починить тесты |
+| Merge конфликт | `git push --force` | Правило безопасности проекта; покрытие хуками зависит от конфигурации | Разрешить конфликт |
+| Тесты падают | Заявить завершение или скрыть ошибку | Проверка не завершена | Исправить или явно сообщить об ошибке; не полагаться на неустановленный хук |
 | Active артефакт устарел | Удалять | Теряется lineage | `forgeplan supersede` или `deprecate` |
 | AI создаёт задачу | Не проверять дубли | Шум в трекере | `search_entities` сначала |
 
@@ -1241,13 +1303,13 @@ Chat Orch │   Git    │  Звонки  │  AI фоновый
  (шум)        (контекст)     + Задача
 ```
 
-### Как AI собирает Inbox (автоматически при session start)
+### Как AI собирает Inbox (при вызове сценария начала сессии)
 
 ```
 STEP 1: СБОР (read-only, безопасно)
-├── mcp__orch__get_unread_chats()     → новые сообщения
-├── mcp__orch__get_mentions()         → @упоминания
-├── git log --since="last session"    → новые коммиты
+├── get_unread_chats()                 → новые сообщения
+├── get_mentions()                    → @упоминания
+├── git log --since=<recorded timestamp> → новые коммиты
 ├── forgeplan health                  → stale, blind spots
 └── memory_recall                     → контекст прошлой сессии
 
@@ -1313,7 +1375,7 @@ STEP 4: AI ВЫПОЛНЯЕТ решения
 | Читать git log | ✅ Да | Read-only |
 | forgeplan health | ✅ Да | Read-only |
 | Классифицировать сигналы | ✅ Да | Подготовка для triage |
-| Сохранить в Memory/Hindsight | ✅ Да | Non-destructive |
+| Сохранить в Memory/Hindsight | Не по умолчанию | Нужны opt-in проекта, разрешённый банк/инструмент и применимое согласие; хуки выключены |
 | **Создать артефакт** | ❌ Нет | Нужно подтверждение |
 | **Создать задачу** | ❌ Нет | Нужно подтверждение |
 | **Отправить сообщение** | ❌ Нет | Safety rule |

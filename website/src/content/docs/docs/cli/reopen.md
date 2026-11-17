@@ -3,7 +3,11 @@ title: forgeplan reopen
 description: "Deprecate an artifact AND create a new draft successor - lineage-preserving re-evaluation of a past decision."
 ---
 
-`forgeplan reopen` is the "let's think about this again" transition. It deprecates the current artifact (moving it into the terminal `deprecated` state with the reason you supply) and simultaneously creates a new `draft` artifact of the same kind, linked back to the original as a lineage pointer. Use it when a decision has aged out and needs a fresh pass through Shape → Validate → ADI rather than a quick extension. Unlike `supersede`, you are not replacing with an already-active successor - you are starting the exploration over.
+`forgeplan reopen` creates a new draft of the same kind, links it to the source with `based_on`, then deprecates the old artifact with your reason. Use it for re-evaluation rather than a validity extension. It is a sequence of writes, not a promise of atomic rollback if a later write fails. Unlike `supersede`, it creates the replacement instead of referring to one that already exists.
+
+## Forgeplan 0.38.0
+
+The source can be active or stale; terminal statuses are refused. The new draft has a based_on relation to the old artifact, which becomes deprecated. This creates a successor, not a transition from terminal back to draft.
 
 ## When to use
 
@@ -55,7 +59,7 @@ forgeplan reopen ADR-007 --reason "storage strategy needs rethinking after Lance
 forgeplan reopen PRD-010 --reason "target users changed after 2026 Q1 persona research"
 ```
 
-The new draft inherits the kind (`PRD`) and is linked as the successor under re-evaluation. The old PRD stays readable for historical context.
+The draft inherits kind, depth, author, parent epic, and tags, resets validity, and uses the old title with ` (reopened)` appended. Its body contains a Lineage section, not the old content or a full template. The old PRD remains readable with a Reopened section.
 
 ### Example 3: Use reopen as part of a refresh cycle
 
@@ -76,9 +80,9 @@ Reopen is the most expensive lifecycle transition: it restarts the `Shape → Va
 | Error | Cause | Fix |
 |---|---|---|
 | `--reason is required` | Flag omitted | Pass `--reason "..."` explaining why re-evaluation is needed |
-| `Cannot reopen from draft` | Original never activated | Edit the existing draft directly instead |
-| `Cannot reopen from terminal state` | Already `deprecated` or `superseded` | Create a new artifact from scratch with `forgeplan new` |
-| `New draft created but still empty` | Expected - reopen only scaffolds | Open the new draft, fill MUST sections, then validate |
+| `Cannot reopen …: status 'draft'. Reopen requires active or stale.` | Source is draft | Edit that draft directly |
+| `Cannot reopen …: status '…' is terminal.` | Source is deprecated or superseded | Create a new artifact with `forgeplan new` |
+| New draft contains only lineage | Expected behavior, not an error | Write required content, then validate |
 
 ## See also
 

@@ -1,6 +1,6 @@
 ---
 title: "The full cycle on a single feature - from a one-liner in chat to a decision that opens itself for review a year later"
-description: "Six months ago, one line in chat: 'we need streaming for model responses.' Today, a connected set of five artifacts marked active, with measured trust and explicit review conditions. The series capstone: the path from that line to a decision, in seven steps on one real task."
+description: "Six months ago, one line in chat: 'we need streaming for model responses.' Today, a connected set of five artifacts marked active, with measured trust and explicit review conditions. The series ends with seven steps on one real task, from that line to a decision."
 slug: full-cycle-on-one-feature
 lang: en
 publishedAt: 2026-05-24
@@ -21,7 +21,7 @@ Six months ago, one message appeared in the Vault team chat: "we need streaming 
 
 Today the repository holds a connected set of five artifacts: PRD-018, Spec-012, RFC-007, ADR-012 (DDR-style), and EVID-001. All marked active. Each one has a measured trust score following the logic developed in the previous posts in this series. ADR-012 has an explicit review condition that has already triggered once.
 
-I want to walk through this path step by step and show how the methods from the seven previous posts in the series come together into one coherent process on one real task. This isn't theory - it's a breakdown of seven steps and one invisible boundary: the line between "active" and "gone stale."
+This real task brings together the methods from the seven previous posts: seven steps from a chat message to a decision, followed by the boundary between "active" and "gone stale."
 
 ## Step 1. Routing
 
@@ -31,9 +31,9 @@ The project manager picks up the chat message and frames the task: "Add a stream
 
 The command returns: "depth level: deep, need PRD, Spec, RFC, ADR. ADI (three-version analysis) is required."
 
-That recommendation takes half a second. Without it, the team would have spent an hour debating "do we need a separate ADR here, or is an RFC enough?" With it - the debate closes and the work moves.
+The recommendation takes half a second. Without it, the team would have spent an hour debating "do we need a separate ADR here, or is an RFC enough?" With it, the team can settle the question and start work.
 
-Routing is the first step, and it's a short one. Not "an attempt to guess the truth," but "an escape from the argument that doesn't move the work forward."
+Routing is a short first step. It offers "an escape from the argument that doesn't move the work forward" rather than "an attempt to guess the truth."
 
 ## Step 2. Shaping the PRD
 
@@ -63,7 +63,7 @@ The command returns one remark: "PRD-018: functional requirement FR-7 contains t
 
 Running `forgeplan validate PRD-018` again - all three checks are green.
 
-This is the guard against the situation "by the document everything is done, but the user says - it doesn't work." The check doesn't let through phrases that can be interpreted two different ways.
+The check rejects phrases that can be interpreted two different ways. It guards against the situation "by the document everything is done, but the user says - it doesn't work."
 
 ## Step 4. Three-version architecture analysis
 
@@ -94,9 +94,9 @@ Version 1 (SSE) wins on the result-to-complexity ratio. Version 3 (HTTP/2 push) 
 
 ## Step 6. Implementation and evidence collection
 
-The developer picks up ADR-012, RFC-007 (describing the implementation in phases), and Spec-012 (describing endpoint behavior). Over three days: code, tests, API documentation.
+The developer picks up ADR-012, RFC-007 (describing the implementation in phases), and Spec-012 (describing endpoint behavior). Over three days they write the code, tests, and API documentation.
 
-After going live - a load test in production. Measurements: p95 first-token - 220 ms. p99 - 380 ms. p99.9 - 750 ms. The "abandonment during response wait" metric drops from 12% to 3% over two weeks.
+After going live, the team runs a load test in production. Measurements: p95 first-token is 220 ms, p99 is 380 ms, and p99.9 is 750 ms. The "abandonment during response wait" metric drops from 12% to 3% over two weeks.
 
 `forgeplan new evidence "SSE streaming endpoint production benchmark"`. This creates `EVID-001` with three evaluation axes - what Forgeplan calls the **R_eff** (effective reliability) scoring: each piece of evidence is rated on Formality (F), Granularity (G), and Reliability (R), then penalized for congruence gap between where evidence was gathered and where the decision applies.
 
@@ -133,7 +133,7 @@ Two choices: either `forgeplan renew ADR-012` (extend with an updated review con
 
 The team picks the first path - update the SSE implementation with an optimized hot path. Measurement shows p95 first-token at 280 ms. ADR-012 is updated through `forgeplan renew` with a new review condition (threshold 700 ms) and a link to new evidence.
 
-The cycle closes. The decision made six months ago didn't turn into a monument. It opened itself for review, was updated, and is alive again.
+The six-month-old decision has been reviewed and updated instead of being left untouched as the system changed. The cycle is complete.
 
 ## What stayed off-screen
 
@@ -146,7 +146,7 @@ What I did **not** show in this capstone:
 - Cases where a decision has to be rolled back and made again (via `forgeplan reopen`).
 - Cases where the review condition was wrong, and the team learns to write triggers more precisely.
 
-These situations are real life that doesn't fit into one post. But the basic seven-step cycle on one feature is the foundation everything else rests on. If this cycle hasn't been run on an individual task - no amount of "team process organization" layered on top will work.
+Those situations don't fit into one post, but they depend on the same seven-step cycle. If this cycle hasn't been run on an individual task, adding "team process organization" on top won't help.
 
 ## What to hand to the AI agent, what to keep for yourself
 
@@ -160,7 +160,7 @@ Each of the seven steps has a portion of work for AI and a portion of work for a
 - Step 6 (evidence): AI templates the evidence file. The human sets the F/G/R scores and the congruence level.
 - Step 7 (activation): fully automated. The human confirms the final step.
 
-If AI completes all seven steps at 100% - you don't have a decision cycle, you have seven polished files that nobody will be able to make sense of in a year. If AI does 0% - you're burning the two days of work that could have taken an hour. The baseline rule: AI generates structure and drafts, the human adds substance and context.
+If AI completes all seven steps at 100%, it leaves seven polished files that nobody will be able to make sense of in a year. If AI does 0%, you're spending two days on work that could have taken an hour. AI should generate structure and drafts; the human adds substance and context.
 
 ## What to read next
 
@@ -177,7 +177,7 @@ Full list:
 7. [POS terminal for methodologies](/blog/forgeplan-pos-terminal) - what Forgeplan is
 8. This post (series capstone)
 
-The series is complete. The site has ten interactive walkthroughs that go deeper on each step: a 3D graph of artifacts for one project, a task-depth routing calculator, a DDR template, the delta format for specifications, the R_eff formula in action. The walkthroughs hub is [/guides](/guides). Navigation is "if you're looking for X - start with Y."
+The site has ten interactive walkthroughs with more detail on each step: a 3D graph of artifacts for one project, a task-depth routing calculator, a DDR template, the delta format for specifications, and the R_eff formula in action. Find them at [/guides](/guides). The navigation follows the pattern "if you're looking for X - start with Y."
 
 If you want to try Forgeplan on your own task - it's on GitHub under an open license. Local, no cloud, no subscription. One binary, installs in a minute. The `.forgeplan/` directory lives in your code repository; sync is through git, just like everything else.
 

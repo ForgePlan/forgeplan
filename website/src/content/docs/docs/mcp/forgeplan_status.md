@@ -18,36 +18,44 @@ If you need debts / risks / next actions, call `forgeplan_health` instead.
 
 ## Input parameters
 
-_No input parameters. Call this tool with an empty object `{}`._
+_No declared input fields. Call this tool with an empty object `{}`._
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
 
+Success is JSON inside MCP text content. Illustrative values:
+
 ```json
 {
-  "total": 184,
-  "by_kind": {
-    "prd": 42,
-    "rfc": 18,
-    "adr": 12,
-    "epic": 5,
-    "spec": 9,
-    "evidence": 57,
-    "problem": 34,
-    "solution": 7,
-    "note": 45,
-    "refresh": 3
-  },
-  "by_status": {
-    "draft": 12,
-    "active": 98,
-    "stale": 4,
-    "superseded": 23,
-    "deprecated": 47
-  }
+  "project": "billing-service",
+  "workspace": "/work/billing-service/.forgeplan",
+  "total": 3,
+  "by_kind": [
+    { "kind": "note", "count": 1 },
+    { "kind": "prd", "count": 2 }
+  ],
+  "by_status": [
+    { "status": "active", "count": 1 },
+    { "status": "draft", "count": 2 }
+  ],
+  "_next_action": "2 drafts pending. List them: `forgeplan_list status=draft`."
 }
 ```
 
+`by_kind` and `by_status` are arrays of `{kind, count}` and `{status, count}`,
+not maps. Each is sorted by its label; absent groups are omitted. An empty
+workspace returns `total: 0` and empty arrays. These are stored artifact statuses,
+not evidence freshness computed by health. The hint recommends routing for an
+empty workspace, listing drafts when drafts outnumber active artifacts, or health otherwise.
+
+There is no `workspace` input or `resolved_via` / `resolved_workspace` trace here.
+The `workspace` output identifies the selected directory. Resolution failures are
+tool errors; configuration and store-read failures are JSON-RPC errors.
+
 ## Example invocation
+
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
 
 ```json
 {}

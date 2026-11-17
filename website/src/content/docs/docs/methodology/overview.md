@@ -27,7 +27,7 @@ flowchart LR
   D --> E[Build] --> F[Prove] --> G[Activate]
 ```
 
-Consider a real scenario: your team decides to use JWT for authentication. Six months later, a security audit asks why you chose JWT over session-based auth. With Forgeplan, the ADR explains the reasoning, the Evidence shows the benchmark results, and the PRD traces back to the original requirements. Without Forgeplan, you are digging through Slack history and hoping someone remembers.
+For example, suppose your team chooses JWT for authentication. Six months later, a security audit asks why you chose JWT over session-based auth. The ADR should explain the reasoning, linked Evidence should record the actual checks, and the PRD should trace the requirements. Forgeplan preserves those records; it does not establish that the decision is correct merely because the records exist.
 
 ## What Forgeplan Is NOT
 
@@ -49,10 +49,10 @@ No implementation leakage in PRDs. Describe WHAT, not HOW. Write "User can persi
 PRD -> Epic, RFC -> PRD, ADR -> RFC. Always traceable upward. This means if you read any artifact, you can follow the links up to understand the full context of why it exists.
 
 ### 4. Supersede, don't delete
-Old artifacts get `status: superseded`. History is preserved. When your team asks "didn't we try this approach before?", the superseded artifact shows what was tried, why it was abandoned, and what replaced it.
+Use `forgeplan supersede OLD-ID --by NEW-ID` to retire an active artifact in favor of its replacement. Do not set terminal statuses through `update --status`. History records what changed and why.
 
 ### 5. R_eff = min(evidence)
-Trust is the weakest link: not the average, the minimum. One blind spot drags everything down. If you have three solid benchmarks and one completely untested assumption about production load, your decision reliability equals that untested assumption.
+Trust uses the weakest link, not an average. `forgeplan score` combines current evidence with eligible transitive dependencies. Terminal evidence is excluded, draft evidence still counts, and evidence type and expiry affect the result. An unrecorded assumption is not automatically discovered by the formula; record and investigate it. See [Evidence & R_eff](/docs/methodology/evidence/).
 
 ## The Full Cycle
 
@@ -60,23 +60,25 @@ Trust is the weakest link: not the average, the minimum. One blind spot drags ev
 1. Route:    forgeplan route "your task" -> determines depth
 2. Shape:    forgeplan new prd "Title" -> create artifact
 3. Validate: forgeplan validate PRD-XXX -> quality gates
-4. Reason:   forgeplan reason PRD-XXX -> ADI hypotheses (Standard+)
+4. Reason:   forgeplan reason PRD-XXX --save -> linked ADI Note (LLM required)
 5. Build:    write code, test every pub fn
 6. Prove:    forgeplan new evidence -> link -> score
 7. Activate: forgeplan activate PRD-XXX
 ```
 
-**Work isn't done until:** PRD filled + validated + evidence created + R_eff > 0 + activated.
+**Methodology completion for Standard+ implementation work** means filled and validated artifacts, recorded implementation checks, linked evidence, an understood score, and explicit activation. This is a workflow policy, not a claim that `activate` runs your tests or proves R_eff > 0. Tactical work can have no artifact. The published `/forge-cycle` additionally requires linked ADI Evidence and reviewer gates at Standard+.
 
 ## Common Mistakes
 
 - **Creating artifacts for everything.** A button color change does not need a PRD. Use `forgeplan route` to determine the right level of rigor; most tasks are Tactical and need zero documentation.
 - **Leaving PRD stubs.** Creating an empty PRD and moving on to code means you now have a stub that clutters your project health. Either fill it immediately or do not create it.
-- **Activating without evidence.** An active PRD with no code, no tests, and R_eff = 0 is a false promise. It tells anyone reading your project that this decision is validated when it is not.
-- **Skipping ADI on Deep decisions.** If the router says Deep and you jump straight to code, you are betting on your first idea without checking alternatives. ADI takes 10 minutes; a wrong architecture takes weeks to undo.
+- **Confusing an active plan with a delivered feature.** A PRD or RFC can be activated before implementation: its evidence supports the requirements or design. Activation does not prove that code is complete or tests passed. R_eff = 0 calls for checking the evidence; it does not mean every planning artifact must already have an implementation.
+- **Skipping structured reasoning.** The baseline recommends ADI at Standard and requires it at Deep/Critical. The published `/forge-cycle` and `guardian` are stricter: they require linked ADI Evidence with at least three hypotheses at Standard+.
 - **Treating the pipeline as a checklist.** The pipeline is a thinking tool. Going through the motions mechanically (create PRD, check; create RFC, check) without actually reasoning through each step defeats the purpose.
 
 ## 10 Artifact Types
+
+These are the ten main workflow types. The core also supports Memory and six brownfield types (UseCase, Glossary, Invariant, Scenario, Hypothesis, DomainModel); this table is not the full runtime enum.
 
 | Type | Question it answers | When to use |
 |------|-------------------|-------------|
@@ -88,10 +90,10 @@ Trust is the weakest link: not the average, the minimum. One blind spot drags ev
 | **Problem** | What's the signal? | Bug, risk, observation |
 | **Evidence** | Does it work? | Test results, benchmarks |
 | **Solution** | Which option? | 2-3 variant comparison |
-| **Note** | Quick decision | Micro-decision (90-day TTL) |
-| **Refresh** | Still valid? | Stale artifact re-evaluation |
+| **Note** | Quick decision | Lightweight prose record; not a key-value entry |
+| **Refresh** | Still valid? | Record reconciliation and cycle closure; required at Deep/Critical in the published workflow |
 
-In practice, most teams use 5-6 types regularly: PRD, RFC, ADR, Evidence, Problem, and Epic. The rest (Note, Solution, Spec, Refresh) are situational. Do not feel obligated to use all 10.
+Use the types the task needs. The core router suggests PRD → RFC for Standard and PRD → Spec → RFC → ADR for Deep/Critical. The published methodology adds SOL before design and REFRESH at cycle close for Deep/Critical; the CLI does not create these nodes automatically.
 
 ## When not to create an artifact
 
@@ -113,17 +115,25 @@ The rest of the methodology expands on ten rules. Each has its own doc; this lis
 3. **`[Actor] can [capability]`** - no implementation leakage in PRD FRs
 4. **Child references parent** - PRD→Epic, RFC→PRD, ADR→RFC
 5. **Supersede, don't delete** - [Lifecycle](/docs/methodology/lifecycle/)
-6. **Quality gates by depth** - Tactical = nothing, Standard = Verification Gate, Deep+ = Adversarial Review
-7. **Session start: `health` + memory recall** - fix orphans and blind spots first
-8. **Work isn't done until R_eff > 0 + activated** - [Evidence & R_eff](/docs/methodology/evidence/)
+6. **Quality gates by depth** — in the published cycle, `/gate-check` before build at Standard+, post-build at Deep+, and `guardian` before activation
+7. **Session start: `health` and configured memory** — recall is optional and separate from the artifact store
+8. **Evidence before completion** — examine R_eff and the weakest link; activation alone is not proof — [Evidence & R_eff](/docs/methodology/evidence/)
 9. **ADI is mandatory on Deep+** - [ADI Reasoning](/docs/methodology/adi/)
 10. **Stale = re-validate, don't ignore** - set `valid_until` on every ADR
 
 ## Tooling
 
-In AI coding agents this entire methodology is packaged as the `/forge` skill. Install it with `forgeplan setup-skill` (offline, built into the binary) or get the full `forgeplan-workflow` plugin via `/plugin install forgeplan-workflow@ForgePlan-marketplace`. The skill wraps `route -> new -> validate -> reason -> activate` into a single conversational command.
+The CLI and MCP server provide artifact operations; they do not run a team of coding agents for you. `forgeplan setup-skill` installs the bundled `/forge` instructions for Claude Code, not the full marketplace harness.
 
-Additional plugins provide code auditing (`/audit`), sprint planning (`/sprint`), FPF reasoning (`/fpf`), and more. Full plugin catalog: [Marketplace Overview](/docs/marketplace/overview/).
+The public marketplace supplies separate packages:
+
+- **`forgeplan-workflow`** provides `/forge-cycle` and the methodology skill. The main session interprets the workflow and calls tools; slash-command markers inside the template are not automatically executed.
+- **`fpl-skills` 1.75.1** provides `/smith`, `/gate-check`, `/wrap`, and other workflow skills. Smith reads project state and returns a Plan; the orchestrator dispatches and executes it.
+- **`agents-pro`** provides `smith`, authors, reviewers, and `guardian`. Guardian reads the full evidence chain and returns PASS / CONCERNS / BLOCKER; the orchestrator, not guardian, activates.
+
+These are distinct from the CLI's `session` state and the advisory per-artifact `phase` marker. Installing `/forge` does not install the other plugins or enforce every marketplace policy. See the [Marketplace Overview](/docs/marketplace/overview/).
+
+Cross-session memory is also separate. CLI `remember "text"` stores categorized memory records and `recall "query"` searches them; neither is a key-value API. Notes are artifact records. **`fpl-hsmem` 3.7.0** connects to Hindsight only after project opt-in through `.hindsight.json` with explicit `url`, `banks`, and `defaultBank`, using banks that already exist on the server. Recall retrieves relevant facts; mental models synthesize recurring questions. Hooks default off, and the client's BankGate is not server authorization.
 
 ## Next Steps
 

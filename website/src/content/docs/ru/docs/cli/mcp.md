@@ -9,10 +9,15 @@ description: "Parent command for MCP integration helpers - install Forgeplan int
 клиента (`mcp install`) или вручную запустить stdio-сервер (`mcp serve`, алиас для
 [`forgeplan serve`](/ru/docs/cli/serve/)).
 
-Forgeplan - MCP-first: большая часть повседневной поверхности (73 инструмента) доступна
-через сервер. Эта родительская команда существует для того, чтобы один-единственный
-`forgeplan mcp install --client claude` довёл вас от свежего `brew install forgeplan` до
-работающего агента без ручного редактирования JSON.
+Сервер предоставляет инструменты `forgeplan_*`, перечисленные в [справочнике MCP](/ru/docs/mcp/). `forgeplan mcp install --client claude` записывает конфигурацию клиента; не устанавливает сам клиент, не выдаёт разрешения и не гарантирует перезагрузку сервера уже открытой сессией.
+
+## Подкоманды
+
+```text
+  serve    Start MCP server (alias for `forgeplan serve`)
+  install  Install forgeplan MCP config into a client (Claude / Cursor / Windsurf)
+  help     Print this message or the help of the given subcommand(s)
+```
 
 ## Когда использовать
 

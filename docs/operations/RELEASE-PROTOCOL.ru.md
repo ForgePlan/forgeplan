@@ -82,10 +82,12 @@ sources. `debug` достаточно (быстрее build); release-optimised 
     > /tmp/draft-vX.Y.Z.md
 ```
 
-`--since v0.30.0` для v0.31.0 cut. Инструмент walks
+`--since v0.30.0` — пример для релиза v0.31.0. Инструмент читает
 `.forgeplan/{prds,problems,evidence,rfcs,adrs,specs,epics,solutions}/`
-между двух ref'ов, resolves slugs и `KIND-NNN` IDs, и emit'ит
-Keep-a-Changelog–shaped section.
+между двумя ref, разрешает slug и `KIND-NNN` ID и формирует раздел
+Keep a Changelog. По умолчанию в него попадают артефакты с
+`status == active` **или** `r_eff_score > 0`; `--draft` отключает фильтр.
+Это черновик по закоммиченным артефактам, а не аудит полноты или безопасности.
 
 ### 4. Полировать draft в `CHANGELOG.md`
 
@@ -110,7 +112,7 @@ Keep-a-Changelog–shaped section.
 
 ### 5. Bump'нуть версии по всему workspace
 
-Четыре ref-типа update'ить — `cargo check` орёт если миссанул:
+Обнови версию workspace и все четыре ссылки на зависимости внутри него:
 
 ```toml
 # Cargo.toml (workspace root)
@@ -146,6 +148,15 @@ priming context на session start (CLAUDE.md auto-loaded every turn).
 
 ### 7. Commit на release branch
 
+**Согласование с владельцем — до любой записи в remote на шагах 7–10:**
+получи явное разрешение на push именованной release-ветки и создание PR,
+публикацию тега (она запускает cargo-dist), push sync-ветки и создание
+sync-PR. Разрешение должно охватывать каждый эффект; несогласованные
+действия останови. Если их выполняет playbook, согласуй их **до запуска**:
+локальные `--yes`/`--allow-shell` подтверждают исполнение, но не дают
+разрешения на публикацию. Для merge по-прежнему нужны применимые review,
+CI и политика репозитория.
+
 ```bash
 git checkout -b release/vX.Y.Z
 git add Cargo.toml Cargo.lock CHANGELOG.md CLAUDE.md README.md \
@@ -169,17 +180,21 @@ gh pr create \
 RED LINE #2 всё ещё applies: не мерджить без explicit user approval
 после review PR.
 
-CI должен быть fully green — включая `smoke-e2e` job, license audit
-(`cargo deny`), MCP tool-count drift detector. Если любой fail'ит, fix
-на release branch и re-push; НЕ push'ать напрямую в `main`.
+PR CI должен быть зелёным — включая `smoke-e2e`, проверку корректности
+эмбеддингов и `Check MCP tool count drift` в `ci.yml`. `security.yml`
+(`cargo deny`) запускается при push в `dev`/`main`, не на PR; перед тегом
+проверь security-результат SHA релиза. Ошибки исправляй в release-ветке;
+не отправляй изменения прямо в `main`.
 
 ### 9. Tag после merge, дать cargo-dist published
 
 ```bash
 git fetch origin
 git checkout main && git pull --ff-only
-MERGE_SHA=$(git log -n 1 --format=%H)
-git tag vX.Y.Z $MERGE_SHA
+MERGE_SHA=$(git rev-parse HEAD)
+gh run list --branch main --commit "$MERGE_SHA"
+# Перед тегированием проверь применимые проверки именно этого SHA.
+git tag vX.Y.Z "$MERGE_SHA"
 git push origin vX.Y.Z
 ```
 
@@ -188,17 +203,23 @@ git push origin vX.Y.Z
 если нет — check что tag реально landed на remote
 (`git ls-remote --tags origin | grep vX.Y.Z`).
 
-**Проверить, что опубликованный бинарь несёт заявленные фичи.** Успешная
-публикация не доказывает правильный состав — PROB-088 просидел незамеченным
-месяцами именно потому, что бинари собирались и публиковались нормально,
-просто без `semantic-search`. Скачай один опубликованный артефакт и проверь
-маркер линковки, а не доверяй факту сборки:
+**Проверь, что опубликованный бинарь содержит заявленные возможности.**
+Успешная публикация не доказывает правильный состав — PROB-088 оставался
+незамеченным месяцами: бинарные файлы собирались и публиковались, но без
+`semantic-search`. Скачай артефакт и запусти его во временном
+инициализированном workspace с новым артефактом:
 
 ```bash
-# Спроси сам бинарь. Отказ означает, что фичи нет; любой другой исход
-# (прогресс-бар, реальный прогон) означает, что она есть.
-/path/to/downloaded/forgeplan embed 2>&1 | head -3
+/path/to/downloaded/forgeplan embed
 ```
+
+Сохрани полный вывод. Сообщение `Embedding not available — this build was
+compiled without the semantic-search feature` доказывает отсутствие фичи.
+Ошибки workspace, кэша или загрузки модели **не** доказывают её наличие
+или корректность. Для функциональной проверки нужен завершённый прогон:
+хотя бы один артефакт встроен, `0 failed`, затем артефакт находится поиском.
+При первом использовании возможна загрузка модели ~2.1 GB. Пустой workspace
+или уже актуальные векторы не проверяют вычисления модели.
 
 **Прежняя проверка по линковке больше не работает и не должна возвращаться.**
 До RFC-013 маркером было наличие `libc++` в выводе `otool -L` — он появлялся
@@ -232,8 +253,9 @@ manifest.** См. PR #262 (sync-after-v0.30.0) и PR #285
 (sync-after-v0.31.0) как canonical examples — каждый релиз ship'ается
 с одним.
 
-Approve и merge sync-PR сам после CI passes (low-risk mechanical sync;
-user approval — для release PR, не этого).
+Доведи sync-PR до merge после CI и необходимых согласований, по политике
+репозитория. Обязательная синхронизация не отменяет разрешение владельца
+на push/PR, review и условия merge; низкий риск сам по себе не разрешение.
 
 ---
 
@@ -268,10 +290,10 @@ Symptom: `cargo publish` (если используется) errors на depende
 version mismatch. Или end-users устанавливающие через
 `cargo install --git` получают inconsistent linkage warnings.
 
-Fix: шаг 5 lists ровно четыре `version = "X.Y.Z"` локации. После
-правки `cargo check --workspace` fail'ит loud если миссанул (он
-resolve'ит path dep но warn'ит что explicit `version =` field уже не
-satisfied). Trat'ить warning как hard error — re-grep'нуть
+Fix: шаг 5 перечисляет четыре ссылки на зависимости внутри workspace
+**плюс** версию workspace package. После правки запусти
+`cargo check --workspace` и проверь версии во всех manifest: совместимый
+диапазон Cargo не гарантирует точного совпадения версий. Найти старую версию:
 `grep -rn 'version = "<PREV>"' Cargo.toml crates/*/Cargo.toml`.
 
 ### Hand-write CHANGELOG вместо `release-notes`
@@ -290,12 +312,10 @@ output. Polish для narrative, НЕ bypass для "скорости" — ин�
 Symptom: tag landed, бинари не publish'атся, users репортят 404 на
 brew bottle.
 
-Fix: никогда не tag'ать до того как CI на `main` fully green. Шаг 9
-читает `git checkout main && git pull --ff-only` first; единственный
-способ чтобы это succeed'ило после мерджа release PR — это merge
-commit на `main`'s tip, и единственный способ что *этот* tip safe to
-tag — это что его CI passed. Check `gh run list --branch main --limit
-3` ПЕРЕД `git tag`.
+Fix: не создавай тег, пока применимые проверки точного SHA в `main` не
+пройдут. `git pull --ff-only` обновляет checkout, но не ждёт CI и не
+доказывает его запуск. В шаге 9 SHA фиксируется и его прогоны проверяются
+до создания тега.
 
 ### Dependabot alerts на release time (RED LINE #10)
 
@@ -320,8 +340,8 @@ justification** (explicit risk-take statement). Файл triage doc под
 `.gitkeep` плейсхолдеры из PRD-077 FR-001, `secrets.env` template из
 FR-002).
 
-`forgeplan init --force` — migration entry point. Он **strictly additive**
-(PROB-068 контракт):
+`forgeplan init --force` обновляет структуру workspace. Гарантия
+добавочного обновления относится к телам артефактов, **не** к активному config:
 
 - Existing artifact `.md` bodies НИКОГДА не перезаписываются.
 - `config.yaml` регенерируется (предыдущая версия сдвигается в сторону
@@ -343,8 +363,9 @@ FR-002).
     git pull
     forgeplan init --force
 
-Это idempotent и additive — твои artifact bodies, custom config.yaml
-edits, и existing secrets.env ключи сохраняются.
+Тела артефактов и существующие ключи secrets.env сохраняются. config.yaml
+заменяется настройками по умолчанию: сравни его резервную копию с временной
+меткой и перенеси свои настройки до дальнейшей работы.
 ```
 
 ---

@@ -7,10 +7,10 @@ description: "Claim an artifact for exclusive work - TTL-based advisory lock for
 
 This is an **advisory lock**, not a hard lock - no other Forgeplan command refuses to run because something is claimed. The convention is that agents check [`forgeplan claims`](/docs/cli/claims/) before starting work and respect what they see. The dispatcher ([`forgeplan dispatch`](/docs/cli/dispatch/)) does honour claims and excludes already-claimed artifacts from its plans.
 
-Two safety properties:
+Two coordination behaviors:
 
-- **No double-claim** - if a different agent already holds a live claim for this artifact, the call fails with a clear error message.
-- **Renewal is idempotent** - the same agent calling `claim` again refreshes the expiry without changing the holder. Use this on long-running work to keep the claim alive.
+- **Live-holder check** — a different holder observed by the read is rejected. This is a check-then-write advisory protocol, not an atomic cross-process compare-and-set; simultaneous CLI claims are not a guaranteed mutex.
+- **Renewal** — the same identity can replace its claim with a refreshed expiry. Use a distinct `--agent` per worker and respect live claims.
 
 Mirrors [`forgeplan_claim`](/docs/mcp/forgeplan_claim/) on the MCP side.
 
@@ -57,7 +57,7 @@ forgeplan claim [OPTIONS] <ID>
 forgeplan claim PRD-057 --note "implementing FR-003"
 ```
 
-Reserves `PRD-057` for 30 minutes under the default `cli/<version>` identity. The note appears in [`forgeplan claims`](/docs/cli/claims/) so the orchestrator can see what each agent is doing.
+Reserves `PRD-057` for 30 minutes under `cli-<crate-version>` (a hyphen, not a slash). The help block above still describes the older slash form; the implementation rejects `/` in an explicit CLI agent identity. Choose a distinct `--agent` for each worker: workers sharing the default identity can renew one another's claim.
 
 ### Example 2: Orchestrator claims on behalf of a worker
 
@@ -73,7 +73,16 @@ Useful when the orchestrator is a shell script driving sub-agents that do not sp
 forgeplan claim PRD-057 --ttl-minutes 30
 ```
 
-The same agent calling `claim` again on its own artifact extends the expiry without changing anything else. Use this on long-running refactors before the TTL runs out.
+The same agent refreshes both `claimed_at` and `expires_at`; the supplied note replaces the previous note (omitting `--note` clears it). Use the same explicit `--agent` when renewing a worker's claim.
+
+With `--json`, success contains `id`, `agent_id`, `claimed_at`, `expires_at`,
+`note` (possibly null), `_next_action`, and `hints`. A live-holder conflict
+exits `1` and returns `error: "already_held"`, `id`, `agent_id`, `expires_at`,
+`_next_action`, and `hints`. Other validation/I/O errors are ordinary CLI
+errors, not that JSON envelope. TTL must be 1–1440 minutes. An explicit agent
+identity is trimmed and limited to 64 bytes; path/control/format characters
+are rejected. A syntactically valid forward-reference ID can be claimed even
+before the artifact exists.
 
 ## How it fits the workflow
 

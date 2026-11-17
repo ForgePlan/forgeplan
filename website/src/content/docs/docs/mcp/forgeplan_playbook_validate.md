@@ -7,35 +7,52 @@ Validate a playbook YAML file (parse + structural checks: cycles, unknown step r
 
 **Category**: Other
 
+## Example invocation
+
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
+
+```json
+{
+  "file": ".forgeplan/playbooks/brownfield-code.yaml"
+}
+```
+
 ## What it does
 
 1. Canonicalizes `file` and checks it is a regular file inside an allowed root.
-2. Reads it under the 1 MiB size cap and the 256-character YAML nesting cap.
-3. Runs the SPEC-003 loader. The loader parses the YAML with `deny_unknown_fields`, then checks the structural invariants below, in this order. It stops at the first failure.
+2. Reads it under the 1 MiB cap and a heuristic cap of 256 `{` / `[` opening characters in total, not recursive YAML depth.
+3. Runs the SPEC-003 loader: parse (including unknown-field checks on strict types), schema-version check, non-empty steps, unknown references, cycles, then mapping/output consistency. It stops at the first error; unknown step fields are not rejected by the `Step` type.
 4. Returns `passed: true` with counts, or `passed: false` with a single structured error object.
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
-| `file` | `string` | yes | Path to the playbook YAML to validate. A bare playbook name is **not** looked up through discovery here - pass a path. The path must canonicalize inside the workspace root or the `~/.claude/plugins/` tree. |
+| `file` | `string` | yes | Path to the playbook YAML file to validate. |
 
-_Schema source: `crates/forgeplan-mcp/src/types.rs::PlaybookValidateParams`_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Checks performed
 
 | Check | Severity | Result |
 |---|---|---|
-| YAML parses, all required fields present, no unknown top-level field, known `delegate_to.type` | ERROR | `kind: yaml_parse_error` with `line` and `column` |
+| YAML parses, required fields present, strict types have no unknown fields, known `delegate_to.type` | ERROR | `kind: yaml_parse_error` with `line` and `column` |
+| `schema_version` is inside the supported range | ERROR | `kind: unsupported_schema_version` with `version` and `supported` |
 | `steps:` is not empty | ERROR | `kind: empty_steps` |
-| Every `requires:` entry names a step that exists in this playbook | ERROR | `kind: unknown_step_ref` with `count` |
+| Every `requires:` entry names a step that exists | ERROR | `kind: unknown_step_ref` with `count` |
 | The `requires:` graph is acyclic | ERROR | `kind: cycle` with `path_len` |
 | A step with `mapping:` also sets `produces_at:` | ERROR | `kind: mapping_without_produces_at` with `step_id` |
-| `schema_version` is inside the supported range | ERROR | `kind: unsupported_schema_version` with `version` and `supported` |
-| A step with `produces_at:` but no `mapping:` | WARN | Loads fine; the loader logs a warning that the output will be captured but not ingested |
-| A `delegate_to: command` step (shell exec) | WARN | Loads fine; execution is separately gated - see [`forgeplan_playbook_run`](/docs/mcp/forgeplan_playbook_run/) |
+| `produces_at:` without `mapping:` | WARN | Loads; warning is logged, not returned in a `warnings` field |
+| Command delegate or undeclared plugin/skill prerequisite | WARN | Loads; execution and consent remain separate |
 
 ## Returns
+
+The table describes JSON returned in MCP text content after a successful file read.
+A loader failure with `passed: false` is still an MCP success, not `isError: true`.
+Path and bounded-read failures instead return a plain-text tool error with an
+`_next_action:` line and no `passed` field. No `workspace` parameter or trace exists.
 
 | Field | Type | Description |
 |---|---|---|
@@ -55,7 +72,7 @@ Validate a path:
 { "file": ".forgeplan/playbooks/brownfield-code.yaml" }
 ```
 
-A passing run (captured against the shipped `brownfield-code` playbook):
+Illustrative passing result for a four-step playbook:
 
 ```json
 {
@@ -80,7 +97,7 @@ A failing run. The `errors` entry carries the error class and the metadata that 
 }
 ```
 
-The same broken file through the CLI, which is not redacted and therefore names the offending step:
+Illustrative CLI comparison. Unlike MCP's redacted error metadata, CLI names the offending reference:
 
 ```text
 $ forgeplan playbook validate .forgeplan/playbooks/badref.yaml --json
@@ -113,7 +130,7 @@ Error content is redacted by design: the raw parser message can quote lines of t
 
 - **This is a static check.** Nothing is executed, no dispatcher is constructed, and no journal entry is written. Read-only, idempotent, non-destructive.
 - **One error at a time.** The loader returns on the first failure, so `errors` has length 1 whenever `passed` is `false`. Fix, re-run, repeat.
-- **A `passed: true` does not mean the playbook will run.** It means the YAML is structurally sound. Missing plugins, missing skills, and missing credentials only surface during [`forgeplan_playbook_run`](/docs/mcp/forgeplan_playbook_run/).
+- **`passed: true` does not mean the playbook will run.** It checks structure, not installed prerequisites, credentials or output files. Runtime dispatch can still fail; skill steps in 0.38.0 only print a marker and do not detect missing skills.
 - A path outside the allowed roots fails with `cannot read playbook (path not in workspace)`, with `_next_action` pointing at [`forgeplan_playbook_list`](/docs/mcp/forgeplan_playbook_list/).
 
 ## Related commands

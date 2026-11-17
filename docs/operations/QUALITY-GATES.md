@@ -16,15 +16,24 @@ locally**, **how to fix common failures**.
 
 | Gate | Trigger | Blocks |
 |---|---|---|
-| `cargo fmt --check` | pre-commit hook + CI | commit, PR merge |
-| `cargo check` / `cargo clippy` | pre-commit hook + CI | commit, PR merge |
-| `cargo test` | CI (PR, push dev) | PR merge |
-| `forgeplan health` | CI + pre-commit hook | PR merge |
-| `forgeplan validate` | CI | PR merge |
-| MCP tool count drift detector | CI (PR, push dev) | PR merge |
+| `cargo fmt --check` | Claude Code commit hook + CI | agent commit, PR merge when required |
+| `cargo check` / `cargo clippy` | CI (default + `semantic-search`) | PR merge when required |
+| Tests (`nextest` + doc-tests) | CI (PR, push dev) | PR merge when required |
+| Embedding correctness oracle | CI with cached model | PR merge when required |
+| `forgeplan health` | path-filtered CI; local hook warns | PR merge when required |
+| `forgeplan validate --ci` | path-filtered CI | PR merge when required |
+| MCP tool count drift detector | `ci.yml` (every PR, push dev) | PR merge when required |
+| Website build, command drift, CLI surface smoke | `ci.yml` | PR merge when required |
+| `cargo-deny check` | push `dev`/`main`, weekly schedule, manual dispatch | post-merge security signal; not a PR job |
 
-Hooks in `.claude/hooks/` are a local safety net before CI. CI gates in
-`.github/workflows/forgeplan-health.yml` are the final barrier before merge.
+Hooks in `.claude/hooks/` intercept configured Claude Code tool calls, not
+arbitrary shell or Git operations. CI is defined in `ci.yml`,
+`forgeplan-health.yml`, and `security.yml`; GitHub rulesets determine
+which checks actually block merging.
+
+`security.yml` runs `cargo deny check advisories licenses bans sources`
+after pushes, not on `pull_request`. Inspect the security result for the
+release SHA before tagging; a green PR alone does not include that scan.
 
 ---
 
@@ -34,8 +43,8 @@ Hooks in `.claude/hooks/` are a local safety net before CI. CI gates in
 (no uncommitted diff after auto-format).
 
 **When it runs:**
-- `pre-commit-fmt.sh` — pre-commit hook. Runs `cargo fmt --check`; if dirty
-  diff is found, aborts `git commit` with an explanation.
+- `pre-commit-fmt.sh` — Claude Code `PreToolUse` hook for Bash commands
+  containing `git commit`; exits 2 when `cargo fmt --check` fails.
 - CI — every PR to `dev` or `main`.
 
 **Hook file:** `.claude/hooks/pre-commit-fmt.sh`
@@ -52,10 +61,9 @@ cargo fmt                    # fix all formatting
 cargo fmt -- --check         # must return exit 0, empty stdout
 ```
 
-Formatting is MANDATORY before every commit (CLAUDE.md §Rust coding rules pt.3).
-The `.claude/hooks/pre-commit-fmt.sh` hook blocks commits automatically,
-but do not rely on the hook alone — run `cargo fmt` manually at the end of
-every coding session.
+Formatting is mandatory before every commit (CLAUDE.md §Rust coding rules).
+The configured Claude Code hook blocks intercepted commits, but does not
+install a native Git pre-commit hook or cover commits from other clients.
 
 ---
 
@@ -68,16 +76,17 @@ every coding session.
 - Locally: after each code change (recommended practice).
 - CI: every PR to `dev` or `main`.
 
-**Full CI command:**
+**CI commands:** `ci.yml` sets `RUSTFLAGS="-Dwarnings"` and runs:
 ```bash
-cargo clippy --workspace --all-targets --features test-helpers -- -D warnings
+cargo check --workspace --all-targets
+cargo clippy --workspace --all-targets
+cargo check --workspace --all-targets --features semantic-search
+cargo clippy --workspace --all-targets --features semantic-search
 ```
 
-**How to run locally:**
-```bash
-cargo check --workspace                                    # fast compilation check
-cargo clippy --workspace --all-targets -- -D warnings      # full lint
-```
+**How to run locally:** use the same commands with `RUSTFLAGS="-Dwarnings"`.
+`test-helpers` is not the CI feature configuration; compiling the semantic
+configuration is separate from running the embedding correctness oracle.
 
 **How to fix:**
 
@@ -100,7 +109,8 @@ Rust 1.95 tightened several lints (CLAUDE.md §Rust coding rules pt.3).
 
 ## 3. Testing: `cargo test`
 
-**Purpose:** runs the full workspace test suite. Any test failure causes exit 1.
+**Purpose:** runs workspace tests. CI uses `nextest` for test binaries and
+`cargo test --doc` separately; semantic inference has its own model-backed job.
 
 **When it runs:**
 - CI: every PR + push to `dev`.
@@ -108,10 +118,15 @@ Rust 1.95 tightened several lints (CLAUDE.md §Rust coding rules pt.3).
 
 **How to run locally:**
 ```bash
-cargo test --workspace                                     # standard run
-cargo test --workspace --features test-helpers             # with test-helper escape-hatches
-cargo test --workspace --features test-helpers -- --nocapture  # verbose output
+cargo nextest run --workspace --all-targets                 # CI test binaries
+cargo test --workspace --doc                               # CI doc-tests
+cargo test --workspace                                    # alternative local runner
 ```
+
+The `Embedding correctness oracle` job separately runs the feature-gated
+reference tests with a cached ~2.1 GB model and a guard that fails instead
+of silently skipping missing weights. Default workspace tests do not
+exercise that configuration.
 
 **Smoke test from CLAUDE.md:**
 ```bash
@@ -130,12 +145,13 @@ test to make it pass without understanding why it failed.
 
 ## 4. Health gate: `forgeplan health`
 
-**Purpose:** checks the workspace artifact health — no orphan artifacts
-(in DB but not in files), blind spots (active without evidence), stale artifacts.
-In CI mode (`--ci --fail-on`) returns exit 1 when thresholds are exceeded.
+**Purpose:** reports artifact-graph health. Orphans have no incoming or
+outgoing links; blind spots are active decisions without supporting evidence.
+These are not file/index mismatch counts. `--ci --fail-on` returns exit 1
+when the configured counts exceed their thresholds.
 
 **When it runs:**
-- `.claude/hooks/pre-commit-health.sh` — pre-commit hook (locally).
+- `.claude/hooks/pre-commit-health.sh` — advisory Claude Code hook, not a blocking Git hook.
 - `.github/workflows/forgeplan-health.yml` step `Health check` — CI.
 
 **CI command:**
@@ -143,9 +159,9 @@ In CI mode (`--ci --fail-on`) returns exit 1 when thresholds are exceeded.
 forgeplan health --ci --fail-on "orphans=10,blind_spots=5"
 ```
 
-Thresholds: `orphans=10` (tolerates up to 10 orphans — lance rebuild may lag),
-`blind_spots=5` (more than 5 active without evidence — methodological debt,
-blocks merge).
+Thresholds: `orphans=10` tolerates up to 10 unlinked artifacts;
+`blind_spots=5` tolerates up to 5 active decisions without evidence.
+Exceeding either fails this CI step.
 
 **How to run locally:**
 ```bash
@@ -153,26 +169,41 @@ forgeplan health                                              # state overview
 forgeplan health --ci --fail-on "orphans=10,blind_spots=5"   # full CI check
 ```
 
+**0.38.0 JSON gate limitation (core #545):** `health --json --ci`
+returns from the JSON branch before evaluating the `--ci --fail-on`
+thresholds. Keep the text-mode commands above for that gate; JSON output
+alone is not its exit-code equivalent. `health --strict --json` has a
+different, stricter contract (including failure on any orphan or blind
+spot), not a replacement that preserves the configured thresholds.
+
 **How to fix:**
 
-*Orphan artifacts* (in files, not in DB):
+*Orphan artifacts* (no links): inspect `forgeplan get <ID>` and add a
+meaningful relation to the relevant decision or evidence. Reindexing does
+not create missing relationships. For a stale file-derived index, use:
 ```bash
-forgeplan scan-import   # reindex markdown → LanceDB
-forgeplan health        # verify orphans=0
+forgeplan reindex       # sync existing .forgeplan markdown → LanceDB
+forgeplan health
 ```
+`scan-import` discovers new artifacts in arbitrary markdown; it is not an
+index rebuild command.
 
-*Blind spots* (active without evidence):
+*Blind spots* (active decisions without evidence): collect real results,
+create `forgeplan new evidence "Verification results"`, and fill the pack
+with the actual methods, results, `verdict`, `congruence_level`, and
+`evidence_type` through `forgeplan update`. Link the returned ID:
 ```bash
-forgeplan health        # see blind spots list
-# For each blind spot:
-forgeplan new evidence --for <ID> "Smoke evidence"  # or full EVID
+forgeplan link <EVID-ID> <DECISION-ID> --relation informs
+forgeplan validate <EVID-ID> --ci
 forgeplan activate <EVID-ID>
+forgeplan score <DECISION-ID>
 ```
+Creating or activating an empty template is not evidence.
 
 *Stale artifacts* (TTL expired):
 ```bash
 forgeplan stale                    # list stale artifacts
-forgeplan renew <ID> --reason "..." --until 2026-08-01
+forgeplan renew <ID> --reason "Reverified against current sources" --until <YYYY-MM-DD>
 # or if completely obsolete:
 forgeplan deprecate <ID> --reason "obsolete"
 ```
@@ -185,7 +216,7 @@ forgeplan deprecate <ID> --reason "obsolete"
 
 **Purpose:**
 - `forgeplan validate <ID>` — checks an artifact against its schema (MUST sections,
-  frontmatter, format). Returns exit 1 on errors.
+  frontmatter, format). Use `--ci` to return exit 1 on MUST failures.
 - `forgeplan score <ID>` — computes R_eff (weakest-link). Does not block CI by
   itself, but feeds into the health check.
 - `forgeplan blocked` — shows artifacts blocked by unclosed dependencies.
@@ -244,15 +275,16 @@ until documentation catches up. Numbers intentionally kept abstract here so
 this section does not itself become a drift target — see the live count
 emitted by `scripts/check-mcp-tool-count.sh`.
 
-**Source of truth:** count of async functions matching `async fn forgeplan_*(`
-in `crates/forgeplan-mcp/src/server.rs`.
+**Source of truth:** registered `#[tool(...)]` attributes in
+`crates/forgeplan-mcp/src/server.rs`. Counting `async fn forgeplan_*`
+also counts undecorated test functions and can overstate the tool total.
 
 **Script file:** `scripts/check-mcp-tool-count.sh`
 
 **When it runs:**
-- CI step `MCP tool count drift check` in `.github/workflows/forgeplan-health.yml`.
-  Runs **last** in the health-gate sequence: fmt → build → reindex →
-  health → validate → drift-check.
+- Independent `Check MCP tool count drift` job in `.github/workflows/ci.yml`,
+  on every PR to `dev`/`main` and push to `dev`, with no path filter.
+  It first self-tests its extraction regex, then scans the documentation.
 - Not run as a pre-commit hook (too slow for every commit); recommended as a
   pre-push check or manual run before opening a PR.
 
@@ -286,7 +318,7 @@ Excluded from checks:
 ```
 
 **Typical output on success** (concrete numbers vary per release —
-`<ACTUAL>` is the live count from `grep -c 'async fn forgeplan_' …/server.rs`):
+`<ACTUAL>` is the registered-tool count emitted by the script):
 ```
 Actual MCP tool count (src): <ACTUAL>
 
@@ -310,7 +342,7 @@ comment explaining why the historical number is preserved (e.g. CHANGELOG).
 
 1. Find the actual count:
    ```bash
-   grep -cE 'async fn forgeplan_' crates/forgeplan-mcp/src/server.rs
+   grep -cE '^[[:space:]]*#\[tool\(' crates/forgeplan-mcp/src/server.rs
    ```
 
 2. Update all locations listed in the drift output. Use the actual count
@@ -341,21 +373,38 @@ before opening a PR. Otherwise CI will fail at the drift-check step.
 
 ## 7. Pre-commit hooks overview (`.claude/hooks/`)
 
-Hooks are a local safety net that run before `git commit`. They do not replace
-CI but catch issues earlier.
+Hooks intercept matching Claude Code tool calls when wired in
+`.claude/settings.json`. They do not run for every native Git operation
+and do not replace CI or remote rulesets.
 
 | Hook file | Blocks | When |
 |---|---|---|
 | `forge-safety-hook.sh` | Destructive commands (`rm -rf /`, `cargo publish`, `DROP TABLE`, `git push --force`) | pre-tool-use in Claude Code |
-| `pre-commit-fmt.sh` | Commit if `cargo fmt --check` shows drift | git pre-commit |
-| `commit-test-check.sh` | Commit if diff contains a new `pub fn` without a test | git pre-commit |
-| `pr-todo-check.sh` | Push if PR has unclosed P0 tasks | git pre-push |
-| `pre-commit-health.sh` | Commit if `forgeplan health` reports critical issues | git pre-commit |
+| `pre-commit-fmt.sh` | Commit if `cargo fmt --check` shows drift | Claude Code Bash `git commit` |
+| `commit-test-check.sh` | Commit when its new-function/test heuristic fails | Claude Code Bash `git commit` |
+| `pr-todo-check.sh` | PR creation with unchecked P0 TODO items | Claude Code Bash `gh pr create` / `gh pr submit` |
+| `pre-commit-health.sh` | Advisory warning about blind spots (exit 1, not blocking exit 2) | Claude Code Bash `git commit` |
+| `pre-pr-evidence-check.sh` | Recognized referenced artifacts without detected linked evidence | Claude Code Bash recognized `gh pr create` |
 
 **Note:** hooks are in `.claude/hooks/` (for Claude Code integration), not in
 the standard `.git/hooks/`. They are activated by the Claude Code environment
 as `PreToolUse` hooks. Standard git pre-commit hooks operate independently
 (if present).
+
+`pre-pr-evidence-check.sh` is registered in `.claude/settings.json`.
+It recognizes `gh pr create` only as the first command after whitespace
+and simple leading environment assignments. It extracts numeric artifact
+IDs from the branch and last 20 commits, skips EVID/NOTE IDs, and checks
+evidence-link presence (graph lookup, then a heuristic relations-section
+fallback), not evidence quality or completeness. No recognized refs means
+pass-through; a missing Forgeplan binary also warns and skips the check.
+
+Its bypasses are `FORGEPLAN_SKIP_EVIDENCE=1` and branches matching
+`docs/*`, `chore/sync-*`, `chore/dependabot-*`, `release/v*`, or `hotfix/*`.
+It also recognizes a hook-only `--no-evidence-check` token in the unquoted
+argument prefix; the hook does not remove it or make it a supported `gh`
+option. Detected missing evidence blocks with exit 2; an allowed call
+does not certify that every relevant artifact or result was checked.
 
 **Detailed guide:** [`docs/operations/AGENT-HOOKS.md`](AGENT-HOOKS.md)
 
@@ -380,13 +429,15 @@ Before PR (additionally):
   8. ./scripts/check-mcp-tool-count.sh     # no drift
 ```
 
-Full smoke test from CLAUDE.md:
+For CLI end-to-end smoke, use the repository's disposable-workspace
+scripts rather than creating a half-filled PRD in the working project:
 ```bash
-cargo fmt && cargo fmt -- --check && cargo check && cargo test
-forgeplan init -y && forgeplan new prd "Smoke" && forgeplan validate PRD-XXX
-forgeplan score PRD-XXX && forgeplan blocked && forgeplan order
-forgeplan fpf ingest && forgeplan fpf search "trust"
+bash scripts/smoke-test.sh --verbose
+bash scripts/check-doc-command-drift.sh --bin target/debug/forgeplan
+bash scripts/cli-surface-exercise.sh --bin target/debug/forgeplan
 ```
+Build the binary first. Model- or LLM-dependent surfaces may be reported
+as `EXTERNAL` by the surface script; that is not a passed functional check.
 
 ---
 
@@ -398,19 +449,17 @@ forgeplan fpf ingest && forgeplan fpf search "trust"
 
 **Steps (in execution order):**
 
-1. `actions/checkout@v4` — code checkout
+1. Checkout (pinned action SHA)
 2. Install system dependencies (`protobuf-compiler`)
-3. `dtolnay/rust-toolchain@stable` — Rust toolchain
-4. `Swatinem/rust-cache@v2` — Cargo cache
-5. `cargo build -p forgeplan` — CLI build
-6. **Rebuild index** — `forgeplan init -y` + copy markdown + `scan-import`
-   (reconstructs LanceDB from tracked markdown files)
-7. **Health check** — `forgeplan health --ci --fail-on "orphans=10,blind_spots=5"`
-8. **Validate artifacts** — `forgeplan validate --ci`
-9. **MCP tool count drift check** — `./scripts/check-mcp-tool-count.sh`
+3. Install stable Rust and configure Cargo cache
+4. `cargo build -p forgeplan`
+5. **Rebuild index** — `./target/debug/forgeplan reindex`
+6. **Health check** — `./target/debug/forgeplan health --ci --fail-on "orphans=10,blind_spots=5"`
+7. **Validate artifacts** — `./target/debug/forgeplan validate --ci`
 
-Each step is an independent exit-code barrier. If step 7 fails, steps 8 and 9
-do not run (GitHub Actions fail-fast behavior).
+Each step is an exit-code barrier; later ordinary steps are skipped after
+a failure. Formatting, tests, and MCP count drift are separate `ci.yml`
+jobs, not later steps in this health job.
 
 ---
 
@@ -420,7 +469,7 @@ do not run (GitHub Actions fail-fast behavior).
 
 ```bash
 # 1. Get the current count
-grep -cE 'async fn forgeplan_' crates/forgeplan-mcp/src/server.rs
+grep -cE '^[[:space:]]*#\[tool\(' crates/forgeplan-mcp/src/server.rs
 
 # 2. Find all locations to update
 ./scripts/check-mcp-tool-count.sh --warn
@@ -436,19 +485,14 @@ cd website && node scripts/copy-changelog.mjs
 
 ### "forgeplan health fails in CI but passes locally"
 
-Cause: local LanceDB may contain stale data from previous init-s. CI always
-does a clean init + scan-import. To reproduce locally:
+One possible cause is a stale local index. CI rebuilds the tracked
+markdown with `reindex`, not `init` plus `scan-import`. Compare the exact
+PR checkout in a disposable clone, then run:
 
 ```bash
-forgeplan export --output backup-$(date +%Y%m%d).json
-cp -r .forgeplan .forgeplan-backup-$(date +%Y%m%d)
-rm -rf .forgeplan && forgeplan init -y
-# Copy tracked markdown back:
-cp -r .forgeplan-backup-*/prds/ .forgeplan/
-cp -r .forgeplan-backup-*/rfcs/ .forgeplan/
-# ... etc.
-forgeplan scan-import
-forgeplan health --ci --fail-on "orphans=10,blind_spots=5"
+./target/debug/forgeplan reindex
+./target/debug/forgeplan health --ci --fail-on "orphans=10,blind_spots=5"
+./target/debug/forgeplan validate --ci
 ```
 
 ### "`cargo fmt --check` fails in CI but passes locally"

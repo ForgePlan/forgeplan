@@ -1,11 +1,11 @@
 ---
 title: forgeplan release
-description: "Release an active claim - drop the lock so other sub-agents can pick up the artifact. Idempotent; missing claim is a no-op."
+description: "Release an advisory artifact claim. Missing claims are successful no-ops; a different live holder requires an explicit force override. This is not an artifact write lock."
 ---
 
 `forgeplan release` drops a claim - the artifact returns to the candidate pool, and the next [`forgeplan dispatch`](/docs/cli/dispatch/) can hand it to another agent. It deletes the claim file at `.forgeplan/claims/<id>.yaml`.
 
-By default the command refuses if a different agent holds the claim - you can only release your own work. To override (e.g. after a sub-agent crashed and is no longer running), pass `--force`. Calling release on an artifact with no active claim is a no-op - idempotent - so cleanup scripts can run without checking first.
+By default the command refuses if a different agent holds the claim. `--agent` is a caller-supplied coordination label, not authenticated ownership. To override after confirming a worker is no longer using the artifact, an orchestrator can pass `--force`. A missing claim is a successful no-op. Claims are advisory records, not artifact write locks; release does not stop a running worker or alter lifecycle status.
 
 Mirrors [`forgeplan_release`](/docs/mcp/forgeplan_release/) on the MCP side.
 
@@ -74,6 +74,10 @@ forgeplan release SPEC-018 --agent worker-2
 ```
 
 When a shell script needs to release on behalf of a specific worker, pass `--agent` explicitly. Without `--force`, the agent identity must match the current holder, otherwise the command refuses.
+
+## JSON and errors
+
+Success emits `id`, `released: true`, `force`, and `_next_action`; `released: true` also covers a missing claim. A holder mismatch exits 1 and emits `error: "not_held_by_requester"`, `id`, `held_by`, `_next_action`, and `_alternative_action` in JSON. Other failures, including missing workspace or claim-store errors, follow the ordinary CLI error path, not this JSON shape.
 
 ## How it fits the workflow
 

@@ -1,11 +1,15 @@
 ---
 title: forgeplan reconcile-ids
-description: "PROB-060 Phase 2.4 (W2.C) - инструмент ручной очистки для устранения дрейфа идентичности после слияния. Сканирует `.forgeplan/<kind>/*.md`, обнаруживает четыре категории дрейфа (несоответствие имени файла, отсутствие `predicted_number`, дрейф ссылок в теле, дублирование `assigned_number`) и либо выводит отчёт (`--check-only`), либо автоматически исправляет безопасные категории. LanceDB никогда не затрагивается; запустите `forgeplan scan-import` после этого, если индекс нужно перестроить"
+description: "PROB-060 Phase 2.4 (W2.C) - инструмент ручной очистки для устранения дрейфа идентичности после слияния. Сканирует `.forgeplan/<kind>/*.md`, обнаруживает четыре категории дрейфа (несоответствие имени файла, отсутствие `predicted_number`, дрейф ссылок в теле, дублирование `assigned_number`) и либо выводит отчёт (`--check-only`), либо автоматически исправляет безопасные категории. LanceDB никогда не затрагивается; запустите `forgeplan reindex` после этого, если индекс нужно перестроить"
 ---
 
 Устраняет дрейф идентичности артефактов после слияния. Дрейф возникает всякий раз, когда артефакт изменяется вне канонического пути MCP/CLI, или когда миграция Phase 1.x оставила незавершённое состояние: имя файла больше не соответствует отображаемому идентификатору, `predicted_number` так и не был перенесён, ссылки в теле и ссылки во frontmatter расходятся, или два артефакта претендуют на один и тот же номер.
 
 Это ручной аналог [`forgeplan ci-assign-id`](/ru/docs/cli/ci-assign-id/): назначатель создаёт номера в CI, `reconcile-ids` восстанавливает рабочее пространство, идентичности которого вышли из синхронизации.
+
+## Forgeplan 0.38.0
+
+`--report-cross-pr` добавляет только cross_pr_deferred, не исследует соседние PR. Коды 0/1 в сформированном отчёте зависят от неустранённых actions, не от массива scan_errors. Поэтому ошибки отдельных файлов могут сочетаться с summary.unresolved=false и exit 0. Для CI используйте --check-only и проверяйте также scan_errors; один успешный код не доказывает полный обход.
 
 ## Использование
 
@@ -16,12 +20,12 @@ forgeplan reconcile-ids [OPTIONS]
 ## Опции
 
 ```text
-      --workspace <WORKSPACE>  Корень рабочего пространства, содержащий `.forgeplan/`. По умолчанию: поиск вверх от текущей директории. Также может быть директорией `.forgeplan/` напрямую
-      --check-only             Сообщить о несоответствиях без изменения файлов. По умолчанию режим применения (авто-переименование + авто-заполнение `predicted_number`)
-      --report-cross-pr        Флаг прямой совместимости для обнаружения дрейфа перекрёстных ссылок RFC-009 §Phase 2.4. Текущая реализация выводит маркер-заглушку в JSON-выводе; обход перекрёстных PR отложен (см. документацию модуля)
-      --json                   Вывести JSON-отчёт в stdout (schema_version 1). По умолчанию — читаемая человеком сводка
-  -h, --help                   Показать справку
-  -V, --version                Показать версию
+      --workspace <WORKSPACE>  Workspace root containing `.forgeplan/`. Default: walk-up search from cwd. May also be a `.forgeplan/` directory directly
+      --check-only             Report inconsistencies without modifying files. Default is apply mode (auto-rename + auto-fill `predicted_number`)
+      --report-cross-pr        Forward-compat flag for RFC-009 §Phase 2.4 cross-PR ref-drift detection. The current implementation surfaces a no-op marker in the JSON output; cross-PR walking is deferred (see module docs)
+      --json                   Emit JSON report to stdout (schema_version 1). Default is a scannable human-readable summary
+  -h, --help                   Print help
+  -V, --version                Print version
 ```
 
 ## Что делает команда
@@ -33,7 +37,7 @@ forgeplan reconcile-ids [OPTIONS]
 5. В режиме применения (по умолчанию): переименовывает файлы и заполняет `predicted_number` через атомарные помощники frontmatter и `git mv` / `fs::rename`.
 6. Выводит сводку и устанавливает код выхода.
 
-LanceDB никогда не затрагивается (ADR-003). Если хранилище нужно синхронизировать, запустите [`forgeplan scan-import`](/ru/docs/cli/scan-import/) после этого.
+LanceDB никогда не затрагивается (ADR-003). Если хранилище нужно синхронизировать, запустите [`forgeplan reindex`](/ru/docs/cli/reindex/) после этого.
 
 ## Четыре категории дрейфа
 
@@ -228,7 +232,7 @@ Error: No .forgeplan/ workspace found from /private/tmp/agent-recon-none
 ## Примечания
 
 - **Режим применения установлен по умолчанию.** Нет флага `--apply`; вы отказываетесь от него с помощью `--check-only`. Подключите форму проверки в CI, а голую форму - в PR очистки.
-- `--json` всегда выводит `schema_version: 1`, а сводка содержит булево значение `unresolved`, отражающее код выхода.
+- Если отчёт сформирован, JSON использует schema_version 1, а summary.unresolved описывает неустранённые действия. Фатальные ошибки пространства/обхода возвращают 2 в stderr без JSON-отчёта.
 - Переименования используют `git mv`, когда файл отслеживается, поэтому история переживает пост-слияние squash; `fs::rename` - запасной вариант вне репозитория.
 - Сканер никогда не переписывает тела артефактов - только frontmatter через канонические помощники.
 - В отчёте используется форма пути относительно рабочего пространства (`prds/PRD-007-alpha.md`), поэтому вывод безопасно вставлять в лог CI.
@@ -237,6 +241,6 @@ Error: No .forgeplan/ workspace found from /private/tmp/agent-recon-none
 
 - [Обзор CLI](/ru/docs/cli/)
 - [`forgeplan ci-assign-id`](/ru/docs/cli/ci-assign-id/) - назначатель CI, вывод которого восстанавливает эта команда
-- [`forgeplan scan-import`](/ru/docs/cli/scan-import/) - перестроить хранилище после переименования
+- [`forgeplan reindex`](/ru/docs/cli/reindex/) - перестроить хранилище после переименования
 - [`forgeplan link`](/ru/docs/cli/link/) - канонический способ исправить находку дрейфа ссылок в теле
 - [`forgeplan migrate-dry-run`](/ru/docs/cli/migrate-dry-run/) - предварительный просмотр миграции идентичности перед её запуском

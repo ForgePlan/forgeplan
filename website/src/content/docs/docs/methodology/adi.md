@@ -7,13 +7,13 @@ description: Abduction -> Deduction -> Induction -- structured thinking before b
 
 The most expensive bugs are not code bugs. They are architecture bugs. Choosing the wrong database, the wrong communication pattern, or the wrong auth strategy costs weeks or months to fix. And the root cause is almost always the same: the team went with their first idea without seriously considering alternatives.
 
-ADI (Abduction -> Deduction -> Induction) is a structured way to avoid this trap. It forces you to generate multiple options, predict their consequences, and check those predictions against evidence, all before writing a single line of code. Ten minutes of ADI can save ten days of rework.
+ADI (Abduction → Deduction → Induction) structures the comparison of alternatives: generate options, derive testable consequences, then assess evidence and remaining unknowns. Some evidence requires a prototype or experiment; the command does not perform those experiments for you.
 
 ## Why ADI?
 
 Most architecture decisions are made on gut feeling. ADI forces you to generate alternatives, test predictions, and reach justified conclusions.
 
-**Required** for Deep and Critical depth. **Recommended** for Standard.
+The baseline methodology **requires** ADI for Deep/Critical and **recommends** it for Standard. The published `/forge-cycle` and `agents-pro:guardian` are stricter: **Standard+** requires linked ADI Evidence with at least three hypotheses. This is a marketplace workflow gate, not an automatic CLI activation check.
 
 ## The Three Phases
 
@@ -25,14 +25,14 @@ Generate **3+ hypotheses** that could solve the problem. Force yourself to think
 forgeplan reason PRD-001
 ```
 
-Example output:
+Illustrative hypotheses (not captured command output):
 ```
 Hypothesis 1: JWT tokens with refresh rotation
 Hypothesis 2: Session-based auth with Redis
 Hypothesis 3: OAuth2 delegation to external provider
 ```
 
-Why three? Because the first idea is usually based on familiarity, not fitness. The second is often the obvious alternative. The third is where creative solutions emerge. If all three converge on the same answer, you have high confidence. If they diverge, you have important trade-offs to evaluate.
+Three genuinely distinct hypotheses help expose alternatives to the familiar choice. Their count alone establishes neither independence nor correctness; check assumptions and missing evidence rather than treating agreement as proof.
 
 ### 2. Deduction: "What should be true?"
 
@@ -41,16 +41,16 @@ For each hypothesis, derive **2-3 testable predictions**. If this approach works
 ```
 H1 predictions:
   - Token validation < 1ms (no DB call)
-  - Refresh rotation prevents token theft
-  - Stateless = horizontal scaling works
+  - Rotation rejects reuse of a consumed refresh token in a replay test
+  - Validation nodes can scale without shared per-request session state
 
 H2 predictions:
   - Session lookup < 5ms (Redis)
   - Server restart doesn't lose sessions
-  - Session store becomes single point of failure
+  - Losing the session store interrupts authentication unless failover works
 
 H3 predictions:
-  - Zero auth code to maintain internally
+  - Delegation reduces, but does not eliminate, internal auth code
   - External dependency for critical path
   - User experience depends on third-party uptime
 ```
@@ -59,15 +59,15 @@ Good predictions are specific and falsifiable. "It will be fast" is not a predic
 
 ### 3. Induction: "Does evidence support it?"
 
-Check predictions against available evidence. Score each hypothesis:
+Check predictions against available evidence. The table below is an illustrative comparison, not a measured security result; attach real logs and sources before recording these verdicts:
 
 | Hypothesis | Verdict | Evidence |
 |-----------|---------|----------|
-| H1: JWT | **supports** | Benchmark: 0.3ms validation, OWASP recommends rotation |
-| H2: Redis | **weakens** | Redis adds infra complexity, session store is SPOF |
-| H3: OAuth2 | **supports** | Delegates auth risk, but adds external dependency |
+| H1: JWT | **supports**, if observed | Validation benchmark meets target; replay test rejects consumed refresh tokens |
+| H2: Redis | **weakens**, if observed | Failover experiment misses the required availability target |
+| H3: OAuth2 | **supports**, if observed | Integration meets the required flows; provider dependency remains a risk |
 
-At this point, the decision is no longer gut feeling. It is an informed comparison. You might still choose H1, but now you know the trade-offs and you have evidence to back it up. Six months from now, when someone asks "why JWT?", the ADI output answers the question.
+The comparison becomes evidence-based only after those checks run. Record what remains unknown, distinguish predictions from observations, and explain why the chosen trade-offs meet the requirements.
 
 ```mermaid
 flowchart TD
@@ -83,7 +83,7 @@ flowchart TD
 
 Once you have scored the hypotheses, the path forward usually becomes clear:
 
-- **All hypotheses converge**: high confidence, proceed with the strongest option
+- **One option best supported by relevant evidence**: proceed with its assumptions and limits recorded
 - **Two viable options with different trade-offs**: document both in an ADR, pick the one that aligns with your priorities
 - **No clear winner**: you need more evidence. Run a PoC, benchmark, or consult an expert before committing
 
@@ -94,12 +94,16 @@ Once you have scored the hypotheses, the path forward usually becomes clear:
 forgeplan reason PRD-001
 
 # With FPF knowledge base context
-forgeplan reason PRD-001 --fpf
+forgeplan reason PRD-001 --fpf --save
 ```
 
-The `--fpf` flag enriches the prompt with relevant FPF framework concepts
-from the knowledge base. This is useful for decisions that involve trust
-calculus, bounded rationality, or exploration-exploitation trade-offs.
+`reason` requires a configured LLM provider in `.forgeplan/config.yaml::llm`. HTTP providers use the configured API-key environment variable; local CLI providers require their installed stock CLI and existing login and are explicit personal-development opt-ins, not shared/production/CI profiles. Calls consume the provider's service or subscription. For a non-Forgeplan project, supply its architecture in `.forgeplan/prompts/architecture.md`; the CLI otherwise uses a Forgeplan-specific default.
+
+Without `--save`, CLI reasoning is printed, not persisted. `--save` creates a linked **Note**, not an EvidencePack and not an update to the original artifact. `--json` exposes structured ADI when parsing succeeds, with a raw-analysis fallback otherwise. Inspect the actual hypotheses: the prompt asks for 3+, but parsing is not a guarantee of three valid alternatives.
+
+MCP `forgeplan_reason` accepts `id` and optional `workspace`, not CLI `--save`/`--fpf` or a custom `prompt` parameter. Its result contains `analysis` and provider/model metadata; it does not persist the analysis automatically. The orchestrator must explicitly create, fill, and link an EvidencePack when the workflow requires ADI evidence. A saved Note does not satisfy guardian's linked-ADI-Evidence requirement.
+
+The CLI `--fpf` flag looks up relevant indexed FPF sections and adds them to the prompt when available. Populate the knowledge base through `forgeplan fpf ingest`; absent sections produce a message and reasoning continues without them. Enrichment is context, not an independent verifier.
 
 ADI maps directly onto FPF sections **B.3 (Trust Calculus)** and
 **B.5 (Abduction / Deduction / Induction)**, the reasoning backbone of
@@ -119,15 +123,15 @@ forgeplan fpf search "abduction hypothesis"
 | Deep | **Mandatory** |
 | Critical | **Mandatory + review** |
 
-For **Standard** depth, ADI is recommended but not enforced. If you have two clear approaches and a quick comparison is enough, an informal ADI (even just a mental exercise) is fine. For **Deep** and **Critical**, skipping ADI is a methodology violation because the cost of a wrong decision is too high to leave to intuition.
+These are baseline depth recommendations. In the published `/forge-cycle`, ADI Evidence is mandatory already at **Standard**. `/gate-check` has a narrower structural ADI check at **Deep/Critical**: at least one linked EVID body must carry three `### Hypothesis` sections. `guardian` additionally blocks Standard+ activation without linked ADI Evidence. The author/orchestrator records the alternatives; the reviewer checks them; the orchestrator alone activates.
 
 :::caution
-Skipping ADI on Deep/Critical depth is a methodology violation. The review process expects evidence of structured reasoning before activation.
+Calling `reason`, saving a Note, or advancing the advisory artifact phase to `adi` does not by itself satisfy those gates. Neither generated reasoning nor a high R_eff proves that experiments ran.
 :::
 
 ## A Real-World ADI Example
 
-**Task**: Choose an embedded database for storing project artifacts (structured data + vector embeddings).
+**Illustrative task**: Choose an embedded database for project artifacts (structured data + vector embeddings). This is a worked comparison, not a historical benchmark report.
 
 **Abduction** (3 hypotheses):
 1. SQLite + separate vector index (FAISS)
@@ -153,17 +157,15 @@ H3 (PostgreSQL + pgvector):
 
 **Induction** (evidence check):
 - H3 eliminated: requires server, violates local-first constraint
-- H1 vs H2: LanceDB benchmark shows 10K artifact queries in <100ms (CL2). SQLite is proven but dual-system sync complexity is a maintenance burden
-- Decision: H2 (LanceDB), because single engine simplicity outweighs ecosystem maturity risk; open data format provides migration escape hatch
-
-This entire analysis took 15 minutes and saved weeks of potential rework if the wrong choice had been made.
+- H1 vs H2: benchmark both on the required data volume, query mix, and environment; record the measured results and justify CL. Compare this with the cost of maintaining a separate vector index.
+- Conditional decision: H2 (LanceDB) if the measurements meet the contract and single-engine maintenance outweighs ecosystem risk. Record those conditions in the ADR; the open format provides a migration option, not a guarantee of cheap migration.
 
 ## Common Mistakes
 
 - **Generating fake hypotheses.** If your three hypotheses are "the right answer", "a strawman", and "another strawman", you are not doing ADI. You are rationalizing a decision you already made. Each hypothesis should be a genuine contender.
 - **Skipping Deduction.** Going straight from "here are three options" to "I pick this one" bypasses the most valuable step. Deduction forces you to articulate what success looks like for each option, which is where hidden assumptions surface.
 - **Using ADI for Tactical tasks.** If the fix is a one-line change, ADI is overhead. Reserve it for decisions where being wrong is expensive.
-- **Not recording the ADI output.** The reasoning is only valuable if it is captured. When you run `forgeplan reason`, the output is stored with the artifact. Do not do ADI in your head and skip the command.
+- **Not recording ADI.** Use CLI `--save` for a linked Note, or explicitly record and link ADI Evidence for the marketplace gate. A plain CLI/MCP `reason` call does not store a durable evidence record.
 - **Treating ADI as a one-time event.** If new evidence emerges after your initial ADI (e.g., a benchmark shows unexpected results), re-run it. ADI is not a ceremony. It is a thinking tool you use whenever you need clarity.
 
 ## Related

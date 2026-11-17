@@ -23,11 +23,11 @@ The definition that clicked hardest for me:
 > "If it's not the model's weights - it's the harness. Your harness determines what fraction of the model's capabilities actually gets realized."
 > - walkinglabs, lecture 02
 
-A number that stopped me cold: OpenAI reported that three engineers, through their harness, produced 1,500 code changes in five months. Not the model made 1,500 changes. The environment around the model did. When I read that, I realized I had spent six months building exactly that - I just called it something else: "a tool for ADR discipline."
+A number that stopped me cold: OpenAI reported that three engineers, through their harness, produced 1,500 code changes in five months. The environment around the model did that work, not the model alone. When I read that, I realized I had spent six months building exactly that - I just called it something else: "a tool for ADR discipline."
 
-Six months ago I didn't know the word "harness." Now half of my open-source project is harness mechanics. What I learned between those two points is what this post is about.
+Six months ago I didn't know the word "harness." Now half of my open-source project is harness mechanics. These are the lessons I learned along the way.
 
-This is not an ad. ForgePlan is open source, Rust, MIT, **one star on GitHub**. By the time you reach the end, you'll understand why. And why I'm writing about a harness now instead of "developer tools," like I used to say.
+ForgePlan is open source, Rust, MIT, **one star on GitHub**. That last number has a lot to do with why I now describe it as a harness instead of "developer tools," as I used to.
 
 ---
 
@@ -48,9 +48,9 @@ A harness is everything around the model except its weights. Walkinglabs (a free
 5. Checks        - validate, lint, score, health, observability
 ```
 
-The analogy is stubborn, but right. If one of the five zones collapses, the degradation is not proportional - it cascades. An agent without instructions wanders. An agent without checks overestimates its own output (more on this in a separate story below). An agent without state has amnesia every session. An agent without tools can only talk. An agent without an environment can only work inside its own head.
+The analogy holds up. If one of the five zones collapses, the damage cascades rather than staying proportional to the missing part. An agent without instructions wanders. An agent without checks overestimates its own output (more on this in a separate story below). An agent without state has amnesia every session. An agent without tools can only talk. An agent without an environment can only work inside its own head.
 
-Where most teams leave performance on the table is a separately painful question. Walkinglabs give a direct answer:
+Where do most teams leave performance on the table? Walkinglabs give a direct answer:
 
 > "Among the five subsystems, the checks subsystem typically has the lowest barrier to entry and the highest return."
 > - walkinglabs, lecture 02
@@ -65,7 +65,7 @@ I only understood this when I saw `forgeplan score` give me an R_eff (reliabilit
 
 The full picture is at walkinglabs (12 lectures, free): walkinglabs.github.io/learn-harness-engineering/
 
-Further below - what I specifically built, what hurt, and where I still fall short.
+In my own implementation, some of these lessons came painfully, and some gaps remain.
 
 ---
 
@@ -89,7 +89,7 @@ The decisive moment came when I discovered that our own markdown store was **not
 
 ADR-003 formalized the reversal: **markdown is the source of truth, LanceDB is the derived index**. It sounds cosmetic. In practice it was a shift from "we have decisions" to "we have a **repository as the single source of truth**."
 
-The difference is not in words. It is a different operating model. In the first framing, artifacts exist as a convenient way to record "what we decided." If the database goes down - artifacts are lost. If you migrate to another system - you need data migration. The artifact depends on the infrastructure that stores it.
+The operating model changes with it. In the first framing, artifacts exist as a convenient way to record "what we decided." If the database goes down, artifacts are lost. If you migrate to another system, you need data migration. The artifact depends on the infrastructure that stores it.
 
 In the second framing, an artifact is a file in git. The database is a cache. If the cache goes down, `scan-import` rebuilds it from files. If you migrate - take the `.forgeplan/` directory, done. The artifact does not depend on infrastructure; infrastructure depends on the artifact. That is a dependency inversion.
 
@@ -113,7 +113,7 @@ The mapping in brief:
 | State | `.forgeplan/state/<ID>.yaml`, git, per-project Hindsight MCP bank |
 | Checks | `validate`, `score`, `health`, `blindspots`, `blocked`, `stale`, `order` |
 
-There is no magic here - just careful labeling of what should be there anyway. The key thing is that I can now **name** each component and understand its role. Before I had the harness vocabulary, I just wrote commands that were "useful." Now I understand that `forgeplan health` is not "a handy utility" - it is the **checks subsystem operating at the entire artifact set level**. That gives development a direction.
+These are labels for components that should be there anyway, but having names for them helped me understand their roles. Before I had the harness vocabulary, I just wrote commands that were "useful." Now I can place `forgeplan health` in the **checks subsystem, operating across the entire artifact set**. That gives development a direction.
 
 #### 2. Repository as single source of truth (walkinglabs, lecture 3)
 
@@ -197,7 +197,7 @@ Fixed in two review rounds. Added an explicit warning in `score` output ("EVID-N
 
 The lesson: a harness that checks itself **must shout** about why it said "no." A silent low score is worse than a loud error. Silent failures are the most dangerous class of bugs in a harness, because they compromise **the self-checking mechanism itself**.
 
-Extending this lesson to the checks subsystem in general: every "no" from the harness must contain three components - what is wrong (specific artifact, specific field), why this particular criterion failed, and how to fix it (exact command). If any component is missing, it is not feedback - it is noise. The agent sees noise and learns to ignore it. After a few such episodes, you have a checks subsystem that loudly says nothing - formally present, functionally useless.
+The same lesson applies to the checks subsystem as a whole: every "no" from the harness must explain what is wrong (specific artifact, specific field), why this particular criterion failed, and how to fix it (exact command). If any component is missing, the feedback becomes noise. The agent learns to ignore it. After a few such episodes, the checks subsystem is formally present but functionally useless.
 
 The canonical example of a "correct no" in ForgePlan:
 
@@ -245,7 +245,7 @@ In JSON output, a parallel `_next_action` field lets the agent parse without reg
 
 In version 0.25.0, hint coverage was 36%. After a review and a dedicated sprint - 100%. Every CLI command, every MCP tool. EVID-086 confirmed: verified by tests, no silent gaps. PR #25 in the marketplace plugin v1.5.0 propagated this across the whole ecosystem.
 
-The architectural problem this solves: **documentation and code cannot drift apart** because the documentation is generated by the code at runtime. Not a separate artifact someone forgets to update. That is walkinglabs lecture 11 (observable progress) applied to the workflow documentation itself.
+This prevents **documentation and code from drifting apart** because the code generates the workflow documentation at runtime. There is no separate artifact for someone to forget to update. That is walkinglabs lecture 11 (observable progress) applied to the workflow documentation itself.
 
 A side effect I did not predict: the hint contract made onboarding **new agents** trivial. Previously I had to load an agent with instructions ("after `forgeplan new prd` do `validate`, then `reason`, then ..."). Now - just run a command and read `Next:`. The workflow documents itself. The corresponding section in CLAUDE.md shrank from ~50 instruction lines to ~10. The instructions subsystem (zone 1) got smaller because some knowledge migrated to the checks subsystem (output lines). That redistribution between subsystems is a separate insight I couldn't see until the hint contract was working at 100%.
 
@@ -253,13 +253,13 @@ A side effect I did not predict: the hint contract made onboarding **new agents*
 
 ### What ForgePlan does NOT do yet
 
-Since I am talking openly about how I build - I should be honest about the gaps. Three that I can see right now.
+I can see three gaps right now.
 
 **Gap 1: per-session agent trace (walkinglabs, lecture 11)**
 
 Commands like `forgeplan health`, `graph`, `blindspots` are **process observability**: what is currently in the repository, which decisions are active, where the blind spots are. What is missing is **per-run observability** at the OpenTelemetry level: a trace of each agent session (which tools were called, in what order, how many tokens were burned, where it got stuck, which `_next_action` hint it ignored).
 
-Walkinglabs treat this tracing as a first-class concept - it is the entirety of lecture 11. In ForgePlan it is on the roadmap, without a date. It is a meaningful scope of work: you need trace storage, a viewer, and a decision on privacy (token streams contain user input).
+Walkinglabs devote all of lecture 11 to tracing. In ForgePlan it is on the roadmap, without a date. There is substantial work involved: trace storage, a viewer, and a decision on privacy (token streams contain user input).
 
 **Gap 2: the "sprint contract" artifact**
 
@@ -271,7 +271,7 @@ Walkinglabs treat the sprint contract as a separate primitive. In ForgePlan I fe
 
 `forgeplan_claim` locks one agent to one artifact (one artifact = one claim). But it does **not** prevent one agent from holding multiple artifacts simultaneously. One agent can technically claim three artifacts at once. Walkinglabs (lecture 7) treat "one task in flight" as a hard rule with architectural enforcement. In ForgePlan it is a convention.
 
-This is not a gap from forgetting - it is a gap from not yet solving "how to enforce this without breaking parallel pipelines." A real architectural question on the roadmap.
+I haven't solved how to enforce this without breaking parallel pipelines. That architectural question is on the roadmap.
 
 Those are three out of ten that I can see. The full list is in the repository, issues tagged `harness-roadmap`.
 
@@ -296,7 +296,7 @@ The repository description on GitHub had been "Backend and ForgePlan developer t
 
 I am writing this post partly to rebuild the positioning. ForgePlan is not a developer tool. It is an agent harness that **pretended** to be a decision framework for a year and a half, because I didn't have the vocabulary.
 
-The lesson for anyone building a technical open-source project: **positioning is not marketing, it is part of the architecture**. If the repository description says one thing and the code does another, you pay with missed audience fit. Not "people don't click the repo" - "the people who need it don't come, and the people who don't need it do." Stars distribute in both directions from the true product-market fit. I wrote the description before the industry category it belongs to existed. The category exists now. The description needs rewriting.
+The lesson for anyone building a technical open-source project: **positioning belongs to architecture, not marketing**. If the repository description says one thing and the code does another, the people who need it don't arrive, while people looking for something else do. Stars end up on either side of the project's true product-market fit. I wrote the description before its industry category existed. The category exists now. The description needs rewriting.
 
 ---
 

@@ -5,18 +5,23 @@ description: "Health check across known plugins - reports missing, outdated, OK"
 
 Compares every plugin in the compiled-in registry against what is actually
 installed, and prints the same scan [`forgeplan plugins list`](/docs/cli/plugins-list/)
-performs as three groups: **ok**, **outdated**, and **missing**. It is the only
-command in the family that exits non-zero, which is what makes it usable as a
-gate - in CI, in a session-start check, or in a hook.
+performs as three groups: **ok**, **outdated**, and **missing**.
+It exits `1` when missing/outdated entries exist, making the registry's
+requirements usable as a local gate. Other commands can also fail on input
+or runtime errors; doctor is not the only possible non-zero exit in the family.
 
-Every missing entry is printed with the exact command that would install it, so
-the output is a to-do list you can paste rather than a diagnosis you have to
-research.
+Missing entries carry static install recommendations. Check availability
+against the published catalog before executing them; the command does not
+install anything or prove that the suggested command works.
+
+## Forgeplan 0.38.0
+
+The detection registry compiled into CLI 0.38.0 has 12 entries and is not the public marketplace catalog. Public catalog 1.187.1 at b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7 has 23 plugins. Output below containing 0.37.0 is retained as previously captured examples, not a current installation inventory. The bundled hint `forgeplan skill install brownfield-docs-pack` is not a working CLI 0.38.0 command: no skill install command exists. Other install strings are static recommendations, not proof that a pack exists in the public catalog; consult that catalog and the selected plugin’s instructions.
 
 ## What it does
 
-1. **Loads the registry** - the entries Forgeplan knows how to detect. In
-   0.37.0 that is 12, counting the built-in `forgeplan` capability.
+1. **Loads the registry** — 12 compiled-in detection entries in 0.38.0,
+   including the built-in `forgeplan` capability.
 2. **Detects installed plugins** - the same filesystem scan as
    [`forgeplan plugins list`](/docs/cli/plugins-list/): source roots joined with
    the paths each entry expects, first match wins, version read best-effort
@@ -150,10 +155,10 @@ nothing left to report - the shape a hook or a CI gate should see.
 
 ### Example 4: machine-readable
 
-The text output groups entries visually; `--json` returns them as three arrays
-plus the same next-action hint the text mode prints as `Fix:` or `Done.`. The
-arrays are long on a machine with packs missing, so the useful views are
-projections.
+The text groups entries visually; `--json` returns three arrays plus
+`_next_action`. When entries are missing, the hint is the first missing
+install recommendation. With outdated-only or all-ok results, JSON uses
+`forgeplan plugins list`; text instead prints upgrade guidance or `Done.`.
 
 Verdict and hint:
 
@@ -244,7 +249,7 @@ iteration order and it changes between runs, so match by `name` when parsing.
   whole list, read the body or the `--json` `missing` array.
 - An entry that resolves but ships no version manifest counts as ok, so a
   version-less pack does not produce a false alarm.
-- `-V` reports the subcommand-scoped version, `forgeplan-plugins-doctor 0.37.0`.
+- Historical `0.37.0` version values above are not a claim about the installed 0.38.0 binary.
 
 ## See also
 

@@ -8,9 +8,9 @@ Code, Test, Audit, Evidence, Done) плюс полную append-only истор�
 `.forgeplan/state/<id>.yaml`. Трекинг фаз - **рекомендательный**: ни один другой
 инструмент на нём не блокируется. Если файла состояния нет (артефакт до PRD-056 или
 `phase.enabled: false` в конфиге), ответом будет `current_phase: "unknown"` с пустой
-историей; никогда - ошибка.
+историей. Этот ответ не доказывает наличие артефакта. Неверный ID и некоторые ошибки ввода-вывода всё же могут вернуть ошибку.
 
-**Категория**: Lifecycle (рекомендательный)
+**Категория**: Жизненный цикл (рекомендательно)
 
 ## Когда агент вызывает
 
@@ -23,13 +23,18 @@ Code, Test, Audit, Evidence, Done) плюс полную append-only истор�
 
 ## Входные параметры
 
-| Имя | Тип | Обязательно | Описание |
+| Имя | Тип JSON | Обязательно | Описание и ограничения |
 |---|---|---|---|
-| `id` | `string` | yes | ID артефакта, чьё состояние фазы прочитать. |
+| `id` | `string` | да | ID артефакта, чьё состояние фазы нужно прочитать. |
+| `workspace` | `string \| null` | нет | Необязательный явный каталог рабочего пространства для этого вызова. Сервер ищет `.forgeplan/` по этому пути, а не в каталоге запуска. Используйте для агента в отдельном git worktree. PRD-078 / ADR-015. Принимает абсолютный путь или путь с `~`. По умолчанию в схеме: `null`. |
 
-_Источник схемы: `crates/forgeplan-mcp/src/server.rs::PhaseReadParams`_
+Обязательное поле означает, что ключ должен присутствовать. Значение `null` допустимо только тогда, когда оно перечислено в типе JSON. Значения по умолчанию в схеме не обязательно совпадают с теми, которые использует обработчик и описывает текст.
+
+_Источник схемы: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Возвращает
+
+Успешный ответ — JSON в текстовом содержимом MCP. Условное состояние (поля истории — `from`, `to`, `at`; отсутствующие необязательные `from`/`reason` опускаются):
 
 ```json
 {
@@ -38,10 +43,11 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::PhaseReadPara
   "workflow_type": "greenfield",
   "advanced_at": "2026-04-26T09:30:00Z",
   "history": [
-    { "phase": "shape", "ts": "2026-04-25T14:00:00Z", "reason": null },
-    { "phase": "validate", "ts": "2026-04-25T15:20:00Z", "reason": null },
-    { "phase": "code", "ts": "2026-04-26T09:30:00Z", "reason": "FRs implemented" }
+    { "to": "shape", "at": "2026-04-25T14:00:00Z" },
+    { "from": "shape", "to": "validate", "at": "2026-04-25T15:20:00Z" },
+    { "from": "validate", "to": "code", "at": "2026-04-26T09:30:00Z", "reason": "FRs implemented" }
   ],
+  "schema_version": 1,
   "_next_action": "`PRD-057` is on phase `code`. Suggested next: `test`. Manual override: `forgeplan_phase_advance PRD-057 --to <phase>`."
 }
 ```
@@ -59,17 +65,25 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::PhaseReadPara
 }
 ```
 
+Ответ unknown не содержит `advanced_at` и `schema_version`. Повреждённый, слишком большой файл, симлинк или файл с будущей версией схемы тоже может считаться unknown. Существующее состояние читается и при отключённом автоматическом трекинге. Чтение не проверяет статус жизненного цикла и не обеспечивает выполнение следующего шага.
+
+При ошибке разбора YAML `read_phase` также пытается переименовать файл состояния в `<id>.yaml.corrupt.<timestamp>`. Ответ unknown возвращается независимо от успеха этой попытки. Отсутствие файла, слишком большой размер, симлинк и будущая версия схемы проверяются отдельно; unknown не означает, что переименование обязательно выполнялось.
+
 ## Пример вызова
 
+Аргументы этого инструмента, а не оболочка JSON-RPC. Замените условные ID, идентификаторы сессий и пути значениями из своего рабочего пространства. Соответствие схеме не отменяет проверки рабочего пространства, жизненного цикла и согласия на выполнение.
+
 ```json
-{ "id": "PRD-057" }
+{
+  "id": "PRD-001"
+}
 ```
 
 ## Типичная последовательность
 
 1. `forgeplan_phase` - прочитать текущую фазу.
 2. Если `current_phase: "unknown"` и трекинг нужен:
-   [`forgeplan_phase_advance --to shape`](/ru/docs/mcp/forgeplan_phase_advance/).
+   [`forgeplan_phase_advance` с `to: "shape"`](/ru/docs/mcp/forgeplan_phase_advance/).
 3. Иначе следовать подсказке `_next_action` к рекомендуемой следующей фазе.
 
 ## CLI эквивалент
@@ -80,5 +94,5 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::PhaseReadPara
 
 - [`forgeplan_phase_advance`](/ru/docs/mcp/forgeplan_phase_advance/) - записать следующий переход
 - [`forgeplan_validate`](/ru/docs/mcp/forgeplan_validate/) - гейт вокруг фазы `validate`
-- [`forgeplan_activate`](/ru/docs/mcp/forgeplan_activate/) - терминальное состояние `done` методологии
+- [`forgeplan_activate`](/ru/docs/mcp/forgeplan_activate/) - отдельная активация жизненного цикла; маркер `done` не доказывает активацию
 - [Methodology guide](/ru/docs/methodology/overview/) - Shape → Validate → Code → Evidence → Activate

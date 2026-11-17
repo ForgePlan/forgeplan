@@ -14,20 +14,21 @@
 
 ## Required Sections
 
-| # | Section | Required? | Validation |
-|---|---------|-----------|------------|
-| 1 | **Meta Header** | ✅ MUST | Status, Owner, Created, Target (quarter) |
-| 2 | **Vision** | ✅ MUST | 1 sentence — what we want to achieve |
-| 3 | **Outcomes** | ✅ MUST | >= 2 measurable outcomes |
-| 4 | **Children Table** | ✅ MUST | PRD/RFC/ADR list with status |
-| 5 | **Phases** | ✅ MUST | >= 1 phase with artifacts |
-| 6 | **Progress** | ✅ MUST | Aggregated progress bars |
-| 7 | **Dependency Graph** | SHOULD | Mermaid diagram |
-| 8 | **Risks** | SHOULD | >= 1 risk |
+Forgeplan **0.38.0** checks the following at every depth. The shared metadata MUST checks require non-empty frontmatter `id` and `status`; owner, dates and target quarter are template guidance.
+
+| Section | Runtime MUST: accepted headings |
+|---------|---------------------------------|
+| Vision | `Vision`, `Goals`, `Executive Summary` |
+| Outcomes | `Outcomes`, `Success Criteria`, `Goals` |
+| Children | `Children`, `Artifacts`, `PRDs`, `Components` |
+| Phases | `Phases`, `Phase`, `Implementation Phases`, `Timeline` |
+| Progress | `Progress`, `Status` |
+
+Matching is case-insensitive by prefix at any heading level. These are presence checks: they do not count measurable outcomes, verify child membership, require a phase item or recompute progress bars. Dependency graph and risk sections are useful template guidance, not registered Epic SHOULD rules. Shared placeholder/stub and body/link-drift checks still apply.
 
 ## Aggregated Progress
 
-Epic progress = sum of progress from children (PRD, RFC):
+The template illustrates a manually maintained sum of child checkbox counts. `forgeplan progress EPIC-003` reads checkboxes in the Epic body; it does not recursively aggregate child PRD/RFC progress. A textual Children table also does not set `parent_epic` or create graph edges.
 
 ```
 PRD-001  ████████████████████████  8/8   (100%) DONE
@@ -40,10 +41,11 @@ TOTAL                              15/26 (57.7%)
 ## Status Lifecycle
 
 ```
-Draft → Active → Done → Archived
-          ↓
-      Cancelled (with reason)
+draft → active → superseded | deprecated | stale
+stale → active (renew) | deprecated
 ```
+
+`Done`, `Archived` and `Cancelled` may describe project milestones in prose; they are not shared artifact lifecycle states. Use the lifecycle commands rather than bypassing them through `update --status`.
 
 ## Numbering
 
@@ -51,4 +53,4 @@ Draft → Active → Done → Archived
 |--------|---------|
 | ID | `EPIC-NNN` |
 | File | `EPIC-{NNN}-{kebab-case}.md` |
-| Path | `docs/epics/EPIC-003-auth-system.md` |
+| Path | `.forgeplan/epics/EPIC-003-auth-system.md` |

@@ -48,8 +48,7 @@ forgeplan playbook list [OPTIONS]
    `marketplace/playbooks/` directory next to the workspace root, and one
    `playbooks/` directory per entry in `~/.claude/plugins/`.
 2. Collects `*.yaml` and `*.yml` files in each root, non-recursively.
-3. Reads each file under the runtime's input caps (1 MiB, 256 nesting brackets) and parses it
-   against the schema.
+3. Reads each file under the runtime's input caps (1 MiB and at most 256 total `{`/`[` opening characters, a heuristic rather than actual YAML nesting depth) and parses it against the schema.
 4. Skips anything that fails - a corrupt, oversized, or deeply nested file produces a `warn:`
    line on stderr and the listing continues. One bad file never aborts the whole listing.
 5. Deduplicates by playbook name, keeping the first occurrence in root order, then sorts the
@@ -60,6 +59,8 @@ The exit code is 0 whether or not anything was found - an empty listing is a leg
 not an error.
 
 ## Examples
+
+The output blocks below use illustrative local fixtures, not an executed scan or a guarantee that these packs are installed. Discovery checks only immediate `~/.claude/plugins/<entry>/playbooks/` directories, not arbitrary nested marketplace/version cache layouts.
 
 ### An empty workspace
 

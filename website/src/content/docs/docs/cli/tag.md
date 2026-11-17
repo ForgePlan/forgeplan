@@ -34,11 +34,11 @@ forgeplan tag <ID> <TAGS>...
 
 ## What it does
 
-1. Loads the artifact's frontmatter.
-2. Canonicalizes each tag (lowercased, whitespace trimmed, deduped - see
-   PROB-026 fix in v0.18).
-3. Merges new tags into the existing `tags:` list.
-4. Rewrites frontmatter and re-indexes the artifact in LanceDB.
+1. Loads the stored record by its exact ID and synchronizes existing projection edits.
+2. Canonicalizes new tags: trim, lowercase, replace spaces with `-`, keep alphanumeric characters and `-`, `_`, `=`, `.`; drop empty results and duplicates.
+3. Merges them into `tags`, updates the index, and renders the Markdown projection.
+
+Use the exact ID from `list`; this handler does not resolve a display ID to a slug-backed record. Output is text with the added-count estimate and current tags, not JSON. A missing record is an error.
 
 ## Examples
 
@@ -67,11 +67,9 @@ As of PROB-026 fix in v0.18.0, tags are canonicalized on write:
 - Case-folded to lowercase: `Security` → `security`.
 - Trimmed of surrounding whitespace.
 - Deduplicated: `forgeplan tag PRD-001 auth auth Auth` adds `auth` once.
-- Preserved `=` and `-` for key-value and hyphenated forms.
+- Spaces inside a tag become hyphens; characters other than alphanumeric, `-`, `_`, `=`, and `.` are removed. For example, quoted `"Auth Layer!"` becomes `auth-layer`.
 
-Workspaces created before v0.18 may contain mixed-case tag rows. Run
-[`forgeplan reindex`](/docs/cli/reindex/) to re-canonicalize every artifact in a
-single pass.
+Legacy or manually edited projections can contain mixed-case tags. `reindex` extracts projection tags when creating a missing record; for an existing record it incrementally synchronizes body changes, not the stored tags column. It neither repairs existing tag metadata nor normalizes every tag in place. Correct existing metadata through `untag` / `tag`: remove the exact stored value, then add the desired spelling.
 
 ## Discoverability: where tags show up
 
@@ -100,61 +98,36 @@ The CLI does not enforce a taxonomy, but the following patterns work well:
 Pick a small, opinionated vocabulary and stick to it. Tag sprawl kills
 discovery.
 
-## Source tier and CL mapping (v0.17.0, PRD-035)
+## Source labels versus evidence fields
 
-Tags of the form `source_tier=T1`, `source_tier=T2`, or `source_tier=T3` have
-special meaning in Forgeplan's trust calculus. They map directly to a
-Congruence Level that feeds into R_eff scoring:
+Tags such as `source_tier=t1`, `source_tier=t2`, and `source_tier=t3` can classify artifacts for discovery. In 0.38.0, the evidence parser reads `source_tier` and `congruence_level` from the **body**, not from `record.tags`. Adding or removing a source-tier tag alone does not set the scoring CL.
 
-| Tag value          | Congruence Level | CL penalty | Meaning                          |
-|--------------------|------------------|------------|----------------------------------|
-| `source_tier=T1`   | CL3              | 0.0        | Same context - highest trust     |
-| `source_tier=T2`   | CL2              | 0.1        | Similar context - minor penalty  |
-| `source_tier=T3`   | CL1              | 0.4        | Different context - significant penalty |
+For scoring, declare reviewed evidence fields in its body, for example:
 
-### Security precedence (`min(tier_cl, explicit_cl)`)
+```markdown
+## Structured Fields
 
-If an artifact has **both** a `source_tier` tag and an explicit `congruence_level`
-in its Structured Fields body, Forgeplan takes the **lower** (more conservative)
-of the two:
-
-```
-final_cl = min(tier_cl, explicit_cl)
+verdict: supports
+evidence_type: measurement
+source_tier: t2
+congruence_level: 2
 ```
 
-This prevents **CL upgrade attacks via tag manipulation**. For example:
+This is an illustrative field fragment, not proof of a measurement. Body `source_tier` maps T1 → CL3, T2 → CL2, T3 → CL1; their CL penalties are 0.0, 0.1, and 0.4. If body tier and explicit CL are both present, the parser uses `min(tier_cl, explicit_cl)`. A label alone cannot establish the provenance or validity of evidence.
 
-- An evidence artifact is tagged `source_tier=T1` (would imply CL3).
-- But the body contains `congruence_level: 0` (explicit CL0).
-- Final CL = **min(CL3, CL0) = CL0** - the explicit low-trust field wins.
-
-The conservative-by-default rule means a tag can never **increase** trust
-beyond what the structured fields claim. Tags can only narrow the CL downward,
-never upward.
-
-### Use case: brownfield onboarding
-
-When ingesting artifacts from an external source via the discovery protocol
-(`forgeplan discover`), tier tags let you batch-classify trust levels:
+Discovery-label examples:
 
 ```bash
-# External vendor docs - low trust
 forgeplan tag PRD-050 source_tier=T3 source=vendor-api
-
-# Internal PoC from a sibling team - moderate trust
 forgeplan tag PRD-051 source_tier=T2 source=team-alpha
-
-# Our own production benchmark - highest trust
 forgeplan tag EVID-060 source_tier=T1 source=dogfood
 ```
 
-See [Evidence methodology - SourceTier precedence](/docs/methodology/evidence/#gotchas-and-migration-notes)
-for how this interacts with R_eff scoring after upgrade.
+These tags become lowercase. Use the artifact mutation workflow to maintain evidence body fields and recompute `score` after substantive evidence changes. Repository agent rules can require CLI/MCP mutations even where the library supports projection synchronization; do not confuse library capability with permission to edit artifact files directly.
 
 ## Notes
 
-- Tags are stored in frontmatter as a YAML list. Direct markdown edits work,
-  but re-run `forgeplan scan-import` afterward.
+- Tags are stored in the index and rendered as a YAML list in the projection. Correct tags on an existing record through `tag` / `untag`; `reindex` is not a repair for manual tag edits to that record's frontmatter.
 - To remove tags, use [`forgeplan untag`](/docs/cli/untag/).
 - The `<TAGS>...` positional argument is variadic - pass as many as you like in
   a single invocation.

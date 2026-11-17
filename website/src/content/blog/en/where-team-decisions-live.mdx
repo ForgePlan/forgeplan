@@ -1,6 +1,6 @@
 ---
 title: "ForgePlan: where your team's decisions actually live, if they're not lost"
-description: "Six months of open development on a tool that turns team decisions into first-class git artefacts. What a decision graveyard is, how ForgePlan works, and why the repo has one star on GitHub - an honest report."
+description: "Six months of open development on a tool that turns team decisions into first-class git artefacts. What a decision graveyard is, how ForgePlan works, and why the repo has one star on GitHub."
 slug: where-team-decisions-live
 lang: en
 publishedAt: 2026-04-05
@@ -22,7 +22,7 @@ My name is Ilya, and six months ago I started building a tool that forces decisi
 
 In this post I'll cover: what pain ForgePlan solves, what it actually does (no marketing fluff), how to try it in 60 seconds, the ecosystem that grew around the core, who it's for and who it's **not** for, and why there are so few stars despite the product working for half a year. At the end - where we're going next and a preview of upcoming posts.
 
-This is not an ad. It's the first of three posts about building in the open, and in it I'm being direct: the repo's positioning is currently broken, the description doesn't match reality, and I know at least three gaps in the roadmap that I'm openly tracking in the repo itself.
+This is the first of three posts about building in the open. The repo's positioning is currently broken, the description doesn't match reality, and I know at least three gaps in the roadmap that I'm openly tracking in the repo itself.
 
 ---
 
@@ -36,7 +36,7 @@ Standard approaches fail for different reasons. **Notion/Confluence** - a univer
 
 With AI agents in the team, this pain multiplies by an order of magnitude. An agent clones the repo into a fresh sandbox each session. It has no access to your Notion, your Slack, your memory of yesterday's meeting. If knowledge lives in your head, it doesn't exist for the agent. If knowledge lives in Slack, it doesn't exist for the agent. Only what's present as a file in the repository is real.
 
-Then comes an interesting effect. The discipline a team needs to work well with agents is **also useful** for the team without agents. Without agents, the penalty for poor discipline is weak - teams live with the cost without noticing it. With agents, the penalty becomes visible immediately - the agent gets confused, asks redundant questions, produces the wrong thing. The conditions that make an agent useful are the same conditions that make humans faster: clear structure, explicit commitments, trackable state, build-time checks.
+The discipline a team needs to work well with agents is **also useful** for the team without agents. Without agents, the penalty for poor discipline is weak - teams live with the cost without noticing it. With agents, the penalty becomes visible immediately - the agent gets confused, asks redundant questions, produces the wrong thing. The conditions that make an agent useful are the same conditions that make humans faster: clear structure, explicit commitments, trackable state, build-time checks.
 
 I started ForgePlan to treat the decision graveyard. The first version was about humans. Four months in, I noticed I was increasingly being invited to discussions about "how this connects to AI agents" - and I realised I had unknowingly built a team discipline where agents feel at home by design, not by coincidence. That deserves its own post, coming in two weeks. In this one I focus on the baseline case: a team that doesn't want to lose decisions, regardless of who writes them.
 
@@ -77,7 +77,7 @@ Under the hood - three Rust crates: the core library (~12.8k lines), the CLI (76
 
 ### The 60-second demo
 
-Let's see what this looks like in practice. Say your team needs to add OAuth2 authentication.
+Say your team needs to add OAuth2 authentication.
 
 ```
 $ forgeplan init -y
@@ -182,7 +182,7 @@ And the last number, the one people usually hide - **one star on GitHub**.
 
 I'm not pretending it's not there. The reason is straightforward and engineering-flavoured: the repo description said **"Backend and ForgePlan developer tools"** for a year and a half. That's a promise that doesn't match reality. People searching for "backend developer tools" arrive, see artefact lifecycles, reliability scoring, decision graphs - and leave, because that's not what they were looking for. People searching for decision discipline or a way to work with AI agents in a team never arrive, because those words aren't in the description.
 
-This isn't "marketing let engineering down". It's **positioning as part of the architecture**. If the repo description says one thing and the code does another, stars scatter in both directions away from true product-market fit: the people who need it don't come, and the people who do come leave. I wrote the description before the tool had a clear audience. Now - I'm rewriting it.
+This isn't "marketing let engineering down". It's **positioning as part of the architecture**. If the repo description says one thing and the code does another, it attracts the wrong audience: the people who need it don't come, and the people who do come leave. I wrote the description before the tool had a clear audience. Now I'm rewriting it.
 
 This post is part of that rewrite. If you've read this far and it resonates, it means the description is starting to work. Before, very few people got this far - they were lost at the first sentence.
 

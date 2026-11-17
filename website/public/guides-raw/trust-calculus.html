@@ -334,7 +334,7 @@
   <p class="eyebrow">ADI → Evidence → DDR · интерактивный разбор</p>
   <h1>Trust Calculus в 3D</h1>
   <p class="lead">
-    Каждое доказательство, на котором держится решение, - это вектор в трёх независимых осях:
+    Каждое доказательство, на котором держится решение, - это вектор в системе трёх независимых осей:
     <span class="ax-f">F</span> (Formality), <span class="ax-g">G</span> (Granularity),
     <span class="ax-r">R</span> (Reliability).
     Чтобы выбрать гипотезу после ADI-разбора, мы не считаем среднее по этим осям. Доверие
@@ -342,14 +342,14 @@
     Это правило WLNK.
   </p>
 
-  <h2>Три оси, по которым оценивается каждое утверждение</h2>
-  <p>Шкала 0-9 для каждой оси, оси независимы. Одно доказательство может быть строгим, но из ненадёжного источника - слабое звено решит за всё.</p>
+  <h2>Три оси для оценки каждого утверждения</h2>
+  <p>У каждой оси своя шкала 0-9. Оси независимы: доказательство может быть строгим, но исходить из ненадёжного источника. Доверие ограничит слабое звено.</p>
 
   <div class="axes">
     <div class="axis-card f">
       <div class="axis-tag">Ось · <span class="axis-letter">F</span></div>
       <h3><span class="ax-f">F</span> · Formality · строгость</h3>
-      <p class="desc">Насколько точно сформулировано. Можно ли проверить или опровергнуть утверждение?</p>
+      <p class="desc">Насколько точно сформулировано утверждение. Можно ли его проверить или опровергнуть?</p>
       <div class="scale">
         <b>0-2</b> «мне кажется» · интуиция<br>
         <b>3-5</b> claim с условиями<br>
@@ -408,7 +408,7 @@
 
   <h2>Доказательства в <span class="ax-f">F</span>/<span class="ax-g">G</span>/<span class="ax-r">R</span>-пространстве</h2>
   <p>
-    Каждая точка - отдельное доказательство. Цвет указывает гипотезу, которую evidence адресует.
+    Каждая точка - отдельное доказательство. Цвет указывает, к какой гипотезе оно относится.
     Прозрачная плоскость показывает порог <code><span class="ax-f">F</span> + <span class="ax-g">G</span> + <span class="ax-r">R</span> = 12</code> - всё, что лежит «под» ней, считается слабым evidence.
     Сцена крутится мышью; при наведении видна полная карточка с WLNK и вердиктом.
   </p>
@@ -425,8 +425,8 @@
 
   <h2>Семь evidence · что показывает Trust Calculus</h2>
   <p>
-    Колонка <b class="k">WLNK</b> = <code>min(<span class="ax-f">F</span>, <span class="ax-g">G</span>, <span class="ax-r">R</span>)</code>. Это не сумма и не среднее - это самое слабое звено вектора.
-    Сравните с тем, как обманывает «средний балл», когда одна ось критически проседает.
+    Колонка <b class="k">WLNK</b> = <code>min(<span class="ax-f">F</span>, <span class="ax-g">G</span>, <span class="ax-r">R</span>)</code>. Это самое слабое звено вектора, а не сумма или среднее.
+    Сравните с тем, что показывает «средний балл»: он скрывает критически низкую оценку по одной из осей.
   </p>
 
   <div class="table-wrap">
@@ -450,9 +450,9 @@
 
   <h2>Среднее обманывает · WLNK против Average</h2>
   <p>
-    Возьмите E5 (whitepaper вендора): <span class="ax-f">F</span>=7, <span class="ax-g">G</span>=8, <span class="ax-r">R</span>=3. Среднее = 6 - выглядит твёрдо. Но <span class="ax-r">R</span>=3 - это маркетинговая бумага,
-    источник продаёт продукт. Для production-решения слабое <span class="ax-r">R</span> не компенсируется красивой формулировкой.
-    WLNK = 3 честно показывает: использовать как опору для решения нельзя.
+    Возьмите E5 (whitepaper вендора): <span class="ax-f">F</span>=7, <span class="ax-g">G</span>=8, <span class="ax-r">R</span>=3. Среднее = 6, выглядит убедительно. Но <span class="ax-r">R</span>=3: это маркетинговый документ,
+    его источник продаёт продукт. Для production-решения слабое <span class="ax-r">R</span> не компенсируется красивой формулировкой.
+    WLNK = 3 показывает, что на это доказательство нельзя опираться при выборе решения.
   </p>
   <div class="bars-wrap">
     <canvas id="barChart" role="img" aria-label="Сравнение среднего F+G+R и WLNK (min) для семи доказательств"></canvas>
@@ -460,8 +460,8 @@
 
   <h2>Кто победил по ADI · выбор гипотезы</h2>
   <p>
-    Применяем Trust Calculus к семи evidence. Победитель - гипотеза с самым сильным <i>supporting</i> доказательством
-    по правилу WLNK. Среднее проигнорировано - считаем только <code>min(F, G, R)</code>.
+    Применяем Trust Calculus к семи evidence. Побеждает гипотеза с самым сильным <i>supporting</i> доказательством
+    по правилу WLNK. Среднее не учитываем, считаем только <code>min(F, G, R)</code>.
   </p>
   <div class="winner">
     <div class="head">
@@ -471,14 +471,14 @@
     <p>
       Лучшее supporting evidence - E6 (внутренний бенчмарк): <span class="ax-f">F</span>=7, <span class="ax-g">G</span>=9, <span class="ax-r">R</span>=7, WLNK=7.
       H1 опровергнута собственным замером E2 (EXPLAIN ANALYZE показал 18-24 ms, это
-      <i>weakens</i> гипотезу). H2 имеет WLNK=7 от flamegraph, но <span class="ax-g">G</span>=8 против <span class="ax-g">G</span>=9 у H3.
-      DDR пишется по H3 с условиями пересмотра - decay-триггеры показаны в конвейере ниже.
+      <i>weakens</i> гипотезу). У H2 WLNK=7 по flamegraph, но <span class="ax-g">G</span>=8 против <span class="ax-g">G</span>=9 у H3.
+      По H3 составляем DDR с условиями пересмотра. Триггеры устаревания показаны в конвейере ниже.
     </p>
     <span class="winner-tag">H3 · activated</span>
   </div>
 
   <h2>Цикл целиком · ADI → Evidence → Trust Calculus → DDR</h2>
-  <p>Trust Calculus - это инспекция между сбором фактов и фиксацией решения. Не пропустите decay-триггеры в DDR - без них решение становится памятником.</p>
+  <p>Trust Calculus помогает проверить доказательства после сбора фактов, перед фиксацией решения. Не пропустите триггеры устаревания в DDR: без них решение становится памятником.</p>
   <div class="pipeline">
     <div class="pipe-box">
       <div class="step-tag">01 · ADI</div>
@@ -525,7 +525,7 @@
     (function poll() {
       if (typeof window[globalName] !== 'undefined') { then(); return; }
       if (Date.now() - start > (timeoutMs || 8000)) {
-        const msg = globalName + ' не загрузился · проверьте интернет или CDN-блокировку (cdn.plot.ly · cdn.jsdelivr.net)';
+        const msg = globalName + ' не загрузился · проверьте подключение к интернету или блокировку CDN (cdn.plot.ly · cdn.jsdelivr.net)';
         if (globalName === 'Plotly') showError(document.getElementById('plot3d'), msg);
         if (globalName === 'Chart')  {
           const c = document.getElementById('barChart');

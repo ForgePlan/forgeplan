@@ -5,7 +5,7 @@ description: Как агенты читают детерминированные
 
 > Статус: **Active** с Forgeplan v0.25.0 (PRD-071, 2026-04-27)
 
-В Forgeplan v0.25.0 введён **унифицированный 5-правильный hint contract** - любой агент (Claude Code, Cursor, Windsurf, custom orchestrators) может читать вывод без повторного открытия методологии каждый раз. Эта страница - канонический агент-ориентированный референс.
+Forgeplan ввёл контракт подсказок из пяти правил в v0.25.0. Эта страница описывает целевой протокол и реальные границы CLI/MCP в **0.38.0**. Подсказка помогает выбрать следующую операцию, но не даёт полномочий на её исполнение и не заменяет требования задачи к доказательствам и ревью.
 
 ## Зачем это нужно
 
@@ -15,47 +15,49 @@ Forgeplan - методологический движок. Каждая кома
 - Гадают, иногда галлюцинируют
 - Зацикливаются на одном шаге
 
-Каждое из этого тратит токены и рискует корректностью. Контракт убирает неоднозначность - каждый вывод несёт явный детерминированный next-action.
+Подсказки уменьшают повторный поиск следующего шага, но не гарантируют, что каждый ответ — готовая команда. В 0.38.0 часть значений содержит прозу или заполнители, а часть команд не выводит маркер. Читайте сам результат и фактическую схему команды/инструмента.
 
 ## Контракт из 5 правил
 
-Каждый вывод Forgeplan, независимо от surface, удовлетворяет:
+Это **правила проектирования**, а не заявление о полном покрытии каждого ответа 0.38.0:
 
-1. **PRESENCE** - каждый ответ либо emit'ит next-action, либо явно терминальный. Тихих gaps не бывает.
-2. **ACTIONABILITY** - next-action это полная copy-paste команда с реальными ID, никогда не фрагмент или placeholder.
-3. **DETERMINISM** - одно и то же состояние всегда производит одинаковую hint строку. Без рандома.
-4. **CONDITIONALITY** - подсказки появляются только когда actionable. Терминальные states emit'ят `Done.` вместо фиктивного "all done!".
-5. **CONSISTENCY** - text и JSON renderings несут одинаковый семантический контент. CLI отражает MCP semantics.
+1. **PRESENCE** — предоставить следующее действие или явный сигнал завершения.
+2. **ACTIONABILITY** — предпочтительна полная команда с реальной ссылкой на артефакт; до исполнения выявите незаполненные параметры.
+3. **DETERMINISM** — подсказки процесса выводятся из состояния. Протокол не делает анализ и роутинг LLM детерминированными.
+4. **CONDITIONALITY** — не предлагать лишние операции, если в процессе этого инструмента больше нечего делать.
+5. **CONSISTENCY** — сохранять смысл следующего шага между интерфейсами, не предполагая одинакового транспорта и синтаксиса аргументов.
 
 ## 5 hint маркеров
 
 | Маркер | Когда emit'ится | Действие агента |
 |---|---|---|
-| `Next: <full command>` | Основное действие - рекомендуемый следующий шаг | Выполнить exactly как написано |
-| `Or: <command>` | Альтернатива когда primary блокирован (например claim занят) | Использовать только если primary fails |
-| `Wait: <condition>` | Async/TTL state | Retry после condition |
-| `Done.` | Workflow завершён (terminal) | Перейти дальше, не зацикливаться |
-| `Fix: <command>` | Error remediation (paired с `Error:`) | Сразу выполнить fix команду |
+| `Next: <full command>` | Рекомендуемый следующий шаг | Проверьте область, условия и аргументы; выполняйте при наличии полномочий |
+| `Or: <command>` | Альтернатива, если основной шаг заблокирован | Выберите уместную альтернативу, не запускайте обе вслепую |
+| `Wait: <condition>` | Асинхронная операция/условие TTL | Дождитесь условия, не повторяйте немедленно |
+| `Done.` | В процессе инструмента нет следующего шага | Завершите этот цикл; вся задача пользователя ещё может быть не выполнена |
+| `Fix: <command>` | Исправление ошибки | Прочитайте ошибку, проверьте уместность и допустимость исправления |
 
 ## Где читать hint
 
 | Surface | Местоположение | Формат |
 |---|---|---|
-| **CLI text (success)** | последние строки stdout | `Next: <full command>` плюс опциональный rationale |
-| **CLI text (error)** | после `Error:` строки | `Fix: <full command>` |
-| **CLI JSON** | top-level field | `{"_next_action": "<command>" \| null, ...}` |
-| **MCP success** | top-level field | `_next_action: "<command>" \| null` |
-| **MCP error** | error data field | `error.data._next_action: "<command>"` |
+| **CLI text (success)** | Обычно последние строки stdout | `Next:`, `Done.` или другие маркеры |
+| **CLI text (error)** | Вывод ошибки, обычно stderr | Читайте ошибку и возможные `Fix:` / `Wait:` |
+| **CLI JSON** | Объект результата, если он есть | `_next_action` может содержать команду, прозу или null; у массива поля верхнего уровня нет |
+| **MCP success** | Содержимое результата, часто JSON в текстовом блоке | Разберите content и прочитайте `_next_action`, если он есть; возможны проза и запись вызовов MCP |
+| **MCP error** | Содержимое результата с `isError` либо ошибка протокола | В ошибке может быть текстовая строка `_next_action:`; `error.data._next_action` не является универсальной оболочкой |
 
-**Особый случай**: `forgeplan list --json` и `forgeplan tree --json` сохраняют bare-array stdout (backward compat для `jq '.[]'` consumers). Hint emit'ится в **stderr** в JSON режиме.
+**Особые случаи**: `forgeplan list --json` и `forgeplan tree --json` сохраняют массив в stdout; подсказка читается из **stderr**. Другие ветки с массивом/пустым результатом могут не содержать `_next_action`. Null означает отсутствие рекомендации в этом результате, а не выполнение всех критериев приёмки.
 
 ## Хорошие vs. плохие подсказки
 
 ### Хорошо ✅
 
+Ниже — примеры формы подсказок, не сохранённый запуск:
+
 ```
 Next: forgeplan score PRD-001
-  R_eff is 0 - link evidence to enable activation
+  Изучите оценку и её причины до выбора следующей операции.
 ```
 Specific, full command, реальный ID, rationale объясняет *почему*.
 
@@ -72,6 +74,8 @@ Fix: forgeplan activate PRD-001
 Error имеет clear, executable remediation.
 
 ### Плохо ❌ (паттерны до v0.25.0 - не должны появляться в v0.25.0+ выводе)
+
+Заголовок сохраняет исходное требование контракта. Это по-прежнему нежелательные паттерны, но 0.38.0 не гарантирует их отсутствия.
 
 ```
 suggested next: adi
@@ -91,78 +95,66 @@ or ask the orchestrator to force-release.
 
 ## Reading protocol для агента
 
-Когда агент получает любой Forgeplan вывод:
+Когда агент получает вывод Forgeplan:
 
-1. **Найди next-action**.
-   - CLI text: scan для `Next:`, `Fix:`, `Wait:`, или `Done.` строки
-   - CLI JSON: read `_next_action` field (или stderr `Next:` для list/tree)
-   - MCP: read `_next_action` field response'а
-2. **Выполни primary если present**.
-   - Если `Next:` или `Fix:` - выполни команду **exactly как написано**
-   - Не парафразируй, не подставляй placeholders
-   - Не разбивай на несколько команд
-3. **Используй `Or:` только если primary blocks**.
-4. **На `Wait:`, retry после condition**.
-5. **На `Done.`, workflow complete** - переходи к следующей задаче, не зацикливайся.
-6. **На no hint и не terminal - сообщи о violation контракта**. Это bug в Forgeplan. Не импровизируй.
+1. **Сначала прочитайте успех/ошибку и содержательный результат**, включая предупреждения и частичные сбои.
+2. **Найдите подсказку** в stdout/stderr CLI или разобранном содержимом MCP. Не предполагайте наличие поля на уровне протокола.
+3. **Определите реальную операцию**. Примеры CLI и запись вызовов MCP не являются взаимозаменяемыми схемами. Используйте выданный ID/slug; до исполнения замените шаблонный заголовок и другие заполнители значениями задачи.
+4. **Проверьте область и полномочия**. Подсказка не разрешает `--force`, удаление, отправку данных в LLM или запись в чужой worktree.
+5. **Выполните одно подходящее основное действие**, при необходимости используйте `Or:`; на `Wait:` дождитесь условия.
+6. **На `Done.` завершите этот цикл**, затем оцените оставшиеся критерии пользователя.
+7. **Если нужная подсказка отсутствует или некорректна**, сообщите о пробеле. Не выдумывайте вывод и не повторяйте одну операцию в надежде, что следующий шаг изменится.
 
 ## Чего НЕ делать
 
-1. **Не парафразируй hint** - full команда дана не просто так
-2. **Не комбинируй `Next:` + `Or:`** в одном call - выбери одно
-3. **Не игнорируй `Done.`** - явный terminal сигнал
-4. **Не подставляй `EVID-NNN` placeholders** - сначала запусти `forgeplan_new evidence`, потом используй real ID
-5. **Не паникуй на `Wait:`** - async/TTL это нормально; просто retry
+1. **Не исполняйте текст подсказки как непроверенный shell-скрипт.**
+2. **Не объединяйте основной шаг и альтернативу вслепую.**
+3. **Не считайте `Done.` доказательством проверки кода или тестов.**
+4. **Не передавайте буквальные `EVID-NNN`/`<title>`** — создайте запись, затем используйте выданную ссылку.
+5. **Не освобождайте чужой claim принудительно только из-за подсказки.** Claims согласуют работу; заброшенный захват разбирает оркестратор осознанно.
 
 ## Практические workflow паттерны
 
 ### Pattern A: Shape → Validate → Activate
 
+Иллюстративная последовательность, не протокол запуска. PRD-042 и EVID-017 обозначают реально выданные `new` ссылки.
+
+```bash
+forgeplan route "add OAuth login" --level 0
+forgeplan new prd "OAuth login support"
+# Заполните применимые разделы в oauth-prd.md.
+forgeplan update PRD-042 --body @oauth-prd.md
+forgeplan validate PRD-042
+# Завершите проектирование, реализацию и требуемое независимое ревью.
+# Создайте Evidence с реальными результатами и структурированными полями.
+forgeplan new evidence "OAuth verification results"
+forgeplan update EVID-017 --body @oauth-evidence.md
+forgeplan link EVID-017 PRD-042 --relation informs
+forgeplan score PRD-042
+forgeplan review PRD-042
+# По политике marketplace перед этим вызовом нужен guardian PASS.
+forgeplan activate PRD-042
 ```
-forgeplan_route("add OAuth login")
-  → Next: forgeplan new prd "<title>"
 
-forgeplan_new(kind: "prd", title: "OAuth login support")
-  → Next: forgeplan validate PRD-042
-
-forgeplan_validate("PRD-042")
-  → Next: forgeplan activate PRD-042   (если PASS)
-  → Fix: forgeplan validate PRD-042    (если errors)
-
-forgeplan_activate("PRD-042")
-  → Done.
-```
+Успешный `validate` не означает прохождения гейта доказательств. `activate` может предложить сверку родительских артефактов вместо `Done.`. Полный цикл marketplace также требует ADI Evidence на Standard+; сокращённая последовательность не позволяет пропустить этот гейт.
 
 ### Pattern B: Recovery после error
 
-```
-forgeplan_activate("PRD-042")
-  → Error: No evidence linked
-  → Fix: forgeplan validate PRD-042
-
-forgeplan_validate("PRD-042")
-  → Result: PASS
-  → Next: forgeplan score PRD-042
-```
+Если активация сообщает «No evidence linked», повтор валидации не создаст доказательство. Создайте пакет, заполните результаты и поля, свяжите с решением, изучите `score`, повторите `review`. Не используйте `--force` как обычный способ исправления.
 
 ### Pattern C: Multi-agent dispatch
 
+```bash
+forgeplan dispatch --agents 3
+# Оркестратор выбирает выданное назначение; ID ниже — пример.
+forgeplan claim PRD-054 --agent worker-1 --ttl-minutes 30
 ```
-forgeplan_dispatch(--agents 3)
-  → Next: forgeplan claim PRD-054 --agent worker-1 --ttl 30
-  → Or:   forgeplan list --status draft
 
-forgeplan_claim("PRD-054")
-  → Error: Already held by worker-2
-  → Or: forgeplan release PRD-054 --force
-```
+Если claim уже у worker-2, изучите `forgeplan claims`, согласуйте работу или выберите свободный артефакт. Не запускайте `release --force` автоматически. Claim — мягкий координационный сигнал, не блокировка каждой операции с артефактом.
 
 ## Drift prevention
 
-Контракт enforced через:
-
-1. **Integration test** `crates/forgeplan-cli/tests/hint_contract.rs` - 36 тестов, fails CI если команда без contract marker
-2. **Audit script** `scripts/audit-hints.sh` - coverage метрика, target 100%, currently 90.0% (72/80 проверенных команд; у 8 новых команд contract marker пока нет)
+Релиз содержит интеграционные проверки `crates/forgeplan-cli/tests/hint_contract.rs` и скрипт `scripts/audit-hints.sh`. Само их наличие не доказывает полное покрытие маркерами, корректность условий и смысловую эквивалентность всех CLI/MCP-подсказок. Числа прежних аудитов исторические, а не актуальный замер 0.38.0.
 
 ## Quick reference card
 
@@ -170,11 +162,11 @@ forgeplan_claim("PRD-054")
 ┌─────────────────────────────────────────────────────────┐
 │  FORGEPLAN HINT CONTRACT (v0.25.0+)                     │
 ├─────────────────────────────────────────────────────────┤
-│  Next:  <command>   → execute as-is                     │
-│  Or:    <command>   → fallback if primary blocks        │
-│  Wait:  <condition> → retry after condition             │
-│  Done.              → workflow complete, move on        │
-│  Fix:   <command>   → error remediation (with Error:)   │
+│  Next:  <command>   → проверьте, действуйте в области задачи │
+│  Or:    <command>   → уместная альтернатива                 │
+│  Wait:  <condition> → дождитесь условия                     │
+│  Done.              → завершите этот цикл инструмента       │
+│  Fix:   <command>   → изучите ошибку и исправление           │
 ├─────────────────────────────────────────────────────────┤
 │  Read from: stdout (text), _next_action (JSON/MCP)      │
 │  Special:   list/tree --json → hint on stderr           │
@@ -183,16 +175,14 @@ forgeplan_claim("PRD-054")
 
 ## Для пользователей плагина
 
-Marketplace плагин **`forgeplan-workflow` v1.5.0+** учит Claude Code агентов читать эти маркеры автоматически. После установки:
+Опубликованный **`forgeplan-workflow` 1.23.1** содержит `/forge-cycle` и навык методологии. **`fpl-skills` 1.75.1** предоставляет `/smith`, `/gate-check`, `/wrap`; **`agents-pro` 1.30.0** — smith и guardian. Это отдельные плагины, а не возможности, которые автоматически устанавливает `forgeplan setup-skill`.
 
-```
-/plugin marketplace update ForgePlan-marketplace
-```
+Основная сессия читает цикл и выполняет операции. Smith рекомендует Plan; авторы создают артефакты, ревьюеры — Evidence; guardian проверяет всю цепочку и возвращает PASS / CONCERNS / BLOCKER. **Активирует оркестратор**, не smith и не guardian. `/gate-check` — проверка между этапами, не команда активации.
 
-Твой агент будет читать `Next:`/`Fix:` подсказки в `/forge-cycle`, `forge-advisor` агенте и methodology skill - без manual configuration.
+Маркеры `phase` артефакта рекомендательные. MCP `forgeplan_guard` проверяет отдельный автомат фаз сессии через `target_session_phase`; он не проверяет завершение фаз артефакта, тесты и одобрение guardian. Полезный `_next_action` не заменяет эти проверки.
 
 ## Связанное
 
 - **Forgeplan v0.25.0 release** - первая версия с контрактом ([CHANGELOG](/ru/docs/changelog/))
-- **Marketplace плагин forgeplan-workflow v1.5.0** - agent-side awareness layer
+- **Опубликованный процесс marketplace** — правила работы агентов поверх операций CLI/MCP
 - **Lifecycle model** ([читать дальше](/ru/docs/methodology/lifecycle/)) - подсказки интегрируются с переходами status (draft → active → terminal)

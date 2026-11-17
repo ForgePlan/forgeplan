@@ -3,13 +3,13 @@ title: forgeplan_hypothesis_promote
 description: "Promote a hypothesis along the verification state machine (parked → inferred → strong-inferred → verified; or any → refuted; or any → parked). Mutates the artifact body via file-first projection: updates the `hypothesis_state:` frontmatter field and appends an audit entry to the `## Lifecycle State` section. Returns a list of artifacts that informs / based_on the hypothesis (cascade) - informational only, not auto-bumped. Rejects illegal transitions with a structured error enumerating the allowed next states."
 ---
 
-The one supported writer for the `kind: hypothesis` lifecycle. A hypothesis carries a
-`hypothesis_state:` frontmatter field and this tool is the only thing that moves it.
+The dedicated writer for the `kind: hypothesis` lifecycle updates `hypothesis_state:`
+and derives the corresponding artifact status together.
 [`forgeplan_activate`](/docs/mcp/forgeplan_activate/) deliberately refuses the kind and redirects
 here, because a plain activate would flip `status` without touching `hypothesis_state` and leave
 the two fields disagreeing.
 
-Each call rewrites the artifact in three linked places:
+A state-changing call rewrites the artifact in three linked places; a same-state call writes nothing:
 
 1. `hypothesis_state:` in the frontmatter is overwritten with the target state.
 2. `status` is derived from that target state in the same write, so the pair can never drift:
@@ -35,8 +35,7 @@ hypothesis cannot lose an audit line.
 - **Activation.** Promoting to `verified` is the only path that makes a hypothesis `active`.
   Calling [`forgeplan_activate`](/docs/mcp/forgeplan_activate/) instead returns an error telling
   you to use this tool with `new_state=verified` (activate) or `new_state=refuted` (deprecate).
-- **After the call.** Follow the returned `_next_action` and re-score what the hypothesis feeds via
-  [`forgeplan_score`](/docs/mcp/forgeplan_score/).
+- **After the call.** Inspect `cascade` and decide which affected artifacts need [`forgeplan_score`](/docs/mcp/forgeplan_score/). `_next_action` is advisory; its literal hint names the hypothesis itself, not each cascade member.
 
 ## The verification state machine
 
@@ -64,70 +63,38 @@ The rules behind that table:
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
-| `hypothesis_id` | `string` | yes | Hypothesis artifact id or slug (`HYP-001`, `hyp-some-claim`). Must resolve to an artifact whose `kind` is `hypothesis`. |
-| `new_state` | `string` | yes | Target state in kebab-case: `parked`, `inferred`, `strong-inferred`, `verified`, or `refuted`. Parsed case-insensitively after trimming, and `strong_inferred` / `stronginferred` are accepted aliases. |
-| `evidence_refs` | `string[]` | no | Evidence artifact ids backing the move, normally `EVID-NNN`. Defaults to an empty list, which is legal for holds but not for `verified`. Each entry must match the id shape: one leading ASCII letter, then letters, digits, `-` or `_`. |
-| `rationale` | `string` | yes | One-line reason for the audit trail, stored verbatim in the body. Embedded line breaks and control characters are rejected. |
-| `workspace` | `string` | no | Explicit workspace directory for this call, so an agent in a git worktree can target its own `.forgeplan/` instead of the server's launch directory. Absolute or tilde-expanded path. |
+| `evidence_refs` | `array<string>` | no | IDs of evidence artifacts (typically `EVID-NNN`) backing the promotion. May be empty (e.g. parked-for-hold) but the rationale is still mandatory. Schema default: `[]`. |
+| `hypothesis_id` | `string` | yes | Hypothesis artifact id or slug (`HYP-001` / `hyp-some-claim`). Must resolve to an artifact whose `kind == "hypothesis"`. |
+| `new_state` | `string` | yes | Target lifecycle state in kebab-case: `parked`, `inferred`, `strong-inferred`, `verified`, or `refuted`. |
+| `rationale` | `string` | yes | Free-form one-line rationale for the audit trail in `## Lifecycle State`. Stored verbatim in the body, sanitised for hint emission. |
+| `workspace` | `string \| null` | no | Optional explicit workspace directory for this call. When set, the MCP server resolves the `.forgeplan/` projection from this path instead of the server's startup CWD. Use this when the calling agent is running in a git worktree separate from the MCP server's launch directory. PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. Schema default: `null`. |
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::HypothesisPromoteParams`_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## What it does
 
-1. Acquires the workspace write lock, so concurrent promotes serialise instead of racing on the
-   audit-line append. A held lock returns an error asking you to retry.
-2. Parses `new_state` before touching the store. An unknown state fails fast with the valid set.
-3. Resolves `hypothesis_id` (id or slug) to a canonical id and loads the record.
-4. Enforces the kind gate: anything that is not `kind: hypothesis` is rejected, with a hint to
-   inspect it via [`forgeplan_get`](/docs/mcp/forgeplan_get/) or find a valid target via
-   [`forgeplan_list`](/docs/mcp/forgeplan_list/).
-5. Reads the current state from the `hypothesis_state:` frontmatter field. A missing, null, non-string
-   or unparseable value defaults to `parked` - the safe choice, since every forward move is legal
-   from there.
-6. Checks the transition against the matrix above. An illegal move returns an error that lists the
-   allowed next states for the current one.
-7. Short-circuits a no-op (`old == new`) into an `unchanged: true` envelope without writing an
-   audit line - the state machine permits same-to-same for idempotent re-application, but a
-   duplicate audit entry would be misleading.
-8. Validates `rationale` (no control characters, no Unicode line or paragraph separators) and every
-   `evidence_refs` entry (id shape only).
-9. For `verified` only: requires at least one evidence ref and resolves every one of them against
-   the store. This is the gate that stops a stub hypothesis from reaching `status: active` with
-   fabricated evidence.
-10. Rewrites the frontmatter and appends the audit line, then persists through the projection
-    helper.
-11. Enumerates the cascade: artifacts pointing at this hypothesis with an `informs` or `based_on`
-    relation. Informational only - nothing downstream is re-scored or re-activated for you.
+1. Acquires the workspace write lock, parses `new_state`, resolves the hypothesis ID/slug and requires `kind: hypothesis`.
+2. Reads `hypothesis_state` from frontmatter. A missing, null, non-string or unparseable value defaults to `parked`; the only forward step from there is `inferred`, not a direct jump to `verified`.
+3. Checks the transition matrix. Same-state calls return `unchanged: true` with an empty cascade before rationale/ref validation; they do not update an audit line or repair an inconsistent stored status.
+4. For a real change, rejects control characters and Unicode line/paragraph separators in `rationale`. Every reference must be an ASCII ID-like token starting with a letter. `rationale` is a required string (an empty string is accepted); only omitted `evidence_refs` defaults to `[]`. The no-op shortcut does not waive schema-required keys.
+5. For a change to `verified`, requires at least one reference and checks that every referenced artifact resolves and exists. **0.38.0 limit:** this checks existence, not `kind: evidence`, verdict, congruence or a positive score. It does not create evidence links for you.
+6. Updates the frontmatter/status and appends an audit entry through the projection helper. Enumerates incoming `informs` / `based_on` sources as `cascade`; no downstream artifact is auto-promoted or re-scored. Enumeration failure is non-fatal and can return an empty cascade.
 
 ## Returns
 
-A successful forward promotion returns the old and new state, the refs and rationale you supplied,
-and the cascade:
+A state-changing success contains `id`, `old_state`, `new_state`, the supplied `evidence_refs` and `rationale`, `cascade`, and `_next_action`. This handler does not add workspace trace fields. The cascade names sources of incoming `informs` / `based_on` edges; it is not a count of completed follow-up actions.
 
-```json
-{
-  "_next_action": "Next: re-score downstream artifacts — `forgeplan_score HYP-001`.",
-  "cascade": [
-    "EVID-001",
-    "PRD-001"
-  ],
-  "evidence_refs": [],
-  "id": "HYP-001",
-  "new_state": "inferred",
-  "old_state": "parked",
-  "rationale": "initial signal from the refund policy grep"
-}
-```
-
-The audit line written into `## Lifecycle State` for that call reads:
+For example, a `parked` → `inferred` change can append:
 
 ```text
 - 2026-09-16: parked → inferred (refs: none; rationale: initial signal from the refund policy grep)
 ```
 
-Empty `evidence_refs` render as `none`; a blank `rationale` renders as `(no rationale provided)`.
+Empty references render as `none`; a blank rationale renders as `(no rationale provided)`. A no-op has the different payload documented below and omits the supplied rationale/refs.
 
 ## Idempotent re-application
 
@@ -149,7 +116,7 @@ so an empty list there means "nothing happened", not "nothing depends on this".
 
 ## Rejected calls
 
-Every rejection is a proper MCP error whose text ends with a `_next_action` fix line.
+Transition, kind and input refusals are MCP error text, often with an advisory `_next_action` line. Store/projection failures can use other error text; there is no universal structured error object.
 
 | Rejection | Error text |
 |---|---|
@@ -182,45 +149,22 @@ Allowed next states from `inferred`: parked, inferred, strong-inferred, refuted.
 
 ## Example invocation
 
-```json
-{
-  "hypothesis_id": "HYP-001",
-  "new_state": "strong-inferred",
-  "evidence_refs": ["EVID-001"],
-  "rationale": "grep evidence corroborates the gate"
-}
-```
-
-Refuting a claim, which needs no forward step:
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
 
 ```json
 {
   "hypothesis_id": "HYP-001",
-  "new_state": "refuted",
-  "evidence_refs": ["EVID-007"],
-  "rationale": "integration test shows the gate is bypassed for refunds under 100"
-}
-```
-
-Holding a claim that lacks signal, with no evidence and the rationale still mandatory:
-
-```json
-{
-  "hypothesis_id": "HYP-004",
   "new_state": "parked",
-  "rationale": "no second source found; revisit after the billing interview"
+  "rationale": "Awaiting an independent source."
 }
 ```
 
 ## Typical sequence
 
-```text
-forgeplan_hypothesis_status                    ← where is everything right now
-forgeplan_hypothesis_promote (parked → inferred)
-forgeplan_hypothesis_promote (inferred → strong-inferred)
-forgeplan_hypothesis_promote (strong-inferred → verified)
-forgeplan_score HYP-001                        ← the returned `_next_action`
-```
+1. Read `forgeplan_hypothesis_status` and the hypothesis.
+2. Record the supported one-step transitions: `parked` → `inferred` → `strong-inferred`.
+3. For `verified`, supply existing references, for example `evidence_refs: ["EVID-001"]`, and a truthful rationale. Create/link evidence separately where the workflow requires it.
+4. Inspect the returned `cascade`, then explicitly score/review the affected artifacts. Do not execute `_next_action` as a shell command.
 
 ## Related commands
 

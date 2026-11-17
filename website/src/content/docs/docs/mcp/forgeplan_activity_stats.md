@@ -1,6 +1,6 @@
 ---
 title: forgeplan_activity_stats
-description: "Aggregate the activity log by tool name - counts, error rates, p50/p95 duration, total time."
+description: "Aggregate statistics from the activity log grouped by tool name: count, error count, p50/p95 duration, total time. Use to attribute LLM-token spend and identify slow tools. Params: since_hours (default 24, max 720)."
 ---
 
 Reads the same activity log as [`forgeplan_activity`](/docs/mcp/forgeplan_activity/) but
@@ -20,13 +20,18 @@ spent its time, instead of paging through individual entries.
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
-| `since_hours` | `number` | no (default 24, max 720) | Time window in hours. `720` = 30 days. |
+| `since_hours` | `integer \| null` | no | Time window in hours. Default 24. Schema default: `null`. `format`: `uint32`. `minimum`: `0`. |
+| `workspace` | `string \| null` | no | Optional explicit workspace directory for this call. When set, the MCP server resolves the `.forgeplan/` projection from this path instead of the server's startup CWD. Use this when the calling agent is running in a git worktree separate from the MCP server's launch directory. PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. Schema default: `null`. |
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::ActivityStatsParams`_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
+
+Success is JSON inside MCP text content. Values below are illustrative, not measured results.
 
 ```json
 {
@@ -52,25 +57,28 @@ _Schema source: `crates/forgeplan-mcp/src/server.rs::ActivityStatsParams`_
   "total_errors": 1,
   "total_ms": 7380,
   "since_hours": 24,
-  "_next_action": "60 total call(s), 1 error(s), 7380 ms total. Top by time: `forgeplan_score` ..."
+  "_next_action": "60 call(s), 1 error(s), 7380 ms total. Drill into busiest: `forgeplan_activity tool=\"forgeplan_score\"`."
 }
 ```
 
 Rows are ordered by `total_ms` descending (most expensive first), matching how the
 `_next_action` hint surfaces the top tool.
 
+The handler defaults to 24 hours and clamps `since_hours` to 1–720. Unlike
+`forgeplan_activity`, it imposes no entry limit. `err_count` counts entries whose
+status is not `ok`; p50/p95 use nearest-rank percentiles of recorded durations.
+Totals are sums of tool durations, not session elapsed time or token/cost measurements.
+Malformed JSONL lines are skipped by the query layer, but this response does not
+include its warnings; use `forgeplan_activity` to inspect them. No log files yields
+empty `stats` and zero totals. Workspace-resolution failures are tool errors;
+log-read failures are JSON-RPC errors.
+
 ## Example invocation
 
-Default window (last 24 h):
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
 
 ```json
 {}
-```
-
-Full-month rollup:
-
-```json
-{ "since_hours": 720 }
 ```
 
 ## Typical sequence
@@ -81,9 +89,11 @@ Full-month rollup:
 
 ## CLI equivalent
 
-No direct CLI command - activity instrumentation lives in the MCP layer (PRD-055).
-For ad-hoc analysis, `jq` over `.forgeplan/logs/tools-*.jsonl` produces the same
-shape with more flexibility.
+```bash
+forgeplan activity-stats --since-hours 24 --json
+```
+
+[`forgeplan activity-stats`](/docs/cli/activity-stats/) aggregates the same activity logs.
 
 ## See also
 

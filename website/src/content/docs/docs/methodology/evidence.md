@@ -15,21 +15,21 @@ The most valuable insight is not a high score. It is finding a low one. A decisi
 
 **Trust is not a feeling. It's a measurement.**
 
-Every decision in Forgeplan has an R_eff score: a number that tells you how reliable it is, based on actual evidence.
+R_eff summarizes declared evidence and eligible dependencies. It is not a probability of correctness, and the scorer does not independently verify that a claimed test or benchmark actually ran.
 
 ## R_eff Formula
 
 ```
-R_eff = min(evidence_scores)
+R_eff = min(own current evidence scores, eligible dependency scores)
 ```
 
 **Not average. Minimum.** Your decision is only as strong as your weakest evidence. Three strong proofs + one untested assumption = untested decision.
 
 ```mermaid
 flowchart TD
-  V["Verdict\nsupports=1.0 | weakens=0.5 | refutes=0.0"] --> S["score = verdict - CL_penalty"]
+  V["Verdict\nsupports=1.0 | weakens=0.5 | refutes=0.0"] --> S["fresh score = max(0, verdict - CL penalty - type modifier)"]
   CL["CL Penalty\nCL3=0.0 | CL2=0.1 | CL1=0.4 | CL0=0.9"] --> S
-  S --> R["R_eff = min(all evidence scores)\nWeakest link, never average"]
+  S --> R["R_eff = min(current evidence, eligible dependencies)\nExpired evidence scores 0.1"]
 ```
 
 This design choice is deliberate. Averaging would let strong evidence mask weak spots. Imagine a bridge: if three pillars are solid but one is cracked, you do not average the pillar strength. You fix the cracked one.
@@ -37,8 +37,15 @@ This design choice is deliberate. Averaging would let strong evidence mask weak 
 ## Evidence score calculation
 
 ```
-evidence_score = max(0, verdict_score - CL_penalty)
+fresh_evidence_score = max(0, verdict_score - CL_penalty - type_modifier)
+expired_evidence_score = 0.1
 ```
+
+`forgeplan score` and MCP `forgeplan_score` use the recursive engine. Type modifiers are **0.0** for `test` and `measurement`, **0.1** for `benchmark`, and **0.2** for `audit`. The low-level flat `r_eff()` helper omits this modifier; do not mistake that simpler formula for the command's aggregate.
+
+The recursive engine follows outgoing `informs`, `based_on`, `refines`, and legacy `depends_on` dependencies. Draft, superseded, and deprecated dependencies are skipped, as are Note/memory dependencies. This differs from linked **evidence**, where draft packs still participate. Evidence's outgoing `informs`/`based_on` links to the decisions it supports are not treated as dependencies. A leaf EvidencePack scores its own fields; it needs no invented child evidence. Dependency scores are reduced by 0.1 for `informs`/`based_on`, with no relation penalty for `refines`/legacy `depends_on`. Read `weakest_link` and `factors` alongside the aggregate.
+
+**0.38.0 output limitation:** CLI JSON `evidence[].score` and `r_eff_ci.point` use the flat, local calculation, while top-level `r_eff` uses the recursive calculation with type modifiers and dependencies. These values can differ. The interval is a heuristic, not a statistical confidence guarantee; fewer than three current packs is labeled insufficient. Do not average the displayed pack scores to reconstruct `r_eff`.
 
 ### Verdict Scores
 
@@ -65,30 +72,36 @@ How close is the evidence to your actual context? Evidence from your own project
 
 You are deciding whether to use LanceDB for artifact storage. You gather three pieces of evidence:
 
-1. **Your benchmark on 10K records**: supports (1.0) at CL2 (tested in a PoC, not production) -> score = 1.0 - 0.1 = **0.9**
-2. **LanceDB Rust SDK documentation**: supports (1.0) at CL1 (external docs) -> score = 1.0 - 0.4 = **0.6**
-3. **A Hacker News comment about production use**: weakens (0.5) at CL1 (external, unverified) -> score = 0.5 - 0.4 = **0.1**
+1. **Your benchmark on 10K records**: `supports`, CL2, `benchmark` → 1.0 - 0.1 - 0.1 = **0.8**
+2. **LanceDB Rust SDK documentation**: `supports`, CL1, `measurement` → 1.0 - 0.4 = **0.6**
+3. **A Hacker News comment about production use**: `weakens`, CL1, `measurement` → 0.5 - 0.4 = **0.1**
 
 ```
-R_eff = min(0.9, 0.6, 0.1) = 0.1 (AT RISK)
+R_eff = min(0.8, 0.6, 0.1) = 0.1 (before any weaker dependency)
 ```
 
-The weak link is the unverified production concern. To improve R_eff, you need either stronger evidence about production readiness (run your own production test, CL3) or remove that concern from your evidence set if it is not relevant to your use case.
+The weak link is the unverified production concern. Investigate it and record a new check. If new evidence displaces an old pack, link the replacement to the decision and use the lifecycle commands below; do not delete or rewrite adverse evidence merely to raise the score.
 
 ## Which packs participate in the min
 
-R_eff ranges over the artifact's **current** evidence only. Packs with a terminal lifecycle status (`superseded` or `deprecated`) are excluded from the min: a displaced pack stays in the graph as history (and stays listed in `forgeplan score` with an "excluded from min" mark), but it no longer speaks for present reliability. Draft evidence **does** count (it is the normal state of a fresh measurement before activation), and an **active** `refutes` pack still zeroes the score.
+R_eff ranges over the artifact's **current** evidence only. Packs with a terminal lifecycle status (`superseded` or `deprecated`) are excluded from the min and evidence count: a displaced pack stays in the graph as history and remains in the `score` breakdown marked "excluded from min." Draft evidence **does** count. A fresh **active** `refutes` pack still zeroes the score.
 
-The honest way to clear a stale weak pack is displacement, not deletion or verdict editing: link the re-verification pack, then `forgeplan supersede <old> --by <new>`. If *all* linked packs are terminal, the artifact degrades to "no active evidence" (R_eff 0.0). Recovery requires the replacement pack to be linked, not merely to exist. A refutes/weakens pack terminated *without* a successor is flagged by the `unbacked_displacement` anomaly.
+Displacement preserves the old result; deletion or verdict editing does not. Link the re-verification pack to the decision, then check the old pack's **saved** lifecycle status:
+
+- **active:** `forgeplan supersede OLD-ID --by NEW-ID`.
+- **draft:** a completed, valid pack must first pass `forgeplan activate OLD-ID`; only then can it be superseded. Do not activate an unfinished or unsupported pack merely to change its status.
+- **stale:** `supersede` is not an allowed transition. Record the replacement relation with `forgeplan link OLD-ID NEW-ID --relation supersedes`, matching the lifecycle command's old-to-replacement direction, then use `forgeplan deprecate OLD-ID --reason "Replaced by NEW-ID after re-verification"`. The replacement must also have its own `informs` link to the decision.
+
+Expiry alone does not change the saved status. If all linked packs are terminal, the artifact has no current evidence and R_eff is 0.0. A refutes/weakens pack terminated without a successor is flagged by `unbacked_displacement`.
 
 ## Evidence Decay
 
 Evidence has a TTL (`valid_until` field). When it expires:
 
-- Evidence is **not deleted**. It becomes **stale**.
-- Score drops to **0.1** (stale is not the same as absent)
-- `forgeplan stale` detects expired evidence
-- `forgeplan renew` extends validity with new evidence
+- Evidence is **not deleted**. Expiry is detected from `valid_until`; detection does not itself rewrite lifecycle status.
+- The scoring engine returns **0.1** for any expired pack before applying verdict or type penalties. Even an expired `refutes` pack follows this branch; do not describe it as a permanent veto.
+- `forgeplan stale` detects expired records.
+- Re-run the relevant checks before renewing validity or publishing replacement evidence. `renew` records a reason and date; it does not run those checks. See [Lifecycle](/docs/methodology/lifecycle/#stale-the-forgotten-state) for the explicit status transition.
 
 Decay exists because the world changes. Your benchmark from six months ago was run on a different version of the library, different hardware, different data volume. Stale evidence is not worthless. It tells you something was true once. But it should not give you full confidence in the present.
 
@@ -96,14 +109,16 @@ Decay exists because the world changes. Your benchmark from six months ago was r
 
 ```bash
 # Create evidence pack
-forgeplan new evidence "Auth benchmark -- JWT 2ms, 12 tests pass"
+forgeplan new evidence "Auth verification results"
+# Use the returned ID. EVID-001 below is illustrative.
+# First fill a real result record in auth-evidence.md, then update the body:
+forgeplan update EVID-001 --body @auth-evidence.md
 
 # Link to the decision it supports
 forgeplan link EVID-001 PRD-001 --relation informs
 
-# Check the impact
+# Check the impact; the result depends on fields, expiry, and dependencies
 forgeplan score PRD-001
-# -> R_eff = 1.00
 ```
 
 ### Required structured fields
@@ -124,7 +139,9 @@ evidence_type: measurement
 | `congruence_level` | 0-3 | How close is the evidence context to your actual context? |
 | `evidence_type` | measurement / test / benchmark / audit | What kind of evidence is this? |
 
-Without these fields, the R_eff parser cannot extract scoring data and defaults to CL0 (0.9 penalty). This is the single most common reason for unexpectedly low R_eff scores.
+Write standalone `key: value` lines, outside HTML comments and tables, without trailing `#` explanations. The parser takes the first matching field. Missing or unknown `verdict`, or missing both explicit CL and `source_tier`, forces CL0. `verdict: unknown` is not a fourth scored verdict. Missing/unknown `evidence_type` instead defaults to `measurement`; it does **not** itself force CL0. An undeclared supporting measurement normally scores 0.1; type modifiers and other verdicts can lower that further.
+
+For evidence claiming a code change, also record `base_sha`, `result_sha`, and `changed_paths` against the real git delta. The activate-time provenance gate is configured as `integrity.evidence_provenance_gate: warn|block|off` (default `warn`); `--force` bypasses it. Structured fields do not prove that the measurement is genuine.
 
 ### What makes good evidence
 
@@ -137,12 +154,11 @@ Without these fields, the R_eff parser cannot extract scoring data and defaults 
 
 | R_eff | Status | Action |
 |-------|--------|--------|
-| >= 0.5 | Adequate | Decision can be accepted |
-| < 0.5 | Needs Review | Add evidence or reconsider |
-| < 0.3 | AT RISK | Decision unreliable, re-evaluate |
-| 0.0 | Blind Spot | No evidence at all |
+| >= 0.5 | Adequate display band | Inspect coverage and weakest link before accepting |
+| < 0.5 | Needs review | Add evidence or reconsider |
+| 0.0 | Zero score | Could mean no current evidence, a refutation, penalties, or a weak dependency |
 
-A **blind spot** (R_eff = 0.0) is the most dangerous state. It means you made a decision with zero supporting evidence. `forgeplan health` prominently flags these because they represent unknown risk.
+These bands are not universal activation gates. The core activation gate checks linked evidence and validation, not a numerical R_eff threshold. Published `/gate-check` defaults treat score floors as `should`; structural `must` failures block. `blindspots` identifies missing evidence links, not every possible cause of a zero score.
 
 ## Commands
 
@@ -155,11 +171,13 @@ forgeplan health            # Full project health dashboard
 
 ## Gotchas
 
-- **Forgetting structured fields in evidence body.** This is the number one mistake. Without `verdict`, `congruence_level`, and `evidence_type`, the parser assigns CL0 and your R_eff drops to near zero.
-- **Over-claiming CL3.** A benchmark you ran once on your laptop is not CL3. CL3 means the evidence was gathered in the same context where the decision will be applied (same codebase, same environment, same scale).
+- **Forgetting or corrupting fields.** Use exact supported values; absent `evidence_type` and absent `verdict` have different fallback behavior.
+- **Over-claiming CL3.** Match the context of the claim: a unit test can be CL3 for local function behavior, but a laptop benchmark is not production-scale evidence.
 - **Ignoring "weakens" evidence.** If you find evidence that a chosen approach has problems, record it with `verdict: weakens`. Hiding inconvenient evidence does not make it go away; it just makes your R_eff dishonest.
 - **Never refreshing evidence.** Benchmarks and test results have shelf lives. Set `valid_until` to 90-180 days and address stale evidence when `forgeplan health` flags it.
 - **Linking evidence to the wrong artifact.** Evidence should be linked to the decision it supports, not to the Epic or to an unrelated PRD. A mislinked evidence pack provides no R_eff benefit.
+
+Reviewer verdicts such as **PASS / CONCERNS / BLOCKER** belong in the review narrative. They are not values for the scoring field `verdict`, which accepts only `supports / weakens / refutes`. Record both when the marketplace workflow needs them.
 
 ## Gotchas and migration notes
 
@@ -198,15 +216,9 @@ R_eff.
 
 ### SourceTier precedence - conservative `min()` rule
 
-When an artifact has both a `source_tier` tag and an explicit
-`congruence_level` in its Structured Fields, the system takes
-`min(tier_cl, explicit_cl)` - the **more conservative** value wins. A tag can
-never upgrade trust beyond what the structured fields claim.
+The scorer reads `source_tier: T1` / `T2` / `T3` as a standalone **body field**, mapping to CL3 / CL2 / CL1. If an explicit `congruence_level` is also present, it uses `min(tier_cl, explicit_cl)` — the more conservative value.
 
-This protects against CL upgrade attacks via tag manipulation: tagging an
-artifact `source_tier=T1` does not override an explicit `congruence_level: 0`
-in the body. See [`forgeplan tag` - Source Tier and CL mapping](/docs/cli/tag/#source-tier-and-cl-mapping-v0170-prd-035)
-for the full tier-to-CL table and examples.
+For example, body fields `source_tier: T1` and `congruence_level: 0` remain CL0. An ordinary frontmatter tag such as `source_tier=T1` is not this scoring field. Source tier supplies context, not a replacement for a declared verdict or independently verified results.
 
 ## Related
 

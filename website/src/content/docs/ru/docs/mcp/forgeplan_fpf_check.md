@@ -10,9 +10,9 @@ description: "Оценивает набор правил FPF для конкре
 ## Когда агент вызывает это
 
 - После того как пользователь спрашивает «какое моё следующее действие по PRD-042?» - `message` выигрышного правила даёт ответ.
-- Во время цикла ревью - для проверки каждого активного артефакта, чтобы выявить те, что застряли ниже порога EXPLORE.
-- Для отладки неожиданного вывода `forgeplan_reason` или `forgeplan_health` - `fpf_check` показывает точное правило, вызвавшее рекомендацию.
-- Перед `forgeplan_activate` - для подтверждения, что артефакт находится в категории EXPLOIT, а не EXPLORE.
+- Во время ревью проверить, какие правила совпадают с активными артефактами и почему.
+- Чтобы проверить рекомендацию правил независимо от рассуждения LLM.
+- Перед активацией проверить рекомендацию; эта операция чтения не разрешает активацию и не заменяет проверки жизненного цикла.
 
 ## Как это работает
 
@@ -22,56 +22,60 @@ description: "Оценивает набор правил FPF для конкре
 4. Собирает совпадения и сортирует по `priority` - **первое совпадение выигрывает**, точно так же, как это делает движок во время выполнения.
 5. Сообщает `action` выигрышного правила как рекомендуемую категорию вместе с его `message`.
 
-Пороги, определяющие категории, берутся из `fpf.thresholds` в конфигурации (`explore_reff`, `investigate_reff`, `exploit_reff`). Глубина влияет на пороги: критическому артефакту требуется более сильное доказательство для достижения EXPLOIT, чем тактическому, поэтому один и тот же R_eff может попасть в разные категории в зависимости от глубины.
+Встроенные правила учитывают статус, оценку доказательств, качество и число связей, а не универсальные интервалы `0.33/0.66` или автоматическое повышение порогов по глубине. Пять условий по умолчанию описаны в [`forgeplan_fpf_rules`](/ru/docs/mcp/forgeplan_fpf_rules/). Непустой `fpf.rules` заменяет встроенные правила.
 
 ## Входные параметры
 
-| Имя | Тип | Обязательный | Описание |
+| Имя | Тип JSON | Обязательно | Описание и ограничения |
 |---|---|---|---|
-| `id` | `string` | yes | ID артефакта (без учёта регистра), например, `PRD-042`, `RFC-007`, `ADR-003`. |
+| `id` | `string` | да | ID проверяемого артефакта, например `PRD-041`. |
+| `workspace` | `string \| null` | нет | Необязательный явный каталог рабочего пространства для этого вызова. Сервер ищет `.forgeplan/` по этому пути, а не в каталоге запуска. Используйте для агента в отдельном git worktree. PRD-078 / ADR-015. Принимает абсолютный путь или путь с `~`. По умолчанию в схеме: `null`. |
 
-_Источник схемы: `crates/forgeplan-mcp/src/server.rs::FpfCheckParams`_
+Обязательное поле означает, что ключ должен присутствовать. Значение `null` допустимо только тогда, когда оно перечислено в типе JSON. Значения по умолчанию в схеме не обязательно совпадают с теми, которые использует обработчик и описывает текст.
+
+_Источник схемы: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Возвращает
 
+Успешный ответ содержит JSON в текстовом содержимом MCP. Условный пример для артефакта, которому соответствует только `blind-spot`:
+
 ```json
 {
-  "artifact": {
-    "id": "PRD-042",
-    "kind": "prd",
-    "status": "draft",
-    "depth": "deep",
-    "r_eff": 0.28
-  },
-  "winning_rule": {
-    "name": "low_trust_explore",
-    "priority": 10,
-    "action": "EXPLORE",
-    "message": "R_eff 0.28 < 0.33 explore threshold - add evidence or narrow scope before activation."
-  },
+  "artifact_id": "PRD-042",
+  "kind": "prd",
+  "status": "draft",
   "matched": [
-    { "name": "low_trust_explore", "priority": 10, "action": "EXPLORE" },
-    { "name": "draft_needs_adi",   "priority": 50, "action": "INVESTIGATE" }
+    {
+      "name": "blind-spot",
+      "priority": 1,
+      "action": "EXPLORE",
+      "message": "Draft with no evidence (R_eff < 0.01). Needs evidence to validate."
+    }
   ],
-  "unmatched": [
-    { "name": "high_trust_exploit", "priority": 30, "action": "EXPLOIT",
-      "reason": "r_eff (0.28) < exploit_reff (0.66)" }
-  ],
-  "thresholds": {
-    "explore_reff":     0.33,
-    "investigate_reff": 0.66,
-    "exploit_reff":     0.66,
-    "depth_adjustment": "+0.10 for deep"
-  }
+  "unmatched": ["weak-evidence", "orphan-active", "medium-quality", "ready-to-build"],
+  "winning": {
+    "name": "blind-spot",
+    "priority": 1,
+    "action": "EXPLORE",
+    "message": "Draft with no evidence (R_eff < 0.01). Needs evidence to validate."
+  },
+  "summary": "1 matched, 4 unmatched, winning: blind-spot",
+  "_next_action": "Illustrative guidance; read winning.message."
 }
 ```
+
+Если ни одно правило не совпало, `winning` равен `null`. `unmatched` содержит имена, а не объяснения несовпадений. Вложенного объекта `artifact`, оценки, глубины и объекта порогов нет. `_next_action` — рекомендация, а не результат принудительной проверки.
 
 Если ID не существует, инструмент возвращает ошибку, чтобы агент мог вернуться к `forgeplan_search`.
 
 ## Пример вызова
 
+Аргументы этого инструмента, а не оболочка JSON-RPC. Замените условные ID, идентификаторы сессий и пути значениями из своего рабочего пространства. Соответствие схеме не отменяет проверки рабочего пространства, жизненного цикла и согласия на выполнение.
+
 ```json
-{ "id": "PRD-042" }
+{
+  "id": "PRD-001"
+}
 ```
 
 ## Типовая последовательность
@@ -86,7 +90,7 @@ forgeplan_fpf_check { id: "PRD-X" } ← какая рекомендуемая к
 
 ## Эквивалент CLI
 
-- [`forgeplan fpf check <ID>`](/ru/docs/cli/fpf-check/) - идентичный вывод, отображаемый в терминале.
+- [`forgeplan fpf check <ID>`](/ru/docs/cli/fpf-check/) - та же оценка правил в представлении для терминала.
 
 ## См. также
 
@@ -94,4 +98,4 @@ forgeplan_fpf_check { id: "PRD-X" } ← какая рекомендуемая к
 - [`forgeplan_fpf_rules`](/ru/docs/mcp/forgeplan_fpf_rules/) - перечень правил, оцениваемых здесь
 - [`forgeplan_score`](/ru/docs/mcp/forgeplan_score/) - вычисляет R_eff, с которым сопоставляются правила
 - [`forgeplan_reason`](/ru/docs/mcp/forgeplan_reason/) - рассуждения ADI, дополняющие проверки на основе правил
-- [`forgeplan_activate`](/ru/docs/mcp/forgeplan_activate/) - завершающее действие, как только артефакт достигает EXPLOIT
+- [`forgeplan_activate`](/ru/docs/mcp/forgeplan_activate/) - отдельная операция жизненного цикла со своими проверками

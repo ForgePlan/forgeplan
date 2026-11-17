@@ -1,8 +1,8 @@
 # Agent Protocol — Reading Forgeplan Output
 
-> Status: **Active** (PRD-071, 2026-04-27)
+> Reference: **Forgeplan 0.38.0**. PRD-071 defines the intended hint discipline; this page distinguishes that target from the shipped transport and agent safety rules.
 >
-> This document defines the contract between Forgeplan and any agent (Claude Code, Cursor, Windsurf, custom orchestrators) consuming its output. It exists so a single mental model works across CLI text, CLI JSON, MCP success, CLI error, and MCP error surfaces.
+> Hints guide agents and humans through a workflow. They are not executable authority, proof of a passed gate, or a substitute for checking the current state and permissions.
 
 ## Why this contract exists
 
@@ -12,27 +12,29 @@ Forgeplan is a methodology engine. Each command/tool call is one step in a longe
 - Guess and sometimes hallucinate
 - Loop on the same step
 
-Each of these costs tokens and risks correctness. The contract eliminates ambiguity by guaranteeing every output carries an explicit, deterministic next-action.
+The shared hint helpers select a primary next action. In 0.38.0 the convention is not universal: actions may contain prose or placeholders, errors may lack a hint, and a missing hint does not itself prove completion.
 
 ## The 5-rule contract
 
-Every Forgeplan output, regardless of surface, satisfies these:
+The **design target** is presence, actionability, determinism, conditionality and consistency:
 
-1. **PRESENCE** — every response either emits a next-action OR is explicitly terminal. No silent gaps.
-2. **ACTIONABILITY** — the next-action is a full, copy-pasteable command with real IDs (e.g. `forgeplan score PRD-001`), never a fragment (`consider scoring`) or placeholder (`<id>`).
-3. **DETERMINISM** — same input state always produces the same hint string. No randomness, no multi-choice paralysis.
-4. **CONDITIONALITY** — hints appear only when actionable. Terminal states (workflow complete) emit `null`/silence rather than fake-positive "all done!".
-5. **CONSISTENCY** — text and JSON renderings carry the same semantic content. CLI mirrors MCP semantics.
+1. Supply a primary action or an explicit terminal outcome.
+2. Prefer a complete command with existing IDs; distinguish unknown values that the caller must fill.
+3. Choose one primary action deterministically.
+4. Emit advice only when applicable; do not manufacture an “all done” command.
+5. Keep CLI and MCP advice semantically consistent.
+
+Consumers must tolerate the actual forms below. For example, MCP `reason` and `guard` can return explanatory prose in `_next_action`; `score_hints` can contain `EVID-NNN` for evidence not yet created. Do not pass arbitrary hint text directly to a shell.
 
 ## Surfaces and renderings
 
 | Surface | Where the hint lives | Format |
 |---|---|---|
-| **CLI text (success)** | last lines of stdout | `Next: <full command>` plus optional rationale |
-| **CLI text (error)** | after `Error:` line | `Fix: <full command>` |
-| **CLI JSON** | top-level field | `{"_next_action": "<command>" | null, ...}` |
-| **MCP success response** | top-level field | `_next_action: "<command>" | null` |
-| **MCP error response** | error data field | `error.data._next_action: "<command>"` |
+| **CLI text (success)** | output text | `Next: ...` where emitted; other advisory lines may precede it |
+| **CLI text (error)** | error text | `Fix: ...` / `Wait: ...` on paths that provide remediation |
+| **CLI JSON** | command-specific payload | `_next_action` where implemented; not every command supports JSON |
+| **MCP success response** | JSON encoded in MCP text content | `_next_action` where supplied; may be prose, command or null |
+| **MCP tool error (`err_hinted`)** | text content with `isError: true` | message followed by literal `_next_action: ...`, not `error.data._next_action` |
 
 ## Hint kinds
 
@@ -41,50 +43,35 @@ The contract defines five kinds of next-actions. Most outputs use `Next` — the
 | Kind | When to emit | Example |
 |---|---|---|
 | `Next` | Primary action, the one the agent should run | `Next: forgeplan validate PRD-001` |
-| `Or` | Alternate action, paired with `Next`, only if primary doesn't apply | `Or: forgeplan release PRD-054 --force` |
+| `Or` | Alternative advice; does not grant permission to override another agent | `Or: forgeplan list` |
 | `Wait` | Async / TTL state; agent should retry after the condition | `Wait: TTL expires in 30 min` |
 | `Done` | Terminal success; workflow complete, move on | `Done.` |
 | `Fix` | Error remediation; pair with `Error:` line | `Fix: forgeplan undo-last --within-hours 720` |
 
 ## Slug-aware references (PROB-060 / SPEC-005 / ADR-012)
 
-Forgeplan uses **two-layer artifact identity**: a canonical `slug`
-(`prd-auth-system`) that never changes, and a derived `display id`
-(`PRD-074`) that is finalised by a CI bot when the artifact's branch
-merges to `dev`. While the bot has not yet flipped `assigned_number`
-from `null` to a number, the artifact is **pre-merge** and the
-display id carries a `?` marker (`PRD-74?`) signalling "predicted, not
-final".
+Forgeplan carries slug and numeric identity fields. **Do not infer assignment from lifecycle status or from whether a branch merged.** Default `new` creation in 0.38.0 assigns a number immediately. The frontmatter helper preserves an explicit `assigned_number: null` for deferred-assignment workflows; CI bot setup is external to that creation path.
 
-The hint protocol mirrors this contract:
+The `refs_form` helper selects:
 
 | State | Hints reference | Rendered example |
 |---|---|---|
-| **Pre-merge** (`assigned_number: null`) | the **slug** | `Next: forgeplan validate prd-auth-system` |
-| **Post-merge** (`assigned_number: 74`) | the **display id** | `Next: forgeplan validate PRD-074` |
+| Deferred assignment (`assigned_number` absent/null, valid slug present) | **slug** | `Next: forgeplan validate prd-auth-system` |
+| Assigned (`assigned_number: 74`) | **fallback ID** supplied by caller | `Next: forgeplan validate PRD-074` |
+| Legacy / invalid or missing slug | **fallback ID** | `Next: forgeplan validate PRD-018` |
 
-The selection happens in [`forgeplan_core::artifact::frontmatter::refs_form`](../../crates/forgeplan-core/src/artifact/frontmatter.rs);
-all CLI / MCP hint sites consult that helper so the choice stays in
-exactly one place. Agents do not need to re-implement the rule —
-`Next:` lines and `_next_action` JSON fields already carry the right
-form. Just **paste the command verbatim**.
+The selection lives in [`forgeplan_core::artifact::frontmatter::refs_form`](../../crates/forgeplan-core/src/artifact/frontmatter.rs). Not every hint callsite uses that helper; CLI `new`, for example, uses its allocated ID directly. The `?` marker is a display convention for a prediction, not an identifier to paste into commands.
 
 ### Why this matters for `Refs:` in commit messages
 
-Because `assigned_number` is write-once and only flips at merge, a
-commit body that pins `Refs: PRD-074` **before** the CI bot has
-assigned it points to nothing — the number is still predicted and may
-shift if a sibling branch merges first. Pre-merge commits MUST use
-the slug; post-merge they MAY use either form (the resolver maps both
-to the same artifact).
+For deliberately deferred assignment, prefer the valid slug until a number is assigned. For the shipped immediate-assignment path, use the returned ID or valid slug; merging is not the condition that makes the returned ID resolvable. Legacy IDs remain usable without slug migration. See [ID-ASSIGNMENT.ru.md](ID-ASSIGNMENT.ru.md) for current limits and historical rollout plans.
 
 ```
-✅ Pre-merge:  Refs: prd-auth-system, FR-001..003
-✅ Post-merge: Refs: PRD-074, FR-001..003
-✅ Post-merge: Refs: prd-auth-system  (slug also resolves)
+✅ Deferred assignment: Refs: prd-auth-system, FR-001..003
+✅ Assigned/default creation: Refs: PRD-074, FR-001..003
+✅ Assigned: Refs: prd-auth-system  (valid slug also resolves)
 
-❌ Pre-merge:  Refs: PRD-74?, FR-001..003   # "?" marker is for display, not refs
-❌ Pre-merge:  Refs: PRD-074, FR-001..003   # number not yet assigned — broken pointer
+❌ Refs: PRD-74?, FR-001..003   # display marker is not an identifier
 ```
 
 ## Good hints vs. bad hints
@@ -101,17 +88,13 @@ Specific, full command, real ID, rationale explains *why*.
 Next: forgeplan validate prd-auth-system
   draft, MUST sections incomplete
 ```
-Pre-merge artifact: hint references the slug. Agent's next commit will
-use `Refs: prd-auth-system` so the pointer survives any merge-time
-display-number reshuffle.
+For deliberately deferred assignment, use the slug in refs so the reference does not depend on a predicted display number.
 
 ```
 Next: forgeplan activate PRD-074
-  R_eff = 0.82 — ready to ship
+  R_eff = 0.82 — review activation prerequisites
 ```
-Post-merge artifact (`assigned_number: 74` is set): hint references the
-zero-padded display id. Slug still resolves but display id is the
-canonical form once the number is finalised.
+`assigned_number: 74` is set (including immediate assignment by default). Slug lookup still works; a positive score alone does not establish every activation prerequisite.
 
 ```
 Next: forgeplan dispatch --agents 3
@@ -151,38 +134,28 @@ Terminal status without an exit signal. What should the agent do? (If truly term
 ```
 Next: forgeplan validate PRD-74?
 ```
-Pre-merge artifact whose hint embeds the literal `?` marker. The marker
-is for **display** (the human-readable card heading); commit messages
-and `forgeplan` commands should consume the slug instead. Forgeplan
-rendering MUST strip the marker before populating `Next:`.
-
-```
-Next: forgeplan validate PRD-074
-```
-…on a draft artifact whose `assigned_number` is still `null`. The
-display id `PRD-074` is not stable yet — a sibling branch may shift the
-predicted number on merge. Pre-merge hints MUST use the slug.
+The `?` marker is for display; use the valid slug or assigned ID. A hint containing `PRD-074` is not wrong merely because its branch is unmerged: the default creation path assigns immediately. Check the artifact's actual identity fields.
 
 ## Agent reading protocol
 
-When an agent receives any Forgeplan output, it should:
+When receiving Forgeplan output:
 
-1. **Look for the next-action**. CLI text: scan for `Next:`, `Fix:`, `Wait:`, or `Done.` line. JSON: read `_next_action` field. MCP: read `_next_action` field of response.
-2. **Execute primary if present**. If `Next:` or `Fix:` — execute the command exactly as written. Do not paraphrase, do not substitute placeholders (there shouldn't be any), do not split into multiple commands.
-3. **Use `Or:` only if primary blocks**. The primary `Next:` is the recommended path. Fall back to `Or:` only when primary fails or doesn't apply (e.g. claim held by another agent → `Or: --force`).
-4. **On `Wait:`, retry after condition**. The hint specifies what to wait for.
-5. **On `Done.`, the workflow is complete**. Move to the next task; do not loop.
-6. **On no hint and not terminal — report a contract violation**. This is a bug in Forgeplan, not an agent decision.
+1. Read the result and error status before the hint. For MCP, parse JSON text content when present; handle text-only tool errors separately.
+2. Look for `Next:`, `Fix:`, `Wait:`, `Done.` or `_next_action`, but do not assume one is present or shell-ready.
+3. Check the proposed operation against the user's task, permissions, ownership and current artifact state. Replace unresolved placeholders only with verified values. A hint is not authorization for `--force`, release of a peer's claim or lifecycle bypass.
+4. Prefer the primary applicable advice; use an alternative only when justified. On a claim conflict, wait or ask the owning orchestrator to resolve it; do not take the claim.
+5. Honour a concrete wait condition. On an explicit terminal result, stop that workflow; no hint alone is not a terminal signal.
+6. Report missing/malformed or unsafe hints as protocol defects and choose a supported read-only diagnostic where possible.
 
 ## Implementation reference
 
 Forgeplan implements the contract through the `forgeplan_core::hints` module:
 
 ```rust
-use forgeplan_core::hints::{Hint, primary_action, render_next_action_line};
+use forgeplan_core::hints::{primary_action, render_next_action_line, score_hints};
 
-// Each command produces a Vec<Hint> via domain-specific helpers
-let hints = score_hints(r_eff, has_evidence, cl0_count);
+// Illustrative fragment: inputs come from the command's score result.
+let hints = score_hints("PRD-001", r_eff, has_evidence, cl0_count);
 
 // CLI text mode appends `Next:` line at end of output
 print!("{}", render_next_action_line(&hints));
@@ -193,8 +166,8 @@ let json = serde_json::json!({
     "_next_action": primary_action(&hints),
 });
 
-// MCP responses use the same primary_action() output
-hinted_result(&payload, primary_action(&hints).unwrap_or_default())
+// MCP handlers attach an action to their JSON payload as appropriate.
+// Recoverable errors may instead use err_hinted(), which emits text content.
 ```
 
 Slug-aware reference selection (PROB-060 / SPEC-005 / ADR-012) lives in
@@ -213,18 +186,11 @@ let ref_form = refs_form_from_body(&record.body, &record.id);
 let hints = get_hints(&ref_form, &status, &kind, has_links, &depth);
 ```
 
-Hint sites MUST consult these helpers rather than inlining the
-"slug if pre-merge else display id" branch — keeping the rule in one
-place is what prevents drift between the MCP `_next_action` shape and
-the CLI `Next:` line (Rule 5: CONSISTENCY).
+New hint sites should reuse reference helpers rather than duplicating identity logic, and preserve the safety checks in the reading protocol. This is a contributor requirement, not a claim that every shipped callsite already complies.
 
 ## Drift prevention
 
-The contract is enforced by:
-
-1. **Integration test** `tests/hint_contract.rs` — runs every CLI command + asserts every response has `Next:` line or explicit terminal status.
-2. **Audit script** `scripts/audit-hints.sh` — produces coverage metric, runs in CI.
-3. **Code review checklist** — any new CLI command or MCP tool without a hint fails review.
+The repository contains `crates/forgeplan-cli/tests/hint_contract.rs` and `scripts/audit-hints.sh` to detect gaps, plus review guidance for new command/tool surfaces. Their existence is not proof that every possible runtime response satisfies the five rules; keep observed release exceptions explicit.
 
 ## Related
 

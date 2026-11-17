@@ -1,9 +1,9 @@
 ---
 title: forgeplan_calibrate
-description: "Suggest depth level (Tactical/Standard/Deep/Critical) for artifacts based on content analysis. Detects security sections, breaking changes, link count, body complexity."
+description: "Recommend Tactical, Standard or Deep from artifact content without changing its stored depth."
 ---
 
-Suggest an appropriate **depth** level (`Tactical` / `Standard` / `Deep` / `Critical`) for one or all artifacts, based on heuristic content analysis. Depth drives validator strictness (MUST rules per depth), ADI requirement, and review ceremony - so miscalibrated depth means either over-engineering a one-liner or shipping a critical change without adversarial review.
+Suggests an artifact depth using deterministic heuristics, without modifying the artifact. This released implementation suggests `Tactical`, `Standard` or `Deep`; it does not produce a distinct `Critical` level. Depth-sensitive validation and a team's ADI/review policy are separate from this recommendation.
 
 **Category**: Quality
 
@@ -14,48 +14,58 @@ Suggest an appropriate **depth** level (`Tactical` / `Standard` / `Deep` / `Crit
 - **Audit sweep** - find artifacts marked `Tactical` that actually warrant `Deep` based on body content.
 - **Onboarding agents** - teach them what factors push depth up (security, breaking changes, cross-team scope).
 
-Heuristics considered: security sections present, breaking-change markers, outgoing link count, body length and section complexity.
+Signals include checkbox count, English security/breaking-change markers, outgoing relation count, a parent Epic, H2 section count and body line count. Checkbox thresholds are >3 for Standard and >10 for Deep; links >2/>5, H2 sections >4/>8 and lines >50/>200. Security or breaking-change markers imply Deep; a parent Epic implies Standard. The highest signal wins, or Tactical if none match. This is heuristic text matching, not semantic or language-independent analysis.
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
-| `id` | `string` | no | Artifact ID to calibrate. Omit to calibrate all artifacts in the workspace. |
+| `id` | `string \| null` | no | Artifact ID (checks all if omitted) Schema default: `null`. |
+| `workspace` | `string \| null` | no | Optional explicit workspace directory for this call. When set, the MCP server resolves the `.forgeplan/` projection from this path instead of the server's startup CWD. Use this when the calling agent is running in a git worktree separate from the MCP server's launch directory. PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. Schema default: `null`. |
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::CalibrateParams`_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
 
+Illustrative JSON payload in MCP text content:
+
 ```json
 {
-  "suggestions": [
+  "results": [
     {
-      "id": "PRD-042",
+      "artifact_id": "PRD-042",
+      "artifact_title": "Login flow",
       "current_depth": "tactical",
-      "suggested_depth": "deep",
-      "reasons": [
-        "Security section present",
-        "Breaking change detected (## Migration required)",
-        "8 outgoing links"
+      "suggested_depth": "Deep",
+      "escalation_needed": true,
+      "signals": [
+        {"name": "security_section", "value": "present", "minimum_depth": "Deep"}
       ]
     }
   ],
-  "total_suggestions": 1
+  "total_escalations": 1,
+  "_next_action": "Illustrative guidance to review an under-depth artifact."
 }
 ```
 
+`results` includes every checked record, not just mismatches. `total_escalations` counts only recommendations above current depth. Suggested and signal depths use title case; `current_depth` preserves the stored value. With `id`, matching is case-insensitive and an unknown ID returns an MCP error. Relation-read failures are logged and counted as zero links. No LLM or automatic depth write is involved.
+
 ## Example invocation
 
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
+
 ```json
-{ "id": "PRD-042" }
+{}
 ```
 
 ## Typical sequence
 
 1. `forgeplan_calibrate` - scan the workspace.
-2. For each mismatch: re-route the task with `forgeplan_route` or manually set depth in frontmatter.
-3. `forgeplan_validate` - rerun validation under the new depth (stricter MUST rules).
-4. `forgeplan_reason` - ADI is mandatory at Deep / Critical.
+2. Review each escalation and explicitly update the artifact's frontmatter depth if warranted; re-routing alone does not change it.
+3. Validate under the new depth.
+4. Run ADI/review as required by team policy; calibration does not enforce those steps.
 
 ## CLI equivalent
 

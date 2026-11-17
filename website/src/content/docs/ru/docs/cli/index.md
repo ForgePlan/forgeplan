@@ -1,6 +1,6 @@
 ---
 title: Справочник CLI
-description: "Полный справочник всех 82 команд Forgeplan CLI."
+description: "Forgeplan 0.38.0: 82 команды верхнего уровня, 103 команды с учётом подкоманд."
 ---
 
 Forgeplan поставляется с **82 командами верхнего уровня**, охватывающими полный жизненный цикл Shape→Validate→ADI→Code→Evidence→Activate.
@@ -104,7 +104,7 @@ Forgeplan поставляется с **82 командами верхнего �
 |---|---|
 | [`forgeplan scan`](/ru/docs/cli/scan/) | Сканировать кодовую базу на исходные модули |
 | [`forgeplan scan-import`](/ru/docs/cli/scan-import/) | Сканировать существующие документы и импортировать как артефакты |
-| [`forgeplan reindex`](/ru/docs/cli/reindex/) | Перестроить индекс LanceDB из .md файлов (синхронизация файлы-первыми) |
+| [`forgeplan reindex`](/ru/docs/cli/reindex/) | Синхронизировать индекс из markdown; существующие записи обновляют тело, не все метаданные; без пересчёта оценок/векторов |
 | [`forgeplan embed`](/ru/docs/cli/embed/) | Сгенерировать эмбеддинги для всех артефактов (семантический поиск) |
 | [`forgeplan watch`](/ru/docs/cli/watch/) | Следить за файлами .forgeplan/ и синхронизировать изменения в LanceDB в реальном времени |
 | [`forgeplan git-sync`](/ru/docs/cli/git-sync/) | Синхронизировать изменения артефактов из операций git (pull/merge) в LanceDB |
@@ -145,11 +145,38 @@ Forgeplan поставляется с **82 командами верхнего �
 | [`forgeplan anomalies`](/ru/docs/cli/anomalies/) | Issue #289 - обнаружить аномалии конвейера (застрявшие черновики, сироты ссылок, неправильно типизированные based_on и т.д.). Каждая запись содержит severity + tier + suggested_resolution, чтобы оркестраторы могли отправлять исправления |
 | [`forgeplan phase`](/ru/docs/cli/phase/) | Прочитать консультативное состояние фазы для артефакта. Возвращает current_phase, workflow_type, timestamps и полную историю переходов только для добавления из `.forgeplan/state/<id>.yaml`. Если файл состояния не существует (артефакт до PRD-056 или отслеживание фазы было отключено), возвращает `current_phase: unknown` -- никогда ошибка. Отслеживание фазы консультативно и никогда не блокирует другие инструменты |
 | [`forgeplan phase-advance`](/ru/docs/cli/phase-advance/) | Вручную продвинуть (или установить) маркер консультативной фазы для артефакта. Добавляет переход в историю. НЕ валидирует упорядочение фаз -- консультативный слой позволяет переходы вне порядка (например, прямое переопределение `done`). Полное применение фазы приземляется в более позднем PRD под EPIC-005. Используйте, когда автоматическое продвижение пропустило переход или при переклассификации состояния рабочего процесса |
-| [`forgeplan ci-assign-id`](/ru/docs/cli/ci-assign-id/) | PROB-060 Фаза 0b - атомный CI назначитель `assigned_number`. Проходит `.forgeplan/**/*.md` в `--head`, находит кандидатов с `assigned_number: null`, вычисляет `next = max(assigned_number)+1` на вид из `--base` git ссылки, переписывает frontmatter (без переименования файла - Фаза 2.1). LanceDB-свободно согласно ADR-003. Обёрнуто в производстве `.github/workflows/assign-id.yml` `concurrency: forgeplan-id-assign` |
+| [`forgeplan ci-assign-id`](/ru/docs/cli/ci-assign-id/) | Назначить номера из рабочего дерева по --base, обновить frontmatter и имена файлов; коллизии требуют просмотра, LanceDB не меняется |
 | [`forgeplan migrate-dry-run`](/ru/docs/cli/migrate-dry-run/) | PROB-060 Фаза 0b - сухой прогон миграции EVID-C. Сканирует все артефакты в `.forgeplan/`, вычисляет slug, который каждый получит согласно правилам SPEC-005, и обнаруживает коллизии на вид перед миграцией Фазы 4. Только для чтения - никогда не мутирует .md файлы |
 | [`forgeplan migrate-secrets`](/ru/docs/cli/migrate-secrets/) | PRD-077 FR-023 Часть B - импортировать известные переменные окружения API-ключей (GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY) из окружения процесса в `.forgeplan/secrets.env`, чтобы ключи жили локально в проекте вместо того, чтобы быть в rc вашей оболочки. По умолчанию сухой прогон; передайте `--apply` для записи |
-| [`forgeplan reconcile-ids`](/ru/docs/cli/reconcile-ids/) | PROB-060 Фаза 2.4 (W2.C) - инструмент ручной очистки для дрейфа идентичности после слияния. Сканирует `.forgeplan/<kind>/*.md`, обнаруживает четыре категории дрейфа (несоответствие имени файла, отсутствующий `predicted_number`, дрейф ссылок в теле, дублирующийся `assigned_number`) и либо сообщает (`--check-only`), либо автоисправляет безопасные категории. LanceDB никогда не трогается; запустите `forgeplan scan-import` после, если индекс нужно перестроить |
+| [`forgeplan reconcile-ids`](/ru/docs/cli/reconcile-ids/) | PROB-060 Фаза 2.4 (W2.C) - инструмент ручной очистки для дрейфа идентичности после слияния. Сканирует `.forgeplan/<kind>/*.md`, обнаруживает четыре категории дрейфа (несоответствие имени файла, отсутствующий `predicted_number`, дрейф ссылок в теле, дублирующийся `assigned_number`) и либо сообщает (`--check-only`), либо автоисправляет безопасные категории. LanceDB никогда не трогается; запустите `forgeplan reindex` после, если индекс нужно перестроить |
 | [`forgeplan mcp`](/ru/docs/cli/mcp/) | Помощники интеграции MCP (установить конфиг для клиентов AI агентов) |
 | [`forgeplan playbook`](/ru/docs/cli/playbook/) | Среда выполнения playbook (PRD-065 / SPEC-003) - декларативная оркестровка YAML с делегированиями внешним плагинам |
 | [`forgeplan ingest`](/ru/docs/cli/ingest/) | Механизм приёма (PRD-066 / SPEC-004) - применить YAML маппинг к выходам плагинов, сгенерировать forge артефакты со ссылками на источник file:line |
 | [`forgeplan plugins`](/ru/docs/cli/plugins/) | Обнаружение плагинов + рекомендации (PRD-067) - список установленных плагинов, проверка здоровья, информация о конкретном плагине |
+## Forgeplan 0.38.0
+
+Опубликованный релиз — **0.38.0**: **82 команды верхнего уровня, 103 с учётом подкоманд**. Блоки использования, аргументов и опций воспроизводят справку бинарного файла дословно; идентификаторы и примеры кода не переводятся. Пояснения отмечают расхождения справки и реализации. Документация генератора не заменяет проверку поведения.
+
+## Подкоманды
+
+- [`forgeplan discover start`](/ru/docs/cli/discover-start/)
+- [`forgeplan discover list`](/ru/docs/cli/discover-list/)
+- [`forgeplan discover show`](/ru/docs/cli/discover-show/)
+- [`forgeplan discover complete`](/ru/docs/cli/discover-complete/)
+- [`forgeplan fpf dashboard`](/ru/docs/cli/fpf-dashboard/)
+- [`forgeplan fpf ingest`](/ru/docs/cli/fpf-ingest/)
+- [`forgeplan fpf search`](/ru/docs/cli/fpf-search/)
+- [`forgeplan fpf section`](/ru/docs/cli/fpf-section/)
+- [`forgeplan fpf list`](/ru/docs/cli/fpf-list/)
+- [`forgeplan fpf status`](/ru/docs/cli/fpf-status/)
+- [`forgeplan fpf rules`](/ru/docs/cli/fpf-rules/)
+- [`forgeplan fpf check`](/ru/docs/cli/fpf-check/)
+- [`forgeplan mcp serve`](/ru/docs/cli/mcp-serve/)
+- [`forgeplan mcp install`](/ru/docs/cli/mcp-install/)
+- [`forgeplan playbook list`](/ru/docs/cli/playbook-list/)
+- [`forgeplan playbook show`](/ru/docs/cli/playbook-show/)
+- [`forgeplan playbook validate`](/ru/docs/cli/playbook-validate/)
+- [`forgeplan playbook run`](/ru/docs/cli/playbook-run/)
+- [`forgeplan plugins list`](/ru/docs/cli/plugins-list/)
+- [`forgeplan plugins doctor`](/ru/docs/cli/plugins-doctor/)
+- [`forgeplan plugins info`](/ru/docs/cli/plugins-info/)

@@ -1,9 +1,9 @@
 ---
 title: forgeplan_discover_complete
-description: "Finalise a brownfield discovery session. ForgePlan groups findings by phase and tier, runs forgeplan_health on the workspace, and proposes PROBs / PRDs / RFCs synthesised from the findings. Proposed artifacts are printed - not auto-created - so the agent or human can review before committing."
+description: "Complete a discovery session and return finding counts and artifact IDs. Health must be invoked separately."
 ---
 
-Closes an active discovery session started by `forgeplan_discover_start`. ForgePlan walks the findings the agent reported, groups them by phase and tier, runs a project health pass, and synthesises a set of **proposed** follow-up artifacts (PROBs for risks, PRDs for requirements, RFCs for implementation shapes). Crucially, the proposals are **printed only** - they are not auto-created. The agent (or human) reviews them and decides which to promote into the workspace via `forgeplan_new`.
+Marks a discovery session as `completed` and returns counts of the findings already recorded through `forgeplan_discover_finding`. In Forgeplan 0.38.0 the handler does **not** run health or generate a proposal set: `_next_action` asks the caller to run `forgeplan_health` separately. Finding artifacts already exist and remain drafts until reviewed and explicitly activated.
 
 **Category**: Brownfield Discovery
 
@@ -11,77 +11,61 @@ Closes an active discovery session started by `forgeplan_discover_start`. ForgeP
 
 - After the seven protocol phases have been walked and all findings emitted.
 - When the user says "wrap up discovery" / "propose next steps" / "finish the scan".
-- Before starting any Shape → Validate → Code cycle on the newly-discovered codebase - the proposals become the backlog seed.
+- Before starting a Shape → Validate → Code cycle on an accepted finding.
 
 ## What it does
 
-1. **Collects** every finding artifact tagged with the session (via `discover:<session_id>`).
-2. **Groups** them by phase and tier so the summary reflects source-priority ordering.
-3. **Runs** `forgeplan health` on the workspace to surface blind spots, orphans, and stale evidence alongside the fresh findings.
-4. **Synthesises** proposals by clustering related findings:
-   - Multiple tier-1 findings about the same subsystem → proposed **RFC**.
-   - Risk / instability / drift findings → proposed **PROB**.
-   - User-facing goals inferred from tests + git intent → proposed **PRD**.
-5. **Marks** the session as `completed` so it's excluded from further `discover_finding` calls.
+1. Loads the session named by `session_id`.
+2. Sets its session status to `completed`, records the completion time, and saves it.
+3. Counts findings by phase and tier and returns their artifact IDs.
+4. Suggests a separate health check and review of the created drafts.
 
-## Why proposals are not auto-created
+## Review stays with the caller
 
-Auto-creating artifacts from discovery would flood the workspace with low-confidence stubs and violate the project rule "never leave PRD stubs." Printing proposals keeps a human (or the agent, with user consent) in the loop: only items that earn buy-in graduate into real artifacts through `forgeplan_new`.
+Completion is not validation or activation. The caller reads the findings, decides which artifacts to keep, fills their required sections and follows the ordinary quality and lifecycle gates. Do not treat `session_status: "completed"` as an artifact status or as proof that the discovered claims are correct.
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
-| `session_id` | `string` | yes | Session handle from `forgeplan_discover_start`. Must still be active. |
+| `session_id` | `string` | yes | Session ID to complete |
+| `workspace` | `string \| null` | no | Optional explicit workspace directory for this call. When set, the MCP server resolves the `.forgeplan/` projection from this path instead of the server's startup CWD. Use this when the calling agent is running in a git worktree separate from the MCP server's launch directory. PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. Schema default: `null`. |
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::DiscoverCompleteParams`_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
 
-A summary report plus the proposal set:
+The payload contains `session_id`, `project_name`, `session_status`, `total_findings`, `phase_counts`, `tier_counts`, `artifacts_created`, `completed_at` and `_next_action`. `status` remains a deprecated alias for the session status; `_field_warnings` explains that distinction.
 
-```json
-{
-  "session_id": "discover-legacy-billing-service-…",
-  "status": "completed",
-  "findings_total": 27,
-  "findings_by_phase": {
-    "detect": 3, "structure": 4, "code": 9,
-    "git": 4, "tests": 3, "docs": 4
-  },
-  "findings_by_tier": { "1": 12, "2": 5, "3": 4, "4": 6 },
-  "health": { "blind_spots": 2, "orphans": 1, "stale_evidence": 0 },
-  "proposed": [
-    { "kind": "rfc",     "title": "Consolidate retry layers in billing engine",
-      "rationale": "3 tier-1 findings describe overlapping exponential backoff." },
-    { "kind": "problem", "title": "README drifted from src/auth - 4 claims unverified",
-      "rationale": "Tier-4 vs tier-1 reconciliation mismatch." },
-    { "kind": "prd",     "title": "Formalise idempotency guarantees on checkout",
-      "rationale": "Tests imply exactly-once semantics not reflected in code or docs." }
-  ],
-  "next_steps": [
-    "Review each proposal with the user.",
-    "For each accepted proposal: forgeplan_new <kind> <title>.",
-    "Start Shape → Validate cycle on the first PRD."
-  ]
-}
-```
+`artifacts_created` names the finding artifacts already created during the session. There is no `health`, `proposed` or `next_steps` result in the 0.38.0 handler.
+
+`phase_counts` maps phase names to counts; `tier_counts` is a JSON object whose
+keys are tier numbers rendered as strings. Only observed phases and tiers appear.
+`completed_at` is an RFC 3339 timestamp. This is a JSON summary in MCP text content,
+not a generated report artifact; there are no workspace trace fields.
+
+The handler does not require all seven phases, findings, or an active session.
+An empty session can complete, and repeating completion replaces `completed_at`.
+It does not change finding-artifact statuses; a draft may already have been
+activated separately, so read current artifacts rather than treating the hint as
+a fresh status check. Missing sessions and save failures are plain-text tool errors;
+workspace write-resolution may fail at JSON-RPC level.
 
 ## Example invocation
 
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
+
 ```json
-{ "session_id": "discover-legacy-billing-service-2026-04-11T10:15:00Z" }
+{
+  "session_id": "disc-20261023-120000"
+}
 ```
 
 ## Typical sequence
 
-```
-discover_start → …many discover_finding calls… → discover_complete
-                                                    ↓ reviews proposals
-                                                 forgeplan_new (one per accepted proposal)
-                                                    ↓
-                                                 forgeplan_validate / forgeplan_reason …
-```
+`forgeplan_discover_start` → repeated `forgeplan_discover_finding` calls → `forgeplan_discover_complete` → `forgeplan_health` → review the created drafts → validate and activate the ones to retain.
 
 ## CLI equivalent
 
@@ -92,5 +76,5 @@ discover_start → …many discover_finding calls… → discover_complete
 - [MCP overview](/docs/mcp/)
 - [`forgeplan_discover_start`](/docs/mcp/forgeplan_discover_start/) - kick off a session
 - [`forgeplan_discover_finding`](/docs/mcp/forgeplan_discover_finding/) - report observations
-- [`forgeplan_health`](/docs/mcp/forgeplan_health/) - the health snapshot bundled with the summary
-- [`forgeplan_new`](/docs/mcp/forgeplan_new/) - promote a proposal into a real artifact
+- [`forgeplan_health`](/docs/mcp/forgeplan_health/) - separate post-discovery health check
+- [`forgeplan_new`](/docs/mcp/forgeplan_new/) - create an additional artifact after reviewing the findings

@@ -1,8 +1,8 @@
 [English](MULTI-AGENT.md) · [Русский](MULTI-AGENT.ru.md)
 
-# Multi-Agent Workflow (v0.24.0+)
+# Multi-Agent Workflow (Forgeplan 0.38.0)
 
-Since **v0.24.0** (PRD-057), Forgeplan can **dispatch work** between 2–5 sub-agents sharing a single workspace. One MCP call returns a ready-to-execute plan: who works on what, what runs in parallel, what waits in the serial queue, and why.
+Forgeplan computes work plans and records advisory artifact claims. The orchestrator starts and supervises workers through its own agent runtime; `dispatch` does not spawn them. The original coordination tools shipped in v0.24.0; the CLI examples below use the 0.38.0 release.
 
 ## Why this exists
 
@@ -18,7 +18,7 @@ Before v0.24.0 the orchestrator (you or an AI agent) had to **manually** keep in
 - **Serial wasted** — A waits on B while C could have gone in parallel
 - **Forgotten blocker** — a PRD is activated while deps are still draft
 
-v0.24.0 closes this through four MCP tools.
+The four coordination operations help an orchestrator avoid duplicate assignments. They do not enforce source-file ownership or replace a task tracker.
 
 ## The four MCP tools
 
@@ -45,7 +45,7 @@ v0.24.0 closes this through four MCP tools.
 ```jsonc
 {
   "buckets": [["PRD-901"], ["PRD-902"], ["PRD-903"]],  // one bucket per agent
-  "serial_queue": ["PRD-905"],                           // waits their turn
+  "serial_queue": [{"id": "PRD-905", "reason": "missing affected_files frontmatter"}],
   "reasoning": [                                          // NFR-005 — why each decision
     "PRD-901: assigned to agent 0 (no file conflict, skill match)",
     "PRD-905: serialized (conflicts with every bucket or no matching skill)"
@@ -63,12 +63,12 @@ v0.24.0 closes this through four MCP tools.
 **What the algorithm considers** (in order):
 
 1. **Claims** (`forgeplan_claim`) — already-claimed artifacts are excluded.
-2. **Structural dependencies** — blocked artifacts (via `graph::topological::kahn_sort`, the same Kahn sort used by `forgeplan_blocked`) are excluded with explanation.
-3. **File overlap** — Jaccard similarity on `affected_files`. Pairs with overlap ≥ threshold (default 0.3) are treated as conflicting. `affected_files` source: frontmatter key if present; otherwise the `## Affected Files` markdown section (fallback for legacy artifacts).
+2. **Structural dependencies** — unresolved dependencies keep artifacts out of buckets and appear in `serial_queue` with blocker reasons.
+3. **File overlap** — Jaccard similarity on the declared path strings. Pairs with overlap ≥ threshold (default 0.3) cannot share a bucket. Paths/globs are not expanded against the filesystem; different strings can refer to overlapping files. Source: frontmatter `affected_files`, otherwise the `## Affected Files` body section.
 4. **Domain/skill match** — if `agent_skills` is provided, an artifact goes only to an agent with a matching skill. Skill mismatch → serial queue.
 5. **Least-loaded-first greedy** — distributes work evenly; avoids dumping everything onto agent 0.
 
-**Read-only:** does not mutate the workspace, does not take `workspace_lock`. Safe to poll at 1 Hz — does not serialize writers.
+**Read-only:** does not take `workspace_lock` or reserve assignments. Re-read claims before handing out work. **Important limitation:** conflicts are checked within each bucket, not across buckets. The orchestrator must check all concurrent workers' actual file sets before starting them.
 
 ### `forgeplan_claim` — "I am taking this artifact"
 
@@ -87,6 +87,8 @@ v0.24.0 closes this through four MCP tools.
 Writes `.forgeplan/claims/PRD-901.yaml` (gitignored). If already held by a different agent — **refuses** with the holder's `agent_id` and `expires_at`. Same-agent calls **renew** the TTL. Expired claims are **transparently overwritten** (AC-3).
 
 **Atomic write** via tempfile + rename — SIGKILL mid-write cannot leave a corrupt YAML.
+
+**A claim is a soft signal, not a write lock.** Other artifact tools do not refuse writes because another agent holds a claim. The separate workspace lock serializes participating CLI/MCP mutations; neither mechanism locks source files, git branches, or a remote clone. Claims are local to the selected `.forgeplan/` directory, not shared automatically across worktrees.
 
 ### `forgeplan_release` — "done"
 
@@ -130,44 +132,43 @@ Sorted by `expires_at` ASC (earliest-expiring first). **Read-only** — does not
 
 ### Orchestrator dispatches work to 3 agents
 
+Run from the intended workspace. These CLI commands are real 0.38.0 syntax; IDs are illustrative:
+
+```bash
+forgeplan dispatch --agents 3 --epic EPIC-005 --json
+forgeplan claims --json
+# Review cross-bucket file overlap, then assign exact files to each worker.
+forgeplan claim PRD-901 --agent worker-1 --ttl-minutes 30
+# The orchestrator starts worker-1 through its own runtime.
+# Renew before expiry with the same command and identity.
+forgeplan claim PRD-901 --agent worker-1 --ttl-minutes 30
+# After work is complete:
+forgeplan release PRD-901 --agent worker-1
+forgeplan dispatch --agents 3 --json
 ```
-1. orchestrator → forgeplan_dispatch --agents 3 --epic EPIC-005
-   ← { buckets: [[PRD-A], [PRD-B], [PRD-C]], serial: [PRD-D], ... }
 
-2. orchestrator → worker-1 "work on PRD-A"
-   orchestrator → worker-2 "work on PRD-B"
-   orchestrator → worker-3 "work on PRD-C"
-
-3. worker-1 → forgeplan_claim PRD-A --ttl 30
-   worker-2 → forgeplan_claim PRD-B --ttl 30
-   worker-3 → forgeplan_claim PRD-C --ttl 30
-
-4. Agents work in parallel. Every ~N minutes:
-   worker-1 → forgeplan_claim PRD-A (same agent, renews TTL)
-
-5. worker-1 done → forgeplan_release PRD-A
-   orchestrator → forgeplan_dispatch --agents 3 (re-plan — PRD-D may be parallelizable now)
-```
+Use the **same explicit `--agent`** for claim, renewal and release. The 0.38.0 implementation defaults differ: `claim` uses `cli-0.38.0`, while `release` uses `cli/0.38.0` (the help text does not expose this mismatch). Always pass a simple identity such as `worker-1`; explicit CLI claim validation rejects `/` and `\` even though MCP `clientInfo` identities can use `name/version`. `--agent` identifies the claim holder; it does not select or start a model.
 
 ### An agent crashed — orchestrator reaps the claim
 
+After confirming the holder has stopped:
+
+```bash
+forgeplan release PRD-902 --force
+forgeplan dispatch --agents 3 --json
 ```
-worker-2 crashed; claim on PRD-B still valid for 20 more minutes.
-orchestrator → forgeplan_release PRD-B --force
-orchestrator → forgeplan_dispatch --agents 3 (PRD-B available again)
-```
 
-Alternative: just wait for TTL expiry — the claim will self-expire after 30 minutes.
+Alternatively, wait until the recorded `expires_at`. Do not use `--force` to fix an identity mismatch on your own release.
 
-## What v0.24.0 does NOT ship
+## Current boundaries (0.38.0)
 
-(Deferred to v0.25+ per PRD-057 Growth Vision)
+- **CLI parity:** `dispatch`, `claim`, `release`, and `claims` are available. Per-agent `agent_skills` remains MCP-only.
+- **No persistent agent profiles:** skills are supplied to each dispatch call, not loaded from `agents/<id>.yaml`.
+- **Stdio MCP:** `forgeplan serve` exposes a connection's `clientInfo`; claims are not authenticated access-control grants.
+- **Cross-bucket overlap:** the limitation described above remains; a returned plan is not proof that concurrent edits are conflict-free.
+- **Separate roles:** Forgeplan holds decisions, evidence and artifact dependencies. A configured tracker holds tasks, assignees and deadlines. Tracker pickup is not `forgeplan claim`; closing a task does not activate an artifact.
 
-- **CLI parity** — no `forgeplan dispatch/claim/release/claims` CLI commands; MCP only. To use from CLI, pipe to `forgeplan serve` stdio MCP.
-- **`agents/<id>.yaml` profiles** — skills are passed per-call, not persisted. Roadmapped for v0.27.
-- **HTTP/SSE transport** — identity capture works on stdio only (one client per connection). Multi-connection HTTP needs per-request identity extraction.
-- **Inter-bucket overlap check** — the dispatcher checks file conflicts within a bucket but not between agents. Two overlapping PRDs may land in different buckets (they will merge-conflict on the mainline — user-level mitigation: don't hand them out together). Tracked as a v0.25 follow-up.
-- **Richer claim context** — Claim stores only `id + agent + ttl + note`. Structured fields ("which FRs I am working on") are a v0.25 item.
+MCP coordination calls accept `workspace` for a worktree separate from the server's launch directory. Pass the intended absolute worktree root consistently; a CLI `cwd` change does not redirect an already-running MCP server.
 
 ## Frontmatter fields for better dispatch
 
@@ -182,21 +183,21 @@ status: draft
 depth: standard
 # ← new for dispatch:
 affected_files:
-  - crates/auth/src/**
-  - crates/api/src/auth/
+  - crates/auth/src/session.rs
+  - crates/api/src/auth.rs
 domain: backend   # frontend | backend | api | infra | docs | testing | general
 ---
 ```
 
 - **Without `affected_files`:** the dispatcher applies the R-2 safety bias and sends the artifact to the serial queue (treat as shared ground).
 - **With `affected_files`:** the dispatcher computes Jaccard overlap against other candidates and decides if they are parallel-compatible.
-- **With `domain`:** when the orchestrator passes `agent_skills`, the artifact routes to the matching agent. `domain` is validated against ASCII `[a-z0-9_-]` — non-ASCII (Cyrillic, RTL, ZWJ) is **rejected** (security CWE-176).
+- **With `domain`:** matching uses ASCII domain names and case-insensitive skill comparison. Invalid domain characters are normalized to no domain, not rejected as an artifact write. An empty agent skill list accepts any domain.
 
 **Fallback for legacy artifacts** (no FM key): the dispatcher reads the `## Affected Files` markdown section in the body — backward-compatible.
 
 ## Identity stamping (Inc 2)
 
-**Automatic** on every MCP write tool, provided the client passed `clientInfo` during `initialize`:
+**Best-effort** stamping on MCP `new` and `update`, when the server has captured valid `clientInfo`:
 
 ```yaml
 # In .forgeplan/prds/PRD-042-title.md after forgeplan_update:
@@ -225,12 +226,19 @@ Used for:
 | Claim file size | ≤ 64 KB | billion-laughs, R1 parity |
 | Claim TTL | 1..=1440 min (24h) | shorter churns, longer risks stuck agent |
 
-Exceeding the cap → error at the MCP boundary with a clear message.
+Bounds are operation-specific: dispatch rejects invalid agent counts/thresholds at the boundary, while affected-file parsing truncates the list to 512 entries and drops overlong paths. Do not treat these limits as a file-ownership check.
 
 ## Further reading
 
-- **PRD-057** (`.forgeplan/prds/PRD-057-*.md`) — full FR/AC/NFR + Growth Vision roadmap
-- **EVID-077** (`.forgeplan/evidence/EVID-077-*.md`) — what was tested and how (R_eff=1.00, CL3)
-- **CHANGELOG.md** `[0.24.0]` — full release notes
-- [AGENT-HOOKS.md](AGENT-HOOKS.md) — how Forgeplan hooks (forge-safety, pre-commit-fmt) behave in a multi-agent setup
+- **PRD-057** (`.forgeplan/prds/PRD-057-*.md`) — original requirements and Growth Vision, not a statement that every roadmap item shipped
+- **EVID-077** (`.forgeplan/evidence/EVID-077-*.md`) — historical v0.24.0 verification (R_eff=1.00, CL3), not a fresh 0.38.0 test result
+- **CHANGELOG.md** `[0.24.0]` — historical release notes
+- [AGENT-HOOKS.md](AGENT-HOOKS.md) — public hook registration, advisory checks and host boundaries
 - [UNIFIED-WORKFLOW.md](../methodology/UNIFIED-WORKFLOW.md) — how Forgeplan × Orchestra × Hindsight fit together
+
+## Release sources
+
+- [Core 0.38.0 claims](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-core/src/claim/mod.rs#L1-L10) — advisory intent versus workspace locking.
+- [Dispatcher and overlap checks](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-core/src/dispatch/mod.rs#L383-L508) and [CLI parity](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-cli/src/commands/dispatch.rs#L114-L185).
+- [Public task-runner role](https://github.com/ForgePlan/marketplace/blob/b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7/plugins/forgeplan-orchestra/agents/task-runner.md#L184-L218) — tracker work is separate from source changes and Forgeplan mutations.
+- [CLI claim default](https://github.com/ForgePlan/Forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-cli/src/commands/claim.rs#L17-L28) versus [release default](https://github.com/ForgePlan/Forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-cli/src/commands/release.rs#L13-L15) — why explicit matching identities are necessary.

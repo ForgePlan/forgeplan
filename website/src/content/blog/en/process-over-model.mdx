@@ -12,9 +12,9 @@ translations:
   ru: process-over-model
 ---
 
-Everyone says AI accelerates development. That's true - we checked. Over eighteen months of working with AI assistants, the speed of writing code went up noticeably. But speed and quality turned out to be different vectors. Without guardrails we got fast work with accumulating debt - PR after PR, each one fine on its own, and still the codebase was begging for a refactor three months later. When we added process - the first few weeks were slower, every step required artifact sign-off. But there were no rollbacks.
+Everyone says AI accelerates development. That's true - we checked. Over eighteen months of working with AI assistants, the speed of writing code went up noticeably. But faster work didn't mean better work. Without guardrails we got fast work with accumulating debt - PR after PR, each one fine on its own, and still the codebase was begging for a refactor three months later. When we added process, the first few weeks were slower: every step required artifact sign-off. But there were no rollbacks.
 
-Over those months, three theses solidified for me. Not rules - theses: claims you can verify and disprove. I repeat them more than anything else when talking to teams that are starting to take agents seriously.
+Over those months, three theses became clear to me. Not rules - theses: claims you can verify and disprove. I repeat them more than anything else when talking to teams that are starting to take agents seriously.
 
 ---
 
@@ -50,13 +50,13 @@ That solves the problem of one developer with one agent. And that's exactly wher
 
 Take a team of five, each with their own agent. Every agent is correctly configured, every one works within its own CLAUDE.md. Developer one's agent implements feature A over a few hours and opens a PR. Developer two's agent implements feature B in parallel and opens another PR. Both PRs are technically sound. When review starts, the misalignment surfaces: feature A assumes event X is stored in the database, feature B assumes the same event lives in a queue. Both agents worked "correctly" by their own conventions. They had no shared space to align on an architectural assumption.
 
-Five developers with five agents isn't five people - it's twenty-five "workers" in one repository. To keep that from becoming Babel, you need a shared constitution: one PRD format, one architectural decision format, one depth scale for tasks. No single agent makes a unilateral decision, because "one person's rules" don't compose at "team scale."
+Five developers with five agents isn't five people - it's twenty-five "workers" in one repository. To keep that from becoming Babel, you need a shared constitution: one PRD format, one architectural decision format, one depth scale for tasks. No single agent makes a unilateral decision, because "one person's rules" don't work at "team scale."
 
 BMAD (Breakthrough Method for Agile AI-Driven Development) is one format for that shared constitution. Not the only one, not necessarily the best fit for every team. What matters is the principle: a shared artifact format as the **lingua franca** between agents across different developers.
 
-Without it, a team scales speed. Along with it - misalignment.
+Without it, a team scales both speed and misalignment.
 
-With it - each agent knows both "how my developer works" and "how decisions get made here." The difference between "I'm executing a task" and "I understand the context of a task" lives right there.
+With it, each agent knows both "how my developer works" and "how decisions get made here." That context separates "I'm executing a task" from "I understand the context of a task."
 
 Details on coordinating two to five agents in one repository: [Multi-agent coordination](/guides/multi-agent-cycle). The hint contract - the language in which an agent and a tool speak to each other: [Agent protocol](/guides/agent-protocol-cycle).
 
@@ -86,7 +86,7 @@ A second study from the same conference - **"When AI Code Doesn't Stick"** (MSR 
 - **17.71%** - code quality issues
 - **12.47%** - dependency problems
 
-What stops me in that taxonomy: the largest category isn't "wrong algorithm" or "syntax error." It's **over-engineering and side effects**. The agent solves the problem but does it in a way that touches things it shouldn't, or creates structure that's far more complex than the task required. That's the classic result of working without context - without understanding task boundaries, without architectural constraints, without a definition of done.
+What strikes me in that taxonomy: the largest category isn't "wrong algorithm" or "syntax error." It's **over-engineering and side effects**. The agent solves the problem but does it in a way that touches things it shouldn't, or creates structure that's far more complex than the task required. That's the classic result of working without context - without understanding task boundaries, without architectural constraints, without a definition of done.
 
 What distinguished teams whose metrics held up? The MSR authors don't dedicate a separate section to it, but the pattern shows up in the examples: they had a process. Not a specific tool - a process: PRDs with clear boundaries, architectural decisions with revision conditions, a review cadence, artifacts where an agent could read "what's allowed here and what isn't."
 

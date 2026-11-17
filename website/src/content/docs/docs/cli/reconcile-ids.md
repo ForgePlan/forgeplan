@@ -1,6 +1,6 @@
 ---
 title: forgeplan reconcile-ids
-description: "PROB-060 Phase 2.4 (W2.C) - manual cleanup tool for post-merge identity drift. Scans `.forgeplan/<kind>/*.md`, detects four drift categories (filename mismatch, missing `predicted_number`, body-links drift, duplicate `assigned_number`), and either reports (`--check-only`) or auto-fixes the safe categories. LanceDB is never touched; run `forgeplan scan-import` afterwards if the index needs to be rebuilt"
+description: "PROB-060 Phase 2.4 (W2.C) - manual cleanup tool for post-merge identity drift. Scans `.forgeplan/<kind>/*.md`, detects four drift categories (filename mismatch, missing `predicted_number`, body-links drift, duplicate `assigned_number`), and either reports (`--check-only`) or auto-fixes the safe categories. LanceDB is never touched; run `forgeplan reindex` afterwards if the index needs to be rebuilt"
 ---
 
 Clean up artifact identity drift after a merge. Drift appears whenever an
@@ -12,6 +12,10 @@ frontmatter links disagree, or two artifacts claim the same number.
 This is the manual counterpart to [`forgeplan ci-assign-id`](/docs/cli/ci-assign-id/):
 the assigner mints numbers in CI, `reconcile-ids` repairs a workspace that
 got its identities out of step.
+
+## Forgeplan 0.38.0
+
+`--report-cross-pr` only adds cross_pr_deferred; it does not inspect sibling PRs. Once a report is produced, exits 0/1 depend on unresolved actions, not the scan_errors array. Per-file errors can therefore coexist with summary.unresolved=false and exit 0. Use --check-only in CI and inspect scan_errors as well; a successful exit alone does not prove a complete scan.
 
 ## Usage
 
@@ -46,7 +50,7 @@ forgeplan reconcile-ids [OPTIONS]
 6. Emits the summary and sets the exit code.
 
 LanceDB is never touched (ADR-003). If the store needs to follow along,
-run [`forgeplan scan-import`](/docs/cli/scan-import/) afterwards.
+run [`forgeplan reindex`](/docs/cli/reindex/) afterwards.
 
 ## The four drift categories
 
@@ -257,8 +261,7 @@ Exit code `2`.
 - **Apply mode is the default.** There is no `--apply` flag; you opt out with
   `--check-only`. Wire the checker form into CI and the bare form into a
   cleanup PR.
-- `--json` always emits `schema_version: 1`, and the summary carries an
-  `unresolved` boolean that mirrors the exit code.
+- When a report is produced, JSON uses schema_version 1 and summary.unresolved describes unresolved actions. Fatal workspace/discovery failures return 2 on stderr without a JSON report.
 - Renames use `git mv` when the file is tracked, so history survives the
   post-merge squash; `fs::rename` is the fallback outside a repository.
 - The scanner never rewrites artifact bodies - only frontmatter through the
@@ -270,6 +273,6 @@ Exit code `2`.
 
 - [CLI overview](/docs/cli/)
 - [`forgeplan ci-assign-id`](/docs/cli/ci-assign-id/) - the CI assigner whose output this command repairs
-- [`forgeplan scan-import`](/docs/cli/scan-import/) - rebuild the store after a rename
+- [`forgeplan reindex`](/docs/cli/reindex/) - rebuild the store after a rename
 - [`forgeplan link`](/docs/cli/link/) - the canonical way to fix a body-links drift finding
 - [`forgeplan migrate-dry-run`](/docs/cli/migrate-dry-run/) - preview an identity migration before running it

@@ -10,6 +10,12 @@
 - `gh` CLI установлен и авторизован
 - CI workflow (GitHub Actions)
 
+Workflow и rulesets ниже — шаблоны для нового репозитория, а не снимок
+текущих серверных настроек Forgeplan. В собственном `ci.yml` Forgeplan
+есть проверки semantic-search, эмбеддингов, сайта и drift документации;
+см. [Quality Gates](QUALITY-GATES.ru.md). Имена обязательных проверок
+должны совпадать с заданиями, которые реально запускает целевой репозиторий.
+
 ## Архитектура защиты
 
 ```
@@ -76,7 +82,10 @@ jobs:
       - run: cargo test --workspace
 ```
 
-Для Node.js/Python/Go — замени шаги на свои, но **сохрани имена jobs** (`Check, Lint & Format` и `Tests`) — они используются в rulesets.
+Для Node.js/Python/Go замени шаги, но сохрани эти имена jobs **или**
+обнови `required_status_checks.context`. Ниже приведены фрагменты шагов:
+сохрани runners, checkout и установку среды из полного workflow,
+добавив настройку нужного языка.
 
 ### Адаптация для других стеков
 
@@ -258,7 +267,9 @@ gh api repos/${FULL}/rulesets --method POST --input - <<'EOF'
 EOF
 ```
 
-Только admin может создавать/удалять tags. Агенты не смогут случайно тегировать.
+С этим ruleset создание, изменение и удаление тегов требуют admin bypass.
+Ограничение относится к учётной записи, а не к агенту: агент с admin token
+тоже может его обойти. Выдавай агентам credentials без bypass.
 
 ---
 
@@ -282,6 +293,11 @@ gh api repos/${FULL}/vulnerability-alerts --method PUT
 ---
 
 ## Шаг 4: Local Hooks (для AI-агентов)
+
+Эти хуки — проверки текстовых шаблонов в Bash-вызовах Claude Code, а не
+shell sandbox или Git hooks. Другие клиенты, эквивалентные записи команд
+и admin credentials не входят в их защиту. Нужны Bash и `jq`;
+подключи хуки явно в `.claude/settings.json`.
 
 ### 4.1 Safety hook — блокирует опасные команды
 
@@ -308,7 +324,7 @@ BLOCKED_PATTERNS=(
 )
 
 for pattern in "${BLOCKED_PATTERNS[@]}"; do
-  if echo "$COMMAND" | grep -qi "$pattern"; then
+  if echo "$COMMAND" | grep -Fqi -- "$pattern"; then
     echo "BLOCKED: '$pattern' is not allowed. Use PR workflow instead." >&2
     exit 2
   fi
@@ -342,6 +358,11 @@ exit 0
 ```
 
 ### 4.3 Настройка в settings.json
+
+До подключения сделай оба скрипта исполняемыми:
+```bash
+chmod +x .claude/hooks/safety-hook.sh .claude/hooks/pre-commit-fmt.sh
+```
 
 ```json
 {
@@ -381,14 +402,11 @@ gh api repos/${FULL} --jq '.security_and_analysis'
 
 ### Тест защиты (должен fail):
 
-```bash
-# Попробуй push напрямую в main — должно быть rejected
-git checkout main
-echo "test" >> README.md
-git add README.md && git commit -m "test direct push"
-git push origin main
-# Expected: rejected by ruleset
-```
+Используй временный тестовый репозиторий или ветку с эквивалентным
+ruleset и учётную запись **без bypass**. Admin token явно освобождён
+от ограничений выше, поэтому успешный push с ним не доказывает поломку
+защиты. Не создавай тестовый коммит в настоящей ветке `main`
+только ради проверки отказа.
 
 ---
 
@@ -413,6 +431,7 @@ EOF
 ```bash
 #!/bin/bash
 # setup-protection.sh — настраивает защиту GitHub repo
+set -euo pipefail
 # Usage: ./setup-protection.sh MyOrg/my-project
 
 FULL="${1:?Usage: $0 OWNER/REPO}"
@@ -439,13 +458,18 @@ TAGS
 
 # 4. Security
 echo "  Enabling secret scanning..."
-gh api repos/${FULL} --method PATCH -f security_and_analysis[secret_scanning][status]=enabled -f security_and_analysis[secret_scanning_push_protection][status]=enabled 2>/dev/null
+gh api "repos/${FULL}" --method PATCH -f 'security_and_analysis[secret_scanning][status]=enabled' -f 'security_and_analysis[secret_scanning_push_protection][status]=enabled'
 
 echo "  Enabling Dependabot..."
-gh api repos/${FULL}/vulnerability-alerts --method PUT 2>/dev/null
+gh api "repos/${FULL}/vulnerability-alerts" --method PUT
 
 echo "Done! Verify: gh api repos/${FULL}/rulesets"
 ```
+
+При ошибке API скрипт останавливается. Доступность security-возможностей
+зависит от видимости репозитория, тарифа и прав; проверь возвращённые
+настройки, а не только сообщение об окончании. Повторный запуск создаёт
+дополнительные rulesets; для обновления существующих используй шаг 6.
 
 ---
 

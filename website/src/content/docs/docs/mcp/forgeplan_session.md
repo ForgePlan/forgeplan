@@ -16,36 +16,29 @@ Show the current methodology session state - which phase you are in (`idle` / `r
 
 ## Input parameters
 
-_No input parameters. Call this tool with an empty object `{}`._
+_No declared input fields. Call this tool with an empty object `{}`._
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
 
-```json
-{
-  "phase": "coding",
-  "active_artifact": "PRD-042",
-  "depth": "standard",
-  "enforcement": "enabled",
-  "started_at": "2026-04-11T09:17:00Z",
-  "history": [
-    { "phase": "routing", "at": "2026-04-11T09:05:00Z" },
-    { "phase": "shaping", "at": "2026-04-11T09:10:00Z" },
-    { "phase": "coding", "at": "2026-04-11T09:17:00Z" }
-  ]
-}
-```
+| Field | Meaning |
+|---|---|
+| `phase` | Saved session phase: `idle`, `routing`, `shaping`, `coding`, `evidence` or `pr`. |
+| `active_artifact` | Artifact driving the session, when set. |
+| `route_depth` | Saved depth string or `null`; the MCP route handler does not save it. |
+| `enforced` | Derived from saved depth: false for `null` or exact `"tactical"`, true otherwise. Not proof that hooks or validation gates ran. |
+| `phase_started_at` | Timestamp for the current phase. |
+| `history_count` | Number of saved history entries, not the full history array. |
+| `next_action`, `_next_action` | Guidance for the next step. |
 
-If nothing is active:
+The session is distinct from the per-artifact phase files read by [`forgeplan_phase`](/docs/mcp/forgeplan_phase/). The response does not have `depth`, `enforcement`, `started_at` or a full `history` array.
 
-```json
-{
-  "phase": "idle",
-  "active_artifact": null,
-  "depth": null
-}
-```
+Success is JSON in MCP text content. The tool reads `.forgeplan/session.yaml` without changing it; a missing, unreadable or malformed session file yields the default idle state with null optional fields and empty history. History is retained up to 20 transitions. This endpoint has no per-call workspace argument. Session state is separate from actual code progress; a stale session does not prove work was not done.
 
 ## Example invocation
+
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
 
 ```json
 {}
@@ -56,7 +49,7 @@ If nothing is active:
 1. `forgeplan_session` - read state.
 2. `forgeplan_guard` with target phase - check if transition is allowed.
 3. If allowed, perform the phase work (code / evidence / PR).
-4. Phase auto-advances as artifacts move through lifecycle.
+4. Re-read the session after the operation; do not infer its state from the separate artifact phase marker.
 
 ## CLI equivalent
 
@@ -67,5 +60,5 @@ forgeplan session
 ## See also
 
 - [`forgeplan_guard`](/docs/mcp/forgeplan_guard/) - gate for phase transitions.
-- [`forgeplan_route`](/docs/mcp/forgeplan_route/) - entry point that opens a session.
+- [`forgeplan_route`](/docs/mcp/forgeplan_route/) - recommends depth without opening or updating a session on the MCP surface.
 - [Methodology guide](/docs/methodology/overview/)

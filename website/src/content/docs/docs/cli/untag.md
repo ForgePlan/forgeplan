@@ -30,13 +30,11 @@ forgeplan untag <ID> <TAGS>...
 
 ## What it does
 
-1. Loads the artifact's frontmatter.
-2. Canonicalizes each incoming tag the same way `tag` does (lowercased,
-   trimmed) so `Legacy`, `legacy`, and `  legacy  ` all match the stored value.
-3. Removes each match from the `tags:` list.
-4. Rewrites frontmatter and re-indexes the artifact in LanceDB.
+1. Loads the stored record by exact ID and synchronizes existing projection edits.
+2. Removes tags by **exact string equality**. Unlike `tag`, it does not trim or lowercase incoming values.
+3. Updates the index and renders the Markdown projection.
 
-Unknown tags are silently ignored - `untag` is idempotent and safe to script.
+Use the canonical stored spelling (`legacy`, not `Legacy`) and exact record ID from `list`. Unknown tags are ignored. Text output reports the number of supplied arguments as “Removed”, not the number actually removed; inspect `Current tags` for the resulting state. There is no JSON mode.
 
 ## Examples
 
@@ -66,26 +64,23 @@ To strip a tag across every artifact (e.g. retiring a taxonomy), combine with
 `list --tag`:
 
 ```bash
-forgeplan list --tag wip --format ids | \
+forgeplan list --tag wip --json | jq -r '.[].id' | \
   xargs -I {} forgeplan untag {} wip
 ```
 
-For tag canonicalization across the whole workspace (PROB-026 fix), prefer
-[`forgeplan reindex`](/docs/cli/reindex/) - it normalizes every tag in place
-without needing explicit untag/tag pairs.
+`reindex` imports projection tags when creating a missing record, but its incremental synchronization of an existing record updates the body, not the stored tags column. It is neither an existing-tag metadata repair nor a workspace-wide in-place tag normalizer. Correct existing metadata through `untag` / `tag`; for legacy mixed-case labels, remove the exact stored spelling before adding the desired canonical value.
 
 ## Notes
 
-- `untag` is case-insensitive on the input: `forgeplan untag PRD-001 Legacy`
-  will remove `legacy`.
+- `forgeplan untag PRD-001 Legacy` does not remove a canonical stored `legacy`; use the lowercase exact value.
 - If you want to move an artifact from one tag to another, run `untag` then
   `tag` - there is no `retag` helper.
-- Removing a tag does not affect relations or scoring - tags are pure metadata.
+- Removing a source-tier tag does not change scoring CL in 0.38.0; CL comes from evidence body fields. Relations are unchanged.
 
 ## See also
 
 - [CLI overview](/docs/cli/)
 - [`forgeplan tag`](/docs/cli/tag/) - add tags
-- [`forgeplan reindex`](/docs/cli/reindex/) - canonicalize tags workspace-wide
+- [`forgeplan reindex`](/docs/cli/reindex/) - synchronize existing bodies and index missing projection records
 - [`forgeplan list`](/docs/cli/list/) - filter artifacts by tag
 - [Methodology guide](/docs/methodology/overview/)

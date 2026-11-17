@@ -9,11 +9,11 @@
 
 ## Что такое Forgeplan
 
-Forgeplan заставляет **думать перед кодингом**. Вместо "открыл IDE → написал код → задеплоил" получается "определил depth → создал артефакт → проверил качество → подтвердил evidence → закодил".
+Forgeplan помогает **думать перед кодом**: выбрать глубину, описать и проверить решение, реализовать его, собрать доказательства, затем провести ревью и активировать. CLI/MCP автоматизируют операции с артефактами; инженерную работу выполняют люди и агенты.
 
 **Не Jira.** Не project management. Не task tracker. Forgeplan — это **structured knowledge base** для инженерных решений.
 
-**Основной потребитель**: AI агент (Claude Code, Cursor) через MCP server. CLI — для human inspection.
+AI-агенты могут работать через MCP, люди и агенты — через CLI. Ни один интерфейс сам по себе не проверяет корректность реализации.
 
 ---
 
@@ -22,11 +22,11 @@ Forgeplan заставляет **думать перед кодингом**. В�
 ### 1. AI Skill (для любого AI агента)
 
 ```bash
-# Установить /forge skill для Claude Code, Cursor, Codex, Gemini и 40+ агентов
-npx skills add ForgePlan/forgeplan --skill forge
+# Установить встроенные инструкции /forge для Claude Code (нужен бинарь ниже)
+forgeplan setup-skill
 ```
 
-Skill установится в выбранные агенты. После этого в чате с AI:
+Команда записывает `~/.claude/skills/forge/SKILL.md`, но не устанавливает агентов маркетплейса, `/forge-cycle`, MCP-конфигурацию или защитные хуки. Для полного процесса установите опубликованный плагин `forgeplan-workflow` и нужные проекту наборы специалистов.
 ```
 /forge "Добавить OAuth2 аутентификацию"
 ```
@@ -69,7 +69,7 @@ cargo install forgeplan
 forgeplan init
 
 # 2. Определить что делать
-forgeplan route "Добавить OAuth2 аутентификацию"
+forgeplan route "Add OAuth2 authentication" --level 0
 # → Depth: Deep, Pipeline: PRD → Spec → RFC → ADR
 
 # 3. Создать первый артефакт
@@ -79,7 +79,7 @@ forgeplan new prd "OAuth2 Authentication"
 forgeplan health
 ```
 
-> **Alias**: `fpl` = `forgeplan`. Создайте symlink: `ln -s $(which forgeplan) /usr/local/bin/fpl`
+> **Alias**: релизные установщики предоставляют `fpl`. После установки из исходников `forgeplan setup --skip-model --skip-hooks` создаёт его рядом с бинарём без загрузки модели и установки git-хуков.
 
 ---
 
@@ -94,7 +94,7 @@ forgeplan health
 | Да, тривиально | **Tactical** | Ничего или Note | Fix typo, update config |
 | Нет, есть выбор | **Standard** | PRD → RFC | Новая фича, 1-3 дня |
 | Нет, затрагивает многих | **Deep** | PRD → Spec → RFC → ADR | Новый модуль, 1-2 недели |
-| Стратегия, кросс-команда | **Critical** | Epic → PRD[] → RFC[] → ADR[] | Новая подсистема |
+| Стратегия, кросс-команда | **Critical (политика маркетплейса)** | Epic + согласованные Deep-направления | Новая подсистема |
 
 Или используй автоматический routing:
 
@@ -102,7 +102,9 @@ forgeplan health
 forgeplan route "описание задачи"
 ```
 
-Движок анализирует ключевые слова (security → Deep+, breaking change → Deep+, cross-team → Standard+) и выдаёт рекомендацию мгновенно, без LLM.
+`--level 0` принудительно включает локальный поиск ключевых слов. Без него CLI 0.38 пробует настроенную LLM и при недоступности возвращается к правилам; автоматический режим может дополнить Deep-результат LLM рассуждением ADI. В MCP `forgeplan_route` 0.38 **нет параметра `level`**. Формулировка CLI help «keywords (default)» уже фактического поведения.
+
+**Конвейер ядра 0.38**: Tactical — без артефактов, Standard — PRD → RFC, Deep — PRD → Spec → RFC → ADR. Ядро разбирает `critical` как Deep и не выдаёт отдельный Critical-маршрут. **Опубликованная методология маркетплейса** добавляет SOL (сравнение подходов) до проектирования и REFRESH (результат согласования) на Deep/Critical. Не смешивайте требования процесса с выводом бинаря. См. [зафиксированные источники](#зафиксированные-источники).
 
 ### Вопрос 2: "Какой артефакт?"
 
@@ -123,7 +125,7 @@ forgeplan review PRD-001
 # → Ready to activate? NO
 ```
 
-Если MUST пусто — activate. Если нет — доработай.
+Исправьте MUST-находки и все дополнительные ошибки активации. Для PRD/Epic/Spec/RFC/ADR review также проверяет длину тела, признаки незаполненного шаблона и связь с доказательствами. Машинный PASS — не независимое ревью и не доказательство работоспособности кода.
 
 ### Главное правило
 
@@ -145,6 +147,8 @@ forgeplan review PRD-001
 | `forgeplan list` | Список артефактов | `forgeplan list --type prd --status active` |
 
 **Виды артефактов (kind):** `prd`, `epic`, `spec`, `rfc`, `adr`, `note`, `problem`, `solution`, `evidence`, `refresh`
+
+Это распространённые типы процесса решений; ядро 0.38 поддерживает также локальный `memory` и шесть brownfield-типов (`use_case`, `glossary`, `invariant`, `scenario`, `hypothesis`, `domain_model`). Канонический Markdown находится в `.forgeplan/`; LanceDB — перестраиваемый индекс запросов. Предпочитайте CLI/MCP для записи; `reindex` восстанавливает индекс из Markdown, а `scan-import` импортирует другие документы.
 
 ### Связи и граф
 
@@ -175,7 +179,7 @@ forgeplan review PRD-001
 | `forgeplan supersede <id> --by <new>` | Active → Superseded + chain warnings | `forgeplan supersede PRD-001 --by PRD-002` |
 | `forgeplan deprecate <id> --reason "..."` | Active → Deprecated | `forgeplan deprecate PRD-001 --reason "Cancelled"` |
 
-**Правило:** Notes и Problems не требуют validation gate. PRD, RFC, ADR, Epic, Spec — MUST rules должны пройти.
+**Правило:** полные проверки активации действуют для PRD, RFC, ADR, Epic и Spec. Лёгкие типы, например Note и Problem, их пропускают; базовая валидация не означает оценки качества.
 
 ### Dashboards и аналитика
 
@@ -185,7 +189,7 @@ forgeplan review PRD-001
 | `forgeplan status` | Краткий dashboard | `forgeplan status` |
 | `forgeplan blindspots` | Артефакты без evidence, orphans | `forgeplan blindspots` |
 | `forgeplan journal` | Timeline решений с R_eff | `forgeplan journal --risk` |
-| `forgeplan fpf` | FPF dashboard: contexts + F-G-R + actions | `forgeplan fpf` |
+| `forgeplan fpf dashboard` | FPF dashboard: contexts + F-G-R + actions | `forgeplan fpf dashboard` |
 | `forgeplan stale` | Артефакты с expired valid_until | `forgeplan stale` |
 | `forgeplan decay` | Impact expired evidence на R_eff | `forgeplan decay` |
 | `forgeplan progress [id]` | Checkbox progress bars | `forgeplan progress` |
@@ -194,11 +198,11 @@ forgeplan review PRD-001
 
 | Команда | Что делает | Пример |
 |---------|-----------|--------|
-| `forgeplan route "<description>"` | Rule-based depth + pipeline (no LLM) | `forgeplan route "Add OAuth2"` |
-| `forgeplan route "<desc>" --explain` | + LLM объяснение | `forgeplan route "Add OAuth2" --explain` |
+| `forgeplan route "<description>" --level 0` | Локальный выбор глубины по словам + конвейер ядра | `forgeplan route "Add OAuth2" --level 0` |
+| `forgeplan route "<desc>" --level 1` | Классификация LLM с возвратом к правилам при недоступности | `forgeplan route "Add OAuth2" --level 1` |
 | `forgeplan calibrate [id]` | Suggest depth для существующего артефакта | `forgeplan calibrate PRD-001` |
 
-### AI-powered (требуют LLM config)
+### AI-генерация и локальный семантический поиск
 
 | Команда | Что делает | Пример |
 |---------|-----------|--------|
@@ -206,7 +210,7 @@ forgeplan review PRD-001
 | `forgeplan reason <id>` | ADI reasoning cycle | `forgeplan reason PRD-001 --json` |
 | `forgeplan decompose <id>` | PRD → RFC задачи через AI | `forgeplan decompose PRD-001` |
 | `forgeplan capture "<decision>"` | Записать решение как Note/ADR | `forgeplan capture "Use Redis for cache"` |
-| `forgeplan search <query> --semantic` | Semantic vector search | `forgeplan search "auth" --semantic` |
+| `forgeplan search <query> --semantic` | Локальные эмбеддинги, не вызов LLM; нужны модель и индекс | `forgeplan search "auth" --semantic` |
 
 ### MCP Server
 
@@ -214,7 +218,7 @@ forgeplan review PRD-001
 forgeplan serve  # запустить MCP server (stdio transport)
 ```
 
-73 MCP tools — все команды выше доступны через MCP protocol.
+Сервер 0.38 предоставляет 73 инструмента. CLI и MCP пересекаются, но не идентичны; параметры и доступность уточняйте в справочнике соответствующего интерфейса.
 
 ---
 
@@ -359,7 +363,7 @@ forgeplan new evidence "Benchmark: LanceDB vs SQLite insert performance"
 
 ### ВАЖНО: Structured Fields
 
-EvidencePack **обязательно** должен содержать structured fields в body:
+Явно укажите вердикт, соответствие контекста и тип доказательства. Ниже учебный пример, не опубликованный бенчмарк:
 
 ```markdown
 ## Measurements
@@ -381,14 +385,14 @@ evidence_type: benchmark
 | `congruence_level` | `0`-`3` | CL3 = same context (лучший). CL0 = opposed context (penalty 0.9) |
 | `evidence_type` | `measurement` / `test` / `benchmark` / `audit` | Тип доказательства |
 
-**Без этих полей** R_eff parser не найдёт данные и выставит CL0 → R_eff = 0.1 вместо 1.0.
+В 0.38 отсутствие/неизвестное значение `verdict` либо отсутствие и `congruence_level`, и корректного `source_tier` приводит к CL0. Для свежего supports-пакета рекурсивная оценка тогда не выше 0.1: test/measurement = 0.1, benchmark/audit = 0 после штрафа за тип. Weakens/refutes также могут получить 0. Отсутствие только `evidence_type` даёт `measurement`, а не CL0. Указывайте все три поля явно, без inline-комментариев `#`.
 
 ### Привязать evidence к артефакту
 
 ```bash
 forgeplan link EVID-001 ADR-002 --relation informs
 forgeplan score ADR-002
-# → R_eff = 1.00 (was 0.00)
+# Если есть только свежий supports/CL3/benchmark из примера и нет более слабой зависимости: R_eff = 0.90
 ```
 
 ### Congruence Levels (CL)
@@ -404,17 +408,27 @@ forgeplan score ADR-002
 
 R_eff = weakest link. Если есть 3 evidence и одно слабое — R_eff = слабое. НЕ average. Участвует только *текущая* эвиденция: superseded/deprecated пакеты исключаются из min (ADR-020) — устаревший слабый пакет вытесняй через `supersede <старый> --by <новый>`, а не правкой его verdict.
 
+Пользовательская команда `forgeplan score` использует **рекурсивный** расчёт. Свежий пакет даёт `max(0, verdict_score − CL_penalty − type_penalty)`: test/measurement вычитают 0, benchmark — 0.1, audit — 0.2. Истёкший учитываемый пакет получает 0.1 до этих вычитаний. Минимум собственных доказательств сравнивается с рекурсивными оценками зависимостей: для `based_on`/`informs` вычитается ещё 0.1, для `refines` — 0. Терминальные доказательства и draft/терминальные зависимости исключаются; зависимости Note/Memory пропускаются. Поэтому бенчмарк выше даёт `1 − 0 − 0.1 = 0.90`, не 1.00.
+
+Плоская совместимая helper-функция `r_eff()` не учитывает штраф типа и обход зависимостей; её формулу нельзя выдавать за результат CLI. Источники: [рекурсивный учёт типа](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-core/src/scoring/reff.rs#L232-L254), [минимум зависимостей](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-core/src/scoring/reff.rs#L424-L499) и [расчёт CLI](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-cli/src/commands/score.rs#L130-L142).
+
 ---
 
 ## Validation — как проверять качество
 
 ### Правила по depth
 
-| Depth | PRD rules | RFC rules | ADR rules |
-|-------|-----------|-----------|-----------|
-| Tactical | 3 base rules | 3 base | 3 base |
-| Standard | 9 rules (+ audience, density, leakage) | 5 rules (+ options, phases) | 3 rules |
-| Deep | 16 rules (+ timeline, stakeholders, risks, acceptance) | 6 rules (+ risks) | 5 rules (+ invariants, rollback) |
+| Тип / глубина | Обязательное содержимое тела в 0.38 |
+|---------------|------------------------------------|
+| PRD, любая глубина | Problem, Goals, Non-Goals, Functional Requirements, Related Artifacts |
+| PRD, Standard+ | Также Target Users; плотность Problem и отсутствие технологий в FR — SHOULD на Standard, MUST на Deep |
+| PRD, Deep | Также Timeline, Stakeholders, Acceptance Criteria, Risk Assessment, Success Metrics; доменные проверки могут добавлять требования |
+| RFC | Summary, Motivation, Proposed Direction; Risks на Deep. Options и Implementation Phases — SHOULD |
+| ADR | Context, Decision, Consequences; Invariants и Rollback на Deep (иначе SHOULD) |
+| Epic | Vision, Outcomes, Children, Phases, Progress |
+| Spec | Summary, Related Artifacts и структурный или поведенческий контракт |
+
+Для всех типов действуют и базовые правила. В 0.38 наличие/измеримость NFR и `### Requirement` без вложенного `#### Scenario` проверяются как SHOULD. Это минимум, не замена содержательному ревью.
 
 ### Validator aliases
 
@@ -441,9 +455,13 @@ Validator принимает синонимы:
 ```
 Draft ──review──→ Draft (если MUST failures)
 Draft ──activate──→ Active (если MUST пройдены)
-Active ──supersede──→ Superseded (link на замену)
-Active ──deprecate──→ Deprecated (с причиной)
+Active ──supersede──→ Superseded (связь с заменой; терминальный)
+Active ──deprecate──→ Deprecated (с причиной; терминальный)
+Active ──stale──→ Stale ──renew──→ Active
+Stale ──reopen──→ Deprecated (старый) + новый Draft
 ```
+
+Истечение `valid_until` обнаруживают `stale` и scoring; не рассчитывайте на фоновое переписывание статуса. Используйте lifecycle-команды, не `update --status active|superseded|deprecated`. Рекомендательная `phase` и состояние сессии существуют отдельно от статуса.
 
 ### Типичный flow
 
@@ -464,7 +482,7 @@ forgeplan update PRD-001 --body @/tmp/prd-001-body.md
 forgeplan review PRD-001
 # → Review PASSED — ready to activate
 
-# 6. Активировал
+# 6. После реальных проверок, связанных доказательств и требуемого независимого ревью
 forgeplan activate PRD-001
 # → draft → active
 ```
@@ -485,11 +503,11 @@ forgeplan activate PRD-001
 ### Вариант 1: Skill + MCP (рекомендуется)
 
 ```bash
-# Установить skill для всех поддерживаемых агентов
-npx skills add ForgePlan/forgeplan --skill forge
+# Установить только встроенный /forge для Claude Code
+forgeplan setup-skill
 ```
 
-Поддерживается 40+ агентов: Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot, Cline, Continue, Windsurf, и другие.
+Для других сред нужны собственные инструкции/MCP-настройки. Команды маркетплейса — контракты для оркестратора, а не дополнительные CLI-подкоманды.
 
 После установки:
 ```
@@ -531,60 +549,37 @@ npx skills add ForgePlan/forgeplan --skill forge
 6. forgeplan_activate   → draft → active
 ```
 
-73 MCP tools всего. 6 core покрывают 90% workflow.
+Эти шесть инструментов помогают сориентироваться и управлять статусом. Для работы нужны также обновления тела, связи, доказательства и независимые проверки; число инструментов не измеряет полноту процесса.
 
 ---
 
 ## Forge Mode — permission model для AI агентов
 
-При работе с AI агентами (Claude Code, Cursor) в автономном режиме используйте **Forge Mode** — модель разрешений с 3 зонами доверия (FPF B.3 Trust Calculus):
+Forge Mode — политика разрешений проекта/среды, а не защитная граница, устанавливаемая бинарём Forgeplan. Разделяйте операции по последствиям, а не общим разрешением `forgeplan:*` или `git:*`.
 
-| Зона | Что | Режим | Примеры |
-|------|-----|-------|---------|
-| **Green** | Read-only + build + test + forgeplan | Авто-разрешено | `cargo test`, `forgeplan health`, `git status` |
-| **Yellow** | Создание/редакция файлов, git add/commit | Авто-разрешено (acceptEdits) | Write, Edit, `git add`, `git commit` |
-| **Red** | Необратимые действия | **BLOCKED** | `git push --force`, `rm -rf /`, `cargo publish` |
+| Операция | Кто отвечает |
+|----------|--------------|
+| Читать артефакты / состояние | Агент соблюдает разрешения среды на чтение |
+| Править, коммитить, выполнять проверки | Политика проекта определяет полномочия и команды |
+| Удалять, обходить проверки, публиковать, делать push | Получить разрешение, требуемое проектом/средой |
 
-### Настройка (Claude Code)
-
-1. **Whitelist** в `settings.local.json` — wildcard patterns:
-```json
-{
-  "permissions": {
-    "allow": [
-      "Bash(cargo:*)", "Bash(forgeplan:*)", "Bash(git:*)",
-      "Bash(ls:*)", "Bash(find:*)", "Bash(grep:*)",
-      "mcp__hindsight__memory_recall", "mcp__hindsight__memory_retain"
-    ]
-  }
-}
-```
-
-2. **Safety hook** в `.claude/hooks/forge-safety-hook.sh` — PreToolUse blacklist:
-```bash
-# Blocked даже в yolo mode:
-# git push --force, git reset --hard, rm -rf /, cargo publish
-```
-
-3. **Режим Claude Code**: `acceptEdits` (файлы авто, bash через whitelist)
+`setup-skill` устанавливает только инструкции. `setup` может установить git-хуки синхронизации индекса; это не общая защита shell-команд. Ни `acceptEdits`, ни чёрный список, ни автономный промпт не разрешают обходить независимое ревью или согласие пользователя.
 
 ### /forge-cycle — полный FPF-aligned dev cycle
 
-Команда `/forge-cycle PRD-XXX` запускает 8-фазный цикл:
+`/forge-cycle` входит в опубликованный плагин `forgeplan-workflow`, а не CLI 0.38. Оркестратор выполняет операции, обозначенные `/sprint`, `/team-up` и `/audit`; шаблон не вызывает вложенные slash-команды автоматически.
 
-```
-Phase 0: OBSERVE    → forgeplan health + stale + fpf (что происходит?)
-Phase 1: ROUTE      → forgeplan route (какой depth?)
-Phase 2: SPRINT     → /sprint (план волн)
-Phase 3: BUILD      → /team-up (реализация с Rust skills)
-Phase 4: AUDIT      → /audit (adversarial review — см. [`QUALITY-GATES.ru.md` §2](./QUALITY-GATES.ru.md#2-adversarial-review-protocol))
-Phase 5: FIXES      → /team-up (исправления по аудиту)
-Phase 6: EVIDENCE   → forgeplan new evidence + score + activate
-Phase 7: COMMIT     → git commit + PR + hindsight
-Phase 8: NEXT       → forgeplan health → следующая фича
-```
+Опубликованный контракт включает:
 
-**FPF auto-resolve**: при конфликтах/выборах агент автоматически применяет ADI cycle (Abduction → Deduction → Induction) + WLNK + Reversibility check. Спрашивает пользователя только при необратимых решениях.
+1. Прочитать состояние проекта/сессии и определить задачу; при наличии настроенной памяти прочитать её.
+2. Оформить сырую идею как Brief **Note**, затем выбрать глубину и создать/заполнить настоящие артефакты.
+3. Standard+: ADI-доказательства, зафиксированная глубина, `/gate-check` перед реализацией; Deep+ — также декомпозиция и оценка.
+4. Реализовать с claims и разделением файлов, выполнить проверки проекта, получить доказательства независимых ревьюеров.
+5. Связать доказательства реализации; Deep+ — `/gate-check` после реализации.
+6. Standard+: guardian проверяет всю цепочку доказательств; оркестратор выполняет review и activate, не автор и не guardian.
+7. Коммит/PR — только в пределах разрешений; запись поставки — после merge. Deep+ `/wrap` сохраняет реальные результаты согласования в REFRESH.
+
+`/gate-check` выдаёт вердикт по порогам, но не читает код и не заменяет guardian. Пользователь нужен также для неразрешённых требований, изменения глубины, обхода проверок и полномочий — не только необратимых решений. Ответственность и параллельная работа разобраны в [HOW-TO-USE](HOW-TO-USE.ru.md).
 
 ---
 
@@ -592,7 +587,7 @@ Phase 8: NEXT       → forgeplan health → следующая фича
 
 ### 1. EvidencePack без structured fields → R_eff = 0.1
 
-Parser ищет `verdict:`, `congruence_level:`, `evidence_type:` в body как plain text. Без них — CL0 по умолчанию.
+Парсер читает отдельные строки полей, не строки таблиц и не примеры в комментариях. Без вердикта или объявления контекста он снижает доверие; без одного лишь типа выбирает measurement.
 
 **Решение:** Всегда добавляй `## Structured Fields` секцию.
 
@@ -600,7 +595,7 @@ Parser ищет `verdict:`, `congruence_level:`, `evidence_type:` в body как
 
 Если не запускать `forgeplan review` → `forgeplan activate`, все артефакты остаются в Draft навсегда. Health dashboard будет показывать "ALL DRAFT".
 
-**Решение:** После заполнения артефакта — сразу review + activate.
+**Решение:** После заполнения проведите review; активируйте, когда готовы доказательства, реализация и применимые проверки.
 
 ### 3. Validator требует секции которых нет в body
 
@@ -619,6 +614,8 @@ forgeplan update PRD-001 --body @/tmp/new-body.md
 ### 5. 10 типов артефактов, но реально нужны 6
 
 Из dogfood опыта: PRD, RFC, ADR, Note, Problem, Epic — реально используются. EvidencePack, Spec, SolutionPortfolio, RefreshReport — для зрелых проектов с большим количеством артефактов.
+
+Это историческое наблюдение dogfood, не современное разрешение пропускать доказательства. Evidence нужны и обычным Standard-решениям; опубликованная методология Deep/Critical добавляет SOL и REFRESH.
 
 ### 6. PRD-заглушки: "создал ID, забыл заполнить"
 
@@ -645,7 +642,7 @@ forgeplan activate PRD-XXX
 
 **Антипаттерн:** активировали PRD до начала реализации. Health не показывает проблем, но артефакт — пустое обещание.
 
-**Решение:** activate ТОЛЬКО когда код написан + evidence создан. Если PRD описывает будущую работу — оставь в draft.
+**Решение:** В цикле реализации активируйте после готовности обещанного поведения и доказательств. Runtime проверяет структуру/связи, не факт запуска кода; отдельно проверенное решение без реализации должно быть явно ограничено таким объёмом.
 
 ---
 
@@ -653,10 +650,17 @@ forgeplan activate PRD-XXX
 
 | Документ | Описание |
 |----------|----------|
-| `docs/guides/HOW-TO-USE.md` | 10 правил методологии с примерами |
-| `docs/guides/DEPTH-CALIBRATION.md` | Подробно про 4 уровня depth + escalation |
-| `docs/guides/QUALITY-GATES.md` | Verification Gate + Adversarial Review |
-| `docs/guides/ARTIFACT-MODEL.md` | Иерархия артефактов: Epic → PRD → Spec → RFC → ADR |
-| `docs/guides/PRD-RFC-ADR-FLOW.md` | Decision tree: какой документ создать |
-| `docs/guides/GLOSSARY.md` | 31 термин |
-| `CLAUDE.md` | Инструкции для AI агента + CLI quick reference |
+| [HOW-TO-USE](HOW-TO-USE.ru.md) | Практические инструкции |
+| [DEPTH-CALIBRATION](DEPTH-CALIBRATION.ru.md) | Глубина и эскалация |
+| [QUALITY-GATES](QUALITY-GATES.ru.md) | Машинные проверки и независимое ревью |
+| [ARTIFACT-MODEL](ARTIFACT-MODEL.ru.md) | Иерархия артефактов |
+| [PRD-RFC-ADR-FLOW](PRD-RFC-ADR-FLOW.ru.md) | Какой документ создавать |
+| [GLOSSARY](GLOSSARY.ru.md) | Терминология |
+
+## Зафиксированные источники
+
+Сверено с **Forgeplan 0.38.0** (`d56466b10ddf788c62a6e8acffd0e0f578d0c1d1`) и публичным маркетплейсом **1.187.1** (`b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7`), не черновиками разработки:
+
+- [CLI routing](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-cli/src/commands/route.rs#L15-L38) и [конвейер ядра](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-core/src/routing/pipeline.rs#L7-L19).
+- [Правила валидации](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-core/src/validation/rules.rs#L353-L550), [проверки активации](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-core/src/lifecycle/mod.rs#L139-L220), [разбор Evidence](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-core/src/scoring/evidence.rs#L57-L204).
+- [Опубликованная методология](https://github.com/ForgePlan/marketplace/blob/b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7/plugins/forgeplan-workflow/skills/forgeplan-methodology/SKILL.md#L71-L103), [контракт цикла](https://github.com/ForgePlan/marketplace/blob/b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7/plugins/forgeplan-workflow/commands/forge-cycle.md#L549-L573) и [передача guardian](https://github.com/ForgePlan/marketplace/blob/b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7/plugins/forgeplan-workflow/commands/forge-cycle.md#L1096-L1168).

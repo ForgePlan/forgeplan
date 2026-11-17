@@ -1,26 +1,9 @@
 ---
 title: forgeplan validate
-description: "Check artifact completeness against depth-aware MUST/SHOULD rules before activation."
+description: "Check an artifact’s structure against the MUST/SHOULD rules for its kind and depth. MUST failures return exit 1 in ordinary mode as well as CI mode; SHOULD findings alone are warnings. This is a structural check, not a verification of the decision or implementation."
 ---
 
-`forgeplan validate` runs the schema validator against one artifact (or all of them) and
-reports every violation of the rules registered for that kind and depth. MUST rules are
-blocking - they prevent `forgeplan activate` from flipping the lifecycle to `active`.
-SHOULD rules are warnings that shape quality but do not block the gate. The validator is
-depth-aware: a Tactical PRD has a thinner rule set than a Deep PRD, so you are never
-penalised for choosing the right depth.
-
-## When to use
-
-- Immediately after creating an artifact from a template (catch empty MUST sections before you forget).
-- Right before `forgeplan activate` - activation refuses to proceed on MUST failures anyway.
-- In CI with `--ci` on the docs / artifacts branch to block merges that introduce stub PRDs.
-- During `/audit` to run `--adversarial` and surface devil's-advocate findings.
-
-## When NOT to use
-
-- On a Note or freshly routed Tactical task - there is nothing to validate yet.
-- As a substitute for human review - the validator checks structure, not reasoning quality.
+Check an artifact’s structure against the MUST/SHOULD rules for its kind and depth. MUST failures return exit 1 in ordinary mode as well as CI mode; SHOULD findings alone are warnings. This is a structural check, not a verification of the decision or implementation.
 
 ## Usage
 
@@ -44,104 +27,41 @@ forgeplan validate [OPTIONS] [ID]
   -V, --version      Print version
 ```
 
-## Examples
+## Selection and CI behavior
 
-### Validate a single PRD before activation
+Without an ID, ordinary `validate` examines all stored artifacts, while `validate --ci` selects only `active` and `stale`. Other statuses, including drafts, are skipped completely in that no-ID CI path: they are not printed as draft warnings. `validate ID --ci` validates the specified artifact regardless of its status, so a draft’s MUST errors still fail.
+
+## Examples
 
 ```bash
 forgeplan validate PRD-001
-```
-
-Prints a table of MUST and SHOULD findings. Typical output:
-
-```text
-PRD-001 - Auth System
-  MUST  Missing section: Problem
-  MUST  FR list empty
-  SHOULD density < 50 words in Goals
-```
-
-Fix the two MUSTs, rerun, then `forgeplan activate PRD-001`.
-
-### Validate everything and fail CI on MUST errors
-
-```bash
 forgeplan validate --ci
-```
-
-Exit code 1 if any artifact has at least one MUST violation. Use this in a pre-merge
-GitHub Action on branches that touch `.forgeplan/`.
-
-### Adversarial review for a Deep decision
-
-```bash
+forgeplan validate PRD-001 --ci
 forgeplan validate ADR-005 --adversarial
+# Ordinary JSON output, without the successful-CI trailer:
+forgeplan validate PRD-001 --json | jq '.results[].errors'
 ```
 
-Runs the devil's-advocate pass (BMAD-inspired). Reviewers MUST find problems - if the
-adversarial pass reports zero issues, re-run with a stronger model or escalate to `/audit`.
+## JSON and exit status
 
-### Machine-readable output
+The normal JSON envelope is `results` plus `_next_action`. A result contains `artifact_id`, `kind`, `depth`, `passed`, integer `errors` and `warnings`, and `findings` entries with `rule_id`, `severity`, `message`, and `section`. There is no `must_violations` field. A successful `--json --ci` run appends a `CI PASSED …` text line to stdout, so that combination is not one pure JSON document. An empty workspace prints `No artifacts found.` even with `--json`. Preserve the producer’s exit status when piping to jq; a successful jq process is not evidence that validation passed.
 
-```bash
-forgeplan validate PRD-001 --json | jq '.must_violations'
-```
+## Adversarial checks and side effects
 
-## Output interpretation
+`--adversarial` adds deterministic body checks from the built-in adversarial module; it does not call an LLM or require a stronger model when no findings are returned. Successful validation of a specific ID can advance the methodology session to coding. It does not activate the artifact. Activation additionally checks length, evidence links, and stub content unless explicitly forced.
 
-- **MUST** - blocking. Activation will refuse. Fix before PR.
-- **SHOULD** - warning. Track them, but they do not block the gate.
-- **Rule aliases** apply (`## Motivation` == `## Problem`, `## Out of Scope` == `## Non-Goals`) - see the methodology guide for the full list.
-- Exit code `0` = clean, `1` = MUST failure (in `--ci` mode only).
+<a id="ci-mode---ci"></a>
 
-## CI mode (`--ci`)
-
-Added in Sprint 11.3 as part of the methodology integrity work (PRD-034 / PRD-043),
-`forgeplan validate --ci` turns the validator into a **hard pipeline gate**. In CI mode
-the command exits 1 if **any MUST rule** fails on an `active` or `stale` artifact -
-**drafts are intentionally excluded** so you are not blocked by work-in-progress stubs
-that have not been activated yet.
-
-### Behaviour
-
-- `forgeplan validate --ci` → scans every artifact, filters to `status in {active, stale}`,
-  runs the depth-aware MUST ruleset, and exits 1 if any artifact has at least one MUST
-  violation.
-- Drafts are still validated for human consumption (printed warnings) but do **not**
-  cause a non-zero exit. The assumption is that a draft is explicitly a WIP state and
-  activation is the real commitment point.
-- Output stays human-readable by default; pair with `--json` if you want to post-process
-  in CI (e.g. annotate a PR with findings).
-
-### GitHub Actions snippet
-
-Drop this into `.github/workflows/ci.yml` next to your `forgeplan health --ci` step:
+## CI integration
 
 ```yaml
 - name: Forgeplan validate gate
   run: |
-    forgeplan scan-import
+    forgeplan reindex
     forgeplan validate --ci
 ```
 
-If this exits 1, the PR is blocked. Fix the MUST violations (or supersede / deprecate
-the offending artifact if it is genuinely abandoned) before re-running.
-
-Pair with [`forgeplan health --ci`](/docs/cli/health/#ci-mode---ci) for a two-layer gate:
-`validate` catches structural completeness failures, `health` catches methodology debt
-(blind spots, orphans, stale). Together they stop both "this PRD has no Problem section"
-and "this PRD has no evidence" from landing in `dev`.
-
-## How it fits the workflow
-
-```
-route → new → validate → reason (ADI) → code → evidence → review → activate
-                 ↑                                           ↑
-                 └───────── re-run after each edit ──────────┘
-```
-
-`validate` is the "did I fill the form" gate. `review` is the "am I ready to ship" gate
-on top of it. `activate` refuses to run unless `validate` passes.
+This excludes draft work by design. Validate an explicit draft ID separately when that is the intended policy. Pair with `health --ci` for its documented debt thresholds, not as a guarantee that every stale or at-risk artifact fails health by default.
 
 ## See also
 

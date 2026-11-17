@@ -1,6 +1,6 @@
 ---
 title: forgeplan_capture
-description: "Capture a decision from conversation into a Note or ADR artifact. Auto-detects type: simple decisions become Notes, architectural decisions become ADRs."
+description: "Capture a decision from conversation into a Note or ADR artifact. Auto-detects type: simple decisions become Notes, architectural decisions become ADRs. Requires LLM provider."
 ---
 
 Turns free-form conversation context into a persisted artifact - either a `Note` (tactical micro-decision) or an `ADR` (architectural decision record) based on auto-detection. The agent calls this when it realizes a real decision was just made in chat but nobody wrote it down yet. Capture is how Forgeplan recovers "tribal knowledge" that would otherwise be lost to scrollback.
@@ -11,46 +11,37 @@ Turns free-form conversation context into a persisted artifact - either a `Note`
 
 - User ends a discussion with "let's go with approach B then" - agent captures to preserve the rationale.
 - End-of-session checkpoint: agent surveys the chat and captures decisions before context is lost.
-- When `forgeplan_health` reports that recent commits lack linked decisions - retroactive capture.
+- When a discussion produced a decision that has not yet been recorded. A configured LLM provider is required; there is no input field that forces the output kind.
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
-| `decision` | `string` | yes | The decision statement to capture. |
-| `context` | `string` | no | Additional context. |
+| `context` | `string \| null` | no | Additional context (optional) Schema default: `null`. |
+| `decision` | `string` | yes | The decision statement to capture |
+| `workspace` | `string \| null` | no | Optional explicit workspace directory for this call. When set, the MCP server resolves the `.forgeplan/` projection from this path instead of the server's startup CWD. Use this when the calling agent is running in a git worktree separate from the MCP server's launch directory. PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. Schema default: `null`. |
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::CaptureParams`_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
 
-The created artifact ID and the kind the classifier chose. Agents should read back the `kind` because it reveals whether the decision was considered "heavy" (ADR) or "light" (Note) - useful for deciding whether to follow up with reasoning or just link it.
+The payload contains `id`, `kind`, `title`, `filepath`, `auto_detected_type`, `provider`, `model` and `_next_action`. The artifact is created as a draft; inspect the chosen `kind` and read the body with `forgeplan_get` before validating, linking or activating it.
 
-Example response shape:
+There is no `auto_detected` boolean or `path` field in this handler's response. `decision` is required input; `context` is additional information, not a replacement for the decision statement.
 
-```json
-{
-  "ok": true,
-  "id": "ADR-012",
-  "kind": "adr",
-  "auto_detected": true,
-  "title": "Use JWT over session cookies for mobile clients",
-  "path": ".forgeplan/adrs/adr-012-use-jwt-for-mobile.md"
-}
-```
+The handler persists a `draft` at `tactical` depth, writing the Markdown projection before syncing the store. The title is the first line of `decision`, truncated to 80 characters. Type selection comes from the LLM's `KIND:` line; malformed or missing selection falls back to `note`. Success is JSON in MCP text content and does not include workspace-trace fields in this release. Provider failures return `isError` with text and a configuration/login hint; no artifact is created before generation succeeds.
 
 ## Example invocation
 
-```json
-{ "context": "We decided to use JWT with 15m access tokens and 7d refresh tokens for mobile clients, because session cookies break on iOS PWA." }
-```
-
-With typical agent context:
-
-> After a design discussion, agent captures the final decision so it survives future sessions.
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
 
 ```json
-{ "to": "adr", "context": "Settled on pg_partman for time-partitioning the events table because it integrates with pg_cron cleanly." }
+{
+  "decision": "Use PostgreSQL for transactional storage.",
+  "context": "The service needs multi-row transactions."
+}
 ```
 
 ## Typical sequence

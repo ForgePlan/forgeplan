@@ -19,23 +19,23 @@ translations:
 
 A judge doesn't just say "guilty." They write a reasoned opinion: which evidence was considered, which was dismissed and why, on what basis the conclusion was reached.
 
-This isn't formality. A year later, if new circumstances emerge, the case can be reopened. And the next judge gets the full picture: what was decided, why exactly that way, what alternatives were on the table, and under what conditions the decision might have gone differently.
+The reasoned opinion makes review possible. A year later, if new circumstances emerge, the case can be reopened. The next judge gets the full picture: what was decided, why exactly that way, what alternatives were on the table, and under what conditions the decision might have gone differently.
 
 If judges wrote "after deliberation we settled on this verdict," the legal system wouldn't function. You couldn't appeal, couldn't build precedent, couldn't understand the principle underlying the ruling.
 
 In software development we write exactly like that: "after discussion we settled on JWT." Six months later the team has no rationale, no alternatives considered, no conditions for reopening. There's technically a record - but it's useless.
 
-The third post in this series already hinted at the format of a record with a built-in reopening condition. Today I'll go through it in detail - all six sections, which one matters most, and why it's the one most often left blank.
+The record format hinted at in the third post has six sections. The one that matters most, conditions for reopening, is also the one most often left blank.
 
 ## The six sections of a DDR
 
-DDR (Detailed Decision Record) - an extended ADR format that explicitly captures evidence and review conditions - is a short record that guides the team toward a decision rather than describing it after the fact. Six sections. Each one closes off a class of mistakes that otherwise surfaces a year later.
+DDR (Detailed Decision Record) is an extended ADR format that explicitly captures evidence and review conditions. This short record guides the team toward a decision rather than describing it after the fact. Each of its six sections prevents a class of mistakes that otherwise surfaces a year later.
 
 **Context**. One or two paragraphs: the situation at decision time, the constraints, the requirements. Without this, a year later it's impossible to tell whether the decision still applies to the new situation. "Chose JWT" without context is useless. "Chose JWT because we had a single authentication provider and needed to ship the integration in two weeks" - a year later that gives you the ability to say "we now have three providers and no time pressure, the context has changed."
 
 **Alternatives considered**. At minimum three. Not "JWT vs sessions" but "JWT with refresh-token rotation, classic sessions backed by Redis, delegating to an external OAuth provider." Three is the empirical threshold below which a choice almost always turns out to be false.
 
-**Evidence**. What you relied on to make the call. Not "discussed and decided" but specific references: "benchmark on our own data," "vendor documentation," "a colleague's experience on a similar project." Each piece of evidence annotated with a reliability rating - the F/G/R logic from the previous post in this series, plus a context-match level.
+**Evidence**. What you relied on to make the call, with specific references rather than "discussed and decided": "benchmark on our own data," "vendor documentation," "a colleague's experience on a similar project." Annotate each piece of evidence with a reliability rating using the previous post's F/G/R logic, plus a context-match level.
 
 **Decision**. One sentence. "We choose JWT with refresh-token rotation, TTL of 7 days."
 
@@ -51,7 +51,7 @@ The decision persists by inertia. Another six months pass and someone at a quart
 
 With a reopening condition: "revisit if support automates 80% of tickets or paid conversion climbs above 12%." Six months later the support metric hits 78%, conversion hits 14%. **The decision opens itself for review** - no heroism of memory required. The team sits down, reads the old record with its alternatives, and makes a new decision in 30 minutes.
 
-That one section turns a record from a monument into a living document. Without it, any decision capture becomes "that's what we decided back then, don't touch it."
+That one section keeps the record useful as circumstances change. Without it, any decision capture becomes "that's what we decided back then, don't touch it."
 
 The condition can take many forms:
 
@@ -60,7 +60,7 @@ The condition can take many forms:
 - event: "revisit if we expand into the European market"
 - release: "revisit when the next major version of the library ships"
 
-The key is that the event must be observable automatically. "Revisit when it becomes a problem" doesn't work - nobody's watching. "Revisit when metric X exceeds Y" works - you can put an alert on a metric.
+The event must be observable automatically. "Revisit when it becomes a problem" doesn't work because nobody's watching. "Revisit when metric X exceeds Y" works because you can put an alert on the metric.
 
 ## Evidence has a shelf life too
 
@@ -78,7 +78,7 @@ When I first walked a team through the six sections, the reaction was: "we don't
 
 That reaction is based on the wrong picture. People imagine a DDR is a twenty-page document signed off by the DevOps director.
 
-In reality - 200-400 words in one markdown file. One screen of text. Five to ten minutes to fill in all six sections. No new tools needed: a `docs/decisions/` directory in your existing repo and one team rule.
+A DDR is 200-400 words in one markdown file, one screen of text. Filling in all six sections takes five to ten minutes. You don't need new tools: a `docs/decisions/` directory in your existing repo and one team rule are enough.
 
 If it runs to two thousand words, nobody will come back to it in a month. A record needs to be readable in two minutes, otherwise it can't do its job. A long document is a lecture; a DDR should be a reference card.
 
@@ -86,7 +86,7 @@ Hard limit: one screen, no "supporting appendices." If something doesn't fit, it
 
 ## A concrete example: the decision that reopens itself
 
-Let me walk through a real case, details changed.
+This is a real case with details changed.
 
 A B2B SaaS team decided two quarters ago not to launch a free tier. They wrote it up as a DDR. All six sections:
 
@@ -105,15 +105,15 @@ Six months later the support manager posts the quarterly report: 78% of tickets 
 
 The decision is revisited in 30 minutes. They launch the restricted free tier (fastest path and it tests the demand hypothesis). Next quarter - if it works - they expand to the full tier.
 
-That's the whole point of a DDR. Not "record what was said" but "make it so the team knows six months from now, without a feat of memory, when to come back to the question."
+A DDR should do more than "record what was said." Its purpose is to "make it so the team knows six months from now, without a feat of memory, when to come back to the question."
 
 ## What to hand to the AI agent, what to keep for yourself
 
 An AI agent handles the first DDR draft well: it pulls context from a chat thread or pull request, lists alternatives (even ones mentioned only in passing), suggests reopening conditions following the template "when metric X crosses threshold Y."
 
-The final section worth writing by hand is rejected alternatives with reasons. The agent doesn't know the real reason you rejected a vendor: that vendor's CEO recently had a public falling-out with your investor. Functionality was not the issue. That reason won't appear in public documentation - but it is the real motivation. Only a human records it.
+The rejected alternatives and their reasons are worth writing by hand. The agent doesn't know the real reason you rejected a vendor: that vendor's CEO recently had a public falling-out with your investor. Functionality was not the issue. That reason won't appear in public documentation, but it is the real motivation. Only a human records it.
 
-Baseline rule: the agent is the draft, the human is the substance. If AI writes 100% of the DDR - you don't have a decision record, you have a polished evasion.
+The agent drafts the record; the human supplies the substance. If AI writes 100% of the DDR, the result is a polished evasion rather than a decision record.
 
 ## What to read next
 
@@ -123,9 +123,9 @@ This is the fourth post in the series. Previous posts:
 - [Before fixing - write three versions](/blog/before-fixing-write-three-versions) - a diagnostic technique
 - [Averages lie](/blog/averages-lie-trust-calculus) - how to rate evidence strength
 
-Coming next:
+Coming next in the series:
 
-- How a single Slack message turns into a product document with 13 sections without scope-creep monstering.
-- How to tell intent apart from behavior when documenting requirements.
+- Turning a single Slack message into a product document with 13 sections without letting the scope grow out of control.
+- Telling intent apart from behavior when documenting requirements.
 
 This post comes with an interactive DDR template: enter your decision across six sections and get a complete record with automatic reopening triggers. It lives at [/guides](/guides).

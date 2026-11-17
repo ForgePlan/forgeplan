@@ -1,6 +1,6 @@
 ---
 title: "Harness engineering for AI coding agents - why your prompt isn't the problem"
-description: "If your AI agent ships a feature with the wrong logic and a green test suite, the failure is in the harness - not the prompt. A walkthrough of the five harness subsystems using ForgePlan as a concrete implementation, with code examples and honest gap list."
+description: "If your AI agent ships a feature with the wrong logic and a green test suite, the failure is in the harness - not the prompt. Five harness subsystems explained through ForgePlan, with code examples and a list of gaps."
 slug: harness-engineering-for-ai-agents
 lang: en
 publishedAt: 2026-05-08
@@ -20,7 +20,7 @@ That framing isn't mine. It comes from a small site called **walkinglabs** that 
 
 OpenAI ("Harness engineering: leveraging Codex in an agent-first world", 2025) and Anthropic ("Effective harnesses for long-running agents", 2026) circle the same idea from different angles: the model is a fixed asset, and the variance in your output is dominated by what surrounds it.
 
-I'm going to walk through the five harness subsystems and show how I've implemented them in **ForgePlan** - an open-source Rust CLI + MCP server I've been dogfooding for six months. The code is at [github.com/ForgePlan/forgeplan](https://github.com/ForgePlan/forgeplan) if you want to read along.
+I've implemented these five harness subsystems in **ForgePlan**, an open-source Rust CLI + MCP server I've been dogfooding for six months. The code is at [github.com/ForgePlan/forgeplan](https://github.com/ForgePlan/forgeplan) if you want to read along.
 
 ## The five harness subsystems
 
@@ -35,7 +35,7 @@ State (PROGRESS.md / git)      ──┤
                        Checks (test/lint/build) ← Env (deps/services)
 ```
 
-The killer line from the same lecture: **"of the five subsystems, feedback usually has the lowest input and highest return."** Most teams ship vague tools and stop. The high-leverage move is rebuilding feedback.
+The line from the same lecture that stuck with me: **"of the five subsystems, feedback usually has the lowest input and highest return."** Most teams ship vague tools and stop. Rebuilding feedback gives them more leverage.
 
 ### 1. Rules - the contract the agent reads on startup
 
@@ -80,7 +80,7 @@ forgeplan health
 forgeplan list prd
 ```
 
-…and reconstructs the project state from structured artifacts. No hand-off note. *Lecture 03* again: **"Documentation that diverges from code is more dangerous than no documentation."** ForgePlan answers that with ADR-003: markdown is the source of truth, the LanceDB index is derived. A single `forgeplan scan-import` rebuilds the index from the markdown. The compiler enforces the invariant after the PROB-048 cleanup (32 violation sites, four audit rounds, 56 findings, ending with `pub(crate)` lockdown so direct LanceDB writes from command code don't compile).
+The agent reconstructs the project state from structured artifacts without a hand-off note. *Lecture 03* again: **"Documentation that diverges from code is more dangerous than no documentation."** ForgePlan answers that with ADR-003: markdown is the source of truth, the LanceDB index is derived. A single `forgeplan scan-import` rebuilds the index from the markdown. The compiler enforces the invariant after the PROB-048 cleanup (32 violation sites, four audit rounds, 56 findings, ending with `pub(crate)` lockdown so direct LanceDB writes from command code don't compile).
 
 ### 3. Tools - typed, not free-form
 
@@ -102,7 +102,7 @@ ForgePlan ships 76 CLI commands and 73 MCP tools. The MCP server uses [rmcp](htt
 }
 ```
 
-The `_next_action` field is the same hint contract as the CLI's `Next:` line. The agent reads it and executes. No free-form tool surface, no "agent invents its own ordering of operations."
+The `_next_action` field follows the same hint contract as the CLI's `Next:` line. The agent reads it and executes the next step. The tool interface is structured, and the agent doesn't invent its own ordering of operations.
 
 ### 4. Checks - externalised judgement
 
@@ -120,7 +120,7 @@ pub fn r_eff(scores: &[f64]) -> f64 {
 }
 ```
 
-If three pieces of evidence score 0.9, 0.6, 0.1 - your decision's `R_eff` is 0.1, not 0.53. Average lets a strong evidence statistically launder a weak one. Minimum forces the conversation onto the worst-supported claim.
+If three pieces of evidence score 0.9, 0.6, 0.1, your decision's `R_eff` is 0.1, not 0.53. An average lets strong evidence statistically launder weak evidence. The minimum forces the conversation onto the worst-supported claim.
 
 **Congruence-level penalty:**
 
@@ -133,7 +133,7 @@ If three pieces of evidence score 0.9, 0.6, 0.1 - your decision's `R_eff` is 0.1
 
 A blog post that says "library X is fast" doesn't get to count the same as a benchmark you ran in your own workload, even if both produce numbers.
 
-The dramatic bug story that taught me this matters: **PROB-034**. Six weeks into dogfooding, the same workspace returned `R_eff = 1.00` in one clone and `R_eff = 0.10` in another. HTML comments inside the EvidencePack template (`<!-- TODO: fill verdict -->`) were being parsed as actual structured-fields data. The trust-calculus tool was lying about its own honesty score, and the lie depended on which template version had touched the file last. Hotfix v0.17.2: the parser now refuses any EvidencePack missing concrete (non-commented) `verdict:`, `congruence_level:`, and `evidence_type:` lines.
+**PROB-034** taught me why this matters. Six weeks into dogfooding, the same workspace returned `R_eff = 1.00` in one clone and `R_eff = 0.10` in another. HTML comments inside the EvidencePack template (`<!-- TODO: fill verdict -->`) were being parsed as actual structured-fields data. The trust-calculus tool was lying about its own reliability score, and the lie depended on which template version had touched the file last. Hotfix v0.17.2: the parser now refuses any EvidencePack missing concrete (non-commented) `verdict:`, `congruence_level:`, and `evidence_type:` lines.
 
 A harness has to be able to catch itself cheating, or it has no business grading anyone else.
 
@@ -173,6 +173,6 @@ forgeplan score prd-migrate-auth-from-auth0-to-clerk
 
 State of the project: v0.30.0, 343 artifacts in the live dogfood workspace, 1995 tests, 76 CLI commands, 73 MCP tools, single ~41 MB stripped binary, BGE-M3 1024d local search. Marketplace plugins at [github.com/ForgePlan/marketplace](https://github.com/ForgePlan/marketplace) (12 plugins / 60+ agents / 16 skills). 1 GitHub star - the marketing is a week old.
 
-If harness engineering is a new term to you, walkinglabs's twelve lectures are the cheapest hour of reading you'll do this quarter: [walkinglabs.github.io/learn-harness-engineering](https://walkinglabs.github.io/learn-harness-engineering/).
+If harness engineering is a new term to you, walkinglabs's twelve lectures are worth an hour of your reading time: [walkinglabs.github.io/learn-harness-engineering](https://walkinglabs.github.io/learn-harness-engineering/).
 
 What's your harness like? Especially curious about teams running multiple Claude Code / Cursor agents in parallel - what catches them cheating?

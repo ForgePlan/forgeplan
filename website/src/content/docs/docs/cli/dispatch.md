@@ -1,15 +1,15 @@
 ---
 title: forgeplan dispatch
-description: "Compute a parallel-safe work plan for N sub-agents - buckets, serial queue, reasoning. Read-only; the entry point for multi-agent orchestration."
+description: "Build an advisory work plan for N sub-agents with buckets, a serial queue, and reasoning. Read-only; does not guarantee conflict-free work across agents."
 ---
 
-`forgeplan dispatch` plans parallel work for several agents at once. You tell it how many agents are available; it splits the candidate artifacts into one bucket per agent, plus a serial queue for whatever cannot run in parallel. The goal: every bucket can be worked simultaneously without two agents touching the same files.
+`forgeplan dispatch` distributes candidate artifact IDs across one bucket per agent and a serial queue. It is a planning heuristic, not a file lock or a guarantee that simultaneous workers cannot collide.
 
 How the planner avoids conflicts:
 
 - **Active claims are skipped** - if another agent has already claimed an artifact (see [`forgeplan claim`](/docs/cli/claim/)), it is excluded from the plan.
-- **File overlap is checked** - when two artifacts touch the same files (the planner uses the **Jaccard similarity**, an overlap measure: 0.3 means 30% or more of the file paths match), the second one is pushed to the serial queue instead of getting its own bucket.
-- **Dependencies are respected** - if A blocks B in the dependency graph, B never enters a bucket until A is done.
+- **Declared file overlap is checked within each bucket** using Jaccard similarity (`intersection / union`, conflict at or above the threshold). The released implementation can put overlapping artifacts in different buckets, so the orchestrator must review cross-bucket overlaps before starting workers. Paths are compared as strings, not expanded globs. Missing file declarations go to the serial queue.
+- **Structural dependencies are considered** - candidates in the topological blocked set are deferred. Active, deprecated, and superseded parents count as resolved; this is not a check that implementation work is complete.
 - **Optional filters** - `--epic` / `--kind` narrow the candidate set to one Epic or one artifact kind.
 
 Read-only: this command never modifies the workspace. After dispatch, each agent must call [`forgeplan claim`](/docs/cli/claim/) on its bucket item before touching files. Mirrors [`forgeplan_dispatch`](/docs/mcp/forgeplan_dispatch/) on the MCP side - LLM-driven orchestrators usually use the MCP tool, shell scripts use this CLI.
@@ -62,7 +62,7 @@ forgeplan dispatch [OPTIONS] --agents <AGENTS>
 forgeplan dispatch --agents 3 --kind prd
 ```
 
-Returns three buckets of draft PRDs that can be worked in parallel without file conflicts. The orchestrator hands `buckets[0]` to agent 0, `buckets[1]` to agent 1, and so on.
+Returns three buckets (possibly empty). The orchestrator hands `buckets[0]` to agent 0 and so on, after checking conflicts between buckets. `affected_files` comes from projection frontmatter, falling back to the Affected Files body section; missing or unparseable projections are skipped.
 
 ### Example 2: Replan an entire Epic, regardless of status
 
@@ -78,7 +78,15 @@ Plans across all artifacts in `EPIC-005`, including active and superseded ones. 
 forgeplan dispatch --agents 2 --overlap-threshold 0.15 --json
 ```
 
-Lowers the file-overlap threshold to 0.15 (15% shared file paths instead of the default 30%) - so even modest overlaps send work to the serial queue instead of running in parallel. Use this when agents keep colliding on shared files.
+Lowers the within-bucket conflict threshold to 0.15. A candidate is deferred only when no bucket accepts it; this does not enforce separation of overlapping paths across different agents.
+
+The JSON object contains `buckets` (arrays of IDs), `serial_queue` (objects
+with `id` and `reason`), `reasoning`, `generated_at`, `agent_count`,
+`overlap_threshold`, `candidate_count`, `claimed_count`, `skipped_parse_errors`,
+`blocked_count`, `_next_action`, and `hints`. `candidate_count` is measured
+before claim exclusion; `claimed_count` counts all live workspace claims,
+not just claims matching the filters. No agents are launched or claimed.
+`--agents` must be 1–64 and the threshold must be in `[0, 1]`.
 
 ## How it fits the workflow
 

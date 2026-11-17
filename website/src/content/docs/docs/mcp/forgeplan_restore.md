@@ -1,75 +1,59 @@
 ---
 title: forgeplan_restore
-description: "Restore a soft-deleted artifact from the most recent non-consumed receipt in the trash."
+description: "Restore a soft-deleted artifact from the most recent non-consumed receipt in `.forgeplan/trash/`. Works for delete (recreates row + moves projection back), supersede (resets status + drops link), and deprecate (resets status). Refuses if a different artifact with the same ID currently exists (manual resolution required). TTL default: 30 days from the destructive op."
 ---
 
-Reverses a destructive operation (delete / supersede / deprecate) for a specific
-artifact ID by reading `.forgeplan/trash/`. Recreates the LanceDB row, moves the
-projection back into place, restores relations where the targets still exist, and
-flips status back from `superseded` / `deprecated`. Refuses if a different artifact
-with the same ID currently exists (manual resolution required). Receipts older than
-the TTL (30 days by default, lazily purged) are unrecoverable.
+Applies recovery for a specific artifact from its newest non-consumed receipt in `.forgeplan/trash/`. For a delete it recreates the row and attempts to return the projection; for supersede/deprecate it resets the stored status and title, and for supersede also attempts to remove the replacement edge. Captured relations are re-added where the other endpoint exists. Recovery requires an available receipt; restore starts a lazy 30-day purge, so do not rely on receipts surviving beyond that window.
 
 **Category**: Lifecycle / Recovery
 
 ## When an agent calls it
 
-- "Restore PRD-042" - user noticed the wrong artifact was deleted yesterday.
-- After a `forgeplan_supersede` the agent realizes was wrong: restore the original.
-- Surgical recovery when [`forgeplan_undo_last`](/docs/mcp/forgeplan_undo_last/) would
-  reverse the wrong operation - passing the ID is more precise than "the most recent".
-- Auditing a trash receipt before committing to a real restore.
+- "Restore PRD-042" - the user selected a mistakenly deleted artifact.
+- Undo a specific mistaken supersede/deprecate, after inspecting the receipt.
+- Recover a known ID when [`forgeplan_undo_last`](/docs/mcp/forgeplan_undo_last/) would select a different operation.
+
+This tool is a mutation, **not a receipt audit, preview or dry-run**. Inspect the receipt on disk and the activity log before calling it; there is no preview parameter and no interactive confirmation.
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
 | `id` | `string` | yes | Artifact ID to recover from the most recent non-consumed receipt. |
+| `target_status` | `string \| null` | no | Issue #291: optional explicit override of the restored status. Default behaviour reads `prior_status` from the receipt snapshot (which captures the artifact's status at the moment of `_delete` / `_deprecate` / `_supersede`). Pass `target_status: "active"` to force a specific status - useful when the operator wants to restore to a different state than was captured.  Valid values: `"draft"`, `"active"`, `"deprecated"`. Unknown values are rejected with a structured error. Schema default: `null`. |
+| `workspace` | `string \| null` | no | Optional explicit workspace directory for this call. When set, the MCP server resolves the `.forgeplan/` projection from this path instead of the server's startup CWD. Use this when the calling agent is running in a git worktree separate from the MCP server's launch directory. PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. Schema default: `null`. |
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::RestoreParams`_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
 
-```json
-{
-  "restored": "PRD-042",
-  "op_reversed": "delete",
-  "relations_restored": 3,
-  "relations_skipped": [],
-  "projection_restored": true,
-  "warnings": [],
-  "_next_action": "Restored `PRD-042` (reversed delete). 3 relation(s) restored. Verify with `forgeplan_get PRD-042`."
-}
-```
+The payload contains `restored`, `op_reversed` (`delete`, `supersede` or `deprecate`), `relations_restored`, `relations_skipped`, `projection_restored`, `restored_status`, `restored_status_source`, `warnings` and `_next_action`. This handler does not add workspace trace fields.
 
-When some relation targets no longer exist:
+`relations_skipped` lists missing opposite endpoints; other relation-write problems appear in `warnings`. A success with warnings or `projection_restored: false` is possible. Missing/unreadable receipts, collisions and invalid overrides produce MCP error text, not an `ok: false` JSON object.
 
-```json
-{
-  "restored": "PRD-042",
-  "op_reversed": "delete",
-  "relations_restored": 2,
-  "relations_skipped": ["EVID-099", "RFC-007"],
-  "projection_restored": true,
-  "warnings": [],
-  "_next_action": "Restored `PRD-042` (reversed delete). 2 relation(s) restored, 2 skipped because targets no longer exist. Review with `forgeplan_get PRD-042` and re-link manually if needed."
-}
-```
+## Guards and side effects
 
-When no receipt is found:
+- `id` selects the latest non-consumed receipt by display ID or recorded slug. It does not select a receipt ID or prove that the recorded destructive operation finished successfully.
+- Omit `target_status` to recover the snapshot status. An override is trimmed/lowercased and must be `draft`, `active` or `deprecated`. If the row still exists, the override is checked against its current lifecycle state; even explicitly supplying the snapshot status can fail where omitting the override succeeds.
+- A delete restore refuses any existing row with the same ID. For supersede/deprecate, an existing row with a different kind is refused; the snapshot title can overwrite a later title change.
+- Recovery marks the receipt consumed. Relation or projection problems can be warnings rather than a rollback. If marking the receipt consumed fails, the tool returns an error **after the store was already restored**; inspect the state instead of blindly retrying or deleting a conflicting artifact.
 
-```json
-{
-  "ok": false,
-  "error": "No non-consumed receipt found for `PRD-042`.",
-  "_next_action": "Check `.forgeplan/trash/` contents or use `forgeplan_activity --tool forgeplan_delete,forgeplan_supersede,forgeplan_deprecate --since 720h` to see recent destructive ops. Receipts older than 30 days are purged."
-}
-```
+## Limits in 0.38.0
+
+- `restored_status_source` is intended to distinguish the snapshot from an override, but the handler compares the request with the already-applied result. It can report `receipt_snapshot` even when an override changed the captured status. Check `restored_status` and the original receipt rather than using that source field as proof.
+- For supersede/deprecate, the remaining Markdown projection is not re-rendered, and a deprecation's body section is not removed. `projection_restored: true` on that path means the file was never moved, not that its status, links or body are current.
+- A successful restore does not re-run activation validation, re-score dependents or reset advisory phase history. Inspect the stored record and on-disk projection before resuming work.
 
 ## Example invocation
 
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
+
 ```json
-{ "id": "PRD-042" }
+{
+  "id": "PRD-001"
+}
 ```
 
 ## Typical sequence

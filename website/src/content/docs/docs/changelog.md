@@ -23,6 +23,10 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+### Changed
+- Documentation: сверены EN/RU справочники CLI и MCP, marketplace и действующие руководства разработчика с опубликованным Forgeplan 0.38.0 и публичным каталогом 1.187.1. MCP-параметры генерируются из версионированного `tools/list`, а не Rust-обёрток; сохранены авторские пояснения. Правила агентов отделены от проверок ядра и ограничений хуков. Воспроизведённые ограничения поиска, CI-вывода, lifecycle и планирования записаны в #544–#550, а не выданы за исправленный runtime. Версия Rust-исходников этой ветки остаётся 0.37.0; история опубликованного [0.38.0](https://github.com/ForgePlan/forgeplan/releases/tag/v0.38.0) не подменяет историю ветки.
+- Core review policy: `docs/methodology/QUALITY-GATES.md` §2 (and RU twin) now carry the single normative core protocol - bounded zero-defect PASS under seven D1 conditions, re-review triggers, strict scoped PASS, owner-approved quota-only precedence; governed by ADR-027. Short references in `HOW-TO-USE`, `GLOSSARY`, `FORGEPLAN-GUIDE`, `METHODOLOGY-COURSE`, `USAGE-BY-ROLE`, `PRD-SCHEMA`, `CLAUDE.md` audit mandate and `templates/prd/_TEMPLATE.md` link to §2 instead of repeating the protocol. All other gates (reviewer counts/roles, ≥5 commits OR new public API trigger, Critical ≥ 2 rounds, validation / ADI / Verification Gate / R_eff / security / runtime / consent / activation) are preserved. Source docs only - shipped binary, installed plugin copies, public website surfaces and historical artifacts keep their prior text until independently updated.
+
 ## [0.37.0] - 2026-09-08
 
 Sprint headline: **Trust the number, and the write, and the gate that proves it.**

@@ -4,9 +4,47 @@
 
 A guide to decision quality checks in Forgeplan. Combines the Verification Gate (Quint-code), Adversarial Review (BMAD), 13-Step PRD Validation (BMAD), and R_eff Quality Scoring (Quint-code/FPF).
 
+## 0. Machine gates are not independent reviewers
+
+This page distinguishes **CLI/MCP 0.38.0**, the **published marketplace** (`forgeplan-workflow` 1.23.1 / `fpl-skills` 1.75.1), and this repository's bounded core review policy in §2. The latter does not silently amend installed/public copies. Sources are pinned below; development drafts are not release behavior.
+
+| Check | What it actually establishes | Who acts next |
+|-------|------------------------------|---------------|
+| `forgeplan validate <ID> --json` | Kind/depth rules, MUST errors and SHOULD/COULD findings | Author fixes structure/content |
+| `forgeplan review <ID>` | Validation plus activation checks for PRD/Epic/Spec/RFC/ADR: ≥100 trimmed body bytes, no detected stub, an evidence link | Orchestrator checks remaining engineering/review requirements |
+| `/gate-check <ID>` | Published skill's per-artifact pre-build thresholds; no code inspection or activation | Orchestrator stops build on FAIL |
+| Independent reviewer / guardian | Evidence-backed scope-specific verdict, not a structural score | Fixer resolves findings; orchestrator activates after the required chain passes |
+| `forgeplan activate <ID>` | Guarded lifecycle transition; configurable provenance check for code-claiming evidence | Does not run implementation tests or dispatch reviewers |
+
+There is **no `forgeplan gate` CLI subcommand** in 0.38. MCP `forgeplan_guard` checks **session phase transitions**, not independent review. Artifact `phase` is advisory. Claims are soft coordination signals, not permission/enforcement locks; successful claim/dispatch is not a gate PASS.
+
+### Published `/gate-check` minimums
+
+The skill reads recorded depth, checks `calibrate` without silently changing it, and merges `.forgeplan/quality-gates.yaml` **per key** over its shipped defaults:
+
+| Mode / tier | Shipped MUST checks |
+|-------------|---------------------|
+| Pre-build, Tactical/Standard | Zero validation errors (the cycle skips the separate Tactical gate) |
+| Pre-build, Deep | Above + ≥1 linked EVID with ≥3 `### Hypothesis` sections |
+| Pre-build, Critical policy | Above + an active ADR linked `informs` |
+| Post-build, Deep | Zero validation errors + evidence count grew since pre-build |
+| Post-build, Critical policy | Above + active informing ADR |
+
+R_eff, formality, granularity, reliability and evidence-count floors are **SHOULD**, not shipped blocking numeric thresholds. Project overrides can differ; name the actual source. `gaps` and `blindspots` are workspace advisories, not per-artifact failure counts. Missing pre-build evidence count leaves growth unproven, not passed. Post-build has no Tactical/Standard section; unknown loop gates fail rather than silently pass.
+
+The skill never activates or substitutes for guardian. `--force` requires `--reason` and creates one linked Note recording bypassed checks; the cycle uses it only when the user insists. This is separate from CLI `activate --force`, which bypasses runtime gates and does not prove independent approval. The published cycle requires ADI and independent review/guardian at **Standard+** even though the conceptual table in §5 starts some checks at Deep.
+
+### Release limitations to keep visible
+
+- Core `critical` parses as Deep; the router has no distinct Critical pipeline. Marketplace Critical thresholds are an orchestration contract, not another core validation mode.
+- Core validator MUST rules are a minimum. In 0.38, RFC Options/Implementation Phases are SHOULD; Epic requires Vision/Outcomes/Children/Phases/Progress; Spec accepts structural **or behavioral** contracts. NFR existence/measurability and Requirement-without-Scenario checks are SHOULD. See [the complete practical table](FORGEPLAN-GUIDE.md#rules-by-depth).
+- The runtime evidence-link gate is not a full provenance/independence audit. Report the actual results, evidence scope and `weakest_link`; a positive score alone is not readiness.
+
+Sources: [0.38 activation gates](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-core/src/lifecycle/mod.rs#L139-L220), [CLI provenance check](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-cli/src/commands/activate.rs#L29-L61), [published gate skill](https://github.com/ForgePlan/marketplace/blob/b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7/plugins/fpl-skills/skills/gate-check/SKILL.md#L114-L176), [threshold YAML](https://github.com/ForgePlan/marketplace/blob/b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7/plugins/fpl-skills/templates/quality-gates.yaml#L116-L188).
+
 ## 1. Verification Gate (5 Points)
 
-Before closing any decision (DecisionRecord, ADR, RFC), check all 5 points. This is a safeguard against self-deception and confirmation bias.
+Before accepting a decision (ADR/RFC), apply the points required by the chosen workflow/depth (§5). These are questions for the reviewer, not five checks automatically executed by the CLI.
 
 ### 1.1. Deductive Consequences
 
@@ -29,11 +67,11 @@ Formulate the strongest argument AGAINST the chosen option. A strawman (delibera
 
 ### 1.3. Self-Evidence Check
 
-> Is all evidence from this session only? -> CL1 penalty.
+> Are the evidence sources independent and relevant to the claim?
 
-If all evidence was obtained within a single session (one conversation, one PoC), this is CL1 — limited congruence. External confirmations are needed: documentation, benchmarks from other projects, production experience.
+One session can produce a real same-context test; several sessions can repeat the same unsupported assertion. Evaluate context and independence separately. CLI 0.38 reads the declared CL/source tier; it does not count sessions and automatically assign CL1.
 
-**Penalty**: CL1 = 0.4 penalty to R_eff score.
+**Penalty**: declared CL1 subtracts 0.4 from the verdict score; document why that context level fits.
 
 ### 1.4. Tail Failure Scenarios
 
@@ -42,8 +80,8 @@ If all evidence was obtained within a single session (one conversation, one PoC)
 List 2-3 "what if everything goes wrong" scenarios. Assess: can we survive them? Is there a rollback plan?
 
 **Example**:
-- LanceDB development is abandoned (probability ~5%) -> data is in the open Lance format, migration is possible
-- Embedding model BGE-M3 is removed from HuggingFace (~2%) -> model is embedded in the binary, works offline
+- Hypothetical storage abandonment -> check the current export format and exercise a migration path
+- BGE-M3 becomes unavailable upstream -> retain the required model files/cache. The ~2.1 GB model is downloaded separately; it is **not embedded in the binary**. Offline use requires the files to be present.
 
 ### 1.5. WLNK Challenge — Weakest Link Verification
 
@@ -146,6 +184,8 @@ Zero findings in round 1 does not skip round 2.
 
 Full PRD validation across 13 steps from BMAD-METHOD. Applied at Deep and Critical levels.
 
+This is a **review procedure**, not a promise that `validate` or `review` performs all thirteen semantic checks. The binary implements individual rules with fixed severities; the author/reviewer supplies domain judgment, completeness and a report. In 0.38, NFR presence/measurability and orphan requirements are warnings; passing MUST checks does not turn unmeasured requirements into tested facts.
+
 | Step | Name | What It Checks |
 |------|------|----------------|
 | 1 | **Discovery & Confirmation** | Document type is correctly identified, task is clear |
@@ -176,18 +216,22 @@ A decision quality scoring system from Quint-code. Core principle: **trust in a 
 ### Formula
 
 ```
-R_eff = min(evidence_scores)
+R_eff = min(own_evidence_scores, eligible_recursive_dependency_scores)
 ```
 
 **NEVER the average.** A single weak piece of evidence brings down the entire score.
 
-**Which evidence participates**: the min ranges over the artifact's *current* evidence only. Packs with a terminal lifecycle status (`superseded`/`deprecated`) are excluded — a displaced pack stays in the graph as history but no longer speaks for present reliability (ADR-020, mirrors the dependency skip of ADR-002). Draft evidence still counts (it is the normal pre-activation state of a fresh measurement). An **active** `refutes` pack still zeroes the score; recovery is honest displacement: link the re-verification pack, then `supersede <old> --by <new>`.
+**Which evidence participates**: the min ranges over the artifact's *current* evidence only. Packs with a terminal lifecycle status (`superseded`/`deprecated`) are excluded — a displaced pack stays in the graph as history but no longer speaks for present reliability (ADR-020, mirrors the dependency skip of ADR-002). Draft evidence still counts (it is the normal pre-activation state of a fresh measurement). A **fresh active** `refutes` pack still zeroes the score; recovery is honest displacement: link the re-verification pack, then `supersede <old> --by <new>`.
 
 ### Evidence Score Calculation
 
 ```
-evidence_score = max(0, verdict_score - CL_penalty)
+fresh_evidence_score = max(0, verdict_score - CL_penalty - type_penalty)
 ```
+
+The CLI uses the recursive engine: `type_penalty` is 0 for `test`/`measurement`, 0.1 for `benchmark`, 0.2 for `audit`. Expired eligible evidence returns 0.1 before verdict/CL/type deductions. With no eligible own evidence, a decision's own score is 0. The recursive result also takes the minimum with eligible dependencies after relation penalties: `based_on`/`informs` subtract 0.1, `refines` subtracts 0. Draft/terminal dependencies and Note/Memory dependencies are skipped.
+
+The flat compatibility helper `r_eff()` omits type and dependency deductions; its formula is not the user-facing `forgeplan score` calculation. Sources: [CLI recursive call](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-cli/src/commands/score.rs#L130-L142), [type/expiry calculation](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-core/src/scoring/reff.rs#L232-L254) and [dependency minimum](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-core/src/scoring/reff.rs#L424-L499).
 
 ### Verdict Scores
 
@@ -213,6 +257,8 @@ Each evidence item has a `valid_until` field (TTL). After expiration:
 - Score becomes **0.1** (stale, not absent)
 - This differs from 0.0 — stale evidence is better than no evidence at all
 
+This is the implemented expiry fallback, not an assurance that stale evidence is epistemically better: it is applied before verdict/CL, so even an expired refutes pack receives 0.1. No expiry exists when `valid_until` is unset. Reassess the underlying claim; do not renew a date just to raise a number.
+
 ### Trust Thresholds
 
 | R_eff | Status | Action |
@@ -221,17 +267,19 @@ Each evidence item has a `valid_until` field (TTL). After expiration:
 | < 0.5 | Needs Review | Additional evidence or reconsideration required |
 | < 0.3 | AT RISK | Decision is unreliable, reassessment needed |
 
+These are interpretive guidance, not the CLI activation threshold or the shipped `/gate-check` MUST floors. R_eff is neither a probability of correctness nor a substitute for reviewer evidence.
+
 ### Calculation Example
 
 Decision: "Use LanceDB for artifact storage"
 
-Evidence pack:
-1. Benchmark on 10K records: supports (1.0), CL2 -> score = 1.0 - 0.1 = **0.9**
-2. LanceDB Rust SDK documentation: supports (1.0), CL1 -> score = 1.0 - 0.4 = **0.6**
-3. Production usage reviews: weakens (0.5), CL1 -> score = 0.5 - 0.4 = **0.1**
+Illustrative fresh evidence, with explicit types and no weaker dependency:
+1. Benchmark on 10K records (`benchmark`): supports (1.0), CL2 -> max(0, 1.0 - 0.1 - 0.1) = **0.8**
+2. Observations recorded from the SDK documentation (`measurement`): supports (1.0), CL1 -> max(0, 1.0 - 0.4 - 0.0) = **0.6**
+3. Production usage review (`audit`): weakens (0.5), CL1 -> max(0, 0.5 - 0.4 - 0.2) = **0.0**
 
 ```
-R_eff = min(0.9, 0.6, 0.1) = 0.1 — AT RISK
+R_eff = min(0.8, 0.6, 0.0) = 0.0 — AT RISK
 ```
 
 The weakest link is production usage reviews. Additional evidence (CL2+) or reconsideration is needed.
@@ -253,6 +301,12 @@ At the Standard level, a minimum of 3 of 5 points are required. Recommended:
 3. **WLNK challenge** — identify the real weakest link
 
 Points 3 (Self-evidence check) and 4 (Tail failure scenarios) are optional at Standard but recommended whenever there is any doubt.
+
+The table is a conceptual review profile. When using the published `/forge-cycle`, follow its additional Standard+ ADI/reviewer/guardian requirements and the actual project's threshold file. Do not use this table to skip a stricter installed workflow gate.
+
+## Suggested smoke inspection
+
+In a disposable initialized workspace with real returned IDs, inspect `forgeplan validate PRD-001 --json`, `forgeplan score PRD-001 --json` and `forgeplan review PRD-001`. An untouched PRD should not be treated as ready merely because a metric is positive. In the configured agent host, `/gate-check PRD-001` should report mode/depth/threshold source and distinguish MUST failures from workspace advisories. These examples were **not executed** for this documentation update.
 
 ## Related Documents
 

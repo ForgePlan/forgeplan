@@ -7,10 +7,14 @@ description: "Plugin detection + recommendations (PRD-067) - list installed plug
 
 The parent command requires a subcommand; running it bare exits with code `2` and prints the help banner.
 
+## Forgeplan 0.38.0
+
+The detection registry compiled into CLI 0.38.0 has 12 entries and is not the public marketplace catalog. Public catalog 1.187.1 at b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7 has 23 plugins. Output below containing 0.37.0 is retained as previously captured examples, not a current installation inventory. The bundled hint `forgeplan skill install brownfield-docs-pack` is not a working CLI 0.38.0 command: no skill install command exists. Other install strings are static recommendations, not proof that a pack exists in the public catalog; consult that catalog and the selected plugin’s instructions.
+
 ## Subcommands
 
 - [`plugins list`](/docs/cli/plugins-list/) - list every installed plugin (Claude / agent-skills / Cursor / Forgeplan), one row per detection.
-- [`plugins doctor`](/docs/cli/plugins-doctor/) - health check across the whole registry: which known plugins are installed, which are missing, which are outdated. Emits an exact install command per missing entry.
+- [`plugins doctor`](/docs/cli/plugins-doctor/) - health check across the bundled registry: installed, missing, or incompatible versions. Prints static install recommendations; verify them against the current public catalog.
 - [`plugins info <NAME>`](/docs/cli/plugins-info/) - details for a single plugin: name, source, version requirement, description, install command, and - when installed - the detected path and version.
 
 Each subcommand also accepts `--json` for scripting and CI.
@@ -32,7 +36,7 @@ forgeplan plugins <COMMAND>
 
 ```text
   list    List installed plugins (Claude / agent-skills / Cursor / Forgeplan)
-  doctor  Health check across known plugins - reports missing, outdated, OK
+  doctor  Health check across known plugins — reports missing, outdated, OK
   info    Show details for a specific plugin (path, version, description)
   help    Print this message or the help of the given subcommand(s)
 ```
@@ -59,7 +63,7 @@ The built-in `forgeplan` core plugin is always registered as installed, so `plug
 
 ## When NOT to use
 
-- To install a plugin. The command only reports; use the marketplace install command surfaced by `plugins doctor` or `plugins info`.
+- To install a plugin. This family only reports; consult the public marketplace catalog and the selected plugin's instructions before following a static install hint.
 - To detect skills outside the four known sources. Out-of-band installs stay invisible to the scanner.
 
 ## Examples
@@ -172,7 +176,7 @@ forgeplan plugins doctor
 Fix: /plugin install sparc-specification@ForgePlan-marketplace
 ```
 
-Exit code `1` when at least one known plugin is missing or outdated; `0` when everything is OK. Each missing row carries an exact install command so a CI gate or a human can act without re-reading the docs.
+Exit code `1` when at least one known plugin is missing or incompatible; `0` when everything is OK. Missing rows carry the registry's static install string, which can be stale or unavailable in this CLI; do not execute it blindly as an automated remediation.
 
 ### Example 5: `plugins info <NAME>` (installed)
 
@@ -216,7 +220,7 @@ forgeplan plugins info c4-architecture
 Next: /plugin install c4-architecture@claude-code-workflows
 ```
 
-Exit code `0`. The `Next:` hint is the exact install command, copy-paste-ready.
+Exit code `0`. The `Next:` value is the registry's install recommendation, not a checked installation procedure.
 
 ### Example 7: `plugins info <NAME>` for an unknown name
 
@@ -233,7 +237,7 @@ Exit code `2`. The `Or:` hint points at `plugins list` so the caller can discove
 
 ## Source taxonomy
 
-Four sources are recognised, with these canonical search paths (HOME-relative where applicable):
+The scanner supports four detected source categories plus `Manual` (not auto-detected); the bundled registry currently uses only Claude plugins, AgentSkills, and Forgeplan core:
 
 | Source | Default search paths |
 |---|---|
@@ -257,7 +261,7 @@ The `Forgeplan` and `Manual` sources return no search paths. `Forgeplan` is the 
 - A plugin found in two places (e.g. both `~/.claude/plugins/cache/foo` and `.claude/plugins/foo`) is reported once. The first matching path wins.
 - Version parsing is best-effort: `manifest.json` is checked first, then `plugin.json`, then `SKILL.md` YAML frontmatter. A missing or unparseable version is recorded as `None` and does not raise.
 - Tilde (`~`) in search paths expands to `$HOME` if set; an unset HOME leaves the literal `~` and the scan skips that root.
-- Hidden directories (those starting with `.`) are descended into for the same reason as the rest of the toolchain: layouts like `.local/spike-*.md` are reachable.
+- Detection probes `root/expected_path` directly; it does not recursively walk hidden directories or the nested marketplace/version layout of plugin caches. A real installation can therefore be missed when its layout differs from these candidates.
 
 ## Related commands
 

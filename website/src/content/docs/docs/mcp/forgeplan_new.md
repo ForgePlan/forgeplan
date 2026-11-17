@@ -15,41 +15,40 @@ Creates a new artifact stub from the built-in template for its kind. The agent c
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
-| `kind` | `string` | yes | Artifact kind: `prd`, `epic`, `spec`, `rfc`, `adr`, `problem`, `solution`, `evidence`, `note`, `refresh`. |
-| `title` | `string` | yes | Artifact title. |
+| `kind` | `string` | yes | Artifact kind to create Enum: `"prd"`, `"epic"`, `"spec"`, `"rfc"`, `"adr"`, `"problem"`, `"solution"`, `"evidence"`, `"note"`, `"refresh"`. |
+| `parent_id` | `string \| null` | no | Issue #295: optional parent artifact ID for auto-link. When supplied AND kind=evidence, an `informs` link is created from the new EVID to the named parent in the same call. Reduces the 3-step EVID flow (new → update → link) to 2 steps (new+autolink → update). Accepts display id (`PRD-074`) or slug (`prd-auth-system`). For kinds other than `evidence` the parameter is rejected with a structured error (other auto-link patterns are intentionally out of scope for v1 - see issue #295). Schema default: `null`. |
+| `title` | `string` | yes | Artifact title |
+| `workspace` | `string \| null` | no | Optional explicit workspace directory for this call. When set, the MCP server resolves the `.forgeplan/` projection from this path instead of the server's startup CWD. Use this when the calling agent is running in a git worktree separate from the MCP server's launch directory. PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. Schema default: `null`. |
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::NewParams`_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
 
-The generated ID plus the rendered body. The agent should immediately fill MUST sections via `forgeplan_update` rather than leave a stub - unpopulated PRDs count as blind spots in `forgeplan_health`.
+Creation returns `id`, `kind`, `title`, `filepath`, duplicate `warnings`, `_next_action`, `slug`, `predicted_number`, `assigned_number` when present, `id_canonical`, `id_display`, `hint`, `resolved_workspace` and `resolved_via`. Use returned canonical/display identity fields instead of guessing the next number.
 
-Example response shape:
+For evidence with `parent_id`, `auto_linked` is included only when the parent edge was created; non-empty `auto_link_warnings` describe failures. These are separate from duplicate `warnings`. The response contains neither the full rendered body nor a `path` key. Read the draft through `forgeplan_get`, fill its required sections through `forgeplan_update`, and validate it.
 
-```json
-{
-  "id": "PRD-042",
-  "kind": "prd",
-  "status": "draft",
-  "path": ".forgeplan/prds/prd-042-authentication-system.md",
-  "body": "# PRD-042: Authentication system\n\n## Problem\n..."
-}
-```
+## Guards and side effects
+
+- The handler enforces title validation and the configured title-byte cap, resolves the built-in kind/template and allocates an ID under coordination locks. New artifacts start in `draft` at `standard` depth; there is no input parameter here for an initial status, body or depth.
+- Duplicate detection is advisory: similar titles can produce warnings **and still create another artifact**. This is not an idempotent create-or-get operation; inspect warnings before repeating a call after an uncertain result.
+- `parent_id` is an optional shortcut only for `kind: "evidence"`; other kinds are rejected before creation when it is supplied.
+- A missing parent or failed auto-link does not roll back a newly created Evidence artifact. The link, when successful, is evidence → parent with `informs`; supplying `parent_id` does not activate either artifact.
+- The artifact row and Markdown projection are created. Identity stamping and initializing the advisory phase at `shape` are best-effort. There is no interactive duplicate/consent prompt in the MCP path.
 
 ## Example invocation
 
-```json
-{ "kind": "prd", "title": "Authentication system" }
-```
-
-With typical agent context:
-
-> Router returned `Depth: Standard, Pipeline: PRD → RFC`. Agent creates the PRD stub before touching code.
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
 
 ```json
-{ "kind": "prd", "title": "Rate limit auth endpoints" }
+{
+  "kind": "prd",
+  "title": "Authentication system"
+}
 ```
 
 ## Typical sequence

@@ -1,8 +1,8 @@
 [English](MULTI-AGENT.md) · [Русский](MULTI-AGENT.ru.md)
 
-# Multi-Agent Workflow (v0.24.0+)
+# Совместная работа агентов (Forgeplan 0.38.0)
 
-С версии **v0.24.0** (PRD-057) Forgeplan умеет **диспетчеризовать работу** между 2–5 суб-агентами в одном workspace. Один MCP-вызов возвращает готовый план: кто над чем работает, что идёт параллельно, что ждёт в serial queue, и почему.
+Forgeplan рассчитывает план работы и хранит рекомендательные захваты артефактов (claims). Оркестратор запускает и контролирует исполнителей средствами своего агентного окружения; `dispatch` их не запускает. Первые инструменты координации появились в v0.24.0; примеры CLI ниже соответствуют релизу 0.38.0.
 
 ## Зачем это нужно
 
@@ -18,7 +18,7 @@
 - **Serial wasted** — A ждёт B, хотя могла бы идти параллельно с C
 - **Забытый блокер** — активировали PRD, deps ещё в draft
 
-v0.24.0 закрывает это через четыре MCP-инструмента.
+Четыре операции координации помогают не назначить одну работу дважды. Они не обеспечивают владение исходными файлами и не заменяют трекер задач.
 
 ## Четыре MCP-инструмента
 
@@ -45,7 +45,7 @@ v0.24.0 закрывает это через четыре MCP-инструмен
 ```jsonc
 {
   "buckets": [["PRD-901"], ["PRD-902"], ["PRD-903"]],  // один bucket на агента
-  "serial_queue": ["PRD-905"],                           // ждут своей очереди
+  "serial_queue": [{"id": "PRD-905", "reason": "missing affected_files frontmatter"}],
   "reasoning": [                                          // NFR-005 — почему каждое решение
     "PRD-901: assigned to agent 0 (no file conflict, skill match)",
     "PRD-905: serialized (conflicts with every bucket or no matching skill)"
@@ -63,12 +63,12 @@ v0.24.0 закрывает это через четыре MCP-инструмен
 **Что алгоритм учитывает** (в порядке применения):
 
 1. **Claims** (`forgeplan_claim`) — уже занятые артефакты исключаются.
-2. **Структурные зависимости** — блокированные артефакты (через `graph::topological::kahn_sort`, тот же Kahn sort, что использует `forgeplan_blocked`) исключаются с explanation.
-3. **File overlap** — Jaccard similarity по `affected_files`. Пары с overlap ≥ threshold (default 0.3) считаются конфликтующими. Источник `affected_files`: frontmatter-ключ, если есть; иначе секция `## Affected Files` в теле (fallback для legacy-артефактов).
+2. **Структурные зависимости** — артефакты с неразрешёнными зависимостями не попадают в buckets и появляются в `serial_queue` с причинами блокировки.
+3. **Пересечение файлов** — Jaccard similarity по объявленным строкам путей. Пары с overlap ≥ threshold (по умолчанию 0.3) нельзя поместить в один bucket. Пути и glob-шаблоны не раскрываются по файловой системе; разные строки могут обозначать пересекающиеся файлы. Источник: frontmatter `affected_files`, иначе секция `## Affected Files` в теле.
 4. **Domain/skill match** — если передан `agent_skills`, артефакт идёт только к агенту с совпадающим skill. Skill mismatch → serial queue.
 5. **Least-loaded-first greedy** — распределяет работу равномерно; не валит всё на agent 0.
 
-**Read-only:** не мутирует workspace, не берёт `workspace_lock`. Безопасно поллить с частотой 1 Hz — не блокирует writers.
+**Только чтение:** не берёт `workspace_lock` и не резервирует назначения. Перед передачей работы перечитайте claims. **Ограничение:** пересечения проверяются внутри bucket, но не между buckets. До запуска оркестратор должен сверить реальные наборы файлов всех параллельных исполнителей.
 
 ### `forgeplan_claim` — «я беру этот артефакт»
 
@@ -87,6 +87,8 @@ v0.24.0 закрывает это через четыре MCP-инструмен
 Пишет `.forgeplan/claims/PRD-901.yaml` (gitignored). Если уже держит другой агент — **отказ** с `agent_id` и `expires_at` держащего. Same-agent calls **продлевают** TTL. Истёкшие claims **transparent overwrite** (AC-3).
 
 **Атомарная запись** через tempfile + rename — SIGKILL mid-write не оставляет битый YAML.
+
+**Claim — мягкий сигнал, не блокировка записи.** Другие инструменты артефактов не запрещают запись из-за чужого claim. Отдельный workspace lock сериализует участвующие в протоколе мутации CLI/MCP; ни он, ни claim не блокируют исходные файлы, git-ветки или удалённый клон. Claims локальны для выбранного `.forgeplan/` и не распространяются автоматически между worktrees.
 
 ### `forgeplan_release` — «закончил»
 
@@ -130,44 +132,43 @@ Sorted by `expires_at` ASC (earliest-expiring first). **Read-only** — не б�
 
 ### Оркестратор распределяет работу между 3 агентами
 
-```
-1. orchestrator → forgeplan_dispatch --agents 3 --epic EPIC-005
-   ← { buckets: [[PRD-A], [PRD-B], [PRD-C]], serial: [PRD-D], ... }
+Запускайте CLI в нужном workspace. Синтаксис соответствует 0.38.0; ID приведены для примера:
 
-2. orchestrator → worker-1 "работай над PRD-A"
-   orchestrator → worker-2 "работай над PRD-B"
-   orchestrator → worker-3 "работай над PRD-C"
-
-3. worker-1 → forgeplan_claim PRD-A --ttl 30
-   worker-2 → forgeplan_claim PRD-B --ttl 30
-   worker-3 → forgeplan_claim PRD-C --ttl 30
-
-4. Агенты работают параллельно. Каждые ~N минут:
-   worker-1 → forgeplan_claim PRD-A (same agent, продлевает TTL)
-
-5. worker-1 done → forgeplan_release PRD-A
-   orchestrator → forgeplan_dispatch --agents 3 (re-plan — PRD-D может стать parallelizable)
+```bash
+forgeplan dispatch --agents 3 --epic EPIC-005 --json
+forgeplan claims --json
+# Сверить пересечения между buckets и назначить каждому точные файлы.
+forgeplan claim PRD-901 --agent worker-1 --ttl-minutes 30
+# Оркестратор запускает worker-1 средствами своего окружения.
+# До истечения TTL продлить той же командой с тем же именем.
+forgeplan claim PRD-901 --agent worker-1 --ttl-minutes 30
+# После завершения работы:
+forgeplan release PRD-901 --agent worker-1
+forgeplan dispatch --agents 3 --json
 ```
 
-### Агент упал — orchestrator reap'ит claim
+Используйте **одинаковый явный `--agent`** при захвате, продлении и освобождении. В реализации 0.38.0 значения по умолчанию различаются: `claim` использует `cli-0.38.0`, `release` — `cli/0.38.0` (help этого расхождения не показывает). Всегда передавайте простое имя вроде `worker-1`: явная CLI-валидация claim отвергает `/` и `\`, хотя MCP `clientInfo` может иметь вид `name/version`. `--agent` обозначает владельца claim, а не выбирает и не запускает модель.
 
+### Агент упал — оркестратор снимает claim
+
+Убедившись, что владелец больше не работает:
+
+```bash
+forgeplan release PRD-902 --force
+forgeplan dispatch --agents 3 --json
 ```
-worker-2 crashed; claim на PRD-B ещё валиден 20 минут.
-orchestrator → forgeplan_release PRD-B --force
-orchestrator → forgeplan_dispatch --agents 3 (PRD-B снова доступен)
-```
 
-Альтернатива: просто подождать TTL expiry — claim сам истечёт через 30 минут.
+Либо дождитесь указанного `expires_at`. Не исправляйте несовпадение собственного имени при release через `--force`.
 
-## Что v0.24.0 НЕ включает
+## Границы поддержки в 0.38.0
 
-(Deferred to v0.25+ per PRD-057 Growth Vision)
+- **CLI:** доступны `dispatch`, `claim`, `release`, `claims`. Параметр `agent_skills` остаётся только в MCP.
+- **Нет постоянных профилей:** skills передаются в каждом вызове, а не читаются из `agents/<id>.yaml`.
+- **Stdio MCP:** `forgeplan serve` получает `clientInfo` соединения; claims не являются аутентифицированными правами доступа.
+- **Пересечения между buckets:** описанное выше ограничение сохраняется. План не доказывает отсутствие конфликтов параллельных правок.
+- **Разделение ролей:** Forgeplan хранит решения, доказательства и зависимости артефактов. Настроенный трекер хранит задачи, исполнителей и сроки. Взятие задачи в трекере — не `forgeplan claim`; закрытие задачи не активирует артефакт.
 
-- **CLI parity** — нет CLI-команд `forgeplan dispatch/claim/release/claims`; только MCP. Для использования из CLI — через `forgeplan serve` stdio MCP.
-- **Профили `agents/<id>.yaml`** — skills передаются per-call, не персистятся. Roadmapped на v0.27.
-- **HTTP/SSE transport** — identity capture работает только на stdio (один клиент на connection). Multi-connection HTTP требует per-request identity extraction.
-- **Inter-bucket overlap check** — dispatcher проверяет file-conflicts внутри bucket, но не между агентами. Два overlapping PRD могут попасть в разные buckets (они будут конфликтовать при merge на main — user-level mitigation: не давать их одновременно). Треккается как v0.25 follow-up.
-- **Richer claim context** — Claim хранит только `id + agent + ttl + note`. Структурированные поля («какие FR делаю сейчас») — v0.25.
+MCP-вызовы координации принимают `workspace`, если worktree отличается от каталога запуска сервера. Передавайте абсолютный корень нужного worktree последовательно; смена `cwd` CLI не перенаправляет уже запущенный MCP-сервер.
 
 ## Поля frontmatter для лучшего dispatch'а
 
@@ -182,21 +183,21 @@ status: draft
 depth: standard
 # ← новое для dispatch:
 affected_files:
-  - crates/auth/src/**
-  - crates/api/src/auth/
+  - crates/auth/src/session.rs
+  - crates/api/src/auth.rs
 domain: backend   # frontend | backend | api | infra | docs | testing | general
 ---
 ```
 
 - **Без `affected_files`:** dispatcher применяет R-2 safety bias и отправляет в serial queue (consider shared-ground).
 - **С `affected_files`:** dispatcher считает Jaccard overlap с другими кандидатами и решает, совместимы ли они в параллель.
-- **С `domain`:** если orchestrator передал `agent_skills`, артефакт идёт к совпадающему агенту. `domain` валидируется на ASCII `[a-z0-9_-]` — non-ASCII (Cyrillic, RTL, ZWJ) **отклоняется** (security CWE-176).
+- **С `domain`:** используются ASCII-имена доменов и сравнение skills без учёта регистра. Некорректные символы приводят к отсутствию домена, а не к отказу записи артефакта. Пустой список skills агента принимает любой домен.
 
 **Fallback для legacy-артефактов** (без FM-ключа): dispatcher читает секцию `## Affected Files` в теле — обратная совместимость.
 
 ## Identity stamping (Inc 2)
 
-**Автоматически** на каждый MCP write-tool, если клиент передал `clientInfo` во время `initialize`:
+**Best-effort** запись при MCP `new` и `update`, если сервер получил корректный `clientInfo`:
 
 ```yaml
 # В .forgeplan/prds/PRD-042-title.md после forgeplan_update:
@@ -225,12 +226,19 @@ last_modified_at: 2026-04-19T15:44:56+00:00
 | Claim file size | ≤ 64 KB | billion-laughs, R1 parity |
 | Claim TTL | 1..=1440 min (24h) | короче — churn, длиннее — stuck-agent risk |
 
-Превышение → error at MCP boundary с понятным сообщением.
+Поведение зависит от параметра: неверные число агентов и threshold отвергаются на границе вызова, а список файлов обрезается до 512 записей, слишком длинные пути отбрасываются. Это не проверка владения файлами.
 
 ## Читать дальше
 
-- **PRD-057** (`.forgeplan/prds/PRD-057-*.md`) — полные FR/AC/NFR + Growth Vision roadmap
-- **EVID-077** (`.forgeplan/evidence/EVID-077-*.md`) — что и как было протестировано (R_eff=1.00, CL3)
-- **CHANGELOG.md** `[0.24.0]` — полные release notes
-- [AGENT-HOOKS.ru.md](AGENT-HOOKS.ru.md) — как Forgeplan hooks (forge-safety, pre-commit-fmt) работают в multi-agent setup
+- **PRD-057** (`.forgeplan/prds/PRD-057-*.md`) — исходные требования и Growth Vision, не подтверждение реализации всей дорожной карты
+- **EVID-077** (`.forgeplan/evidence/EVID-077-*.md`) — историческая проверка v0.24.0 (R_eff=1.00, CL3), не новый результат тестирования 0.38.0
+- **CHANGELOG.md** `[0.24.0]` — исторические release notes
+- [AGENT-HOOKS.ru.md](AGENT-HOOKS.ru.md) — публичная регистрация хуков, рекомендательные проверки и границы хостов
 - [UNIFIED-WORKFLOW.ru.md](../methodology/UNIFIED-WORKFLOW.ru.md) — как Forgeplan × Orchestra × Hindsight живут вместе
+
+## Источники релиза
+
+- [Claims в core 0.38.0](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-core/src/claim/mod.rs#L1-L10) — намерение работать и отдельная блокировка workspace.
+- [Диспетчер и проверка пересечений](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-core/src/dispatch/mod.rs#L383-L508), [CLI](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-cli/src/commands/dispatch.rs#L114-L185).
+- [Публичная роль task-runner](https://github.com/ForgePlan/marketplace/blob/b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7/plugins/forgeplan-orchestra/agents/task-runner.md#L184-L218) — трекер отдельно от исходников и мутаций Forgeplan.
+- [CLI claim default](https://github.com/ForgePlan/Forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-cli/src/commands/claim.rs#L17-L28) и [release default](https://github.com/ForgePlan/Forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-cli/src/commands/release.rs#L13-L15) — почему нужно явно передавать одно имя.

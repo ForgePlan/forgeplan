@@ -15,43 +15,40 @@ Runs the rule-based validator over an artifact. Each kind (PRD, RFC, ADR, Epic, 
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
-| `id` | `string` | no | Artifact ID to validate. Validates all artifacts if omitted. |
+| `id` | `string \| null` | no | Artifact ID to validate (validates all if omitted) Schema default: `null`. |
+| `workspace` | `string \| null` | no | Optional explicit workspace directory for this call. When set, the MCP server resolves the `.forgeplan/` projection from this path instead of the server's startup CWD. Use this when the calling agent is running in a git worktree separate from the MCP server's launch directory. PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. Schema default: `null`. |
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::ValidateParams`_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
 
-A verdict plus a list of findings. Each finding carries a `severity` (MUST / SHOULD / COULD), a `rule_id`, a `message`, and often a `section` locator. `status: PASS` means zero MUST failures - the agent can activate.
+Success is JSON in MCP `content[0].text` with `total_artifacts`, `total_passed`, `total_errors`, `total_warnings`, `results`, and an optional `_next_action`. Each result has `artifact_id`, `kind`, `depth`, `passed`, `error_count`, `warning_count`, and `findings`; each finding has `rule_id`, `severity` (`MUST`, `SHOULD`, `COULD`), `message`, and nullable `section`. There is no `status: PASS` field.
 
-Example response shape:
+Omit `id` to validate all stored records. A supplied display ID is matched case-insensitively; a missing ID returns a plain-text MCP tool error (`isError: true`). Validation findings are a successful report, even when `passed` is false. A passing validation can advance the advisory phase to `validate` when tracking is enabled, but never activates the artifact. Passing MUST checks alone does not satisfy all activation gates; use `review`.
+
+Illustrative empty-workspace response:
 
 ```json
 {
-  "id": "PRD-042",
-  "status": "FAIL",
-  "must_count": 1,
-  "should_count": 2,
-  "findings": [
-    { "severity": "MUST", "rule": "prd.has_problem", "message": "Missing ## Problem section" },
-    { "severity": "SHOULD", "rule": "prd.density", "message": "Problem section < 50 words" }
-  ]
+  "total_artifacts": 0,
+  "total_passed": 0,
+  "total_errors": 0,
+  "total_warnings": 0,
+  "results": [],
+  "_next_action": "All passed! Implement → create EvidencePack with structured fields (verdict/congruence_level/evidence_type) → `forgeplan_link EVID-XXX <id>` → `forgeplan_activate <id>`."
 }
 ```
 
 ## Example invocation
 
-```json
-{ "id": "PRD-001" }
-```
-
-With typical agent context:
-
-> Agent just created PRD-001 and wants to run validation before activation.
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
 
 ```json
-{ "id": "PRD-001" }
+{}
 ```
 
 ## Typical sequence

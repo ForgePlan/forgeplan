@@ -1,20 +1,9 @@
 ---
 title: forgeplan activate
-description: "Transition a draft artifact to active state through a validation gate - the moment a decision goes live."
+description: "Publish an artifact by changing its lifecycle status to active. For PRD, Epic, Spec, RFC, and ADR, the default path requires methodology gates and schema validation; activation is not just a status edit or proof that code has been implemented."
 ---
 
-`forgeplan activate` moves an artifact from `draft` to `active`. This is the most frequent lifecycle transition: it marks the point at which a PRD, RFC, ADR, Epic or Spec is considered live, ready to be referenced by other artifacts, and expected to be backed by evidence. For structured artifacts, activation runs the validation gate - all MUST rules must pass. For lightweight artifacts (`Note`, `Problem`), activation is unguarded and happens immediately.
-
-## When to use
-
-- You just finished implementing a PRD: all FRs are checked off, an EvidencePack is linked, and `forgeplan score PRD-001` returns `R_eff > 0`.
-- An ADR has been reviewed with the team and the decision is final - time to make it authoritative.
-- An RFC has passed a verification gate and its implementation phases have started producing evidence.
-
-## When NOT to use
-
-- The artifact still has MUST validation errors - fix them first with `forgeplan validate <id>` instead of reaching for `--force`.
-- There is no code, test, or measurement behind the decision yet. Activating without evidence creates a blind spot in `forgeplan health`.
+Publish an artifact by changing its lifecycle status to `active`. For PRD, Epic, Spec, RFC, and ADR, the default path requires methodology gates and schema validation; activation is not just a status edit or proof that code has been implemented.
 
 ## Usage
 
@@ -36,47 +25,31 @@ forgeplan activate [OPTIONS] <ID>
   -V, --version  Print version
 ```
 
+## Default gates
+
+For the five guarded kinds, the trimmed stored body must be at least 100 UTF-8 bytes, an evidence-link heuristic must pass, recognized stub content must be absent, and schema MUST findings must be clear. Without `--force`, short bodies, missing evidence links, stub content, or MUST errors refuse activation. SHOULD findings do not block it. Run `review` for the shared methodology/validation report and `score` to inspect evidence quality before activating.
+
+## Evidence is not verified by the link gate
+
+The released heuristic accepts an outgoing `informs` or legacy `supports` relation, or an incoming relation whose source ID begins `EVID-`. It does not establish the evidence’s substantive adequacy, verdict, congruence, freshness, or a positive R_eff. Use a real EvidencePack linked evidence → decision with `informs`, fill its structured fields, and inspect the recursive score. Do not create arbitrary links merely to satisfy the predicate.
+
 ## Examples
 
-### Example 1: Activate a fully-validated PRD
-
 ```bash
+# After filling the existing PRD and linking real evidence:
 forgeplan validate PRD-001
 forgeplan score PRD-001
+forgeplan review PRD-001
 forgeplan activate PRD-001
 ```
 
-Run `validate` and `score` first to confirm the MUST gate passes and R_eff is non-zero, then activate.
+## Force and lightweight kinds
 
-### Example 2: Activate an ADR after review
+`--force` bypasses the methodology and MUST-validation refusals, not the lifecycle transition guard or the dedicated hypothesis-state rule. A forced activation without adequate evidence can leave an active blind spot. It is an explicit exceptional override, not the ordinary completion path. Kinds outside PRD/Epic/Spec/RFC/ADR skip these quality gates; hypothesis activation instead uses `forgeplan_hypothesis_promote` on MCP. No activation runs tests or proves the decision correct.
 
-```bash
-forgeplan review ADR-005
-forgeplan activate ADR-005
-```
+## State and failure handling
 
-`review` runs the same checks `activate` uses but without changing state - useful as a dry run before flipping the switch.
-
-### Example 3: Force activation despite validation errors
-
-```bash
-forgeplan activate RFC-012 --force
-```
-
-Use only in exceptional cases (e.g. migrating brownfield artifacts). Prefer fixing the gaps.
-
-## How it fits the workflow
-
-This command belongs in the [full artifact lifecycle](/docs/guides/first-artifact/) - see the tutorial for the end-to-end flow. Activation is how Forgeplan distinguishes "in progress" work from "live" decisions that other artifacts are allowed to depend on.
-
-## Common errors
-
-| Error | Cause | Fix |
-|---|---|---|
-| `MUST rule failed: Problem section missing` | Required frontmatter or section is empty | Edit the artifact file, then re-run `forgeplan validate <id>` |
-| `Artifact already in state: active` | Already activated in a previous session | No action needed; inspect with `forgeplan get <id>` |
-| `R_eff = 0 after activation` | No EvidencePack linked | Create evidence with `forgeplan new evidence`, then `forgeplan link` + `forgeplan score` |
-| `Cannot activate from terminal state` | Artifact is `superseded` or `deprecated` | Terminal states never re-activate - create a new draft instead |
+Use a real draft ID or slug and resolve refusal messages before retrying. Already-active and terminal artifacts are not made activatable by `--force`. For reviewed stale decisions, use the documented renewal workflow; do not use the 0.38.0 renewal defect as a way around activation gates.
 
 ## See also
 

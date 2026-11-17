@@ -12,7 +12,7 @@ const theoryCount = guides.filter(g => g.pill === 'theory').length;
 ---
 <Landing
   title="Guides — Forgeplan"
-  description="Interactive lessons on Forgeplan methodology — ADI, R_eff, BMAD, multi-agent dispatch. Theory + 3D visualizations."
+  description="Interactive lessons on Forgeplan methodology: ADI, R_eff, BMAD, and coordination between agents. Theory and 3D visualizations."
   slug="guides"
 >
   <Header />
@@ -21,10 +21,10 @@ const theoryCount = guides.filter(g => g.pill === 'theory').length;
       <p class="guides-eyebrow">GUIDES · INTERACTIVE LESSONS</p>
       <h1 class="guides-heading">Methodology in motion</h1>
       <p class="guides-lead">
-        A dozen standalone interactive lessons that explain Forgeplan methodology
-        from the inside out: how decisions are scored, why R_eff equals min()
-        not average, how a PRD becomes a Spec becomes a shipped feature, and
-        how multiple AI agents stay out of each other's way.
+        A dozen standalone interactive lessons on Forgeplan methodology:
+        how teams score decisions, why R_eff uses min() rather than an average,
+        how a PRD becomes a Spec and then a shipped feature, and how multiple
+        AI agents work without getting in each other's way.
       </p>
 
       <GuideMap lang="en" />
@@ -38,9 +38,8 @@ const theoryCount = guides.filter(g => g.pill === 'theory').length;
 
       <h2 class="guides-section-title">Reading order</h2>
       <p class="guides-section-desc">
-        Built linearly — each lesson references concepts from the previous.
-        Companion interactive pages (3D charts, calculators) follow their
-        theory pairs.
+        Each lesson builds on concepts introduced earlier. The 3D charts and
+        calculators follow the theory lessons they illustrate.
       </p>
 
       <ol class="guides-order">

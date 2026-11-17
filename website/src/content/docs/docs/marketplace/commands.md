@@ -1,13 +1,15 @@
 ---
 title: Commands Reference
-description: All slash commands from ForgePlan marketplace plugins
+description: Published command files, skill entrypoints, and replacements in the ForgePlan marketplace
 ---
 
 :::note[Installation required]
-Commands listed below come from external marketplace plugins. Install them with `/plugin install <name>@ForgePlan-marketplace` (after `/plugin marketplace add ForgePlan/marketplace`) or use the built-in `forgeplan setup-skill` for the core `/forge` skill.
+These entrypoints come from external marketplace plugins. In Claude Code, first run `/plugin marketplace add ForgePlan/marketplace`, then `/plugin install <name>@ForgePlan-marketplace`. The separate core command `forgeplan setup-skill` installs only the embedded `/forge` skill, not these plugins.
 :::
 
-Every slash command the marketplace ships, grouped by the plugin that provides it - 29 commands across 10 plugins. `dev-toolkit` is deprecated; read [Superseded commands](#superseded-commands) before installing it.
+This reference covers **29 physical `commands/*.md` files in 10 plugins**, not every chat entrypoint. The public catalog **1.187.1**, at [commit `b4e8a1b`](https://github.com/ForgePlan/marketplace/tree/b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7), ships **23 plugins, 99 skills and 97 agent definitions**. Skills can also be invoked from chat; see [Command files and skill entrypoints](#command-files-and-skill-entrypoints).
+
+Tables use short command names. Use the plugin-qualified form when needed, for example `/forgeplan-workflow:forge-cycle` or `/dev-toolkit:sprint`. Availability and naming depend on the host runtime; these files use Claude Code's command format.
 
 ## forgeplan-workflow
 
@@ -42,12 +44,14 @@ Composed code+docs maps under `.forgeplan/map/`.
 
 ## forgeplan-orchestra
 
-Sync with an Orchestra task board.
+The published **3.6.0** plugin still ships both command files below. It also provides the `task-cycle`, `unified-workflow` and `orchestra-mcp` skills and the `task-runner` and `orchestra-advisor` agents. These are distinct components, not extra command files.
 
 | Command | What it does |
 |---|---|
 | `/session` | Session Start Protocol with Inbox Pattern - restores context from Orchestra, Git and Forgeplan. |
-| `/sync` | Bidirectional sync between Forgeplan artifacts and Orchestra tasks. |
+| `/sync` | Compare Forgeplan artifacts with Orchestra tasks, show a diff and wait for confirmation before applying proposed changes. |
+
+There are no `commands/task-cycle.md`, `commands/task-runner.md` or `commands/unified-workflow.md` files in this release. `task-cycle` is a skill; `task-runner` is an agent. Do not treat the newer task workflow as removal of `/session` or `/sync`. Orchestra operations require a configured MCP server and the plugin's server/workspace resolution; a board sync is not automatic.
 
 ## fpf
 
@@ -100,7 +104,7 @@ AI-slop detection and rewriting for UI.
 ## dev-toolkit (deprecated)
 
 :::caution[Deprecated]
-`dev-toolkit` is marked `deprecated` and superseded by **fpl-skills**. Install it only if you already depend on it.
+`dev-toolkit` **1.9.1** is marked `deprecated` in the catalog but is still published, including all four command files. **fpl-skills 1.75.1** is the recommended plugin for new users. The catalog's structured `supersedes` range is specifically `dev-toolkit <=1.6.1`; that range and the current plugin's deprecated status are different facts.
 :::
 
 | Command | What it does |
@@ -112,18 +116,31 @@ AI-slop detection and rewriting for UI.
 
 ## Superseded commands
 
-Two of the deprecated plugin's commands have a successor in an actively maintained plugin. Prefer the successor on a new install.
+For migration to `fpl-skills`, use these skill entrypoints. They are not replacement files under `commands/`.
 
-| Deprecated | Successor | Why |
+| Deprecated command | fpl-skills successor |
+|---|---|
+| `/dev-toolkit:audit` | `/fpl-skills:audit` skill |
+| `/dev-toolkit:sprint` | `/fpl-skills:sprint` skill |
+| `/dev-toolkit:recall` | `/fpl-skills:restore` skill |
+| `/dev-toolkit:report` | `forge-report` skill, invocable as `/fpl-skills:forge-report`; there is no `report` skill or command in fpl-skills |
+
+The catalog separately declares two command-level extensions, not aliases or removals:
+
+| Existing command | Extension | Difference |
 |---|---|---|
-| `/audit` (dev-toolkit) | `/forge-audit` (forgeplan-workflow) | Adds performance and documentation experts and writes Forgeplan evidence. |
-| `/recall` (dev-toolkit) | `/session` (forgeplan-orchestra) | Adds the Orchestra inbox and Forgeplan health to the restore. |
+| `/dev-toolkit:audit` | `/forgeplan-workflow:forge-audit` | Adds Performance and Documentation reviewers. Its operative procedure requires Evidence creation and claim release; the older introductory wording calling Evidence optional is stale. |
+| `/dev-toolkit:recall` | `/forgeplan-orchestra:session` | Adds the Orchestra inbox and Forgeplan health to the restore. |
 
-## Skills are not slash commands
+<a id="skills-are-not-slash-commands"></a>
 
-Several plugins - `fpl-skills`, `agents-*`, `slopocop*`, `fpf` and others - ship **skills** rather than slash commands. A skill is loaded by the agent when the task matches its description; it is not registered as a `/` command and will not appear in the command palette. Skills such as `shape`, `spec-author`, `estimate`, `gate-check`, `refine`, `sprint` and `wrap` live in `fpl-skills` and are used that way.
+## Command files and skill entrypoints
 
-The distinction matters when you are looking for something and cannot find it: absence from this page means "not a command", not "not installed". See the per-plugin pages for the skills each one ships.
+A **command file** lives at `plugins/<plugin>/commands/<name>.md`. A **skill** lives at `plugins/<plugin>/skills/<name>/SKILL.md`; its YAML frontmatter provides `name`, `description` and any invocation controls. Claude Code can expose a user-invocable skill as `/plugin:skill`, even when that plugin has no `commands/` directory. For example, `/fpl-skills:shape`, `/fpl-skills:spec-author`, `/fpl-skills:estimate`, `/fpl-skills:gate-check`, `/fpl-skills:refine`, `/fpl-skills:sprint` and `/fpl-skills:wrap` are skill entrypoints.
+
+`disable-model-invocation: true` means explicit invocation rather than automatic model selection; it does **not** make the skill unavailable from chat. The published `shape` skill uses this flag and explicitly documents `/shape`. Do not assume a skill auto-loads merely because its description matches a task. Host support and frontmatter control invocation.
+
+Absence from the 29-file list therefore does not mean "not invocable" or "not installed". Other runtimes discover portable skills through their own paths and do not necessarily register Claude Code commands or enforce its tool restrictions. See [Plugin Development](/docs/marketplace/development/) for the interop boundary.
 
 ## When to use what
 
@@ -131,7 +148,7 @@ The distinction matters when you are looking for something and cannot find it: a
 |---|---|
 | Starting new feature | `/forge-cycle` |
 | Code review before PR | `/forge-audit` |
-| Comprehensive sprint | `/sprint` |
+| Comprehensive sprint | `/fpl-skills:sprint` skill (preferred); `/dev-toolkit:sprint` is deprecated |
 | Architecture decision | `/fpf-evaluate` |
 | Understanding a system | `/fpf-decompose` |
 | Debugging an argument | `/fpf-reason` |
@@ -147,7 +164,7 @@ The distinction matters when you are looking for something and cannot find it: a
 
 ```
 Feature delivery:
-  /forge-cycle  →  /forge-audit  →  fix  →  /sprint
+  /forgeplan-workflow:forge-cycle  →  /forgeplan-workflow:forge-audit  →  fix if needed
 
 Architecture decision:
   /fpf-evaluate "options"  →  /forge-cycle "implement winner"
@@ -158,3 +175,36 @@ De-slopping a codebase:
 Session start:
   /session  →  work  →  /sync
 ```
+
+## Published component inventory
+
+Counts are per-plugin definitions, not globally unique names; interop symlinks are not extra skills. The 97 agents include 96 direct files and the nested `forgeplan-brownfield-pack/agents/discover/discover.md`. Claude Code [loads agents recursively](https://code.claude.com/docs/en/plugins/components#agents); this definition has the scoped name `forgeplan-brownfield-pack:discover:discover`. Deprecated `dev-toolkit` remains included.
+
+| Plugin | Command files | Skills | Agents |
+|---|---:|---:|---:|
+| fpl-hsmem | 0 | 10 | 1 |
+| fpl-skills | 0 | 46 | 1 |
+| fp-cookbook | 0 | 1 | 0 |
+| agentic-rag | 0 | 1 | 0 |
+| laws-of-ux | 2 | 1 | 1 |
+| forgeplan-workflow | 2 | 1 | 1 |
+| dev-toolkit | 4 | 1 | 1 |
+| fpf | 5 | 1 | 1 |
+| forgeplan-orchestra | 2 | 3 | 2 |
+| forgeplan-brownfield-pack | 0 | 12 | 1 |
+| agents-core | 0 | 0 | 11 |
+| agents-domain | 0 | 0 | 11 |
+| agents-pro | 0 | 0 | 30 |
+| agents-github | 0 | 0 | 7 |
+| agents-sparc | 0 | 1 | 5 |
+| agents-tdd | 0 | 2 | 4 |
+| agents-bmad | 0 | 2 | 1 |
+| cc-best | 0 | 1 | 0 |
+| agents-canvas | 4 | 6 | 8 |
+| forgeplan-map-pack | 4 | 3 | 8 |
+| slopocop | 2 | 3 | 1 |
+| slopocop-design | 2 | 3 | 1 |
+| slopocop-code | 2 | 1 | 1 |
+| **Total** | **29** | **99** | **97** |
+
+Source: the [published catalog](https://github.com/ForgePlan/marketplace/blob/b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7/.claude-plugin/marketplace.json), its plugin directories and each component's frontmatter. These are marketplace assets, not the core Forgeplan CLI or MCP tool inventory.

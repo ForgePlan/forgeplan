@@ -1,24 +1,9 @@
 ---
 title: forgeplan order
-description: "Topological sort of artifacts - what to build first"
+description: "Report the structural relation graph, readiness, blockers, and cycles. Includes based_on, refines, supersedes, and contradicts; the 0.38.0 traversal is not a prerequisite-first execution queue."
 ---
 
-Sort all artifacts into topological execution order using dependency edges
-(`blocks`, `depends_on`, parent/child). The output is a linearized walk
-suitable for sprint planning: "do PRD-002 before PRD-007, because PRD-007
-depends on it."
-
-## When to use
-
-- Sprint planning - sequence multiple PRDs correctly
-- Dependency auditing - spot missing edges that should exist
-- CI gate - fail the build on dependency cycles
-
-## Not to use when
-
-- You want to see only _blocked_ items → use [`forgeplan blocked`](/docs/cli/blocked/)
-- You want hierarchy → use [`forgeplan tree`](/docs/cli/tree/)
-- You want all edges → use [`forgeplan graph`](/docs/cli/graph/)
+Report the relation graph using structural relations (`based_on`, `refines`, `supersedes`, `contradicts`). `informs` does not schedule work. Only nodes in structural edges appear; unlinked artifacts are absent.
 
 ## Usage
 
@@ -36,51 +21,21 @@ forgeplan order [OPTIONS]
 
 ## Examples
 
-Print the full topological order:
-
 ```bash
 forgeplan order
+forgeplan order --json | jq -r '.order[] | "- [ ] \(.)"'
+forgeplan order --json | jq '.cycles, .blocked, .ready'
 ```
 
-Pipe into a sprint doc template:
+## Output and exit behavior
 
-```bash
-forgeplan order --json | jq -r '.[] | "- [ ] \(.id) \(.title)"'
-```
+JSON has `order` (an array of IDs), `cycles`, `blocked` (id and blocked_by), `ready`, and `_next_action`. Text marks active, ready, or blocked entries with their real lifecycle status. The command reports cycles without returning a failing exit status; inspect `.cycles` explicitly for a CI policy. Active, deprecated, and superseded dependencies count as resolved.
 
-## Output interpretation
+In 0.38.0 the Kahn traversal appends an edge's source before its target, while readiness treats the source as depending on that target. Consequently, do not execute `.order` as a prerequisite-first work queue. Use `blocked_by` and `ready` to inspect unresolved dependencies. Nodes omitted by cyclic traversal may not appear in those classifications; inspect `cycles` as well.
 
-One artifact per line, earliest-first (breadth-first tiebreaker):
+## Planning
 
-```
-1.  ADR-003  Files as source of truth       [active]
-2.  PRD-039  BM25 production search         [active]
-3.  RFC-004  Layered search architecture    [active]
-4.  EVID-018 Benchmark results              [active]
-5.  PRD-040  Scoring intelligence           [draft]
-```
-
-| Column  | Meaning                                               |
-|---------|-------------------------------------------------------|
-| Index   | Position in the topological walk                      |
-| ID      | Artifact ID                                           |
-| Title   | Short title                                           |
-| Status  | `[active]`, `[draft]`, etc. - lets you skip terminal  |
-
-If a cycle is detected, the command exits with status 1 and prints the cycle
-path - fix the offending `blocks` / `depends_on` edge and re-run.
-
-## How it fits
-
-`order` is the "execute in this sequence" view. Pair with `blocked`:
-
-```
-order    → ideal sequence (ignores status)
-blocked  → what is stuck right now
-```
-
-A healthy workspace: everything in `order[0:k]` is `[active]` or `[done]`,
-and `blocked` is empty.
+Use `blocked` to focus on current obstacles, `tree` for hierarchy, and `graph` for the complete relation graph. Dependency readiness does not mean validation or evidence gates have passed.
 
 ## See also
 

@@ -3,60 +3,60 @@ title: forgeplan_init
 description: "Initialize a new .forgeplan/ workspace. Creates LanceDB tables, config, and artifact subdirectories."
 ---
 
-Bootstraps a fresh Forgeplan workspace in the current directory. The agent calls this as the first MCP invocation when it detects a project that doesn't yet have `.forgeplan/` - for example after `git clone` on a new machine or when scaffolding a brand-new project from scratch. MCP invocations are implicitly non-interactive (no prompts), equivalent to CLI `forgeplan init -y`.
+Creates a fresh Forgeplan workspace under the MCP server's startup directory, without interactive prompts. It accepts only `force`; there is no MCP `scan` or `workspace` argument. A clone that already contains tracked `.forgeplan/` Markdown usually needs the CLI [`forgeplan reindex`](/docs/cli/reindex/), not a destructive reinitialization.
 
 **Category**: Workspace & Data
 
 ## When an agent calls this
 
-- First MCP call on a fresh clone - no `.forgeplan/lance/` exists yet, agent needs a working index.
+- First setup in a project that has no `.forgeplan/` directory.
 - Scaffolding a new project from zero - agent will chain `init` → `new prd` → `validate`.
-- Recovery after a wiped workspace - user deleted `.forgeplan/` accidentally; agent re-creates structure and then calls `forgeplan_import` or `forgeplan_scan_import` to rebuild.
+- Recovery into an empty project from a saved `forgeplan_export` bundle, followed by `forgeplan_import`.
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
-| `force` | `bool` | no (default: `false`) | Force reinitialize even if workspace exists. |
+| `force` | `boolean \| null` | no | Force reinitialize even if workspace exists Schema default: `null`. |
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::InitParams`_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
 
-A status JSON confirming the workspace was created. Reports whether a scan-import ran and how many artifacts were imported. If `force=false` and the directory already contains `.forgeplan/`, returns an error object the agent should surface to the user rather than silently overwrite.
+`workspace` identifies the `.forgeplan/` directory and `message` describes the result; `_next_action` suggests the next call. If a workspace already exists and `force` is omitted or false, the server returns "Already initialized" without rebuilding its index.
 
-Example response shape:
+`force: true` removes the existing `.forgeplan/` directory found by walking up from the server's startup directory before recreating a workspace at startup CWD. It may therefore remove an ancestor workspace, not just a directory in CWD. This destroys artifacts, the derived index and local workspace data. Save an export and local configuration separately before choosing it; it is not an index-refresh operation.
 
-```json
-{
-  "ok": true,
-  "workspace": "/abs/path/.forgeplan",
-  "tables_created": ["artifacts", "links", "evidence"],
-  "scan_imported": 0
-}
-```
+Initialization creates artifact directories with `.gitkeep`, `config.yaml`,
+a template-only `secrets.env` and LanceDB tables. Forgeplan does not load
+`secrets.env` automatically. This MCP handler does not run CLI onboarding,
+scan/import existing documents, install marketplace skills/agents, configure a host,
+download an embedding model or call an LLM. Distribution setup and model/provider
+configuration remain separate prerequisites for features that need them.
+Success is JSON in MCP text content (`workspace`, `message`, `_next_action`), without
+`resolved_via` / `resolved_workspace`. Removal, filesystem initialization and
+LanceDB failures surface as JSON-RPC errors; a failed reinitialization does not restore
+the deleted directory.
 
 ## Example invocation
 
-```json
-{ "force": false, "scan": true }
-```
-
-With typical agent context:
-
-> Agent just cloned a repo that tracks `.forgeplan/*/` markdown but not the derived LanceDB index. It runs init with `scan: true` to recreate the index from tracked files.
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
 
 ```json
-{ "scan": true }
+{
+  "force": false
+}
 ```
 
 ## Typical sequence
 
-`forgeplan_init` is usually the very first MCP call in a fresh session, followed by `forgeplan_list` or `forgeplan_health` to verify the state. For destructive re-init, the agent should call `forgeplan_export` first, save the JSON, and only then pass `force: true`.
+Use `forgeplan_init` for a fresh workspace, then `forgeplan_status` or `forgeplan_health` to inspect it. In an existing workspace, start with those read tools instead. Before a deliberately destructive re-init, obtain approval, save `forgeplan_export` JSON and preserve local files not covered by the export.
 
 ## CLI equivalent
 
-- [`forgeplan init`](/docs/cli/init/) - same operation, interactive prompt skipped via `-y`
+- [`forgeplan init`](/docs/cli/init/) — fresh initialization, with `-y` / `--yes` for non-interactive defaults. **Force semantics differ:** CLI `--force` preserves existing artifact bodies and takes an automatic backup unless `--no-backup`; MCP `force: true` deletes the workspace. CLI `--scan` and `--with-model` have no counterparts in this MCP tool, and CLI `--yes` alone does not download a model.
 
 ## See also
 

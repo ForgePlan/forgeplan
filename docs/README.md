@@ -4,6 +4,14 @@
 
 Production documentation for the Forgeplan project.
 
+User-facing commands target published **Forgeplan 0.38.0** (82 top-level CLI
+commands, 103 including subcommands; 73 MCP tools). This source branch still
+declares **0.37.0** in `Cargo.toml`. The public marketplace catalog **1.187.1**
+has **23 plugins**; skills and orchestrators are separate from the CLI.
+See the [installation guide](https://forgeplan.dev/docs/getting-started/installation/)
+and [CLI](https://forgeplan.dev/docs/cli/) /
+[MCP reference](https://forgeplan.dev/docs/mcp/).
+
 > **Local notes** (research, planning, sessions, raw source materials) live in `.local/` (gitignored) — not part of this tree.
 
 ## Structure
@@ -12,10 +20,12 @@ Production documentation for the Forgeplan project.
 docs/
 ├── README.md          ← this file — navigation index
 ├── ROADMAP.md         ← gap analysis + priority matrix (Architecture, UX, Distribution, Docs)
-├── agents/            ← contracts an agent reads before acting (tracker, boards)
-├── methodology/       ← how the Forgeplan methodology works (for humans)
-├── operations/        ← agent hooks, enforcement, repo protection (devops)
-└── schemas/           ← formal artifact schemas (contracts for the validator)
+├── agents/            ← project-specific contracts an agent reads before acting
+├── methodology/       ← methodology and workflow guides
+├── operations/        ← setup, hooks, releases and repository protection
+├── schemas/           ← artifact schemas
+├── brownfield-extraction-package/ ← extraction design and examples
+└── vnext/             ← proposed architecture, not the released product
 ```
 
 **Artifacts** (PRDs, RFCs, ADRs, Epics, Specs, Evidence, Problems, Notes) live in the Forgeplan workspace at `.forgeplan/` — see [Artifacts](#artifacts) below.
@@ -35,7 +45,7 @@ Full methodology reference. Canonical source for humans learning to use Forgepla
 | [UNIFIED-WORKFLOW.md](methodology/UNIFIED-WORKFLOW.md) | Forgeplan × Orchestra × Hindsight integration |
 | [USAGE-BY-ROLE.md](methodology/USAGE-BY-ROLE.md) | How to use Forgeplan based on your role |
 | [METHODOLOGY-COURSE.md](methodology/METHODOLOGY-COURSE.md) | Full learning path (course format) |
-| [GLOSSARY.md](methodology/GLOSSARY.md) | 31 terms + lifecycle reference table |
+| [GLOSSARY.md](methodology/GLOSSARY.md) | Terms, storage boundaries and the released lifecycle |
 | [LESSONS.ru.md](methodology/LESSONS.ru.md) | Lessons learned — dependent sprint base verification, audit incidents, process improvements |
 | [agent-protocol.md](methodology/agent-protocol.md) | **Hint contract (PRD-071)** — 5 markers (Next/Or/Wait/Done/Fix), good/bad examples, agent reading protocol |
 | [release-workflow.md](methodology/release-workflow.md) | End-to-end release recipe — dependabot triage gate, version bump, release/* PR strategy, post-release sync (CLAUDE.md red lines #9 + #10), hotfix flow, anti-patterns |
@@ -48,7 +58,7 @@ Setup, hooks, and repository protection.
 |---|---|
 | [AGENT-ENFORCEMENT.md](operations/AGENT-ENFORCEMENT.md) | Rules and guardrails for AI agents working in this project |
 | [AGENT-HOOKS.md](operations/AGENT-HOOKS.md) | PreToolUse / PostToolUse hooks (safety, formatting, tests) |
-| [LLM-PROVIDERS.md](operations/LLM-PROVIDERS.md) | **v0.33.0+** LLM provider config (openai/claude/gemini/ollama/**claude-code**) — keyless `claude-code` reuses local `claude login` (personal/local only, ADR-017 disclosure) |
+| [LLM-PROVIDERS.md](operations/LLM-PROVIDERS.md) | HTTP/local LLM provider configuration and authentication; local subscription CLI adapters are explicit opt-ins for personal development, not shared/production/CI use |
 | [MULTI-AGENT.md](operations/MULTI-AGENT.md) | **v0.24.0+ multi-agent dispatch** — `forgeplan_dispatch/claim/release/claims` MCP tools, file-overlap detection, skill routing |
 | [REPO-PROTECTION-GUIDE.md](operations/REPO-PROTECTION-GUIDE.md) | Branch protection, PR rules, destructive-action prevention |
 | [GIT-WORKFLOW.ru.md](operations/GIT-WORKFLOW.ru.md) | Full Git rules — branching lifecycle, PR pipeline, release process, worktrees |
@@ -69,7 +79,7 @@ Contracts an agent reads before acting, so it does not have to probe or guess.
 
 ## Schemas
 
-Formal specifications that the validator enforces.
+Formal specifications for artifact structure. The released validator implementation determines which rules are enforced.
 
 | Document | Purpose |
 |---|---|
@@ -84,7 +94,7 @@ Formal specifications that the validator enforces.
 **Storage model (per [ADR-003](../.forgeplan/adrs/ADR-003-markdown-files-as-source-of-truth-lancedb-as-index-layer.md)):**
 - **Markdown files** in `.forgeplan/{adrs,rfcs,prds,epics,specs,evidence,problems,solutions,notes,refresh,memory}/` = **source of truth** (git-tracked)
 - **LanceDB** in `.forgeplan/lance/` = derived index layer (git-ignored, rebuildable)
-- **Config** `.forgeplan/config.yaml` = local LLM keys (git-ignored)
+- **Config** `.forgeplan/config.yaml` = provider and workspace settings; keep credential values in environment variables or git-ignored `.forgeplan/secrets.env`, not in tracked configuration
 
 **Directories:**
 
@@ -97,12 +107,12 @@ Formal specifications that the validator enforces.
 | [`.forgeplan/specs/`](../.forgeplan/specs/) | Formal specifications (API contracts, data models) |
 | [`.forgeplan/evidence/`](../.forgeplan/evidence/) | EvidencePacks — tests, benchmarks, measurements |
 | [`.forgeplan/problems/`](../.forgeplan/problems/) | ProblemCards — problem framing with anti-Goodhart indicators |
-| [`.forgeplan/solutions/`](../.forgeplan/solutions/) | SolutionPortfolios — 2-3+ variants with weakest-link scoring |
-| [`.forgeplan/notes/`](../.forgeplan/notes/) | Micro-decisions (auto-expire 90 days) |
-| [`.forgeplan/refresh/`](../.forgeplan/refresh/) | RefreshReports — re-evaluation of stale artifacts |
-| [`.forgeplan/memory/`](../.forgeplan/memory/) | Decision memory |
+| `.forgeplan/solutions/` | SolutionPortfolios — alternatives with weakest-link scoring; created when needed |
+| [`.forgeplan/notes/`](../.forgeplan/notes/) | Micro-decisions; no guaranteed automatic 90-day expiry |
+| `.forgeplan/refresh/` | RefreshReports — re-evaluation of stale artifacts; created when needed |
+| [`.forgeplan/memory/`](../.forgeplan/memory/) | Lightweight `remember`/`recall` artifacts, not Hindsight memory |
 
-**Managing artifacts:** always use `forgeplan` CLI — do not hand-edit YAML frontmatter.
+**Managing artifacts:** use the `forgeplan` CLI or MCP for body, metadata and lifecycle changes. Do not edit artifact projections directly. Submit a prepared body with `forgeplan update ID --body @file.md`; use lifecycle commands, not `update --status active|superseded|deprecated`.
 
 ```bash
 forgeplan new prd "Title"        # create new artifact
@@ -117,10 +127,14 @@ forgeplan reindex                # rebuild LanceDB index from markdown
 
 ```bash
 git clone <repo> && cd forgeplan
-forgeplan init -y                # creates .forgeplan/lance/ locally (empty)
-forgeplan reindex                # syncs tracked markdown into LanceDB
+forgeplan reindex                # rebuild local LanceDB from the tracked markdown
 forgeplan list                   # verify — should see all artifacts
 ```
+
+`reindex` is not `scan-import`: the latter discovers/imports documents, not a
+repair command for existing projections. `forgeplan setup` installs optional
+git hooks for subsequent merge/checkout synchronization; `forgeplan embed`
+refreshes semantic vectors separately.
 
 ## See also
 
@@ -132,7 +146,7 @@ forgeplan list                   # verify — should see all artifacts
 
 ## Conventions
 
-- **All paths in documents are relative to repository root.**
-- **Artifact files in `.forgeplan/` are managed by the `forgeplan` CLI** — hand-editing works but may cause drift with the LanceDB index until `reindex` runs.
-- **Methodology docs here are authoritative** — if a tutorial and a schema disagree, the schema wins.
-- **Activated artifacts are immutable** — supersede via `forgeplan supersede`, do not rewrite history.
+- **Filesystem paths in examples are relative to the repository root unless stated otherwise.** Markdown links are relative to the containing document.
+- **Artifact projections are managed through CLI/MCP.** `reindex` is recovery for file/index drift, not the normal editing workflow.
+- **Methodology requirements and runtime gates are distinct.** Use the schemas for the intended document contract and the released CLI/MCP reference for command behavior.
+- **Preserve accepted decisions.** Use `forgeplan supersede ID --by NEW-ID` or `forgeplan deprecate ID --reason "..."` instead of overwriting their history.

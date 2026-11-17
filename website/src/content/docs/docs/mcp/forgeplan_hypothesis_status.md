@@ -26,12 +26,14 @@ It is a pure report: no artifact is created, mutated or activated.
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
-| `id` | `string` | no | A single HYP- id to narrow the report to. Matching is case-insensitive against the canonical id. When omitted, the report covers every hypothesis in the workspace. |
-| `workspace` | `string` | no | Explicit workspace directory for this call, so an agent in a git worktree can target its own `.forgeplan/` instead of the server's launch directory. Absolute or tilde-expanded path. |
+| `id` | `string \| null` | no | Optional HYP- id to narrow the report to a single hypothesis. When `None`, returns the workspace-wide state distribution. Schema default: `null`. |
+| `workspace` | `string \| null` | no | Optional explicit workspace directory for this call. When set, the MCP server resolves the `.forgeplan/` projection from this path instead of the server's startup CWD. Use this when the calling agent is running in a git worktree separate from the MCP server's launch directory. PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. Schema default: `null`. |
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::HypothesisStatusParams`_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## What it does
 
@@ -49,6 +51,8 @@ _Schema source: `crates/forgeplan-mcp/src/server.rs::HypothesisStatusParams`_
 6. Returns the report with a `_next_action` hint.
 
 ## Returns
+
+Success is JSON encoded in MCP `content[0].text`. Illustrative values (assuming the example dates fall within the cutoff):
 
 ```json
 {
@@ -88,7 +92,7 @@ _Schema source: `crates/forgeplan-mcp/src/server.rs::HypothesisStatusParams`_
 |---|---|
 | `total` | Hypotheses counted after the optional `id` filter. |
 | `by_state` | Per-state counter over the five states. Always all five keys, including the zeros. |
-| `recent_transitions` | Audit entries extracted from `## Lifecycle State`, newest last, within the last 30 days. |
+| `recent_transitions` | Audit entries in record/body scan order, not globally date-sorted. Dates earlier than UTC today minus 30 days are skipped; future-dated lines are not rejected. |
 
 ## Notes
 
@@ -109,36 +113,14 @@ _Schema source: `crates/forgeplan-mcp/src/server.rs::HypothesisStatusParams`_
   workspace is empty.
 - **Reading is not enumerating.** Only counts and recent transitions come back; call
   [`forgeplan_get`](/docs/mcp/forgeplan_get/) on an id when you need the claim itself.
+- **Errors are not empty reports.** Workspace, lock, or record-read failures return plain-text MCP tool errors (`isError: true`). A successful unmatched filter instead returns the zero-count report described above.
 
 ## Example invocation
 
-Workspace-wide distribution:
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
 
 ```json
 {}
-```
-
-One hypothesis, with the workspace pinned for a worktree run:
-
-```json
-{ "id": "HYP-001", "workspace": "/Users/me/work/legacy-billing" }
-```
-
-Reading the same workspace before any hypothesis exists:
-
-```json
-{
-  "_next_action": "Done. — no hypothesis artifacts in workspace.",
-  "by_state": {
-    "inferred": 0,
-    "parked": 0,
-    "refuted": 0,
-    "strong_inferred": 0,
-    "verified": 0
-  },
-  "recent_transitions": [],
-  "total": 0
-}
 ```
 
 ## Typical sequence

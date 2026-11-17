@@ -10,6 +10,12 @@ A practical guide for setting up GitHub repository protection for projects with 
 - `gh` CLI installed and authenticated
 - CI workflow (GitHub Actions)
 
+The workflow and rulesets below are templates for a new repository, not
+a dump of Forgeplan's current remote settings. Forgeplan's own `ci.yml`
+also checks semantic-search, embeddings, the website, and documentation
+drift; see [Quality Gates](QUALITY-GATES.md). Match required check names
+to the jobs actually emitted by the target repository.
+
 ## Protection Architecture
 
 ```
@@ -76,7 +82,10 @@ jobs:
       - run: cargo test --workspace
 ```
 
-For Node.js/Python/Go — replace the steps with your own, but **keep the job names** (`Check, Lint & Format` and `Tests`) — they are used in rulesets.
+For Node.js/Python/Go, replace the steps but keep these job names **or**
+update `required_status_checks.context` to match. The stack snippets below
+are step fragments; keep the runners, checkout, and runtime setup from
+the full workflow and add the appropriate language setup.
 
 ### Adapting for Other Stacks
 
@@ -258,7 +267,9 @@ gh api repos/${FULL}/rulesets --method POST --input - <<'EOF'
 EOF
 ```
 
-Only admins can create/delete tags. Agents cannot accidentally tag.
+With this ruleset, tag creation, updates, and deletion require the admin
+bypass. This is an identity boundary, not an agent boundary: an agent
+using an admin token can bypass it too. Use non-bypass credentials for agents.
 
 ---
 
@@ -282,6 +293,11 @@ gh api repos/${FULL}/vulnerability-alerts --method PUT
 ---
 
 ## Step 4: Local Hooks (for AI agents)
+
+These sample hooks are pattern-based guardrails for Claude Code Bash
+calls, not a shell sandbox or native Git hooks. Other clients, equivalent
+command spellings, and admin credentials remain outside their coverage.
+They require Bash and `jq`; connect them explicitly in `.claude/settings.json`.
 
 ### 4.1 Safety hook — blocks dangerous commands
 
@@ -308,7 +324,7 @@ BLOCKED_PATTERNS=(
 )
 
 for pattern in "${BLOCKED_PATTERNS[@]}"; do
-  if echo "$COMMAND" | grep -qi "$pattern"; then
+  if echo "$COMMAND" | grep -Fqi -- "$pattern"; then
     echo "BLOCKED: '$pattern' is not allowed. Use PR workflow instead." >&2
     exit 2
   fi
@@ -342,6 +358,11 @@ exit 0
 ```
 
 ### 4.3 Configuration in settings.json
+
+Make both scripts executable before enabling them:
+```bash
+chmod +x .claude/hooks/safety-hook.sh .claude/hooks/pre-commit-fmt.sh
+```
 
 ```json
 {
@@ -381,14 +402,11 @@ gh api repos/${FULL} --jq '.security_and_analysis'
 
 ### Test protection (should fail):
 
-```bash
-# Try pushing directly to main — should be rejected
-git checkout main
-echo "test" >> README.md
-git add README.md && git commit -m "test direct push"
-git push origin main
-# Expected: rejected by ruleset
-```
+Use a disposable test repository or a temporary branch covered by an
+equivalent ruleset, and authenticate with a **non-bypass** account.
+An admin token is explicitly exempted by the rulesets above, so its
+successful push does not show that protection failed. Do not commit a
+test change to the real `main` branch just to probe rejection.
 
 ---
 
@@ -413,6 +431,7 @@ One command for a new project:
 ```bash
 #!/bin/bash
 # setup-protection.sh — sets up GitHub repo protection
+set -euo pipefail
 # Usage: ./setup-protection.sh MyOrg/my-project
 
 FULL="${1:?Usage: $0 OWNER/REPO}"
@@ -439,13 +458,18 @@ TAGS
 
 # 4. Security
 echo "  Enabling secret scanning..."
-gh api repos/${FULL} --method PATCH -f security_and_analysis[secret_scanning][status]=enabled -f security_and_analysis[secret_scanning_push_protection][status]=enabled 2>/dev/null
+gh api "repos/${FULL}" --method PATCH -f 'security_and_analysis[secret_scanning][status]=enabled' -f 'security_and_analysis[secret_scanning_push_protection][status]=enabled'
 
 echo "  Enabling Dependabot..."
-gh api repos/${FULL}/vulnerability-alerts --method PUT 2>/dev/null
+gh api "repos/${FULL}/vulnerability-alerts" --method PUT
 
 echo "Done! Verify: gh api repos/${FULL}/rulesets"
 ```
+
+The script stops on API errors; security features depend on repository
+visibility, plan, and permissions. Inspect the returned settings rather
+than treating a printed completion message as proof. Running the script
+again creates additional rulesets; use Step 6 to update existing ones.
 
 ---
 

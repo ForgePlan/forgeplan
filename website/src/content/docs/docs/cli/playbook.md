@@ -18,6 +18,10 @@ picked up automatically.
 
 `forgeplan playbook` is the parent command. It carries four subcommands plus `help`.
 
+## Forgeplan 0.38.0
+
+Version 0.37.0 examples below are retained captures from the earlier release. The current published binary is 0.38.0; argument and option blocks come from it. Installing the binary does not install every named playbook: confirm TARGET with playbook list or provide an existing YAML path.
+
 ## What it does
 
 1. **Discovers** every `*.yaml` / `*.yml` under the search roots and parses it against the
@@ -36,7 +40,7 @@ picked up automatically.
 
 - **Repeatable onboarding** - `brownfield-code`, `brownfield-docs`, and `greenfield-kickoff`
   encode the first hour of a project as an executable sequence.
-- **Multi-agent reviews** - `audit.yaml` fans a review out across specialist agents.
+- **Multi-agent reviews** — a playbook can invoke specialist agents; the runtime dispatches steps sequentially, not as an automatic parallel fan-out.
 - **Release mechanics** - `release.yaml` runs the pre-flight gates (`cargo fmt --check`,
   `cargo clippy`, the workspace test suite, `forgeplan health`) in a fixed order.
 - **CI and agent bootstraps** - `--json` output plus the process exit code let a pipeline treat
@@ -93,17 +97,15 @@ variants:
 
 | `type` | Fields | What runs |
 |---|---|---|
-| `plugin` | `name`, `target` | An external plugin command invoked through the Task tool |
-| `agent` | `name` | A named agent invoked through the Task tool |
-| `skill` | `name`, optional `pack` | A skill loaded into the caller's context |
+| `plugin` | `name`, `target` | `claude --print --agent <target>` subprocess (name used when target is empty) |
+| `agent` | `name` | `claude --print --agent <name>` subprocess |
+| `skill` | `name`, optional `pack` | Emits a `[skill-invoke] /…` trace; core does not load or execute the skill |
 | `command` | `command` as an argv list | An arbitrary process - **opt-in only**, see below |
 | `forgeplan_core` | `target` | A built-in operation: `ingest`, `new`, `validate`, `activate`, or `search` |
 
 `forgeplan playbook show` renders these as compact `delegate=` labels, for example
 `delegate=plugin:<name>#<target>`, `delegate=skill:forge-scaffolder (pack: brownfield-docs-pack)`,
-`delegate=command:echo hello`, or `delegate=forgeplan_core:new`. Only the typed delegates carry
-their own permission boundary; `command` is wide open by construction, which is why it is the
-one that needs a separate acknowledgement.
+`delegate=command:echo hello`, or `delegate=forgeplan_core:new`. Plugin and agent delegates need an installed, authenticated Claude CLI and an available agent; they use the logged-in session, not the Forgeplan LLM provider. The skill dispatcher is a released implementation limit: it returns success after emitting the trace, without checking installation or creating output. A host may interpret the trace, but core does not guarantee that.
 
 ## Discovery and resolution
 
@@ -128,11 +130,9 @@ defines `foo`).
 ## Safety notes
 
 - **`command:` steps are default-deny.** `forgeplan playbook run` refuses them unless
-  `--allow-shell` is passed or the workspace sets `[playbook] allow_shell = true`. The refusal is
-  a step failure, not a silent skip.
+  `--allow-shell` is passed or `.forgeplan/config.yaml` contains `playbook: { allow_shell: true }`. The security check refuses before dispatch, rather than silently skipping the command.
 - **`run` refuses without `--yes`.** This gate is independent of the shell opt-in - see
-  [`forgeplan playbook run`](/docs/cli/playbook-run/) for the observed behaviour of each
-  combination.
+  [`forgeplan playbook run`](/docs/cli/playbook-run/) for the two independent gates. There is no CLI force-deny override for an enabled workspace shell opt-in.
 - **Input is capped before parsing.** A playbook file larger than 1 MiB (1048576 bytes), or with
   more than 256 `{` / `[` brackets, is rejected with a `warn:` line during discovery and a
   structured error from `show` / `run`.
@@ -164,8 +164,8 @@ The three-command shape of a first contact with a pack:
 
 ```bash
 forgeplan playbook list                                    # what is reachable from here?
-forgeplan playbook show greenfield-kickoff                 # what does it actually do?
-forgeplan playbook run greenfield-kickoff --yes --dry-run  # what would it cost?
+forgeplan playbook show greenfield-kickoff                 # inspect a listed target
+forgeplan playbook run greenfield-kickoff --dry-run        # enumerate; no execution
 ```
 
 Every subcommand also accepts `-V` / `--version`, which reports the subcommand-scoped version

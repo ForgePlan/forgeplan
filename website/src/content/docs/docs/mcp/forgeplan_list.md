@@ -1,6 +1,6 @@
 ---
 title: forgeplan_list
-description: "List artifacts with optional kind/status/tag filters. Returns ID, kind, status, and title for each artifact."
+description: "List artifacts with optional kind/status filters. Returns ID, kind, status, and title for each artifact."
 ---
 
 Returns a filtered inventory of artifacts in the workspace. This is the cheapest discovery call - agents use it to answer questions like "what PRDs are active?" or "how many stale ADRs do we have?" without pulling full bodies. For full-text discovery the agent should reach for `forgeplan_search` instead.
@@ -15,42 +15,42 @@ Returns a filtered inventory of artifacts in the workspace. This is the cheapest
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
-| `kind` | `string` | no | Filter by kind (`prd`, `rfc`, `adr`, ...). |
-| `status` | `string` | no | Filter by status (`draft`, `active`, `stale`, `superseded`, `deprecated`). |
+| `kind` | `string \| null` | no | Filter by kind (optional) Schema default: `null`. |
+| `status` | `string \| null` | no | Filter by status (optional) Schema default: `null`. |
+| `workspace` | `string \| null` | no | Optional explicit workspace directory for this call. When set, the MCP server resolves the `.forgeplan/` projection from this path instead of the server's startup CWD. Use this when the calling agent is running in a git worktree separate from the MCP server's launch directory. PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. Schema default: `null`. |
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::ListParams`_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
 
-A JSON array of artifact summaries - ID, kind, status, title, and a few frontmatter fields (depth, tags, updated_at). Bodies are intentionally omitted; use `forgeplan_get` when the full content is needed.
+Success is a JSON object encoded in MCP `content[0].text`: `artifacts`, `total`, and `_next_action`. Each summary contains `id`, `kind`, `status`, `title`, `id_canonical`, and `id_display`; `slug`, `predicted_number`, and `assigned_number` appear only when available. Summaries do not include `depth`, `tags`, timestamps, or body. Use `forgeplan_get` for those record details. `total` counts the filtered result, not the whole workspace. This call does not change artifact status.
 
-Example response shape:
+Illustrative response (legacy artifacts without optional identity fields):
 
 ```json
 {
-  "count": 3,
+  "total": 2,
   "artifacts": [
-    { "id": "PRD-042", "kind": "prd", "status": "active", "title": "Auth system", "depth": "standard" },
-    { "id": "PRD-041", "kind": "prd", "status": "active", "title": "FPF rules", "depth": "deep" },
-    { "id": "PRD-040", "kind": "prd", "status": "draft", "title": "Scoring intelligence", "depth": "standard" }
-  ]
+    { "id": "PRD-042", "kind": "prd", "status": "active", "title": "Auth system", "id_canonical": "prd-042", "id_display": "PRD-042" },
+    { "id": "PRD-041", "kind": "prd", "status": "active", "title": "FPF rules", "id_canonical": "prd-041", "id_display": "PRD-041" }
+  ],
+  "_next_action": "2 active artifact(s). Check trust: `forgeplan_health`."
 }
 ```
 
 ## Example invocation
 
-```json
-{ "kind": "prd", "status": "active" }
-```
-
-With typical agent context:
-
-> Agent starting a session; wants a quick snapshot of active work before reading any bodies.
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
 
 ```json
-{ "status": "active" }
+{
+  "kind": "prd",
+  "status": "active"
+}
 ```
 
 ## Typical sequence

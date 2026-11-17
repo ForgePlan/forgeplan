@@ -14,6 +14,10 @@ playbook at all. `--allow-shell` (or the workspace equivalent) separately author
 `delegate_to: command` steps, which spawn arbitrary processes. Both exist because a playbook is
 data you may have received from someone else; neither is implied by the other.
 
+## Forgeplan 0.38.0
+
+In 0.38.0 delegate_to: skill is a signal-only integration: it prints [skill-invoke], returns success=true and the configured produces_at, but does not load the skill, check its installation, or create that output file. An external harness must actually handle the signal; independently confirm the result. --dry-run proves only plan parsing. Names/paths in retained examples require the corresponding local YAML or discovered pack: installing the binary does not install every playbook.
+
 ## What it does
 
 1. **Refuses without confirmation.** If `--yes` is absent and `--dry-run` is not set, the command
@@ -259,7 +263,7 @@ forgeplan playbook run demo-shell --yes --allow-shell --json
 
 `_next_action` is `null` for a clean run and names a follow-up command otherwise. In JSON mode the
 human-readable progress lines (`Running playbook:`, the `! shell-exec:` warnings) are suppressed,
-so stdout is exactly one JSON document - safe to pipe into `jq`.
+but skill delegates print a `[skill-invoke]` trace to stdout even with `--json`. A run containing those delegates is not one pure JSON document; a success count does not prove the skill executed.
 
 ### Resume from a later step
 

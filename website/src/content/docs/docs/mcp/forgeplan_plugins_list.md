@@ -7,13 +7,21 @@ List installed plugins detected on disk (Claude plugins + agentskills + Cursor) 
 
 **Category**: Other
 
-The tool answers one question in two halves: **what is on this machine**, and **what is in the registry but not on this machine**. The registry is a static list compiled into forgeplan-core; the installed half comes from walking the filesystem. The gap between them is the install work still owed to the user.
+The tool inventories **compiled registry entries detected on disk** and **registered entries not detected**. It is not a catalogue of every installed plugin or an active-agent roster. A `missing` entry is an optional capability, not install work owed to the user unless the selected workflow needs it. Neither registration nor a matching path proves that a host has loaded or can run that agent.
+
+## Example invocation
+
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
+
+```json
+{}
+```
 
 ## What it does
 
 1. **Loads the extended registry** - the static list of plugins, sub-agents and skill packs forgeplan knows how to detect or recommend, each with a version requirement, expected paths, an install command and a description.
 2. **Scans the filesystem** through that registry: for each entry, every expected path under each of that source's search roots is probed until one exists. The first match wins, so a plugin present in two locations is still reported once.
-3. **Tries to read a version** from the matched directory, in order: `manifest.json`, `plugin.json`, then the YAML frontmatter of `SKILL.md`. A version that cannot be parsed is not an error - it is reported as absent.
+3. **Tries to read a version string** from `manifest.json`, `plugin.json`, then `SKILL.md` YAML frontmatter. Missing/unreadable version metadata is absent; a malformed semver string can still be returned as `detected_version`. Compatibility is checked by the doctor/info tools, not this scan.
 4. **Splits the two lists.** Entries with a filesystem match go into `installed` with their detected path and version; everything else goes into `missing` as the static registry entry only.
 5. **Hints the next call**: `forgeplan_plugins_info` for one of the detected plugins (the first one the scan produced), or `forgeplan_plugins_doctor` when nothing was detected while the registry still has gaps.
 
@@ -33,15 +41,17 @@ Relative roots resolve against the server's working directory, so a project-loca
 
 ## Input parameters
 
-This tool takes no parameters. The server declares an explicit empty parameter object so the JSON Schema advertises a correct empty object rather than an ambiguous one.
+_No declared input fields. Call this tool with an empty object `{}`._
 
-| Name | Type | Required | Description |
-|---|---|---|---|
-| (none) | - | - | No parameters. Call with an empty argument object. |
-
-_Schema source: `crates/forgeplan-core/src/plugins/types.rs::EmptyParams`_
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
+
+Success is JSON in MCP text content, with `installed`, `missing`,
+`installed_count`, `missing_count` and `_next_action`. There is no `workspace`
+input or workspace trace. Missing roots/manifests are omissions, not tool errors.
+
+Historical 0.37.0 response capture, trimmed for display. These machine-specific counts are not the public marketplace plugin count or the current release version:
 
 ```json
 {
@@ -83,7 +93,7 @@ The `missing` array is trimmed here to one entry; the counts are from a machine 
 
 - **Before recommending an install** - never tell the user to add a plugin that is already present.
 - **After an install**, to confirm the detection actually picked it up (and at which version).
-- **When a task needs a capability the agent does not have** - a non-empty `missing` list names the exact install command.
+- **When a task needs an optional capability** — inspect the matching registry entry with `forgeplan_plugins_info` and confirm current public installation instructions before recommending an install.
 - **As a cheap environment probe** at the start of a session, to record which plugin packs are available on this machine.
 
 ## Examples
@@ -94,7 +104,7 @@ Enumerate everything:
 {}
 ```
 
-Typical follow-up, reading the entry that the hint points at:
+Typical follow-up **with `forgeplan_plugins_info`**, reading a registry entry (not arguments to `forgeplan_plugins_list`):
 
 ```json
 { "name": "c4-architecture" }
@@ -102,10 +112,11 @@ Typical follow-up, reading the entry that the hint points at:
 
 ## Notes
 
-- Read-only, non-destructive and idempotent: repeated calls return the same lists.
+- Read-only, non-destructive and idempotent. Filesystem changes can change the result, and HashMap registry order is not stable; sort entries by `info.name` / `name` before comparing snapshots.
 - The scanner never panics on a missing or unreadable directory - an absent search root simply contributes nothing. A plugin that cannot be proven present is reported as missing.
 - Detection is by path, not by a lockfile: a plugin directory that exists but carries no parseable manifest still counts as installed, with the version left out.
 - The registry is fixed at build time for a given forgeplan version, so a newly published plugin pack does not appear in `missing` until forgeplan is upgraded.
+- Registry install hints are compiled strings, not a live marketplace lookup. They do not prove current publication, host activation or implementation of a core MCP endpoint.
 
 ## CLI equivalent
 

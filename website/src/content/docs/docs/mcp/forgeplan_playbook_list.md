@@ -7,11 +7,19 @@ List all discoverable playbooks (workspace + Claude plugin packs). Returns name,
 
 **Category**: Other
 
+## Example invocation
+
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
+
+```json
+{}
+```
+
 ## What it does
 
 1. Resolves the workspace from the server's current working directory.
 2. Walks the playbook search roots (see [Discovery roots](#discovery-roots)), reading `.yaml` and `.yml` files.
-3. Skips any file larger than 1 MiB, any file whose YAML exceeds 256 bracket characters, and any file that fails to parse.
+3. Skips files above 1 MiB, YAML with more than 256 `{` / `[` opening characters in total (a heuristic, not recursive depth), unreadable files and loader failures.
 4. Parses each surviving file with the SPEC-003 loader and keeps the first occurrence of each playbook `name`.
 5. Sorts the survivors by `name` and returns the array plus a `total` count.
 
@@ -22,17 +30,19 @@ The scan never errors: a directory that does not exist, an unreadable file, or a
 - Before [`forgeplan_playbook_run`](/docs/mcp/forgeplan_playbook_run/) - resolve a bare playbook name to a real one instead of guessing.
 - When `forgeplan_playbook_show` answered `playbook target ... not resolvable` - this is the recovery call.
 - To detect whether a workspace ships its own playbooks in `.forgeplan/playbooks/` or relies on an installed pack.
-- Cheap capability probe during routing: an empty list means no orchestration is available in this workspace.
+- Capability discovery during routing: an empty list means no valid playbooks were found in these roots, not that path-addressed playbooks or orchestration elsewhere are unavailable.
 
 ## Input parameters
 
-| Name | Type | Required | Description |
-|---|---|---|---|
-| (none) | - | - | The tool takes no parameters. It is read-only, idempotent, non-destructive, and closed-world. |
+_No declared input fields. Call this tool with an empty object `{}`._
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::forgeplan_playbook_list` (signature `Parameters(_p): Parameters<EmptyParams>`)_
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
+
+Success is JSON in MCP text content. There is no `workspace` parameter or workspace
+trace; discovery uses process CWD and `$HOME` and does not require an initialized
+workspace to scan plugin roots.
 
 | Field | Type | Description |
 |---|---|---|
@@ -46,7 +56,7 @@ _Schema source: `crates/forgeplan-mcp/src/server.rs::forgeplan_playbook_list` (s
 
 ## Examples
 
-An empty workspace. The tool is terminal, so the hint is `Done.` (this response was captured live in a checkout with no `.forgeplan/playbooks/`):
+Illustrative empty discovery result, with terminal hint `Done.`:
 
 ```json
 {
@@ -56,7 +66,7 @@ An empty workspace. The tool is terminal, so the hint is `Done.` (this response 
 }
 ```
 
-A workspace with one playbook in `.forgeplan/playbooks/brownfield-code.yaml`:
+Illustrative workspace with one playbook in `.forgeplan/playbooks/brownfield-code.yaml`:
 
 ```json
 {
@@ -73,7 +83,7 @@ A workspace with one playbook in `.forgeplan/playbooks/brownfield-code.yaml`:
 }
 ```
 
-The five returned fields are the exact key set emitted by `forgeplan playbook list --json`, the CLI twin of this tool.
+The handler emits `playbooks`, `total` and `_next_action`; each playbook row has the four fields listed above.
 
 ## Discovery roots
 
@@ -86,7 +96,7 @@ Both roots are non-recursive. A nested `playbooks/subdir/` is not scanned.
 
 ## Notes
 
-- **The MCP scan is narrower than the CLI scan.** [`forgeplan playbook list`](/docs/cli/playbook-list/) also searches `marketplace/playbooks/`; this tool does not. In the ForgePlan repository itself the CLI reports 5 playbooks (all from `marketplace/playbooks/`) while this tool reports `total: 0`. If a name is missing here but valid on the CLI, pass the **path** to `forgeplan_playbook_show` and [`forgeplan_playbook_run`](/docs/mcp/forgeplan_playbook_run/) instead of the bare name.
+- **The MCP scan is narrower than the CLI scan.** [`forgeplan playbook list`](/docs/cli/playbook-list/) also searches `marketplace/playbooks/`; this tool does not. A CLI-discoverable name may therefore be absent here. Pass its allowed **path** to `forgeplan_playbook_show` or [`forgeplan_playbook_run`](/docs/mcp/forgeplan_playbook_run/) instead of the bare name. A returned name is not proof that its delegates can execute.
 - **Silent omissions are by design.** Oversized, too-deeply-nested, and unparseable files are dropped without a warning field. Use [`forgeplan_playbook_validate`](/docs/mcp/forgeplan_playbook_validate/) on a specific file to learn why it is absent.
 - **First path wins on duplicate names.** Roots are visited in the order listed above, so a workspace playbook shadows a plugin pack playbook with the same `name`.
 - **Recommendations are not in this response.** Playbook recommendation from project signals (`triggered_by`: `empty_repo`, `has_git`, `commit_count_min`, `has_docs`, `has_obsidian`, `has_cargo_toml`) is computed by the recommendation engine and emitted by [`forgeplan init`](/docs/cli/init/) on stderr. Set `FORGEPLAN_HINTS=1` to force those hints in a non-TTY pipeline. This tool returns the enumeration only.

@@ -1,14 +1,14 @@
 ---
 title: forgeplan fpf list
-description: "List all ingested FPF sections as a table (ID, part, title)"
+description: "List ingested FPF sections in a table with Section, Lines, and Title columns."
 ---
 
-`forgeplan fpf list` prints every section in the **First Principles Framework** knowledge base as a table - section ID, part (A/B/C), and title. It's the table-of-contents view of the KB.
+`forgeplan fpf list` prints the sections currently ingested into the workspace's **First Principles Framework** knowledge base. Columns are `Section`, `Lines`, and `Title`, followed by the section count. There is no part column or JSON flag.
 
 ## When to use
 
 - **For orientation** - scan the whole FPF structure in one screen.
-- **Right after `fpf ingest`** - confirm the expected ~204 sections are present.
+- **Right after `fpf ingest`** - compare the loaded count with the corpus you selected.
 - **To pick a section ID to read** before running [`fpf section`](/docs/cli/fpf-section/).
 - **To sanity-check coverage** when a search returns surprisingly few results.
 
@@ -45,13 +45,15 @@ forgeplan fpf search "trust"
 
 ## Structure of the FPF corpus
 
-Sections are grouped into three parts:
+The corpus comes from an installed FPF skill or an explicit `fpf ingest --path`
+directory; it is not a fixed 204-section payload bundled in the CLI.
+Section IDs and titles are derived from source headings or filenames.
+Use the actual IDs returned by `list` rather than assuming every installation
+has the same parts or section count.
 
-- **Part A - Foundations.** Kernel architecture, reasoning primitives, base vocabulary.
-- **Part B - Trust calculus.** Evidence grading, congruence levels, R_eff semantics, explore/investigate/exploit.
-- **Part C - ADI cycle.** Abduction → Deduction → Induction, hypothesis management, adversarial review.
-
-A total of 204 sections are shipped with Forgeplan and loaded into the KB on `fpf ingest`.
+An empty KB is a successful result with a message instructing you to run
+`forgeplan fpf ingest` first.
+The populated table's next-action hint points at its first section.
 
 ## How it fits
 

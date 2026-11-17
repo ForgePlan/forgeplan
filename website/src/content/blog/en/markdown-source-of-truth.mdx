@@ -20,7 +20,7 @@ Every artifact mutation flows from markdown into LanceDB, never the reverse. If 
 
 This is ADR-003. It's the single most load-bearing architectural decision in the project. It's also the one we almost lost - twice.
 
-This is the story of how the invariant got compile-time-enforced, what it took (4 audit rounds, 56 findings, a `pub(crate)` lockdown across 32 call sites), and why the boring discipline matters more than the clever architecture.
+Enforcing the invariant at compile time took 4 audit rounds, 56 findings, and a `pub(crate)` lockdown across 32 call sites. Maintaining an architectural rule matters more than devising a clever one.
 
 ### Why one-way
 
@@ -34,7 +34,7 @@ We picked one-way: markdown is authoritative, LanceDB is a cache. The cache can 
 
 The CLI and MCP server enforce this through a single discipline: **never call `LanceStore::create_artifact / update_* / delete_* / add_relation / delete_relation` directly from `commands/*.rs` or `server.rs`**. All mutations go through `forgeplan_core::projection::sync_file_to_store` and `render_projection`.
 
-That's the rule. It's a one-line rule. It would not survive contact with a 12.8K-LOC codebase touched by AI agents and human contributors over six months. So.
+The rule fits in one line, but that alone couldn't protect a 12.8K-LOC codebase touched by AI agents and human contributors over six months.
 
 ### How the rule failed (PROB-048)
 
@@ -44,7 +44,7 @@ It was 32.
 
 Thirty-two places in `commands/*.rs` and `server.rs` were doing direct `LanceStore::create_artifact(...)` or `LanceStore::add_relation(...)` calls. They were spread across history; some were copy-paste from earlier patterns; some were "just for this one edge case"; one was a debug helper that nobody removed.
 
-Each violation was a quiet bomb. None of them caused immediate breakage, because the markdown writes and the LanceDB writes happened in the same commit. But they meant: the projection invariant existed in the *original author's head* and nowhere else. New code, written by a new agent or a new contributor reading the existing patterns, would inherit the violation as the norm.
+None of the violations caused immediate breakage, because the markdown writes and the LanceDB writes happened in the same commit. But the projection invariant existed in the *original author's head* and nowhere else. New code, written by a new agent or a new contributor reading the existing patterns, would inherit the violation as the norm.
 
 I logged this as PROB-048. I scoped a fix as PRD-073, with three phases:
 
@@ -54,7 +54,7 @@ I logged this as PROB-048. I scoped a fix as PRD-073, with three phases:
 
 ### The four audit rounds
 
-Refactoring is the easy part. Refactoring without regression is the hard part. I ran four adversarial audit rounds, each with two AI agents (a security reviewer and a code reviewer), each instructed to find at least three issues. Zero findings = re-spawn (suspect superficial review).
+The hard part was avoiding regressions during the refactor. I ran four adversarial audit rounds, each with two AI agents (a security reviewer and a code reviewer), each instructed to find at least three issues. Zero findings = re-spawn (suspect superficial review).
 
 Round-by-round:
 
@@ -76,7 +76,7 @@ Three reasons.
 
 **One: invariants without compile-enforced guards are folklore.**
 
-ADR-003 was written on day one of the project. It was clear. It was correct. It was 32-times violated within six months. Any architectural document that relies on "we'll all remember the rule" loses to entropy. The interesting question isn't "what's the right invariant" - it's "how does the build break when someone forgets the invariant?" If the answer is "it doesn't," your invariant is decorative.
+ADR-003 was clear and correct when it was written on day one of the project. Within six months it had been violated 32 times. Any architectural document that relies on "we'll all remember the rule" loses to entropy. Ask "how does the build break when someone forgets the invariant?" alongside "what's the right invariant." If the answer is "it doesn't," your invariant is decorative.
 
 **Two: AI-augmented codebases need this discipline more, not less.**
 
@@ -104,7 +104,7 @@ Post-Phase-4, the `forgeplan-core::store` module looks like this:
 
 ### What I'd tell another founder building methodology tooling
 
-If you only take one thing from this post: **the rule is enforced by the compiler or it's not enforced**.
+**A rule needs compiler enforcement; otherwise, it isn't enforced.**
 
 Documentation is necessary but not sufficient. Code review catches some violations. CI tests catch more. But if a senior contributor or an AI agent can write code that compiles and ships while breaking the invariant, that invariant will erode. The only way to preserve it across a year of changes is to make it physically impossible to violate.
 

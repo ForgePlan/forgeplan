@@ -1,14 +1,18 @@
 ---
 title: Quick Start
-description: "From zero to your first activated decision in 10 minutes."
+description: "Create, validate and support your first decision with evidence."
 ---
 
-This is the 10-minute walkthrough. If you want a slower, fully annotated
-tutorial with error recovery, see [First Artifact Tutorial](/docs/guides/first-artifact/).
+This walkthrough shows the CLI cycle for a decision backed by implemented
+work. It is not a time guarantee: requirements, implementation and real
+verification take as long as the task requires. For error recovery, see
+[First Artifact Tutorial](/docs/guides/first-artifact/).
 
 :::tip[Shortcut]
-In Claude Code, Cursor, Windsurf and similar AI agents the entire workflow below is packaged as the `/forge` skill. Install with `forgeplan setup-skill` and run `/forge "your task description"`.
-See [Marketplace: Forgeplan Workflow](/docs/marketplace/forgeplan-workflow/).
+In Claude Code, `forgeplan setup-skill` installs the bundled `/forge` guidance.
+It does not install MCP or the full marketplace harness. For `/smith`,
+`/forge-cycle` and specialist agents, follow
+[Installation](/docs/getting-started/installation/#full-harness-bundle-claude-code).
 :::
 
 By the end of this page you will have:
@@ -30,11 +34,12 @@ Verify it works:
 forgeplan --version
 ```
 
-:::caution[Do the three post-install steps first]
-Installing the binary is not the whole setup. The embedding model, the FPF
-knowledge base and the agent plugins each need one command, and skipping any
-of them degrades results **silently**: nothing errors out. See
-[three things installing the binary does not do](/docs/getting-started/installation/#read-this-first-three-things-installing-the-binary-does-not-do).
+:::caution[Choose the prerequisites for this workflow]
+Basic artifact operations need no model or LLM. Step 5 uses `reason` and
+requires an LLM provider in `.forgeplan/config.yaml`; `--save` preserves its
+output. FPF context is optional for the CLI and requires corpus ingestion.
+Semantic search separately requires model weights and artifact vectors.
+Marketplace agent plugins are not required for this shell walkthrough.
 :::
 
 ## 1. Initialize a workspace
@@ -55,36 +60,51 @@ forgeplan health
 
 ## 2. Route your task
 
-Before writing anything, let Forgeplan pick the right depth:
+Before creating an artifact, request a depth recommendation. Force keyword
+routing here to avoid an unplanned LLM call:
 
 ```bash
-forgeplan route "add user authentication"
+forgeplan route "add user authentication" --level 0
 ```
 
-```
-Depth: Standard
-Pipeline: PRD → RFC
-Confidence: 90%
-Next: forgeplan new prd "User Authentication"
-```
-
-`Standard` means you create a PRD for the "what" and an RFC for the "how".
-For more context see [Routing & Depth](/docs/methodology/routing/).
+Read the returned depth, matched triggers and pipeline rather than expecting
+a fixed confidence or `Standard` result. Security-sensitive work may need a
+deeper pipeline. Create the artifacts the recommendation calls for and set
+their depth explicitly; routing does not change a newly created PRD's
+default depth. This page illustrates a PRD; it does not replace required
+RFC, ADR or SPEC work. See [Routing & Depth](/docs/methodology/routing/).
 
 ## 3. Shape - create the PRD
 
 ```bash
 forgeplan new prd "User Authentication"
-# -> Created: PRD-001 at .forgeplan/prds/PRD-001-user-authentication.md
+# Use the ID and path printed by this command.
 ```
 
-Open the file and fill the MUST sections:
+The commands below use `PRD-001`, `EVID-001` and `NOTE-001` as example IDs;
+substitute the IDs from your workspace.
 
-- **Problem** - why does this exist?
-- **Goals** - what does success look like? (SMART criteria)
-- **Non-Goals** - what is explicitly out of scope?
-- **Target Users** - who benefits?
-- **Functional Requirements (FR)** - `[Actor] can [capability]`
+Read the generated template, then prepare its body in an editing buffer
+outside `.forgeplan/`, preserving the template headings. Fill the sections
+required for its depth, including:
+
+- **Executive Summary** — vision, problem and target users
+- **Success Criteria** — measurable targets and how to measure them
+- **Product Scope** — in scope and out of scope
+- **User Journeys** — who does what and what the system returns
+- **Functional Requirements** — `[Actor] can [capability]`, linked to journeys
+- **Non-Functional Requirements** — metrics, conditions and measurement
+
+Save the body without YAML frontmatter to `/tmp/auth-prd-body.md`, then sync it
+through the CLI:
+
+```bash
+forgeplan update PRD-001 --body @/tmp/auth-prd-body.md
+```
+
+Use `forgeplan update PRD-001 --depth deep` if that is the routed depth.
+Do not edit canonical `.forgeplan/` artifacts directly; `update` synchronizes
+their file and index.
 
 :::caution[Don't leave stubs]
 A stub PRD with no Problem/Goals is technical debt. Fill it now or
@@ -97,42 +117,44 @@ A stub PRD with no Problem/Goals is technical debt. Fill it now or
 forgeplan validate PRD-001
 ```
 
-Expected:
-```
-PRD-001: PASS ✓ (0 MUST errors, 2 SHOULD warnings)
-```
-
-If you see MUST errors, the sections are missing or empty. Fix them and
-re-run. The validator also catches implementation leakage: writing
-"Use JWT" in a requirement fails the gate - requirements describe WHAT,
-not HOW.
+Continue only when the command reports no MUST errors. The number of SHOULD
+warnings depends on the content. Fix reported sections or content rules and
+re-run. Requirements describe WHAT, not implementation choices; the validator
+checks for implementation leakage, but a PASS is not proof that the design
+or implementation is correct.
 
 ## 5. Reason (ADI)
 
-For Standard depth, ADI is recommended. For Deep and Critical, it is
-mandatory:
+ADI generates alternatives and predictions for independent assessment.
+The published harness calls for ADI on Standard+ work; it is not a substitute
+for testing. Configure and authenticate an LLM provider first. HTTP providers
+use the configured API-key environment variable; local subscription CLI
+providers require an existing login and are explicit personal-development
+opt-ins, not shared/CI deployments.
 
 ```bash
-forgeplan reason PRD-001
+forgeplan reason PRD-001 --save
 ```
 
-The router generates **3+ hypotheses**, derives predictions for each, and
-scores them against any evidence already in the workspace. The output is
-stored with the artifact so future readers can see how you arrived at the
-decision.
+This is `reason`, not the task router. Without `--save`, the CLI prints the
+analysis; with it, it creates a linked Note. Review the generated hypotheses
+and verify their claims rather than treating LLM output as observed evidence.
 
 Want FPF knowledge-base context injected into the prompt?
 
 ```bash
-forgeplan reason PRD-001 --fpf
+forgeplan reason PRD-001 --fpf --save
 ```
 
 See [ADI Reasoning](/docs/methodology/adi/) for the full cycle.
 
 ## 6. Build
 
-Code your feature. The critical rule: **write a test for every `pub fn`
-before moving to the next function**. Tests become Evidence in step 7.
+Implement the agreed feature and verify its acceptance criteria. Select the
+methodology before coding: BMAD is for a new product; SPARC is for one feature
+in an existing active system; enforced TDD requires an active PRD and an
+active scenario-bearing SPEC. A planning artifact can be activated before
+implementation; that activation is not evidence that the feature is shipped.
 
 When the feature is done:
 
@@ -147,11 +169,15 @@ All must be green before you activate.
 ## 7. Prove - create Evidence
 
 ```bash
-forgeplan new evidence "Auth tests - 12 pass, JWT validate 0.3ms"
-# -> Created: EVID-001
+forgeplan new evidence "Authentication acceptance test results"
+# Use the returned evidence ID; do not claim a test result in the title before measuring it.
 ```
 
-Open the evidence file and add the **structured fields** block to the body:
+The evidence template already contains a **Structured Fields** section.
+Prepare the complete evidence body outside `.forgeplan/`, replace its
+measurement/result placeholders with observed commands, results, environment
+and limitations, and set the structured fields to match those observations.
+For a supporting test run in the same context, the block is:
 
 ```markdown
 ## Structured Fields
@@ -161,8 +187,18 @@ congruence_level: 3
 evidence_type: test
 ```
 
-Without these fields, the R_eff parser assigns CL0 (0.9 penalty) and your
-score collapses to near zero. This is the number one beginner mistake.
+Missing or unrecognized verdicts and missing congruence declarations fail
+closed to CL0 in 0.38.0 (a supporting base score of 1.0 becomes 0.1).
+Do not choose CL3 just to raise the score: explain why the test context
+matches the claim. For code-claiming evidence, include `base_sha`,
+`result_sha` and `changed_paths` together so provenance can be checked
+against the real git delta. See [Evidence & R_eff](/docs/methodology/evidence/).
+
+Save the completed body to `/tmp/auth-evidence-body.md` and synchronize it:
+
+```bash
+forgeplan update EVID-001 --body @/tmp/auth-evidence-body.md
+```
 
 Link the evidence to the PRD:
 
@@ -176,13 +212,11 @@ forgeplan link EVID-001 PRD-001 --relation informs
 forgeplan score PRD-001
 ```
 
-```
-PRD-001: R_eff = 1.00 - Adequate
-  EVID-001: supports, CL3, test -> score 1.0
-```
-
-If R_eff is 0.0, check: (a) is evidence linked? (b) does evidence body
-contain the structured fields? See [Evidence & R_eff](/docs/methodology/evidence/).
+Use the score actually returned, not a target number to copy into Evidence.
+R_eff uses the weakest current linked evidence; draft packs still count,
+while superseded/deprecated packs do not. A current `refutes` verdict can
+zero the result. If the score is low, inspect links, structured fields,
+congruence and freshness. A positive score alone does not prove correctness.
 
 ## 9. Activate
 
@@ -194,8 +228,10 @@ forgeplan activate PRD-001
 # -> draft → active
 ```
 
-The validation gate runs one more time on activation. If it fails, the
-transition is rejected.
+Activation reruns validation and can reject the transition. Resolve the
+reported findings; do not use `update --status active` to bypass lifecycle
+commands. In the agent harness, an independent reviewer/guardian supplies the
+verdict and the main orchestrator activates; the author does not self-certify.
 
 ## 10. Verify health
 
@@ -203,12 +239,10 @@ transition is rejected.
 forgeplan health
 ```
 
-```
-Artifacts: 1 (1 active, 0 draft, 0 stale)
-Blind spots: 0
-Orphans: 0
-Evidence coverage: 100%
-```
+Inspect the actual counts and findings. This example creates a PRD, an
+EvidencePack and, with `reason --save`, an ADI Note; other routed artifacts
+add to the total. Do not expect a one-artifact workspace or a fixed health
+verdict. Follow up on blind spots, unlinked artifacts and stale evidence.
 
 You now have a fully traced decision with measurable trust. Future-you (or
 your teammate) can open PRD-001 in six months and see: the problem, the
@@ -224,15 +258,17 @@ Route → Shape → Validate → Reason → Build → Prove → Activate
 1. forgeplan route "task"
 2. forgeplan new prd "Title"     # fill MUST sections
 3. forgeplan validate PRD-XXX
-4. forgeplan reason PRD-XXX      # ADI, mandatory on Deep+
+4. forgeplan reason PRD-XXX --save  # LLM required; preserve ADI
 5. code + test
 6. forgeplan new evidence "..." + link + score
 7. forgeplan review + activate
 ```
 
 :::tip[Work isn't done until]
-PRD filled + validated + ADI captured (Standard+) + evidence created + R_eff > 0 + activated.
-Anything less is an open tab, not a finished task.
+For a completed feature: requirements filled and validated, ADI captured for
+Standard+ harness work, implementation independently checked, evidence linked,
+R_eff inspected and the appropriate artifacts activated. An active plan is
+not the same milestone as a delivered feature.
 :::
 
 ## Next steps

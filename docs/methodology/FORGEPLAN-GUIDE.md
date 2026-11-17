@@ -9,11 +9,11 @@
 
 ## What Is Forgeplan
 
-Forgeplan forces you to **think before coding**. Instead of "open IDE -> write code -> deploy", you get "determine depth -> create artifact -> validate quality -> confirm with evidence -> code".
+Forgeplan supports **thinking before coding**: determine depth, shape and validate the decision, implement it, collect evidence, then review and activate. CLI/MCP automate artifact operations; agents and people perform the engineering work.
 
 **Not Jira.** Not project management. Not a task tracker. Forgeplan is a **structured knowledge base** for engineering decisions.
 
-**Primary consumer**: AI agent (Claude Code, Cursor) via MCP server. CLI is for human inspection.
+AI agents can use the MCP server; people and agents can also use the CLI. Neither interface independently verifies implementation correctness.
 
 ---
 
@@ -22,11 +22,11 @@ Forgeplan forces you to **think before coding**. Instead of "open IDE -> write c
 ### 1. AI Skill (for any AI agent)
 
 ```bash
-# Install /forge skill for Claude Code, Cursor, Codex, Gemini, and 40+ agents
-npx skills add ForgePlan/forgeplan --skill forge
+# Install the bundled /forge instructions for Claude Code (requires the binary below)
+forgeplan setup-skill
 ```
 
-The skill will be installed into selected agents. After that, in your AI chat:
+This writes `~/.claude/skills/forge/SKILL.md`; it does not install marketplace agents, `/forge-cycle`, MCP configuration or safety hooks. For the full workflow, install the published `forgeplan-workflow` plugin and the specialist packs your project uses.
 ```
 /forge "Add OAuth2 authentication"
 ```
@@ -69,7 +69,7 @@ Add to your project's `.mcp.json`:
 forgeplan init
 
 # 2. Determine what to do
-forgeplan route "Add OAuth2 authentication"
+forgeplan route "Add OAuth2 authentication" --level 0
 # -> Depth: Deep, Pipeline: PRD -> Spec -> RFC -> ADR
 
 # 3. Create first artifact
@@ -79,7 +79,7 @@ forgeplan new prd "OAuth2 Authentication"
 forgeplan health
 ```
 
-> **Alias**: `fpl` = `forgeplan`. Create a symlink: `ln -s $(which forgeplan) /usr/local/bin/fpl`
+> **Alias**: release installers provide `fpl`. After a source install, `forgeplan setup --skip-model --skip-hooks` creates it beside the executable without downloading the model or installing repository hooks.
 
 ---
 
@@ -94,7 +94,7 @@ Ask yourself one question: **"Is this reversible within a day?"**
 | Yes, trivial | **Tactical** | Nothing or Note | Fix typo, update config |
 | No, there are choices | **Standard** | PRD -> RFC | New feature, 1-3 days |
 | No, affects many | **Deep** | PRD -> Spec -> RFC -> ADR | New module, 1-2 weeks |
-| Strategy, cross-team | **Critical** | Epic -> PRD[] -> RFC[] -> ADR[] | New subsystem |
+| Strategy, cross-team | **Critical (marketplace policy)** | Epic + coordinated Deep workstreams | New subsystem |
 
 Or use automatic routing:
 
@@ -102,7 +102,9 @@ Or use automatic routing:
 forgeplan route "task description"
 ```
 
-The engine analyzes keywords (security -> Deep+, breaking change -> Deep+, cross-team -> Standard+) and provides an instant recommendation without LLM.
+`--level 0` forces offline keyword routing. Without it, CLI 0.38 tries configured LLM routing and falls back to keywords; auto mode can escalate a Deep LLM result to ADI reasoning. MCP `forgeplan_route` has **no `level` parameter** in 0.38. The CLI help's “keywords (default)” wording is narrower than the implementation.
+
+The **0.38 core pipeline** is Tactical = none, Standard = PRD → RFC, Deep = PRD → Spec → RFC → ADR. Core parses `critical` as Deep; it does not produce a distinct Critical route. The **published marketplace methodology** adds SOL (compare approaches) before design and REFRESH (record reconciliation) at Deep/Critical. Keep these workflow requirements separate from the binary's pipeline output. See [versioned sources](#versioned-sources).
 
 ### Question 2: "Which artifact?"
 
@@ -123,7 +125,7 @@ forgeplan review PRD-001
 # -> Ready to activate? NO
 ```
 
-If MUST is empty -- activate. If not -- refine.
+Fix MUST findings and all additional activation-gate failures. For PRD/Epic/Spec/RFC/ADR, review also checks body length, unfilled-template markers and an evidence link. A machine PASS is not an independent review or proof that code works.
 
 ### The Main Rule
 
@@ -145,6 +147,8 @@ If MUST is empty -- activate. If not -- refine.
 | `forgeplan list` | List artifacts | `forgeplan list --type prd --status active` |
 
 **Artifact kinds:** `prd`, `epic`, `spec`, `rfc`, `adr`, `note`, `problem`, `solution`, `evidence`, `refresh`
+
+These are the common decision-workflow kinds; core 0.38 also supports local `memory` and six brownfield kinds (`use_case`, `glossary`, `invariant`, `scenario`, `hypothesis`, `domain_model`). Canonical Markdown lives under `.forgeplan/`; LanceDB is the rebuildable query index. Prefer CLI/MCP writes; `reindex` repairs the index from Markdown, while `scan-import` imports other documents.
 
 ### Links and Graph
 
@@ -175,7 +179,7 @@ If MUST is empty -- activate. If not -- refine.
 | `forgeplan supersede <id> --by <new>` | Active -> Superseded + chain warnings | `forgeplan supersede PRD-001 --by PRD-002` |
 | `forgeplan deprecate <id> --reason "..."` | Active -> Deprecated | `forgeplan deprecate PRD-001 --reason "Cancelled"` |
 
-**Rule:** Notes and Problems do not require a validation gate. PRD, RFC, ADR, Epic, Spec -- MUST rules must pass.
+**Rule:** full activation gates apply to PRD, RFC, ADR, Epic and Spec. Lightweight kinds such as Note and Problem skip those gates; their base validation is not a quality verdict.
 
 ### Dashboards and Analytics
 
@@ -185,7 +189,7 @@ If MUST is empty -- activate. If not -- refine.
 | `forgeplan status` | Brief dashboard | `forgeplan status` |
 | `forgeplan blindspots` | Artifacts without evidence, orphans | `forgeplan blindspots` |
 | `forgeplan journal` | Decision timeline with R_eff | `forgeplan journal --risk` |
-| `forgeplan fpf` | FPF dashboard: contexts + F-G-R + actions | `forgeplan fpf` |
+| `forgeplan fpf dashboard` | FPF dashboard: contexts + F-G-R + actions | `forgeplan fpf dashboard` |
 | `forgeplan stale` | Artifacts with expired valid_until | `forgeplan stale` |
 | `forgeplan decay` | Impact of expired evidence on R_eff | `forgeplan decay` |
 | `forgeplan progress [id]` | Checkbox progress bars | `forgeplan progress` |
@@ -194,11 +198,11 @@ If MUST is empty -- activate. If not -- refine.
 
 | Command | What it does | Example |
 |---------|-------------|---------|
-| `forgeplan route "<description>"` | Rule-based depth + pipeline (no LLM) | `forgeplan route "Add OAuth2"` |
-| `forgeplan route "<desc>" --explain` | + LLM explanation | `forgeplan route "Add OAuth2" --explain` |
+| `forgeplan route "<description>" --level 0` | Offline keyword depth + core pipeline | `forgeplan route "Add OAuth2" --level 0` |
+| `forgeplan route "<desc>" --level 1` | Try LLM classification; fall back if unavailable | `forgeplan route "Add OAuth2" --level 1` |
 | `forgeplan calibrate [id]` | Suggest depth for existing artifact | `forgeplan calibrate PRD-001` |
 
-### AI-powered (require LLM config)
+### AI generation and local semantic search
 
 | Command | What it does | Example |
 |---------|-------------|---------|
@@ -206,7 +210,7 @@ If MUST is empty -- activate. If not -- refine.
 | `forgeplan reason <id>` | ADI reasoning cycle | `forgeplan reason PRD-001 --json` |
 | `forgeplan decompose <id>` | PRD -> RFC tasks via AI | `forgeplan decompose PRD-001` |
 | `forgeplan capture "<decision>"` | Record a decision as Note/ADR | `forgeplan capture "Use Redis for cache"` |
-| `forgeplan search <query> --semantic` | Semantic vector search | `forgeplan search "auth" --semantic` |
+| `forgeplan search <query> --semantic` | Local embedding search, not an LLM call; needs the model/index | `forgeplan search "auth" --semantic` |
 
 ### MCP Server
 
@@ -214,7 +218,7 @@ If MUST is empty -- activate. If not -- refine.
 forgeplan serve  # start MCP server (stdio transport)
 ```
 
-73 MCP tools -- all commands above are available via MCP protocol.
+The 0.38 server exposes 73 tools. CLI and MCP overlap but are not identical; use each interface's reference for parameters and availability.
 
 ---
 
@@ -359,7 +363,7 @@ forgeplan new evidence "Benchmark: LanceDB vs SQLite insert performance"
 
 ### IMPORTANT: Structured Fields
 
-An EvidencePack **must** contain structured fields in the body:
+Record the verdict, context match and evidence type explicitly. This example is illustrative, not a published benchmark:
 
 ```markdown
 ## Measurements
@@ -381,14 +385,14 @@ evidence_type: benchmark
 | `congruence_level` | `0`-`3` | CL3 = same context (best). CL0 = opposed context (penalty 0.9) |
 | `evidence_type` | `measurement` / `test` / `benchmark` / `audit` | Type of evidence |
 
-**Without these fields**, the R_eff parser cannot find data and defaults to CL0 -> R_eff = 0.1 instead of 1.0.
+In 0.38, missing/unrecognized `verdict`, or missing both `congruence_level` and valid `source_tier`, forces CL0. For an unexpired supports pack, the recursive score is then at most 0.1: test/measurement = 0.1, benchmark/audit = 0 after their type penalty. Weakens/refutes can also score 0. Missing `evidence_type` alone defaults to `measurement`, not CL0. Keep all three fields explicit, without inline `#` comments.
 
 ### Link Evidence to an Artifact
 
 ```bash
 forgeplan link EVID-001 ADR-002 --relation informs
 forgeplan score ADR-002
-# -> R_eff = 1.00 (was 0.00)
+# With only the fresh supports/CL3/benchmark pack above and no weaker dependency: R_eff = 0.90
 ```
 
 ### Congruence Levels (CL)
@@ -404,17 +408,27 @@ forgeplan score ADR-002
 
 R_eff = weakest link. If there are 3 evidence items and one is weak -- R_eff = the weak one. NOT average. Only *current* evidence participates: superseded/deprecated packs are excluded from the min (ADR-020) — displace a stale weak pack with `supersede <old> --by <new>` instead of editing its verdict.
 
+The user-facing `forgeplan score` uses the **recursive** engine. A fresh pack contributes `max(0, verdict_score − CL_penalty − type_penalty)`: test/measurement subtract 0, benchmark 0.1, audit 0.2. Expired eligible packs contribute 0.1 before those deductions. The artifact's own evidence minimum is then compared with recursive dependency scores; `based_on`/`informs` dependencies subtract another 0.1, while `refines` subtracts 0. Terminal evidence and draft/terminal dependencies are excluded; Note/Memory dependencies are skipped. Thus the benchmark above gives `1 − 0 − 0.1 = 0.90`, not 1.00.
+
+The flat compatibility helper `r_eff()` omits the type penalty and dependency traversal; do not use its formula as the CLI result. Sources: [recursive type scoring](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-core/src/scoring/reff.rs#L232-L254), [dependency minimum](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-core/src/scoring/reff.rs#L424-L499) and [CLI calculation](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-cli/src/commands/score.rs#L130-L142).
+
 ---
 
 ## Validation -- How to Check Quality
 
 ### Rules by Depth
 
-| Depth | PRD rules | RFC rules | ADR rules |
-|-------|-----------|-----------|-----------|
-| Tactical | 3 base rules | 3 base | 3 base |
-| Standard | 9 rules (+ audience, density, leakage) | 5 rules (+ options, phases) | 3 rules |
-| Deep | 16 rules (+ timeline, stakeholders, risks, acceptance) | 6 rules (+ risks) | 5 rules (+ invariants, rollback) |
+| Kind / depth | Required body content in 0.38 |
+|-------------|------------------------------|
+| PRD, all depths | Problem, Goals, Non-Goals, Functional Requirements, Related Artifacts |
+| PRD, Standard+ | Also Target Users; problem density and implementation leakage are SHOULD at Standard, MUST at Deep |
+| PRD, Deep | Also Timeline, Stakeholders, Acceptance Criteria, Risk Assessment, Success Metrics; domain-specific checks can add requirements |
+| RFC | Summary, Motivation, Proposed Direction; Risks at Deep. Options and Implementation Phases are SHOULD |
+| ADR | Context, Decision, Consequences; Invariants and Rollback at Deep (SHOULD otherwise) |
+| Epic | Vision, Outcomes, Children, Phases, Progress |
+| Spec | Summary, Related Artifacts, and a structural or behavioral contract |
+
+All kinds also receive base rules. In 0.38, NFR presence/measurability and `### Requirement` without a nested `#### Scenario` are SHOULD findings. This is a minimum, not a substitute for substantive review.
 
 ### Validator Aliases
 
@@ -441,9 +455,13 @@ The validator accepts synonyms:
 ```
 Draft --review--> Draft (if MUST failures)
 Draft --activate--> Active (if MUST passed)
-Active --supersede--> Superseded (link to replacement)
-Active --deprecate--> Deprecated (with reason)
+Active --supersede--> Superseded (link to replacement; terminal)
+Active --deprecate--> Deprecated (with reason; terminal)
+Active --stale--> Stale --renew--> Active
+Stale --reopen--> Deprecated (old) + new Draft
 ```
+
+`valid_until` expiry is detected by `stale` and scoring; do not assume a background job rewrites status. Use lifecycle verbs, not `update --status active|superseded|deprecated`. Advisory `phase` and session state are separate from status.
 
 ### Typical Flow
 
@@ -464,7 +482,7 @@ forgeplan update PRD-001 --body @/tmp/prd-001-body.md
 forgeplan review PRD-001
 # -> Review PASSED -- ready to activate
 
-# 6. Activated
+# 6. After real verification, linked evidence and required independent review
 forgeplan activate PRD-001
 # -> draft -> active
 ```
@@ -485,11 +503,11 @@ This does not block activation but signals an immature dependency.
 ### Option 1: Skill + MCP (recommended)
 
 ```bash
-# Install skill for all supported agents
-npx skills add ForgePlan/forgeplan --skill forge
+# Install only the bundled Claude Code /forge skill
+forgeplan setup-skill
 ```
 
-Supports 40+ agents: Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot, Cline, Continue, Windsurf, and more.
+Other runtimes need their own instruction/MCP setup. Marketplace commands are prompt contracts executed by the orchestrator, not extra CLI subcommands.
 
 After installation:
 ```
@@ -531,60 +549,37 @@ In your project's `.mcp.json` (Claude Code, Cursor):
 6. forgeplan_activate   -> draft -> active
 ```
 
-73 MCP tools total. 6 core tools cover 90% of the workflow.
+These six tools orient and manage lifecycle. Real work also needs body updates, links, evidence and independent verification; tool count does not measure workflow coverage.
 
 ---
 
 ## Forge Mode -- Permission Model for AI Agents
 
-When working with AI agents (Claude Code, Cursor) in autonomous mode, use **Forge Mode** -- a permission model with 3 trust zones (FPF B.3 Trust Calculus):
+Forge Mode is a project/host permission policy, not a safety boundary installed by the Forgeplan binary. Classify operations by their effect, not by a blanket `forgeplan:*` or `git:*` allowlist.
 
-| Zone | What | Mode | Examples |
-|------|------|------|---------|
-| **Green** | Read-only + build + test + forgeplan | Auto-allowed | `cargo test`, `forgeplan health`, `git status` |
-| **Yellow** | Create/edit files, git add/commit | Auto-allowed (acceptEdits) | Write, Edit, `git add`, `git commit` |
-| **Red** | Irreversible actions | **BLOCKED** | `git push --force`, `rm -rf /`, `cargo publish` |
+| Operation | Responsibility |
+|-----------|----------------|
+| Read artifacts / inspect status | Agent follows the host's read permissions |
+| Edit, commit, run checks | Project policy determines authorization and commands |
+| Delete, override gates, publish or push | Obtain the authorization required by the host/project |
 
-### Configuration (Claude Code)
-
-1. **Whitelist** in `settings.local.json` -- wildcard patterns:
-```json
-{
-  "permissions": {
-    "allow": [
-      "Bash(cargo:*)", "Bash(forgeplan:*)", "Bash(git:*)",
-      "Bash(ls:*)", "Bash(find:*)", "Bash(grep:*)",
-      "mcp__hindsight__memory_recall", "mcp__hindsight__memory_retain"
-    ]
-  }
-}
-```
-
-2. **Safety hook** in `.claude/hooks/forge-safety-hook.sh` -- PreToolUse blacklist:
-```bash
-# Blocked even in yolo mode:
-# git push --force, git reset --hard, rm -rf /, cargo publish
-```
-
-3. **Claude Code mode**: `acceptEdits` (files auto, bash via whitelist)
+`setup-skill` installs instructions only. `setup` can install index-sync git hooks; those are not a general command safety hook. Do not treat `acceptEdits`, a blacklist or an autonomous prompt as permission to bypass independent review or user consent.
 
 ### /forge-cycle -- Full FPF-aligned Dev Cycle
 
-The `/forge-cycle PRD-XXX` command launches an 8-phase cycle:
+`/forge-cycle` belongs to the published `forgeplan-workflow` plugin, not CLI 0.38. Its orchestrator executes the operations represented by `/sprint`, `/team-up` and `/audit`; the template does not auto-invoke nested slash commands.
 
-```
-Phase 0: OBSERVE    -> forgeplan health + stale + fpf (what's happening?)
-Phase 1: ROUTE      -> forgeplan route (what depth?)
-Phase 2: SPRINT     -> /sprint (wave plan)
-Phase 3: BUILD      -> /team-up (implementation with Rust skills)
-Phase 4: AUDIT      -> /audit (adversarial review — see [`QUALITY-GATES.md` §2](./QUALITY-GATES.md#2-adversarial-review-protocol))
-Phase 5: FIXES      -> /team-up (fix audit findings)
-Phase 6: EVIDENCE   -> forgeplan new evidence + score + activate
-Phase 7: COMMIT     -> git commit + PR + hindsight
-Phase 8: NEXT       -> forgeplan health -> next feature
-```
+The published contract includes:
 
-**FPF auto-resolve**: on conflicts/choices, the agent automatically applies the ADI cycle (Abduction -> Deduction -> Induction) + WLNK + Reversibility check. It asks the user only for irreversible decisions.
+1. Read health/session state and identify the task; optionally read configured memory.
+2. Shape a raw idea as a Brief **Note**, then route and create/fill actual artifacts.
+3. Standard+: ADI evidence, recorded depth and pre-build `/gate-check`; Deep+ also decomposition and effort estimation.
+4. Implement with claims/file ownership, run project checks, obtain independent reviewer evidence.
+5. Link implementation evidence; Deep+ post-build `/gate-check`.
+6. Standard+: guardian checks the full evidence chain; the orchestrator reviews and activates, not the author or guardian.
+7. Commit/PR only within granted permissions; record shipping after merge. Deep+ `/wrap` records actual reconciliation in REFRESH.
+
+`/gate-check` returns a threshold verdict; it does not read code or replace guardian. User decisions are also needed for unresolved requirements, depth changes, overrides and permissions—not only irreversible choices. See [HOW-TO-USE](HOW-TO-USE.md) for responsibilities and concurrency.
 
 ---
 
@@ -592,7 +587,7 @@ Phase 8: NEXT       -> forgeplan health -> next feature
 
 ### 1. EvidencePack without structured fields -> R_eff = 0.1
 
-The parser looks for `verdict:`, `congruence_level:`, `evidence_type:` in the body as plain text. Without them -- CL0 by default.
+The parser reads standalone structured fields, not table rows or commented examples. Missing verdict or context declaration fails closed; missing type alone defaults to measurement.
 
 **Solution:** Always add a `## Structured Fields` section.
 
@@ -600,7 +595,7 @@ The parser looks for `verdict:`, `congruence_level:`, `evidence_type:` in the bo
 
 If you never run `forgeplan review` -> `forgeplan activate`, all artifacts remain in Draft forever. The health dashboard will show "ALL DRAFT".
 
-**Solution:** After filling an artifact -- immediately review + activate.
+**Solution:** Review after filling the artifact; activate only after its evidence, implementation and applicable review gates are ready.
 
 ### 3. Validator requires sections missing from body
 
@@ -619,6 +614,8 @@ No need to copy content into the command line.
 ### 5. 10 artifact types, but you really only need 6
 
 From dogfood experience: PRD, RFC, ADR, Note, Problem, Epic -- are actually used. EvidencePack, Spec, SolutionPortfolio, RefreshReport -- are for mature projects with many artifacts.
+
+That dogfood observation is historical, not current guidance to omit evidence. Evidence supports ordinary Standard decisions too; the published Deep/Critical methodology adds SOL and REFRESH.
 
 ### 6. PRD stubs: "created an ID, forgot to fill it in"
 
@@ -645,7 +642,7 @@ forgeplan activate PRD-XXX
 
 **Anti-pattern:** activated a PRD before implementation began. Health shows no problems, but the artifact is an empty promise.
 
-**Solution:** Activate ONLY when code is written + evidence is created. If the PRD describes future work -- leave it in draft.
+**Solution:** In an implementation cycle, activate only after the promised implementation and evidence are ready. Runtime checks structure/links, not whether the code was actually exercised; an independently reviewed decision-only scope must be labeled as such.
 
 ---
 
@@ -653,10 +650,17 @@ forgeplan activate PRD-XXX
 
 | Document | Description |
 |----------|-------------|
-| `docs/guides/HOW-TO-USE.md` | 10 methodology rules with examples |
-| `docs/guides/DEPTH-CALIBRATION.md` | Details on the 4 depth levels + escalation |
-| `docs/guides/QUALITY-GATES.md` | Verification Gate + Adversarial Review |
-| `docs/guides/ARTIFACT-MODEL.md` | Artifact hierarchy: Epic -> PRD -> Spec -> RFC -> ADR |
-| `docs/guides/PRD-RFC-ADR-FLOW.md` | Decision tree: which document to create |
-| `docs/guides/GLOSSARY.md` | 31 terms |
-| `CLAUDE.md` | Instructions for AI agent + CLI quick reference |
+| [HOW-TO-USE](HOW-TO-USE.md) | Task-oriented methodology instructions |
+| [DEPTH-CALIBRATION](DEPTH-CALIBRATION.md) | Depth and escalation |
+| [QUALITY-GATES](QUALITY-GATES.md) | Machine gates versus independent review |
+| [ARTIFACT-MODEL](ARTIFACT-MODEL.md) | Artifact hierarchy |
+| [PRD-RFC-ADR-FLOW](PRD-RFC-ADR-FLOW.md) | Which document to create |
+| [GLOSSARY](GLOSSARY.md) | Terminology |
+
+## Versioned sources
+
+Checked against **Forgeplan 0.38.0** (`d56466b10ddf788c62a6e8acffd0e0f578d0c1d1`) and public marketplace **1.187.1** (`b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7`), not development drafts:
+
+- [CLI routing](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-cli/src/commands/route.rs#L15-L38) and [core pipeline](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-core/src/routing/pipeline.rs#L7-L19).
+- [Validation rules](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-core/src/validation/rules.rs#L353-L550), [activation gates](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-core/src/lifecycle/mod.rs#L139-L220), [evidence parsing](https://github.com/ForgePlan/forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-core/src/scoring/evidence.rs#L57-L204).
+- [Published methodology](https://github.com/ForgePlan/marketplace/blob/b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7/plugins/forgeplan-workflow/skills/forgeplan-methodology/SKILL.md#L71-L103), [cycle contract](https://github.com/ForgePlan/marketplace/blob/b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7/plugins/forgeplan-workflow/commands/forge-cycle.md#L549-L573) and [guardian handoff](https://github.com/ForgePlan/marketplace/blob/b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7/plugins/forgeplan-workflow/commands/forge-cycle.md#L1096-L1168).

@@ -3,14 +3,12 @@ title: forgeplan fpf dashboard
 description: "Show FPF dashboard - bounded contexts, quality scores, and explore/investigate/exploit recommendations"
 ---
 
-`forgeplan fpf dashboard` renders a single-screen overview of how the project looks through the **First Principles Framework** lens: which bounded contexts are healthy, which carry reasoning debt, and what the rule engine recommends next (explore more options, investigate existing evidence, or exploit a proven path).
-
-It's the FPF counterpart to `forgeplan health` - `health` reports artifact-level facts (orphans, stale, blind spots); `fpf dashboard` interprets them through trust calculus and the explore/exploit model.
+`forgeplan fpf dashboard` combines graph-derived bounded contexts, F-G-R grades, rule-engine recommendations, and lifecycle counts. It is a text report, not an automatic reasoning or implementation agent. Use `health` for orphans, expired artifacts, and blind spots.
 
 ## When to use
 
 - **On session start**, alongside `forgeplan health` - understand where reasoning effort should go today.
-- **At sprint planning** - pick the next bounded context to advance based on R_eff and explore/exploit signals.
+- **At sprint planning** - inspect artifact clusters and pending rule recommendations.
 - **Before a major decision** - see whether you're prematurely exploiting a low-trust path.
 - **After a batch of activations** - confirm scores moved in the expected direction.
 
@@ -47,23 +45,14 @@ forgeplan blocked
 
 ## What you see
 
-The dashboard groups output into three blocks:
+The dashboard has four sections:
 
-1. **Bounded contexts** - each context (e.g. `search`, `scoring`, `fpf-kb`) with aggregate R_eff, artifact count, and blind-spot flags.
-2. **Quality scores** - explore_reff / investigate_reff / exploit_reff per context, showing where trust is strongest.
-3. **Recommended actions** - one of `EXPLORE` (not enough hypotheses), `INVESTIGATE` (hypotheses exist but evidence is weak), or `EXPLOIT` (evidence is strong, ship it).
+1. **Bounded Contexts** — graph clusters with name, member count, cohesion percentage, and member IDs. These are inferred from relations, not a configured domain taxonomy.
+2. **Quality (F-G-R)** — artifact counts by grade, not per-context explore/investigate/exploit scores.
+3. **Next Actions** — counts by `EXPLORE`, `INVESTIGATE`, and `EXPLOIT`, followed by up to ten artifact recommendations and reasons.
+4. **Pipeline** — total artifacts, active count, and draft count.
 
-The action recommendation comes from the same rule engine surfaced by [`forgeplan fpf rules`](/docs/cli/fpf-rules/).
-
-## How it fits
-
-`fpf dashboard` is the visual synthesis of PRD-041 (FPF rule engine) and PRD-043 (methodology integrity). It reads:
-
-- Artifact metadata (kind, status, R_eff) from LanceDB
-- Active rules from the FPF KB
-- Evidence links and congruence levels
-
-...and projects them onto the explore→investigate→exploit axis defined in FPF section B (trust calculus).
+It reads records and relations from LanceDB and workspace FPF configuration. A nonempty `fpf.rules` list replaces built-in rules; no ingested FPF knowledge base or LLM provider is needed. Recommendations do not grant activation or supersession permission; those operations retain their own checks. Dashboard freshness parsing accepts the full `%Y-%m-%dT%H:%M:%S` form; date-only validity values are not treated as stale here, unlike the standalone `fgr` command.
 
 ## See also
 

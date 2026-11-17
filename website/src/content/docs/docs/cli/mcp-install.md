@@ -20,7 +20,7 @@ Cross-platform: macOS, Linux, Windows (uses `dirs::home_dir()` and `PATHEXT` for
 
 ## When NOT to use
 
-- For per-tool config - there is nothing to configure, the server reads `./.forgeplan/`.
+- For per-tool configuration - this writes the launch entry, not workspace settings. The server finds `.forgeplan/` from its launch working directory.
 - For HTTP / network MCP - Forgeplan only ships stdio.
 - To remove Forgeplan from a client - edit the config file by hand; `install` only adds.
 
@@ -33,18 +33,31 @@ forgeplan mcp install [OPTIONS] --client <CLIENT>
 ## Options
 
 ```text
-  -c, --client <CLIENT>          Target client: claude, cursor, or windsurf
-  -s, --scope <SCOPE>            Config scope: user (global) or project (local) [default: user]
-      --binary-path <PATH>       Override binary path (default: detected from current_exe)
-      --use-name <NAME>          Use short name instead of absolute path: forgeplan or fpl
-      --dry-run                  Print proposed change without writing
-  -h, --help                     Print help
-  -V, --version                  Print version
+  -c, --client <CLIENT>
+          Target client: claude, cursor, or windsurf
+
+  -s, --scope <SCOPE>
+          Config scope: user (global) or project (local). Default: user
+          
+          [default: user]
+
+      --binary-path <BINARY_PATH>
+          Override binary path (default: detected from current_exe)
+
+      --use-name <USE_NAME>
+          Use short name instead of absolute path: forgeplan or fpl. Requires PATH to include the binary's directory at MCP launch time. macOS GUI apps may not inherit shell PATH — use absolute path (the default) for maximum portability
+
+      --dry-run
+          Print proposed change without writing
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
 ```
 
-`--binary-path` and `--use-name` are mutually exclusive. By default the command resolves
-the running binary to a stable, non-versioned path (e.g. `/opt/homebrew/bin/forgeplan`,
-not the Cellar location), so `brew upgrade` does not break the entry.
+`--binary-path` and `--use-name` are mutually exclusive. Automatic detection prefers a PATH entry only when it resolves to the running executable; otherwise it falls back to `current_exe`. A stable Homebrew path such as `/opt/homebrew/bin/forgeplan` is preferred, not guaranteed. Inspect the chosen path after installation.
 
 ## Examples
 
@@ -72,8 +85,7 @@ useful when only some projects in a monorepo use Forgeplan.
 forgeplan mcp install --client windsurf --dry-run
 ```
 
-Prints the merged JSON with no filesystem changes. Inspect the diff, then re-run without
-`--dry-run` once happy.
+Prints a labeled line diff between the current and proposed JSON without writing the config or creating its directories. It is not a standalone merged JSON document. Re-run the same client/scope/path options without `--dry-run` to apply; the printed generic `forgeplan mcp install` hint omits the required client flag.
 
 ### Example 4: Use short-name instead of absolute path
 
@@ -98,17 +110,16 @@ Windsurf has no per-project config; pass `--scope user` (the default).
 
 ## Smart-merge behaviour
 
-- Replaces `command`, `args`, and transport for the `forgeplan` entry.
+- Replaces `command` and `args` (`["serve"]`). Removes `transport` and `type` only when their value is `"stdio"`; explicit HTTP/SSE values and other unknown fields survive.
 - **Preserves** any existing `env` block on the entry (project-specific API keys etc.).
 - Leaves all other servers in `mcpServers` untouched.
 - Idempotent - running twice with the same flags is a no-op.
+- Rejects malformed JSON, a non-object root or `mcpServers`, and symlinked config paths instead of silently overwriting them. An explicit `--binary-path` must be an existing executable regular file at an absolute path.
 
 ## How it fits the workflow
 
 `mcp install` is the bridge between "binary is on disk" and "agent can call Forgeplan
-tools". After this succeeds, restart the client and the methodology surface
-(Shape → Validate → Code → Evidence → Activate) is available through `mcp__forgeplan__*`
-tools. Pair with `forgeplan health` after restart to confirm the server boots clean.
+tools". After this succeeds, restart the client and confirm that it discovers Forgeplan's tools in the intended project. A separate CLI `forgeplan health` checks the workspace, not whether the client launched the MCP server successfully. No LLM/model is needed merely to install the entry; individual tools have their own requirements.
 
 ## See also
 

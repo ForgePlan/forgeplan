@@ -20,11 +20,11 @@ ForgePlan scores every decision artifact with a single number, **R_eff** (effect
 R_eff = min(evidence_scores)
 ```
 
-Not the mean. Not the median. The minimum.
+Use the minimum, not the mean or median.
 
 If a PRD has three EvidencePacks scored `0.9`, `0.6`, `0.1`, then R_eff = `0.1`. The PRD is as trustworthy as its weakest evidence, and pretending otherwise is statistical laundering.
 
-This post unpacks why the minimum, what the individual evidence scores actually compute, and how to read a real R_eff number when you're staring at one in `forgeplan score`.
+The choice of minimum matters when you read an R_eff number in `forgeplan score`: you need to know why it uses the minimum and what each evidence score measures.
 
 ### Why minimum, not average
 
@@ -128,9 +128,9 @@ Computed score: `0.10` (CL0 penalty kills it; "supports" verdict can't rescue CL
 R_eff(PRD-XYZ) = min(0.9, 0.55, 0.10) = 0.10
 ```
 
-The PRD is at R_eff = 0.10. Not 0.52 (average). Not 0.55 (median). 0.10. The MacBook anecdote is the bottleneck.
+The PRD is at R_eff = 0.10, rather than 0.52 (average) or 0.55 (median). The MacBook anecdote is the bottleneck.
 
-This is a feature, not a bug. The right move is to either upgrade EVID-C (run the benchmark on the real workload) or strike it from the EvidencePack list. R_eff is a forcing function for evidence hygiene.
+That's deliberate. The right move is to either upgrade EVID-C (run the benchmark on the real workload) or strike it from the EvidencePack list. R_eff forces you to keep the evidence in order.
 
 ### How to read a real R_eff number
 
@@ -147,6 +147,6 @@ In practice, most artifacts spend their early lifecycle in the `0.2 → 0.5` ban
 
 > **Trust = weakest link. R_eff = min(evidence_scores), never average.**
 
-If you take only the formula away from this piece, that's the one that matters. The rest is unpacking.
+That formula sums up the argument; the rest explains how it works.
 
-ForgePlan operationalises it. The same idea applies if you build your own decision tooling: the aggregator you pick determines the conversation your team has during reviews. `min` forces honesty. `average` forecloses it. Pick deliberately.
+ForgePlan implements it. The same idea applies if you build your own decision tooling: the aggregator you pick determines the conversation your team has during reviews. `min` forces honesty. `average` hides weak evidence. Pick deliberately.

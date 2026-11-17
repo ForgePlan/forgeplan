@@ -5,6 +5,39 @@
 > Three systems as a single organism. Each does what it does best.
 > Data lives in one place, references — everywhere.
 
+## Scope and prerequisites
+
+This is an optional integration recipe, not a built-in Forgeplan service.
+User-facing CLI/MCP examples target **0.38.0**; this source branch still
+declares **0.37.0**. The public marketplace catalog **1.187.1** contains
+**23 plugins**. Install only what the project needs:
+
+- `forgeplan-workflow` **1.23.1** supplies `/forge-cycle` and `/forge-audit`.
+- `fpl-skills` **1.75.1** supplies `/smith`, `/research`, `/sprint`, `/audit`,
+  `/build` and `/briefing`. These are agent instructions, not core CLI commands.
+- `forgeplan-orchestra` **3.6.0** supplies `/session`, `/sync`, `task-cycle`
+  and the platform integration. Configure its Orchestra MCP server separately.
+  Namespaced invocations such as `/forgeplan-orchestra:sync` avoid collisions.
+- `fpl-hsmem` **3.7.0** is optional memory. An explicit project
+  `.hindsight.json` must supply `url`, `banks`, `defaultBank`; selected banks
+  already exist on a compatible Hindsight API server (>=0.10.2, <0.11.0).
+  Recall/retain hooks default off; committed config alone is not hook consent.
+  BankGate is client safety, not server authorization.
+
+`forgeplan setup-skill` installs only the `/forge` reference skill, not this
+plugin stack. Forgeplan `remember`/`recall` stores lightweight local artifacts,
+not Hindsight key-value entries. Use distilled lessons and approved banks for
+memory writes; do not automatically capture task chats or full documents.
+
+The configurations, capacities, timings, status names and scenarios below are
+workflow examples, not measured product limits or automatic core behavior.
+CLI commands are literal; `Orch:` lines and tool calls without argument objects
+are pseudocode. Discover the project's server/identity and field/option UIDs
+before writing, read the task's description/chat/checklists first, and inspect
+`failed`, `failedFields` and `warning` in write responses. Assignee, owner,
+due-date, message and deletion changes require the applicable explicit permission.
+
+
 ---
 
 ## Table of Contents
@@ -81,13 +114,13 @@ Three **bounded contexts** (FPF A.1.1) with clear separation of responsibilities
 |--------|------|----------------|---------------------|
 | **Forgeplan** | Artifacts, validation, R_eff, evidence, lifecycle, depth, quality gates | Task tracking, assignees, due dates, communication | What to do, why, at what quality |
 | **Orchestra** | Tasks, statuses, assignees, due dates, checklists, messages, projects | Artifact validation, R_eff scoring, evidence chain | Who does it, when, at what status |
-| **Claude Code** | Skills, hooks, plugins, memory, agents, git workflow | Data storage (delegates to BC1 and BC2) | How to do it, context between sessions |
+| **Claude Code** | Skills, hooks, plugins, agents, git workflow | Artifact/task storage; optional memory belongs to Hindsight | How to execute the configured workflow |
 
 ### What We Do NOT Duplicate in Orchestra
 
 | Data | Lives in | Why we don't duplicate |
 |------|----------|------------------------|
-| Artifact content | Forgeplan (LanceDB + .md) | Orchestra ≠ document management |
+| Artifact content | Forgeplan markdown (LanceDB is derived) | Keep one canonical artifact body |
 | R_eff score | Forgeplan | Computed, goes stale instantly |
 | Validation results | Forgeplan | Dynamic |
 | Evidence chain | Forgeplan (links) | Dependency graph in Forgeplan |
@@ -152,7 +185,12 @@ Two fields reflect different aspects of the same work:
 
 ### Synchronization Rule
 
-If one is updated — the other must be updated too. The AI agent automatically updates Phase when updating Status, and vice versa. On conflict — Status wins (Orchestra = source of truth for execution state).
+In this recipe the agent updates both fields when work actually changes stage.
+Forgeplan core does not synchronize Orchestra. `/forgeplan-orchestra:sync`
+compares the two systems, shows a diff and waits for confirmation before
+applying it. Resolve conflicts from actual work state, not by silently changing
+artifact lifecycle to match a tracker field. `Blocked` is a status, not a phase:
+preserve the task's existing phase while blocked.
 
 ---
 
@@ -224,15 +262,15 @@ Work:
   forgeplan route "task" → depth
   forgeplan new prd "Title" → artifact
   → Orch: create task with fields
-  /sprint or /wave → implementation
+  /sprint → implementation
   → Orch: Status=Doing
   /audit → review
   → Orch: Status=Review
-  forgeplan activate → done
+  forgeplan review ID, then forgeplan activate ID when ready
   → Orch: Status=Done
 
 End of day:
-  Check /orch status
+  Query the project's Orchestra task board
 ```
 
 #### Saved Views
@@ -527,8 +565,8 @@ create_entity: Channel "Standup"
 
 ```
 1. Verify CLAUDE.md contains Session Start Protocol
-2. Verify memory contains unified workflow architecture
-3. Verify /sync-tasks works with the new workspace
+2. If Hindsight is enabled, check the permitted bank for existing workflow context
+3. Verify /forgeplan-orchestra:sync resolves the pinned project server/workspace
 4. First /briefing → ensure it sees tasks
 ```
 
@@ -549,16 +587,16 @@ You already have a project with artifacts in Forgeplan, but Orchestra is empty o
 forgeplan list --status active    # → list of active artifacts
 forgeplan list --status draft     # → list of draft artifacts
 
-# For each active artifact:
-→ Orch: create task "[ID] Title"
-  Fields: Artifact=ID, Type=kind, Phase=Done, Status=Done
+# For each active artifact, inspect whether its associated work is really complete:
+→ Orch: create a missing task only if needed
+  Fields: Artifact=ID, Type=kind; set Phase/Status from actual work state
 
 # For each draft artifact:
 → Orch: create task "[ID] Title"
   Fields: Artifact=ID, Type=kind, Phase=current, Status=current
 
 # 4. Verify
-/orch status → should show all artifacts
+Query the Orchestra board → compare its tasks with the artifact list
 forgeplan health → compare with Orchestra
 ```
 
@@ -604,7 +642,7 @@ forgeplan health → compare with Orchestra
 4. Create "Backlog" and "Operations"
 5. Distribute tasks across projects (move_entity)
 6. Start using Assignee field
-7. Update /sync-tasks routing rules
+7. Update the project's task-routing rules and /forgeplan-orchestra:sync configuration
 ```
 
 **Effort**: 30 minutes. **Risk**: Low — fields are preserved, tasks are moved.
@@ -633,7 +671,7 @@ forgeplan health → compare with Orchestra
 **What to do**:
 ```
 1. Merge sub-projects into project root
-2. Delete empty sub-projects
+2. Report empty sub-projects; archive/delete only with explicit authorization
 3. Return to Sprint field instead of sub-projects
 4. Channels can be kept or archived
 ```
@@ -644,21 +682,22 @@ forgeplan health → compare with Orchestra
 
 ```
 1. Merge all area projects into one "Development"
-2. Delete empty projects
-3. Remove Assignee (everything = me)
+2. Report empty projects; archive/delete only with explicit authorization
+3. Leave assignees unchanged unless the user requests a change
 ```
 
 ---
 
 ## 9. Session Start Protocol
 
-**MANDATORY on every new Claude Code chat.**
+Use this protocol for work sessions when the project has adopted this integration.
+It is not automatically installed or run by the Forgeplan binary.
 
 ```
 STEP 1: CONTEXT RESTORE
 ├── CLAUDE.md loads automatically
-├── memory_recall("Forgeplan") — Hindsight
-└── Auto-memory (MEMORY.md) — loads automatically
+├── If Hindsight is configured: memory_get_current_bank, then targeted memory_recall
+└── Host auto-memory (MEMORY.md), if supported and enabled
 
 STEP 2: PROJECT HEALTH (in parallel)
 ├── forgeplan health
@@ -731,14 +770,15 @@ Specific next action per methodology:
    Orch: Phase=Validate, Status=To Do
 
 4. CODE
-   /sprint or /wave for implementation
+   /sprint for implementation
    Orch: Phase=Code, Status=Doing
    Orch: Branch=feat/xxx
    Orch: add Checklist with FR items from PRD
 
 5. AUDIT + EVIDENCE
-   /audit → 5-agent review
+   /audit → independent specialist review (at least 4 reviewers in fpl-skills)
    forgeplan new evidence "..."        → EVID-XXX
+   forgeplan update EVID-XXX --body @evidence.md
    forgeplan link EVID-XXX PRD-XXX --relation informs
    Orch: Phase=Evidence, Status=Review
 
@@ -751,6 +791,15 @@ Specific next action per methodology:
    git commit + git push + gh pr create
    Orch: Branch field updated
 ```
+
+Prepare `evidence.md` from actual checks, including `verdict`,
+`congruence_level` and `evidence_type` under `## Structured Fields`, plus
+reproduction details and any required git-delta provenance. The title alone
+does not earn a high score. `score`, `review` and `activate` are separate from
+verification; generated reasoning or a linked file is not proof that code works.
+Use `update --body` or MCP for artifact edits, not direct projection writes,
+and lifecycle commands instead of `update --status active|superseded|deprecated`.
+
 
 ### Tactical Tasks (without artifact)
 
@@ -773,20 +822,20 @@ forgeplan route "fix typo" → Tactical
 | Before a task | `forgeplan route "description"` → depth |
 | Creation | `forgeplan new ...` + task in Orch with fields |
 | Work | Move Status in Orchestra as you progress |
-| Code | `/sprint` or `/wave` for AI-assisted dev |
-| Finish | `forgeplan activate` + Orch: Status=Done |
-| End of day | `/orch status` → is everything up to date |
+| Code | `/sprint` for AI-assisted dev |
+| Finish | Review evidence and readiness, activate the artifact, then close genuinely completed tracker work |
+| End of day | Query the task board and check whether fields reflect reality |
 
 ### For PM / Tech Lead
 
 | When | What to Do |
 |------|------------|
-| Overview | `/orch projects` + `forgeplan health` — full picture |
+| Overview | Orchestra project/task queries + `forgeplan health` |
 | Planning | Create tasks with Artifact, Sprint, Priority fields |
 | Priorities | Priority + Sprint fields in Orchestra |
-| Quality | `forgeplan validate` + `forgeplan score` for R_eff |
-| Communication | `/orch msg` for discussions in task context |
-| Sprint planning | Create tasks for next sprint, assign Assignee |
+| Quality | `forgeplan validate` + `forgeplan score ID` or `forgeplan score --all` |
+| Communication | Send a message in the task chat only when explicitly requested/authorized |
+| Sprint planning | Create next-sprint tasks; change assignees only on explicit request |
 | Retro | `forgeplan health` → what's done, what's a blind spot |
 
 ### For QA
@@ -812,7 +861,7 @@ forgeplan route "fix typo" → Tactical
 | **NEVER** | Don't `send_message` without explicit request (safety rule) |
 | **NEVER** | Don't `delete_entity` without confirmation (destructive) |
 
-### For Sub-agents (TeamCreate teammates)
+### For Sub-agents (host-supported teammates)
 
 | Rule | Description |
 |------|-------------|
@@ -831,7 +880,7 @@ forgeplan route "fix typo" → Tactical
 **Impact**: Medium (two sources of truth → confusion)
 **Mitigations**:
 - Session Start Protocol checks both → detects drift
-- `/sync-tasks` enhanced — shows diff
+- `/forgeplan-orchestra:sync` shows a diff before proposing changes
 - Future: Hook on `forgeplan activate` → auto-mark Done in Orch
 
 ### R2: Field Bloat (MEDIUM)
@@ -844,7 +893,7 @@ forgeplan route "fix typo" → Tactical
 **Description**: Two parallel stage trackers, one updated but not the other.
 **Probability**: High
 **Impact**: Medium (AI makes decisions on stale data)
-**Mitigation**: Clear mapping (section 4). AI updates both on any change. On conflict, Status wins.
+**Mitigation**: Use section 4's mapping as a convention. Update fields from the actual work state; preserve Phase when Status is Blocked.
 
 ### R4: AI Creates Duplicates (MEDIUM)
 **Description**: AI agent creates a task for an artifact that is already tracked.
@@ -882,7 +931,7 @@ forgeplan route "fix typo" → Tactical
 
 | Bottleneck | Description | Impact | Solution |
 |------------|-------------|--------|----------|
-| **Manual dual-create** | Creating artifact + task = 2 actions | Friction on every task | Auto-sync in `/forge-cycle`. AI creates both |
+| **Manual dual-create** | Creating artifact + task = 2 actions | Friction on every task | An authorized agent creates both; `/forgeplan-orchestra:sync` proposes missing links/tasks |
 | **Phase update** | Forgetting to update Phase field | Stale data for AI | AI updates when Status changes |
 | **Sprint transition** | Moving unclosed tasks | Overhead every 1-2 weeks | A/B: change Sprint field. C: move to new sub-project |
 | **Cross-area deps** | Task blocks another area | Visibility gap | Orchestra Relations + `forgeplan blocked` |
@@ -896,14 +945,14 @@ forgeplan route "fix typo" → Tactical
 | Anti-pattern | Why It's Bad | Correct Approach |
 |-------------|-------------|------------------|
 | Duplicate PRD content in Orchestra description | Two sources of truth, drift | Only Artifact ID in field |
-| Track R_eff in Orchestra field | Goes stale instantly | `forgeplan score` on demand |
+| Track R_eff in Orchestra field | Goes stale instantly | `forgeplan score ID` on demand |
 | Create Standard+ task without artifact | Work without justification | Route → Shape → Task |
 | `send_message` without user request | Safety violation, spam | Only on explicit request |
 | Sub-agents update Orchestra | Race conditions, conflicts | Only main agent |
 | Ignore Session Start Protocol | Lost context, duplicates | ALWAYS execute |
 | Project per task | Overhead, lost overview | Project = area, not task |
 | Sprint field + Sprint sub-project simultaneously | Confusion: where's the truth? | Choose one per configuration |
-| Move tasks between projects without reason | History is lost | Move only during migration |
+| Move tasks between projects without reason | Can change scope/access and confuse tracking | Move only for an agreed reorganization, then confirm the result |
 | Archive instead of Done | Task disappears from views | Done = visible, Archived = hidden |
 
 ---
@@ -923,42 +972,46 @@ forgeplan blocked             # dependency graph
 ```
 
 ### Orchestra (tasks)
-```bash
-/orch status                  # workspace overview
-/orch create "Task name"      # new task (interactive)
-/orch task <uid>              # task details
-/orch msg <uid> "message"     # message in task chat
-/orch today                   # tasks for today
-/orch overdue                 # overdue tasks
-/briefing                     # morning briefing
-/sync-tasks                   # synchronization
+
+Use the configured server's bare tool names; runtime prefixes are project-specific:
+
+```text
+get_workspace_overview        # workspace overview
+query_entities                # current, overdue or sprint tasks
+search_entities               # find an existing task before creating one
+get_entity                    # task details and fields
+read_messages                 # task chat; paginate until the needed history is covered
+list_fields                   # discover field and option UIDs
+update_entity                 # set fields using those UIDs
+/forgeplan-orchestra:session  # optional session recipe
+/forgeplan-orchestra:sync     # compare, propose, confirm, apply
 ```
 
 ### Claude Code (execution)
-```bash
-/forge-cycle                  # full cycle (route → PR)
-/sprint                       # wave-based sprint with research
-/wave                         # quick waves from context
-/build path/to/reports/       # implementation from research
-/audit                        # 5-agent code review
-/commands                     # list all commands
-/research "question"          # quick search (5 agents)
-/deep-research "topic"        # deep research
+
+```text
+/forge-cycle                  # forgeplan-workflow: full artifact cycle
+/sprint                       # fpl-skills: wave-based implementation
+/build path/to/reports/       # fpl-skills: existing IMPLEMENTATION-PLAN.md + SUMMARY.md
+/audit                        # fpl-skills: independent specialist review, 4+ reviewers
+/research "question"          # fpl-skills: investigate before choosing an approach
+/briefing                     # fpl-skills: daily context
 ```
 
 ### MCP tools (for AI agents)
 
 ```
 # Orchestra
-mcp__orch__get_workspace_overview()     — workspace overview
-mcp__orch__query_entities()             — search with filters
-mcp__orch__create_entity()              — create task/project
-mcp__orch__set_fields()                 — update fields
-mcp__orch__manage_field()               — create/modify field definition
-mcp__orch__search_entities()            — search by name
-mcp__orch__get_entity()                 — entity details
-mcp__orch__read_messages()              — read messages
-mcp__orch__get_checklists()             — task checklists
+get_workspace_overview()                — workspace overview
+query_entities()                       — search with filters
+create_entity()                        — create task/project
+update_entity(fields=[...])            — set field values using discovered UIDs
+list_fields()                          — discover field definitions and options
+manage_field()                         — create/modify a field definition
+search_entities()                      — search by name
+get_entity()                           — entity details
+read_messages()                        — read one page; paginate when needed
+get_checklists()                       — task checklists
 
 # Forgeplan
 forgeplan_health()                      — project state
@@ -975,6 +1028,10 @@ forgeplan_link()                        — link artifacts
 ---
 
 ## 16. Playbook: Daily Work Scenarios
+
+These are hypothetical conversations, not captured command output. Routing,
+scores and validation results depend on the real task and artifact contents.
+
 
 ### Start of Day
 
@@ -1056,7 +1113,7 @@ AI: Sprint=Sprint 10, Status=Backlog
 You: "Starting Sprint 10"
 
 AI: 1. Checks unclosed Sprint 9 tasks:
-       /orch query → Sprint=Sprint 9, Status≠Done
+       query_entities → Sprint=Sprint 9, Status≠Done
        "2 tasks not closed: [RFC-003] and [PROB-023]"
 
     2. Asks: "Carry over to Sprint 10 or close?"
@@ -1064,7 +1121,9 @@ AI: 1. Checks unclosed Sprint 9 tasks:
 
     3. AI updates:
        RFC-003: Sprint → Sprint 10
-       PROB-023: Status → Done (or forgeplan deprecate)
+       PROB-023 task: record cancellation using the project's configured workflow,
+       not Done for unfinished work; discover the actual status/option UID first.
+       Separately, deprecate the associated artifact with a reason if its lifecycle permits.
 
     4. forgeplan health → what's ready for Sprint 10?
        "4 tasks in Backlog with Sprint 10:
@@ -1080,13 +1139,14 @@ AI: 1. Checks unclosed Sprint 9 tasks:
 ```
 AI: code written, tests passing
 
-AI: /audit → 5-agent review
+AI: /audit → independent specialist review
     Findings: 2 LOW, 0 HIGH
     Fixes LOW findings
 
 AI: forgeplan new evidence "Tests pass, 15 new tests, audit clean"
+    forgeplan update EVID-XXX --body @evidence.md
     forgeplan link EVID-XXX PRD-XXX --relation informs
-    forgeplan score PRD-XXX → R_eff = 1.00
+    forgeplan score PRD-XXX → inspect the actual score, including weak/refuting evidence
 
 AI: forgeplan review PRD-XXX → PASSED
     forgeplan activate PRD-XXX → active
@@ -1096,7 +1156,7 @@ AI: Orch: Phase=Done, Status=Done
 AI: git commit + git push + gh pr create
     Orch: Branch=feat/xxx
 
-AI: "PRD-XXX completed. R_eff=1.00, activated, PR created."
+AI: reports completed work, actual score, activation and PR state separately
 ```
 
 ### Conflict: Task Blocks Another
@@ -1104,9 +1164,9 @@ AI: "PRD-XXX completed. R_eff=1.00, activated, PR created."
 ```
 You: "Can't work on PRD-025 until RFC-005 is ready"
 
-AI: forgeplan link PRD-025 RFC-005 --relation blocked-by
-    Orch: adds relation between tasks
-    PRD-025 Status → Backlog (blocked)
+AI: forgeplan link PRD-025 RFC-005 --relation based_on
+    Orch: adds a relation between tasks
+    PRD-025 task Status → Blocked; keep its existing Phase
 
     forgeplan blocked → shows dependency graph
 
@@ -1136,12 +1196,12 @@ AI: creates task:
 ```
 You: "Write in the PRD-021 task chat that I started working on it"
 
-AI: mcp__orch__send_message(chatUid=task, message="Started working...")
+AI: send_message(entityUid=task, message="Started working...")
     ← ONLY on explicit request!
 
 You: "What was written in the PROB-021 chat?"
-AI: mcp__orch__read_messages(entityUid=task)
-    → Shows history
+AI: read_messages(entityUid=task), then older pages as needed
+    → Shows the relevant history
 ```
 
 ### End of Day
@@ -1174,9 +1234,9 @@ AI: Orch: query Sprint=Sprint 9
      Not completed: 1 (carried over to Sprint 10)
      Duration: 2 weeks"
 
-    forgeplan health:
-    "Activated: 3 new (PRD-021, PROB-021, RFC-004)
-     R_eff avg: 0.85
+    Queries the actual artifact state and individual scores separately:
+    "Activated: PRD-021, PROB-021, RFC-004
+     R_eff: report each decision's score, not an aggregate trust average
      Blind spots: 1 (RFC-003)"
 
     "Recommendation for Sprint 10: close blind spot RFC-003,
@@ -1191,10 +1251,10 @@ AI: Orch: query Sprint=Sprint 9
 | Standard+ task | Writing code without PRD | No justification | Shape → Validate → Code |
 | Task ready | `forgeplan activate` without evidence | R_eff = 0, blind spot | Create evidence first |
 | Need to discuss | `send_message` on your own | Orchestra safety rule | Only on user request |
-| Task not needed | `delete_entity` | Destructive | Status=Done or deprecate |
+| Task not needed | Delete it without authorization or call unfinished work Done | Loses history / misstates completion | Record cancellation in the project's workflow; deprecate eligible artifacts with a reason |
 | Sprint ended | Delete old tasks | History is lost | Done or Archive |
-| Merge conflict | `git push --force` | Blocked hook | Resolve the conflict |
-| Tests fail | Commit | `commit-test-check` hook | Fix the tests |
+| Merge conflict | `git push --force` | Project safety policy; hook coverage depends on configuration | Resolve the conflict |
+| Tests fail | Claim completion or ignore the failure | Verification is incomplete | Fix or explicitly report the failure; do not assume a hook enforces it |
 | Active artifact outdated | Delete it | Lineage is lost | `forgeplan supersede` or `deprecate` |
 | AI creates task | Not checking for duplicates | Noise in tracker | `search_entities` first |
 
@@ -1241,13 +1301,13 @@ Chat Orch │   Git    │  Calls   │  AI background
   (noise)     (context)      + Task
 ```
 
-### How AI Collects the Inbox (automatically at session start)
+### How AI Collects the Inbox (when the session recipe is invoked)
 
 ```
 STEP 1: COLLECTION (read-only, safe)
-├── mcp__orch__get_unread_chats()     → new messages
-├── mcp__orch__get_mentions()         → @mentions
-├── git log --since="last session"    → new commits
+├── get_unread_chats()                 → new messages
+├── get_mentions()                    → @mentions
+├── git log --since=<recorded timestamp> → new commits
 ├── forgeplan health                  → stale, blind spots
 └── memory_recall                     → previous session context
 
@@ -1313,7 +1373,7 @@ STEP 4: AI EXECUTES the decisions
 | Read git log | Yes | Read-only |
 | forgeplan health | Yes | Read-only |
 | Classify signals | Yes | Preparation for triage |
-| Save to Memory/Hindsight | Yes | Non-destructive |
+| Save to Memory/Hindsight | Not by default | Requires project opt-in, an allowed bank/tool and applicable consent; hooks are off by default |
 | **Create artifact** | No | Requires confirmation |
 | **Create task** | No | Requires confirmation |
 | **Send message** | No | Safety rule |

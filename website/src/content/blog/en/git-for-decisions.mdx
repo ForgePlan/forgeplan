@@ -1,6 +1,6 @@
 ---
 title: "I built a \"git for decisions\" and use it to teach engineers - six months in"
-description: "Six months of dogfooding ForgePlan - a local-first CLI that treats engineering decisions like first-class artifacts. Honest report: the methodology, a war story about a tool that lied, and what AI-native actually means in practice."
+description: "Six months of dogfooding ForgePlan, a local-first CLI that treats engineering decisions like first-class artifacts. The methodology, a war story about a tool that lied, and what AI-native means in practice."
 slug: git-for-decisions
 lang: en
 publishedAt: 2026-05-05
@@ -24,7 +24,7 @@ I've been a CTO long enough to know this isn't a Slack problem or a Notion probl
 
 I started building ForgePlan six months ago to fix that for myself. Today it's a 343-artifact workspace, 1995 tests, a Rust binary on `brew install`, and the methodology I teach to a small live cohort of mid- and senior-level engineers transitioning to an AI-native workflow.
 
-This is the honest report.
+After six months, I can describe both how it works and where it falls short.
 
 ### What it actually is
 
@@ -43,7 +43,7 @@ The CLI is `forgeplan` (alias: `fpl`), 76 commands, plus a 63-tool MCP server so
 
 ### The methodology, distilled to three rules
 
-Most "ADR template" tools fail because they treat the document as the deliverable. The deliverable is *trust*. ForgePlan formalises that with three uncomfortable rules.
+Most "ADR template" tools fail because they treat the document as the deliverable. What the team needs is *trust* in the decision. ForgePlan formalises that with three uncomfortable rules.
 
 **Rule 1: Trust = weakest link.**
 
@@ -63,7 +63,7 @@ Six weeks in, I was preparing a release. `forgeplan score PRD-XXX` returned `R_e
 
 Out of paranoia I cloned the same workspace into a fresh directory and ran the same command. `R_eff = 0.10`.
 
-Same workspace. Same files. Different number.
+The same workspace and the same files produced different numbers.
 
 Twelve hours of A/B reverse-engineering later: HTML comments inside the EvidencePack template (`<!-- TODO: fill verdict -->`) were being parsed as actual data. The structured-fields parser didn't care that the lines were HTML-commented; it just regexed `verdict:` and got back garbage. Some files had the comments stripped, some didn't, depending on which template version had been used. A trust-calculus tool was lying about its own honesty score.
 
@@ -75,11 +75,11 @@ Parallel to the tool, I run **DEV VELOCITY** - a 6-week live cohort (18 sessions
 
 The framing I use is the **Velocity Scale**: -1 (pre-AI / resistant) to 1.0 (production AI-native), with discrete stages every 0.2.
 
-The interesting empirical fact: most working engineers sit between 0.2 (Cursor inline completion) and 0.4 (chat-driven coding). The painful transition is **0.2 → 0.4**, not 0.4 → 0.6. That's where students plateau. They've internalised "AI saves keystrokes" but haven't crossed into "AI is a methodology compiler."
+In practice, most working engineers sit between 0.2 (Cursor inline completion) and 0.4 (chat-driven coding). The painful transition is **0.2 → 0.4**, not 0.4 → 0.6. That's where students plateau. They've internalised "AI saves keystrokes" but haven't crossed into "AI is a methodology compiler."
 
 The course teaches four methodologies, not one: **FPF** (trust calculus), **BMAD** (13-step PRD), **OpenSpec** (DAG of delta-specs), and **ForgePlan** (the synthesis). The reason you teach four is so students learn to *route* - pick the right depth of methodology for the problem in front of them, instead of bureaucratising every commit.
 
-ForgePlan is the tool that makes the synthesis tractable in a real repo, but it's not the punchline. The punchline is the routing skill.
+ForgePlan makes it possible to combine these methodologies in a real repo. Learning to route matters more than learning the tool.
 
 ### What "AI-native" actually means in practice
 
@@ -97,7 +97,7 @@ The line is in Russian because that's how I say it to my Russian-speaking cohort
 
 ### Honest "what's missing"
 
-I owe you the failure list, because every Medium post about a side project lies by omission.
+Every side-project post on Medium lies by leaving out its failures. Here are mine.
 
 - **9 GitHub stars.** Six months in. The tool is good; the audience is small. Part of why I'm writing this is to fix that distribution gap.
 - **No third-party validation of R_eff.** I haven't run a benchmark of the scoring against expert human ratings on a public dataset. It's on the roadmap. Until then, R_eff is internally consistent but externally unproven.
@@ -129,8 +129,8 @@ If you want the full live cohort, that's `extraboost.ai/dev-velocity`. 5-8 human
 
 ### Closing
 
-Every decision leaves a trail. Every trail has proof. Every proof decays honestly.
+Every decision leaves a trail of proof, and that proof loses reliability over time.
 
 That's the formula. The tool just enforces it. The course just teaches you to internalise it. The graveyard, if your team has one, was never a tooling problem - it was a methodology gap. Tools without methodology produce shelf-ware ADRs. Methodology without tools produces folklore.
 
-The interesting work is the synthesis.
+The interesting work is combining the methodology with tools that enforce it.

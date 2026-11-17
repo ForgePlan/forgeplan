@@ -3,52 +3,49 @@ title: forgeplan_progress
 description: "Show checkbox progress for artifacts. Parses markdown checkboxes (- [ ] / - [x]) and computes completion percentages."
 ---
 
-Show checkbox-based completion progress for one or all artifacts. Parses standard Markdown task lists (`- [ ]` and `- [x]`) in the body, groups them by section (e.g. Implementation Phases, FR list), and returns per-group and overall percentages.
+Show checkbox completion for one or all artifacts from each stored body's own task-list lines. There are no section groups or child-artifact rollups. The parser recognises indented `-`/`*` list markers followed by `[ ]`, `[x]`, or `[X]` and a trailing space; it does not exclude fenced code examples.
 
 **Category**: Quality
 
 ## When an agent calls it
 
 - **Session resume** - see how much of the PRD / RFC you've actually implemented.
-- **Sprint check-in** - group-level breakdown shows which phase is lagging.
+- **Sprint check-in** — compare checkbox totals by artifact, not by section or implementation phase.
 - **PR description generation** - quote the current completion % to communicate status.
 - **After marking boxes** - confirm the parser saw your `- [x]` updates.
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
-| `id` | `string` | no | Artifact ID. If omitted, shows progress for all artifacts that contain checkboxes. |
+| `id` | `string \| null` | no | Artifact ID (shows all artifacts with checkboxes if omitted) Schema default: `null`. |
+| `workspace` | `string \| null` | no | Optional explicit workspace directory for this call. When set, the MCP server resolves the `.forgeplan/` projection from this path instead of the server's startup CWD. Use this when the calling agent is running in a git worktree separate from the MCP server's launch directory. PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. Schema default: `null`. |
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::ProgressParams`_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
+
+Success is JSON in MCP `content[0].text` with `artifacts`, `total_checkboxes`, `total_completed`, and `_next_action`. Each item has `id`, `title`, `kind`, `total`, `completed`, and `percent` rounded to the nearest whole percentage. There is no `done`, `groups`, or top-level percent.
+
+Omitting `id` excludes records without checkboxes. An explicit display ID is case-insensitive and includes a zero-checkbox record with `percent: 0.0`; a missing ID is a plain-text tool error (`isError: true`). The tool never ticks boxes, activates artifacts, or verifies implementation. Its activation hint does not bypass lifecycle checks.
+
+Illustrative partial payload (the dynamic `_next_action` is omitted):
 
 ```json
 {
   "artifacts": [
-    {
-      "id": "RFC-006",
-      "total": 18,
-      "done": 12,
-      "percent": 66.7,
-      "groups": [
-        { "section": "Phase 1 - Shape", "total": 5, "done": 5, "percent": 100 },
-        { "section": "Phase 2 - Build", "total": 8, "done": 6, "percent": 75 },
-        { "section": "Phase 3 - Evidence", "total": 5, "done": 1, "percent": 20 }
-      ]
-    }
-  ]
+    {"id": "RFC-006", "title": "Auth implementation", "kind": "rfc", "total": 18, "completed": 12, "percent": 67.0}
+  ],
+  "total_checkboxes": 18,
+  "total_completed": 12
 }
 ```
 
 ## Example invocation
 
-```json
-{ "id": "RFC-006" }
-```
-
-Or for everything:
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
 
 ```json
 {}

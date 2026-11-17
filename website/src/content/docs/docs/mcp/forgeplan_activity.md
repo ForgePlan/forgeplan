@@ -1,14 +1,14 @@
 ---
 title: forgeplan_activity
-description: "Query the activity log - append-only JSONL record of every MCP tool invocation."
+description: "Query the activity log - append-only JSONL record of every MCP tool invocation at .forgeplan/logs/tools-YYYY-MM-DD.jsonl. Use this to reconstruct what the agent did over a time window, attribute LLM-token spend, or audit destructive operations. Params: since_hours (default 24, max 720), tool (comma-separated names to filter), status (ok/tool_err/rpc_err), limit (default 500, max 5000 - keeps most recent)."
 ---
 
 Returns the entries in the workspace activity log
-(`.forgeplan/logs/tools-YYYY-MM-DD.jsonl`) that match the given filters. Forgeplan
-logs every MCP tool call - tool name, arguments digest, status, duration, error class -
-so the agent can reconstruct what happened without trusting fallible memory. Use it to
-attribute LLM-token spend, audit destructive operations, or rebuild a session timeline
-after an interruption.
+(`.forgeplan/logs/tools-YYYY-MM-DD.jsonl`) that match the given filters.
+The log records tool name, argument hash, status, duration and workspace, with optional
+client information and opt-in raw arguments. Use it to audit operations or rebuild a
+session timeline. It does not record token usage, API cost or an error-class field;
+latency and call counts are only indirect clues when investigating LLM spend.
 
 **Category**: Observability & Audit
 
@@ -22,16 +22,21 @@ after an interruption.
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
-| `since_hours` | `number` | no (default 24, max 720) | Time window in hours back from now. `1` = last hour, `720` = last 30 days. |
-| `tool` | `string` | no | Comma-separated tool names to filter, e.g. `"forgeplan_score,forgeplan_activate"`. |
-| `status` | `string` | no | Filter by status - one of `ok`, `tool_err`, or `rpc_err`. |
-| `limit` | `number` | no (default 500, max 5000) | Cap result set; keeps the most recent N entries. |
+| `limit` | `integer \| null` | no | Cap result set (most recent N). Default 500, max 5000. Schema default: `null`. `format`: `uint32`. `minimum`: `0`. |
+| `since_hours` | `integer \| null` | no | Time window in hours back from now (e.g. 1 = last hour, 24 = last day). Omit for today-only scope. Values 1..=720 (30 days). Schema default: `null`. `format`: `uint32`. `minimum`: `0`. |
+| `status` | `string \| null` | no | Filter by status: `ok`, `tool_err`, or `rpc_err`. Omit for all. Schema default: `null`. |
+| `tool` | `string \| null` | no | Filter by tool name. Repeat with comma to match multiple: `"forgeplan_score,forgeplan_activate"`. Schema default: `null`. |
+| `workspace` | `string \| null` | no | Optional explicit workspace directory for this call. When set, the MCP server resolves the `.forgeplan/` projection from this path instead of the server's startup CWD. Use this when the calling agent is running in a git worktree separate from the MCP server's launch directory. PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. Schema default: `null`. |
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::ActivityQueryParams`_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
+
+Success is JSON serialized inside MCP text content. The following values are illustrative.
 
 ```json
 {
@@ -39,6 +44,8 @@ _Schema source: `crates/forgeplan-mcp/src/server.rs::ActivityQueryParams`_
     {
       "ts": "2026-04-26T10:14:22Z",
       "tool": "forgeplan_score",
+      "args_hash": "a1b2c3d4e5f6",
+      "workspace": "/work/project/.forgeplan",
       "status": "ok",
       "duration_ms": 142
     }
@@ -47,31 +54,28 @@ _Schema source: `crates/forgeplan-mcp/src/server.rs::ActivityQueryParams`_
   "returned": 1,
   "warnings": [],
   "since_hours": 24,
-  "_next_action": "1 entries in window. Busiest tool: `forgeplan_score`. ..."
+  "_next_action": "1 entries in window. Busiest: `forgeplan_score`. Per-tool breakdown: `forgeplan_activity_stats`."
 }
 ```
 
 The `_next_action` hint nudges the agent toward the right follow-up
 (`forgeplan_activity_stats` for aggregates, or a narrower `tool=` filter).
 
+The handler defaults to the last **24 hours**, despite the input-schema description's
+today-only wording. It clamps `since_hours` to 1–720 and `limit` to 1–5000.
+Returned entries remain chronological after keeping the most recent N.
+`total_scanned` counts lines read before filtering, including malformed lines.
+`warnings` reports parse failures; missing daily files contribute no entries.
+`client_info` (`name`, optional `version`) and `args` are omitted unless recorded.
+An unknown status simply matches no entries. Workspace-resolution failures are tool
+errors; log-read failures are JSON-RPC errors, not successful empty results.
+
 ## Example invocation
 
-Last hour of work:
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
 
 ```json
-{ "since_hours": 1 }
-```
-
-All destructive ops in the last week:
-
-```json
-{ "since_hours": 168, "tool": "forgeplan_delete,forgeplan_supersede,forgeplan_deprecate" }
-```
-
-Errors only:
-
-```json
-{ "status": "tool_err", "limit": 50 }
+{}
 ```
 
 ## Typical sequence
@@ -82,9 +86,11 @@ Errors only:
 
 ## CLI equivalent
 
-There is no direct CLI counterpart yet - the activity log is intentionally MCP-first
-(introduced by PRD-055). The raw JSONL files at `.forgeplan/logs/tools-*.jsonl` are
-human-readable as a fallback.
+```bash
+forgeplan activity --since-hours 24 --status tool_err --limit 50 --json
+```
+
+[`forgeplan activity`](/docs/cli/activity/) reads the same JSONL logs. The CLI option is `--since-hours`, corresponding to MCP `since_hours`.
 
 ## See also
 

@@ -3,7 +3,7 @@ title: forgeplan generate
 description: "Generate an artifact using AI from a natural language description"
 ---
 
-Generates a **fully-drafted artifact** from a natural language description using an LLM (Gemini / OpenAI / Anthropic, configured in `.forgeplan/config.yaml`). Unlike [`forgeplan new`](/docs/cli/new/), which produces an empty template you fill manually, `generate` asks the model to write Problem, Goals, Non-Goals, Functional Requirements, and the rest of the MUST sections in one pass. The result is a draft you still review - but the 30-minute cold-start of staring at an empty template disappears.
+Generates an LLM-written Markdown draft from a description. The required `llm:` block in `.forgeplan/config.yaml` supplies provider/model defaults; environment variables can override them. HTTP providers include `openai`, `claude` (Anthropic), `gemini`, `ollama`, and `custom`; explicit subscription-CLI providers reuse their own local login. No provider is auto-detected. The prompt requests a kind-specific structure, but the output is not validated or checked against the code before it is saved.
 
 ## When to use
 
@@ -15,7 +15,7 @@ Generates a **fully-drafted artifact** from a natural language description using
 
 ## When NOT to use
 
-- You don't have LLM credentials configured - add a provider block to `.forgeplan/config.yaml` first, or fall back to [`forgeplan new`](/docs/cli/new/).
+- The chosen provider is unavailable — configure its API key or local login, or use [`forgeplan new`](/docs/cli/new/) without an LLM.
 - The decision is tactical and doesn't need an artifact at all - just commit.
 - You want full manual control over wording - use [`forgeplan new`](/docs/cli/new/) and fill sections yourself.
 - You're logging a decision from a conversation - use [`forgeplan capture`](/docs/cli/capture/).
@@ -31,7 +31,7 @@ forgeplan generate <KIND> <DESCRIPTION>
 
 ```text
   <KIND>         Artifact kind: prd, epic, spec, rfc, adr, problem, solution, evidence
-  <DESCRIPTION>  Natural language description of what to generate
+  <DESCRIPTION>  Description of what to generate
 ```
 
 ## Options
@@ -41,7 +41,16 @@ forgeplan generate <KIND> <DESCRIPTION>
   -V, --version  Print version
 ```
 
-`generate` reads your active LLM provider from `.forgeplan/config.yaml`. If no provider is set or the API key is missing, the command fails early with a config hint instead of falling back to an empty stub.
+`generate` has no provider/model flags and no JSON output flag. Missing required credentials produce a configuration error; keyless providers do not need an API key. The command does not fall back to a template when generation fails. It sends your description to the configured provider; it does not read your subsystem's source files.
+
+Effective settings apply `FORGEPLAN_LLM_PROVIDER`, `FORGEPLAN_LLM_MODEL`,
+`FORGEPLAN_LLM_BASE_URL`, `FORGEPLAN_LLM_MAX_TOKENS`, and
+`FORGEPLAN_LLM_API_KEY_ENV` after the YAML defaults. The last variable changes
+the **name** of the credential variable, not the key value. Maximum tokens
+is overridden only when its value parses as an unsigned 32-bit integer.
+These environment variables do not replace the prerequisite for an `llm:`
+block, even for a keyless provider. Check inherited overrides when the
+effective provider, endpoint, model, or credential lookup is unexpected.
 
 ## Examples
 
@@ -51,15 +60,15 @@ forgeplan generate <KIND> <DESCRIPTION>
 forgeplan generate prd "add rate limiting to /api/v1/ endpoints"
 ```
 
-Produces `.forgeplan/prds/prd-NNN-add-rate-limiting.md` with Problem ("public endpoints are exposed to abuse..."), Goals, Non-Goals, Target Users, and an FR list drafted by the model. Open the file, read critically, tighten the wording, then run `forgeplan validate PRD-NNN` to confirm MUST rules pass.
+Creates a `draft` at `depth: standard`. The metadata title is the first description line, truncated to 80 characters; the assigned ID and actual projection path are printed as `ID:` and `Created:`. Use those values rather than predicting the filename. Review the model's content, then run `forgeplan validate <returned-id>`.
 
 ### Example 2: Reverse-engineer an RFC for an existing subsystem
 
 ```bash
-forgeplan generate rfc "current embedding pipeline: fastembed BGE-M3, 1024 dims, batch 32, cached in .forgeplan/.fastembed_cache/"
+forgeplan generate rfc "current embedding pipeline: tract CPU inference, BGE-M3, 1024 dimensions, shared machine-wide cache"
 ```
 
-Good for brown-field documentation - the LLM drafts an RFC describing the as-built architecture with Implementation Phases already checked off. Use this as a starting point, then correct any hallucinated details against the real code.
+Useful as a draft based on the supplied description, not an as-built audit. The prompt asks for unchecked actionable checkboxes; completed implementation phases are not automatically established. Compare every architecture claim against source before accepting it.
 
 ### Example 3: Draft a ProblemCard for a fresh signal
 
@@ -67,7 +76,7 @@ Good for brown-field documentation - the LLM drafts an RFC describing the as-bui
 forgeplan generate problem "users report search returns stale results after renaming artifacts"
 ```
 
-Generates Signal / Context / Goals / Anti-Goodhart indicators sections. ProblemCards don't require a validation gate, so you can `activate` as soon as the card is coherent and link follow-up Evidence or Solutions.
+The Problem prompt requests Signal / Context / Impact / Anti-Goodhart Indicators. The actual sections depend on the model response. Review the content before using the lightweight activation path; a model-generated assertion is not evidence.
 
 ## How it fits the workflow
 
@@ -75,7 +84,7 @@ Generates Signal / Context / Goals / Anti-Goodhart indicators sections. ProblemC
 route  →  generate  →  (review + edit)  →  validate  →  reason  →  code  →  evidence  →  review  →  activate
 ```
 
-`generate` slots into the same Shape phase as `new`, but collapses "create stub" and "fill MUST sections" into one LLM call. The rest of the pipeline is unchanged: you still need `validate` to pass, `reason` for Deep/Critical depth, and Evidence before `activate`. Treat the generated text as a first draft - the model will not catch domain-specific constraints the way a human operator will.
+`generate` replaces manual first-draft writing, not validation or review. It does not set reasoning state, create evidence links, or activate the result. Any further reasoning/evidence requirements come from your methodology and the separate command guards, not from automatic generation behavior.
 
 ## See also
 

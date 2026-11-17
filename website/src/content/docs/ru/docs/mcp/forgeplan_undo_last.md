@@ -1,6 +1,6 @@
 ---
 title: forgeplan_undo_last
-description: "Reverse the most recent destructive operation (delete / supersede / deprecate) - undo button for AI agents."
+description: "Отменить последнюю деструктивную операцию по доступной записи восстановления."
 ---
 
 Идёт по trash от свежего к старому, находит самый свежий не-consumed receipt в
@@ -10,7 +10,7 @@ description: "Reverse the most recent destructive operation (delete / supersede 
 артефакта. Возвращает ошибку с подсказкой, если подходящего receipt нет - никогда
 не угадывает.
 
-**Категория**: Lifecycle / Recovery
+**Категория**: Жизненный цикл и восстановление
 
 ## Когда агент вызывает
 
@@ -22,59 +22,43 @@ description: "Reverse the most recent destructive operation (delete / supersede 
 
 ## Входные параметры
 
-| Имя | Тип | Обязательно | Описание |
+| Имя | Тип JSON | Обязательно | Описание и ограничения |
 |---|---|---|---|
-| `within_hours` | `number` | no (default 24, max 720) | Временное окно для поиска последней деструктивной операции. Расширьте до 720 (30 дней) при сомнениях. |
+| `within_hours` | `integer \| null` | нет | Окно поиска последней деструктивной операции в часах. По умолчанию 24, максимум 720 (30 дней). По умолчанию в схеме: `null`. `format`: `uint32`. `minimum`: `0`. |
+| `workspace` | `string \| null` | нет | Необязательный явный каталог рабочего пространства для этого вызова. Сервер ищет `.forgeplan/` по этому пути, а не в каталоге запуска. Используйте для агента в отдельном git worktree. PRD-078 / ADR-015. Принимает абсолютный путь или путь с `~`. По умолчанию в схеме: `null`. |
 
-_Источник схемы: `crates/forgeplan-mcp/src/server.rs::UndoLastParams`_
+Обязательное поле означает, что ключ должен присутствовать. Значение `null` допустимо только тогда, когда оно перечислено в типе JSON. Значения по умолчанию в схеме не обязательно совпадают с теми, которые использует обработчик и описывает текст.
+
+_Источник схемы: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Возвращает
 
-```json
-{
-  "restored": "PRD-042",
-  "op_reversed": "delete",
-  "receipt_id": "trash-2026-04-26T10-14-22-001",
-  "relations_restored": 3,
-  "relations_skipped": [],
-  "projection_restored": true,
-  "warnings": [],
-  "_next_action": "Reversed most recent delete of `PRD-042`. To undo another, call `forgeplan_undo_last` again (finds the next newest non-consumed receipt). Or restore a specific ID: `forgeplan_restore <id>`."
-}
-```
+Ответ содержит `restored`, `op_reversed`, `receipt_id`, `relations_restored`, `relations_skipped`, `projection_restored`, `warnings`, `resolved_workspace`, `resolved_via` и `_next_action`. В отличие от `forgeplan_restore`, этот обработчик **не** возвращает `restored_status` и `restored_status_source`.
 
-Когда в окне нечего откатывать:
+При отсутствии подходящей записи возвращается текст ошибки MCP, например `No non-consumed destructive op in the last 24 hour(s).`, а не JSON-объект `ok: false`. Если применение выбранной записи не удалось, сообщается именно этот сбой; инструмент не пропускает её ради более старой операции.
 
-```json
-{
-  "ok": false,
-  "error": "No non-consumed destructive op in the last 24 hour(s).",
-  "_next_action": "Expand the window: `forgeplan_undo_last within_hours=720`. Or inspect the log: `forgeplan_activity --tool forgeplan_delete,forgeplan_supersede,forgeplan_deprecate --since 720h`."
-}
-```
+## Выбор записи и побочные эффекты
+
+- `within_hours` по умолчанию равен 24 и **ограничивается clamp до 1–720**. Поэтому допустимый по схеме 0 означает поиск за один час, а не пустое окно.
+- Выбор общий для всего пространства и всех агентов: берётся самая свежая разбираемая неиспользованная запись в окне. Она не обязательно относится к последнему действию вызывающего. Сначала изучите активность и корзину; для конкретного ID используйте `forgeplan_restore`.
+- Предварительного просмотра и интерактивного подтверждения нет. Каждый успешный вызов потребляет запись; повтор может отменить действие с **другим артефактом**. Не запускайте цикл и не повторяйте автоматически по `_next_action`.
+- Применяется та же реализация и [ограничения восстановления 0.38.0](/ru/docs/mcp/forgeplan_restore/): связи могут пропускаться, проблемы проекции могут стать предупреждениями, а ошибка потребления записи возможна после восстановления артефакта в хранилище.
+- Отмена supersede/deprecate сбрасывает сохранённые статус и заголовок, но не обновляет оставшуюся Markdown-проекцию и не удаляет раздел тела о выводе из использования. Изучите запись и файл: `projection_restored: true` не удостоверяет актуальность проекции.
 
 ## Пример вызова
 
-Дефолтное окно 24 ч:
+Аргументы этого инструмента, а не оболочка JSON-RPC. Замените условные ID, идентификаторы сессий и пути значениями из своего рабочего пространства. Соответствие схеме не отменяет проверки рабочего пространства, жизненного цикла и согласия на выполнение.
 
 ```json
 {}
 ```
 
-Более широкий поиск после периода простоя:
-
-```json
-{ "within_hours": 720 }
-```
-
 ## Типичная последовательность
 
-1. Происходит осечка (`forgeplan_delete`, `_supersede` или `_deprecate`).
-2. `forgeplan_undo_last` - откатить.
-3. Повторить вызов, чтобы откатить предыдущую операцию (каждый вызов потребляет
-   самый свежий не-consumed receipt).
-4. Или переключиться на [`forgeplan_restore <id>`](/ru/docs/mcp/forgeplan_restore/),
-   когда конкретный ID известен.
+1. Изучить журнал деструктивных операций и определить нужное пространство и запись.
+2. Если самая свежая подходящая запись соответствует согласованной отмене, вызвать `forgeplan_undo_last`.
+3. Прочитать восстановленный артефакт, проекцию и предупреждения.
+4. Для следующей отмены отдельно изучить и согласовать операцию; при известном ID предпочесть [`forgeplan_restore`](/ru/docs/mcp/forgeplan_restore/).
 
 ## CLI эквивалент
 

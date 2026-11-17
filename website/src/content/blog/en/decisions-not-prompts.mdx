@@ -14,9 +14,9 @@ translations:
 
 ### Lead
 
-Hi. My name is Ilya. I build an open-source tool for AI agents, and over the past six months I keep catching myself thinking the same thing: when my Claude Code breaks something, the problem is almost never the model. The problem is that the model has nowhere to put the decision.
+Hi. My name is Ilya. I build an open-source tool for AI agents, and over the past six months I've kept catching myself thinking the same thing: when my Claude Code breaks something, the problem is almost never the model. The problem is that the model has nowhere to put the decision.
 
-Five months ago I had a telling conversation. Friday - an agent picked Postgres in one session, wrote the migrations, everything was fine. Monday - a different session, and the agent solemnly proposes "maybe MongoDB after all? here are the arguments." The arguments are compelling. The agent is not broken: **every session starts with zero memory**. This agent has no colleague to ping. No corner of Slack where "we already decided this in March" is pinned. No head that holds the "why."
+Five months ago I had a telling conversation. Friday - an agent picked Postgres in one session, wrote the migrations, everything was fine. Monday - a different session, and the agent solemnly proposes "maybe MongoDB after all? here are the arguments." The arguments are compelling. The agent is not broken: **every session starts with zero memory**. It has no colleague to ping, no corner of Slack where "we already decided this in March" is pinned, no head that holds the "why."
 
 That is the decision graveyard. Before AI it was invisible: decisions died quietly when the last engineer who remembered them left. With agents it became visible every day. I open a new session and read an argument we already closed once.
 
@@ -43,7 +43,7 @@ This worked poorly even when people made decisions - at least you could have the
 
 Walkinglabs is a free course on harness engineering for AI agents (12 short lectures, about 3 hours). The quote above is the central idea of lecture three. Not "should be in the repo," but **does not exist**. If the knowledge is in your head or in Slack - the agent cannot see it. It will rediscover the question, make a decision, implement it. Next session - the same thing again, pointing in a different direction.
 
-Both poles of documentation are about **file freshness**. But the real problem is about **the link between the file and the decision**. Documentation can be current and still useless: it describes "what exists," not "why this way." Decisions in one place, documentation in another, code in a third.
+Both poles of documentation are about **file freshness**. The problem I needed to solve was **the link between the file and the decision**. Documentation can be current and still useless: it describes "what exists," not "why this way." Decisions in one place, documentation in another, code in a third.
 
 I was looking for a way to merge them into one.
 
@@ -55,7 +55,7 @@ The starting pain was not about AI. It was about that very fragmentation.
 
 A year ago I needed to explain to a new team member why we had chosen Postgres. I opened `git log` - nothing useful. Confluence had a "Choice of database" page, but from the previous architecture. Slack returned a thread of 200 messages, half deleted. In the end I just retold it from memory. Three weeks later that same person suggested MongoDB - because the actual arguments had never been written down anywhere.
 
-The decision exists. The rationale does not. A year later - the same conversation replays.
+The decision exists, but the rationale does not. A year later, the same conversation replays.
 
 I started building a tool that forces decisions into first-class artifacts. Not free-form markdown, but files with required structure: mandatory sections, linked evidence, a reliability score **R_eff** calculated from the evidence attached to each decision.
 
@@ -79,7 +79,7 @@ From there came four ideas.
 
 #### 1. A decision is an artifact with its own lifecycle
 
-Not a code comment. Not a commit message. Not a Confluence page. **A file with required structure, a link to its parent, a status.**
+A decision needs **a file with required structure, a link to its parent, and a status**. A code comment, a commit message, or a Confluence page doesn't give it that lifecycle.
 
 ForgePlan has ten artifact types; in practice most teams use five or six: PRD, RFC, ADR, Evidence, Problem, Epic. The rest serve specific scenarios. The idea is strict: each type answers exactly one question. PRD - what and why. RFC - how to build it. ADR - why exactly this way. Evidence - does it work. Problem - what broke.
 
@@ -93,11 +93,11 @@ Ten types looks daunting, but nobody uses all of them at once. Teams adopt in na
 
 R_eff is the reliability score of an artifact, calculated from attached evidence - tests, measurements, reviews. The core idea: **minimum, not average**. Three pieces of evidence at 0.9 and one at 0.1 - R_eff is 0.1, not 0.7.
 
-Deliberate: your confidence in a decision is no higher than its weakest evidence. One blind spot and everything sags. An average would hide this; the minimum does not.
+That's deliberate: your confidence in a decision is no higher than its weakest evidence. One blind spot and everything sags. An average would hide this; the minimum does not.
 
 This is where I got hit hard myself. **PROB-034** is a story I was embarrassed to tell for a long time.
 
-R_eff itself was silently lying about its own honesty. If an EvidencePack (the body of a piece of evidence) was formatted incorrectly - missing explicit `verdict`, `congruence_level`, `evidence_type` fields - the parser silently applied CL0 ("contradicts context," penalty 0.9), and the score collapsed to near zero. The agent saw `R_eff = 0.10` and **had no idea why**. Just a low number, no explanation. A decision graveyard inside the tool that was supposed to prevent decision graveyards.
+R_eff's own failures were hidden. If an EvidencePack (the body of a piece of evidence) was formatted incorrectly - missing explicit `verdict`, `congruence_level`, `evidence_type` fields - the parser silently applied CL0 ("contradicts context," penalty 0.9), and the score collapsed to near zero. The agent saw `R_eff = 0.10` and **had no idea why**. Just a low number, no explanation. A decision graveyard inside the tool that was supposed to prevent decision graveyards.
 
 > "Students cannot grade their own exams."
 > - walkinglabs, lecture 9
@@ -157,13 +157,13 @@ Without this, ForgePlan would have turned into the second pole of documentation:
 
 ### What ForgePlan does not do yet
 
-Since I am talking openly about how I build this - I should be honest about the gaps. Three I can see right now.
+I can see three gaps in the tool right now.
 
 **Gap 1: tracing an individual agent session.** The `health`, `graph`, and `blindspots` commands show repository state. What is missing is observability of a specific run: which tools the agent called, in what order, which `Next:` it ignored. On the roadmap, no date. Needs a trace store, a viewer, a privacy decision (token strings contain user input).
 
 **Gap 2: a sprint contract format.** PRD is too heavy for a day's task (mandatory sections, hypothesis reasoning, linked evidence). Note is too light - no requirement checklists. No intermediate format for "a 2-3 day commitment." I hit this pain every time I sit down to work on something for a single day.
 
-**Gap 3: the tool is effectively Claude Code-only.** Technically model-agnostic - a Rust CLI and an MCP server. But I only use and test it with Claude Code. Cursor, Copilot, Windsurf may work but I have not verified. Reasonable strategy for one person, but an honest limitation.
+**Gap 3: the tool is effectively Claude Code-only.** Technically model-agnostic - a Rust CLI and an MCP server. But I only use and test it with Claude Code. Cursor, Copilot, Windsurf may work but I have not verified. A reasonable strategy for one person, but still a limitation.
 
 ---
 
@@ -182,7 +182,7 @@ State as of 2026-05-23 - pulled from the repository:
 
 That last number is the key one. For a year and a half the repository description was "Backend and ForgePlan developer tools." **A promise that does not match the product.** People searching for "developer tools" arrive, see artifact lifecycles and R_eff scoring, and leave. People searching for an AI agent tool do not arrive, because those words are not in the description.
 
-The description was written before the industry had a word for this category. Now the word exists. The description needs rewriting. Lesson for anyone building an open-source technical project: **positioning is not marketing, it is part of the architecture**. If the description says one thing and the code does another, stars distribute in two directions away from true product-market fit.
+The description was written before the industry had a word for this category. Now the word exists. The description needs rewriting. Lesson for anyone building an open-source technical project: **positioning is part of the architecture, not a separate marketing concern**. If the description says one thing and the code does another, the project misses both audiences and struggles to find product-market fit.
 
 ---
 
@@ -196,7 +196,7 @@ What I learned in six months - one line each:
 4. Trust in a decision equals the weakest piece of evidence, not the average. One blind spot - and everything sags.
 5. The artifact chain is a direction, not a required checklist. Otherwise the tool becomes its own antipattern.
 
-Three links that may be useful:
+Useful links:
 
 - **walkinglabs.github.io/learn-harness-engineering/ru/** - a free course on harness engineering for AI agents, 12 short lectures, about 3 hours. The conceptual framework that helped me build my vocabulary.
 

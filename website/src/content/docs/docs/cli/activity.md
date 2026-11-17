@@ -3,7 +3,7 @@ title: forgeplan activity
 description: "Query the activity log - append-only JSONL record of every MCP tool invocation. Use to reconstruct what the agent did, attribute spend, or audit destructive operations."
 ---
 
-`forgeplan activity` shows you what the agent (or you) actually did. Every Forgeplan command writes one line to a daily log file at `.forgeplan/logs/tools-YYYY-MM-DD.jsonl` - tool name, arguments, status (ok / error), how long it took. This command reads that log and prints entries matching your filters, so you can answer "what happened in the last hour?" without relying on memory.
+`forgeplan activity` reads recorded MCP tool calls from daily `.forgeplan/logs/tools-YYYY-MM-DD.jsonl` files: tool name, arguments, status (`ok`, `tool_err`, or `rpc_err`), and duration. It does not record every CLI command or every action an agent takes. Use it to answer "which recorded calls happened in the last hour?"
 
 This is the CLI version of [`forgeplan_activity`](/docs/mcp/forgeplan_activity/) (the MCP tool); both read the same log files.
 
@@ -46,8 +46,7 @@ forgeplan activity [OPTIONS]
 forgeplan activity --since-hours 1
 ```
 
-Prints every tool call from the last 60 minutes, newest first. Useful right after a
-session interruption to rebuild context.
+Keeps the most recent 500 matching calls by default and prints those retained entries in chronological/log order, not newest first. With this window, entries come from the last 60 minutes. Useful after a session interruption to rebuild context.
 
 ### Example 2: Audit destructive ops over the past week
 
@@ -68,9 +67,13 @@ forgeplan activity --status tool_err --limit 50 --json | jq '.entries[]'
 
 Pipes JSON output into `jq` for further filtering or for feeding into a script. The `--limit` flag caps the result count so you do not accidentally pull thousands of entries from a long-lived workspace.
 
+## JSON and limits
+
+JSON contains `entries`, `total_scanned`, `returned`, `warnings`, `since_hours`, `_next_action`, and `hints`. Entry fields are `ts`, `tool`, `args_hash`, `duration_ms`, `status`, and `workspace`, with optional `client_info` and `args`. Raw arguments are omitted unless `activity.log_args: true` is enabled. The handler clamps the window to 1–720 hours and limit to 1–5000; an unknown status string simply matches no entries. Empty results are successful reports, not command failures. An initialized workspace is required.
+
 ## How it fits the workflow
 
-The activity log is the audit trail under every other Forgeplan command. The usual loop: run [`forgeplan activity-stats`](/docs/cli/activity-stats/) first to spot the slow or failing tool by aggregate, then run `forgeplan activity --tool <name>` here to see individual calls. If a destructive operation shows up that you did not expect, reverse it with [`forgeplan undo-last`](/docs/cli/undo-last/).
+The activity log is an audit trail of recorded MCP calls, not a complete history of workspace changes. Run [`forgeplan activity-stats`](/docs/cli/activity-stats/) to spot slow or failing tools, then `forgeplan activity --tool <name>` for individual calls. Inspect any unexpected destructive operation before choosing [`forgeplan undo-last`](/docs/cli/undo-last/) or a targeted restore.
 
 ## See also
 

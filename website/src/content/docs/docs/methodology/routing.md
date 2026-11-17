@@ -11,13 +11,11 @@ Getting the depth right saves real time. Over-engineering a simple fix with a fu
 
 ## Overview
 
-Before writing any code, Forgeplan determines the **depth**, i.e. how much structure your decision needs.
+Before coding, use `route` to recommend depth and an artifact pipeline. The recommendation is not a source-code permission gate or a replacement for project judgment.
 
 ```bash
-forgeplan route "add payment system"
-# -> Depth: Deep
-# -> Pipeline: PRD -> Spec -> RFC -> ADR
-# -> Confidence: 92%
+forgeplan route "add a new payment module with a public API" --level 0
+# Keyword routing is offline; inspect matched signals, depth, and pipeline.
 ```
 
 ## Four depth levels
@@ -29,11 +27,15 @@ forgeplan route "add payment system"
 | **Deep** | New module, 1-2 weeks, irreversible | PRD -> Spec -> RFC -> ADR | Days |
 | **Critical** | Cross-team, strategic initiative | Epic -> PRD[] -> Spec[] -> RFC[] -> ADR[] | Weeks |
 
+This table describes methodology, not four distinct runtime modes. In 0.38.0, core `Mode` stores `note`, `tactical`, `standard`, and `deep`; Critical is normalized to Deep and displayed as **Deep/Critical**. The core pipeline is empty for Tactical, PRD → RFC for Standard, and PRD → Spec → RFC → ADR for Deep/Critical. It does not automatically add Epic arrays, SOL, or REFRESH.
+
+The published workflow adds **SOL** between PRD and design, and **REFRESH** after reconciliation, at Deep/Critical. `/gate-check` has separate `deep` and `critical` policy thresholds, so an orchestrator must preserve the intended tier explicitly; do not assume the collapsed core label selects the Critical policy for you.
+
 ### Real-World Examples
 
 **Tactical**: Fixing a parsing bug where a closing `---` in YAML frontmatter is not detected. One file, one test, ship it. No artifact needed.
 
-**Standard**: Adding OAuth2 login to your app. There are two approaches (JWT vs sessions), it takes 2-3 days, and the choice affects API design. Create a PRD for requirements and an RFC for the architecture.
+**Standard**: Adding a reversible internal reporting feature with several approaches. Create a PRD for requirements and an RFC for design. Authentication is not a Standard example for the keyword router: `auth` and `oauth` are Deep triggers.
 
 **Deep**: Building a new payment processing module. It touches user financial data, involves third-party integrations, and a wrong choice in payment provider is expensive to reverse. Full pipeline: PRD, Spec for API contracts, RFC for architecture, ADR for the Stripe-vs-PayPal decision.
 
@@ -54,86 +56,74 @@ flowchart TD
     D -->|Strategic| CR["CRITICAL\nEpic → PRDs → Specs → RFCs → ADRs"]
 ```
 
-The first question ("Is this trivial?") filters out 60-70% of daily work. Most things you do are Tactical. The routing system is designed to let you skip structure for the majority of tasks and invest in it only when the stakes justify it.
+Use this as a judgment aid, not the implementation of the router. L0 takes the highest minimum depth among matched signals; no match defaults to Tactical. No measured proportion of your team's work follows from that default.
 
 ## Auto-Escalation Triggers
 
-Regardless of initial assessment, depth escalates when:
+At L0, matching signals impose minimum depths. The rules match English substrings, not a semantic understanding of all languages:
 
-| Trigger | Minimum Level |
-|---------|---------------|
-| Hard to roll back (>2 weeks impact) | Standard+ |
-| Affects multiple teams | Standard+ |
-| Problem unclear, needs research | Standard+ |
-| Security or compliance requirements | Deep+ |
-| Affects public API | Deep+ |
-| Touches user data | Deep+ |
-| Roadmap-level decision | Critical |
+| Example signal | Minimum core depth |
+|---|---|
+| `security`, `auth`, `oauth`, `compliance` | Deep |
+| `breaking change`, `migration`, `deprecat` | Deep |
+| `public api`, `api contract`, `openapi` | Deep |
+| `strategy`, `roadmap`, `initiative`; `p0`, `critical`, `hotfix` | Deep |
+| `cross-team`, `multiple teams`, `cross-service` | Standard |
+| `data model`, `schema change`; infrastructure/deployment | Standard |
+| `new module`, `new command`, `new feature`; `bug`, `regression`, `redesign` | Standard |
 
 :::tip
-**Escalation is safe, de-escalation is risky.** When in doubt, choose the higher level. You can always skip optional artifacts in a Deep pipeline, but you cannot retroactively add rigor to a Tactical decision that went wrong.
+Choose depth from consequences and reversibility. A higher tier adds work; it is not automatically safer if the extra checks are irrelevant or skipped. Record a justified override instead of treating keyword confidence as proof.
 :::
 
-For example, you might start routing "add a caching layer" as Standard (just an optimization). But if the cache affects user-facing data consistency, that is a Deep concern. The auto-escalation trigger "touches user data" bumps it up automatically.
+For example, user-visible cache consistency may justify Deep, but L0 has no generic "touches user data" trigger. Include the actual API, migration, or security consequences in the description and inspect what matched.
 
 ## The Route Command
 
 ```bash
-# Smart routing -- LLM if configured, keywords otherwise
-forgeplan route "add OAuth2 authentication"
+# Offline, deterministic keyword recommendation
+forgeplan route "add OAuth2 authentication" --level 0
+
+# Explicit LLM classification; requires configured provider
+forgeplan route "add OAuth2 authentication" --level 1
 ```
 
-Example output:
+For the offline example, `oauth`/`auth` match the security signal, giving the core Deep/Critical pipeline PRD → Spec → RFC → ADR. The printed confidence summarizes matching rules; it is not a calibrated probability that the route is correct.
 
-```
-Task: add OAuth2 authentication
-Depth: Deep
-Pipeline: PRD → Spec → RFC → ADR
-Confidence: 88%
-Signals:
-  + security keyword (auth)
-  + affects public API (authentication flow)
-  + irreversible choice (provider lock-in)
-Recommendation:
-  1. forgeplan new prd "OAuth2 Authentication"
-  2. Fill MUST sections (Problem, Goals, FR)
-  3. forgeplan reason PRD-XXX  # ADI mandatory for Deep
-```
+Routing does not fill artifacts, run ADI, execute the pipeline, or prove the chosen design. Use actual returned IDs when creating and linking the subsequent records.
 
 The router analyzes keywords (security, API, migration) and scope indicators
 to suggest the right depth. If you disagree, you make the judgment call; the route is a recommendation, not an enforcement.
 
 ### Smart routing v2: three levels
 
-Forgeplan's router (PRD-020) runs up to three layers, falling back
-gracefully if later layers are unavailable:
+The CLI implementation supports three routing levels, with fallback when LLM routing is unavailable:
 
-| Level | Engine | When it runs | Cost |
-|-------|--------|-------------|------|
-| **L0** | Rule-based (keywords, regex, scope detection) | Always | Free, ~1ms |
-| **L1** | LLM classifier (Gemini / Claude / local) | `.forgeplan/config.yaml` has LLM | ~1 API call |
-| **L2** | FPF-enriched reasoning (KB context + ADI) | `--fpf` flag, Deep+ only | ~1-2 API calls |
+| Level | Engine | Selection |
+|---|---|---|
+| **L0** | Deterministic keyword and scope rules | `--level 0`; also the fallback without a usable LLM |
+| **L1** | Configured LLM classifier, constrained by keyword minimums | `--level 1`; auto mode first attempts this |
+| **L2** | LLM reasoning over the routing decision | `--level 2`; auto mode escalates a successful L1 Deep result |
 
-L0 handles 70% of obvious cases (bug fix, typo, feature). L1 kicks in for
-ambiguous tasks where keywords do not decide. L2 brings the FPF knowledge
-base (trust calculus, bounded rationality) into play for high-stakes
-decisions. Each level can run alone; no LLM configured means pure L0.
+In 0.38.0, help lists L0/L1, while the CLI implementation also accepts L2. **There is no `route --fpf` flag.** The CLI's L2 call supplies no indexed FPF context; do not confuse it with `reason --fpf` on an existing artifact. L2 routing is not the durable ADI Evidence required by the marketplace gates.
+
+Without `--level`, the CLI tries the configured LLM, not invariably L0 as the short help wording suggests. `--explain` is deprecated in favor of `--level 1`. MCP `forgeplan_route` accepts `description` and optional `workspace`, not these CLI flags, and uses L1 with an L0 fallback.
 
 ### What the router looks for
 
 The router checks for specific signals that indicate complexity:
 
-- **Security keywords** (auth, encryption, credentials) push toward Deep+
-- **Data keywords** (migration, schema, user data) push toward Deep+
-- **Scope indicators** (multiple teams, public API, cross-service) push toward Critical
-- **Simplicity indicators** (fix, typo, rename, bump) keep it Tactical
+- **Security and breaking-change signals** can impose Deep.
+- **Data model, new subsystem, bug, and cross-team signals** can impose Standard.
+- **No matching signal** defaults to Tactical; it does not establish that the work is simple.
 
-If the router says Tactical but your gut says Standard, trust your gut and
-go higher. Escalation is always safe; de-escalation carries risk.
+Descriptions in Russian may not match the English L0 triggers. Use explicit technical context and review the result rather than assuming a natural-language classifier ran.
+
+The marketplace's `/smith` and `/smith-plan` answer a different question: which of 14 methodology contexts applies, and which agents and evidence are needed? Smith returns a Plan and does not execute its recommended dispatches or activate artifacts. The main orchestrator does that. `/forge-cycle` then applies Standard+ ADI and review gates, `/gate-check` before build, and guardian before activation. None of these roles is installed by the CLI `route` command.
 
 ## Gotchas
 
-- **"Add a new CLI command" often routes as Tactical** when it should be Standard. If the command introduces new behavior or API surface, override to Standard.
+- **"New command" matches Standard at L0.** Other wording may not match. Inspect the signal list instead of assuming all CLI changes are Tactical or all are Deep.
 - **Refactoring can be deceptively deep.** A "simple refactor" that changes module boundaries or public interfaces is Standard or Deep, not Tactical.
 - **Do not route after you have already started coding.** Route first. If you skipped routing and realize mid-implementation that this is more complex than expected, stop and create the appropriate artifacts before continuing.
 - **The router does not know your codebase history.** It cannot tell that "add caching" is trivial in one project and a week-long effort in another. You provide the context it lacks.

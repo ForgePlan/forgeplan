@@ -1,359 +1,217 @@
 #!/usr/bin/env node
-// Generate Starlight CLI reference pages from `forgeplan help <cmd>` output.
-// Part of PRD-046 — closes CLI coverage gap from 1/58 to 58/58.
-//
-// Usage: node scripts/generate-cli-docs.mjs [--binary ../target/release/forgeplan]
+// Refresh captured CLI help blocks; maintain authored prose in the Markdown pages.
+// Usage: node scripts/generate-cli-docs.mjs --binary /path/to/forgeplan [--sync-ru] [--report /path/to/report.json]
 
 import { execFileSync } from 'node:child_process';
-import { writeFileSync, mkdirSync, existsSync, readdirSync, unlinkSync } from 'node:fs';
+import { writeFileSync, readFileSync, mkdirSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, relative, resolve } from 'node:path';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolve(__dirname, '../..');
-const OUT_DIR = resolve(__dirname, '../src/content/docs/docs/cli');
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+const OUT_DIR = resolve(REPO_ROOT, 'website/src/content/docs/docs/cli');
+const RU_DIR = resolve(REPO_ROOT, 'website/src/content/docs/ru/docs/cli');
+const REVIEWED_VERSION = 'forgeplan 0.38.0';
 
-const args = process.argv.slice(2);
-const binaryArgIdx = args.indexOf('--binary');
-const BINARY = binaryArgIdx >= 0
-  ? args[binaryArgIdx + 1]
-  : resolve(REPO_ROOT, 'target/release/forgeplan');
+function parseArgs(argv) {
+  const options = { binary: resolve(REPO_ROOT, 'target/release/forgeplan'), syncRu: false, report: null };
+  const seen = new Set();
+  for (let index = 0; index < argv.length; index++) {
+    const flag = argv[index];
+    if (!['--binary', '--sync-ru', '--report'].includes(flag)) {
+      throw new Error(`Unknown argument: ${flag}`);
+    }
+    if (seen.has(flag)) throw new Error(`Duplicate argument: ${flag}`);
+    seen.add(flag);
+    if (flag === '--sync-ru') {
+      options.syncRu = true;
+      continue;
+    }
+    const value = argv[++index];
+    if (!value || value.startsWith('-')) throw new Error(`${flag} requires a path`);
+    options[flag === '--binary' ? 'binary' : 'report'] = value;
+  }
+  return options;
+}
 
-function run(cmdArgs) {
-  return execFileSync(BINARY, cmdArgs, { cwd: REPO_ROOT, encoding: 'utf8' });
+// Reject malformed invocations before file reads or binary execution.
+const options = parseArgs(process.argv.slice(2));
+
+function run(command) {
+  return execFileSync(options.binary, command, { cwd: REPO_ROOT, encoding: 'utf8' });
 }
 
 function parseTopLevel(output) {
-  const lines = output.split('\n');
   const commands = [];
   let inCommands = false;
-  for (const line of lines) {
+  for (const line of output.split('\n')) {
     if (line.trimStart().startsWith('Commands:')) {
       inCommands = true;
       continue;
     }
     if (!inCommands) continue;
     if (line.trimStart().startsWith('Options:')) break;
-    const m = line.match(/^\s{2}([a-z][a-z0-9-]*)\s{2,}(.*)$/);
-    if (m) {
-      commands.push({ name: m[1], short: m[2].trim() });
-    }
+    const match = line.match(/^\s{2}([a-z][a-z0-9-]*)\s{2,}(.*)$/);
+    if (match && match[1] !== 'help') commands.push(match[1]);
   }
-  return commands.filter(c => c.name !== 'help');
+  return commands;
 }
 
 function parseHelp(output) {
-  const lines = output.split('\n');
-  let description = '';
-  let usage = '';
-  const argsBlock = [];
-  const optsBlock = [];
-  const subBlock = [];
-
-  let i = 0;
-  // First non-empty line = description
-  while (i < lines.length && !lines[i].trim()) i++;
-  if (i < lines.length && !lines[i].startsWith('Usage:')) {
-    description = lines[i].trim();
-    i++;
-  }
-
-  for (; i < lines.length; i++) {
-    const line = lines[i];
-    if (line.startsWith('Usage:')) {
-      usage = line.replace(/^Usage:\s*/, '').trim();
-      continue;
-    }
-    if (line.trim() === 'Arguments:') {
-      i++;
-      while (i < lines.length && lines[i].startsWith('  ')) {
-        argsBlock.push(lines[i]);
-        i++;
-      }
-      i--;
-      continue;
-    }
-    if (line.trim() === 'Options:') {
-      i++;
-      while (i < lines.length && lines[i].startsWith('  ')) {
-        optsBlock.push(lines[i]);
-        i++;
-      }
-      i--;
-      continue;
-    }
-    if (line.trim() === 'Commands:') {
-      i++;
-      while (i < lines.length && lines[i].startsWith('  ')) {
-        subBlock.push(lines[i]);
-        i++;
-      }
-      i--;
-      continue;
+  const sections = {};
+  let section = 'description';
+  for (const line of output.trimEnd().split('\n')) {
+    const heading = line.match(/^(Usage|Arguments|Options|Commands):\s*(.*)$/);
+    if (heading) {
+      section = heading[1];
+      sections[section] = heading[2] ? [heading[2]] : [];
+    } else {
+      (sections[section] ||= []).push(line);
     }
   }
-  return { description, usage, argsBlock, optsBlock, subBlock };
-}
-
-function fmtBlock(block) {
-  if (!block.length) return '';
-  return '```text\n' + block.join('\n') + '\n```\n';
-}
-
-function exampleFor(cmd) {
-  const examples = {
-    init: '```bash\nforgeplan init -y\n```',
-    new: '```bash\nforgeplan new prd "Authentication System"\nforgeplan new problem "Slow search on 10k+ artifacts"\n```',
-    list: '```bash\nforgeplan list\nforgeplan list --kind prd --status active\n```',
-    status: '```bash\nforgeplan status\n```',
-    validate: '```bash\nforgeplan validate PRD-001\nforgeplan validate PRD-001 --ci  # exit 1 on MUST errors\n```',
-    score: '```bash\nforgeplan score PRD-001\n```',
-    link: '```bash\nforgeplan link EVID-001 PRD-001 --relation informs\n```',
-    search: '```bash\nforgeplan search "authentication flow"\nforgeplan search "auth" --kind prd --limit 5\n```',
-    route: '```bash\nforgeplan route "add rate limiting to API"\n```',
-    review: '```bash\nforgeplan review PRD-001\n```',
-    activate: '```bash\nforgeplan activate PRD-001\n```',
-    supersede: '```bash\nforgeplan supersede ADR-003 --by ADR-005\n```',
-    deprecate: '```bash\nforgeplan deprecate PRD-001 --reason "obsoleted by PRD-015"\n```',
-    renew: '```bash\nforgeplan renew ADR-001 --reason "still valid after architecture review" --until 2026-10-01\n```',
-    reopen: '```bash\nforgeplan reopen PRD-010 --reason "re-evaluating approach"\n```',
-    reason: '```bash\nforgeplan reason PRD-001\nforgeplan reason PRD-001 --fpf  # include FPF KB context\n```',
-    generate: '```bash\nforgeplan generate prd "OAuth2 login flow"\n```',
-    decompose: '```bash\nforgeplan decompose PRD-001\n```',
-    health: '```bash\nforgeplan health\nforgeplan health --ci  # exit 1 on orphans/blindspots\n```',
-    reindex: '```bash\nforgeplan reindex\n```',
-    'scan-import': '```bash\nforgeplan scan-import\n```',
-    serve: '```bash\nforgeplan serve  # starts MCP server on stdio\n```',
-    discover: '```bash\nforgeplan discover\n```',
-    tag: '```bash\nforgeplan tag PRD-001 security auth\n```',
-    untag: '```bash\nforgeplan untag PRD-001 legacy\n```',
-    get: '```bash\nforgeplan get PRD-001\n```',
-    update: '```bash\nforgeplan update PRD-001 --status active\n```',
-    delete: '```bash\nforgeplan delete NOTE-042\n```',
-    graph: '```bash\nforgeplan graph > deps.mmd\n```',
-    blocked: '```bash\nforgeplan blocked\n```',
-    blindspots: '```bash\nforgeplan blindspots\n```',
-    order: '```bash\nforgeplan order\n```',
-    tree: '```bash\nforgeplan tree\n```',
-    journal: '```bash\nforgeplan journal\n```',
-    gaps: '```bash\nforgeplan gaps\n```',
-    stale: '```bash\nforgeplan stale\n```',
-    decay: '```bash\nforgeplan decay\n```',
-    export: '```bash\nforgeplan export --output backup.json\n```',
-    import: '```bash\nforgeplan import backup.json\n```',
-    scan: '```bash\nforgeplan scan\n```',
-    coverage: '```bash\nforgeplan coverage\n```',
-    drift: '```bash\nforgeplan drift\n```',
-    fgr: '```bash\nforgeplan fgr PRD-001\n```',
-    progress: '```bash\nforgeplan progress\n```',
-    session: '```bash\nforgeplan session\n```',
-    estimate: '```bash\nforgeplan estimate PRD-001\n```',
-    'calibrate-estimate': '```bash\nforgeplan calibrate-estimate\n```',
-    calibrate: '```bash\nforgeplan calibrate PRD-001\n```',
-    promote: '```bash\nforgeplan promote mem-xxx --kind prd\n```',
-    context: '```bash\nforgeplan context PRD-001\n```',
-    capture: '```bash\nforgeplan capture --to note\n```',
-    embed: '```bash\nforgeplan embed\n```',
-    log: '```bash\nforgeplan log\n```',
-    remember: '```bash\nforgeplan remember "always pull dev before creating feature branch" --kind procedure\n```',
-    recall: '```bash\nforgeplan recall "branch workflow"\n```',
-    watch: '```bash\nforgeplan watch\n```',
-    'git-sync': '```bash\nforgeplan git-sync\n```',
-    migrate: '```bash\nforgeplan migrate\n```',
-    fpf: '```bash\nforgeplan fpf search "trust calculus"\nforgeplan fpf section B.3\n```',
-    unlink: '```bash\nforgeplan unlink PRD-001 PROB-035\n```',
-    'setup-skill': '```bash\nforgeplan setup-skill\n```',
+  const block = name => (sections[name] || []).join('\n').trimEnd().split('\n').filter((line, index, lines) => line || (index > 0 && index < lines.length - 1));
+  return {
+    description: (sections.description || []).join('\n').trim(),
+    usage: (sections.Usage || []).join('\n').trim(),
+    argsBlock: block('Arguments'),
+    optsBlock: block('Options'),
+    subBlock: block('Commands'),
   };
-  return examples[cmd] || '```bash\nforgeplan ' + cmd + '\n```';
 }
 
-function escapeYaml(s) {
-  return s.replace(/"/g, '\\"');
+function helpSections(help, ru) {
+  const parsed = parseHelp(help);
+  return [
+    [ru ? 'Использование' : 'Usage', parsed.usage, ['Usage', 'Использование']],
+    [ru ? 'Аргументы' : 'Arguments', parsed.argsBlock.join('\n'), ['Arguments', 'Аргументы']],
+    [ru ? 'Опции' : 'Options', parsed.optsBlock.join('\n'), ['Options', 'Опции', 'Параметры']],
+    [ru ? 'Подкоманды' : 'Subcommands', parsed.subBlock.join('\n'), ['Commands', 'Subcommands', 'Команды', 'Подкоманды']],
+  ];
 }
 
-// The published docs are swept free of em dashes - they read as an AI tell, and
-// the site-wide sweep removed them. Inside a fenced block they are verbatim tool
-// output and stay exactly as the binary printed them, so only prose is touched.
-function stripEmDashes(text) {
-  let fence = null;
-  return text
-    .split('\n')
-    .map((line) => {
-      const s = line.trimStart();
-      if (fence === null && (s.startsWith('```') || s.startsWith('~~~'))) {
-        fence = s.slice(0, 3);
-        return line;
-      }
-      if (fence !== null && s.startsWith(fence)) {
-        fence = null;
-        return line;
-      }
-      if (fence !== null) return line;
-      return line.replace(/[—–]/g, '-');
-    })
-    .join('\n');
-}
-
-function pageFor(cmd, help) {
-  const { description, usage, argsBlock, optsBlock, subBlock } = parseHelp(help);
-  const title = `forgeplan ${cmd}`;
-  const desc = description || cmd;
-  const example = exampleFor(cmd);
-
-  let body = `---\ntitle: ${title}\ndescription: "${escapeYaml(desc)}"\n---\n\n`;
-  body += `${desc}\n\n`;
-  body += `## Usage\n\n\`\`\`text\n${usage || 'forgeplan ' + cmd}\n\`\`\`\n\n`;
-  if (argsBlock.length) {
-    body += `## Arguments\n\n${fmtBlock(argsBlock)}\n`;
+// Replace only an immediately fenced help block, not prose, examples, metadata,
+// or authored subcommand navigation. Missing help sections are added separately.
+function refreshContracts(body, help, ru = false) {
+  let additions = '';
+  for (const [title, content, aliases] of helpSections(help, ru)) {
+    const pattern = new RegExp(`(^## (?:${aliases.join('|')})\\n\\n)\`\`\`(?:text)?\\n[\\s\\S]*?\\n\`\`\`(?=\\n|$)`, 'm');
+    if (pattern.test(body)) {
+      body = body.replace(pattern, (_, heading) => `${heading}\`\`\`text\n${content}\n\`\`\``);
+    } else if (content) {
+      additions += `## ${title}\n\n\`\`\`text\n${content}\n\`\`\`\n\n`;
+    }
   }
-  if (optsBlock.length) {
-    body += `## Options\n\n${fmtBlock(optsBlock)}\n`;
+  if (additions) {
+    const firstSection = body.search(/^## /m);
+    body = firstSection < 0 ? `${body}\n${additions}` : body.slice(0, firstSection) + additions + body.slice(firstSection);
   }
-  if (subBlock.length) {
-    body += `## Subcommands\n\n${fmtBlock(subBlock)}\n`;
-  }
-  body += `## Example\n\n${example}\n\n`;
-  body += `## See also\n\n`;
-  body += `- [CLI overview](/docs/cli/)\n`;
-  body += `- [Methodology guide](/docs/methodology/overview/)\n`;
-  body += `- [\`forgeplan health\`](/docs/cli/health/) — session start check\n`;
   return body;
 }
 
-function pageForSubcommand(parent, subName, subDesc, subHelp) {
-  // Derive description / usage / arguments / options from the subcommand's own
-  // `forgeplan <parent> <sub> --help` output. Hardcoding `[OPTIONS]` here used to
-  // emit a usage line that did not exist: subcommands that take positional
-  // arguments (`playbook run <TARGET>`) or none at all (`plugins doctor`) drifted.
-  const parsed = subHelp ? parseHelp(subHelp) : null;
-  const desc = (parsed && parsed.description) || subDesc;
-  const usage = (parsed && parsed.usage) || `forgeplan ${parent} ${subName}`;
-  const positional = parsed
-    ? parsed.argsBlock
-        .map(l => l.match(/^\s+(<[^>]+>)/))
-        .filter(Boolean)
-        .map(m => m[1])
-    : [];
-
-  const title = `forgeplan ${parent} ${subName}`;
-  let body = `---\ntitle: ${title}\ndescription: "${escapeYaml(desc)}"\n---\n\n`;
-  body += `${desc}\n\n`;
-  body += `## Usage\n\n\`\`\`text\n${usage}\n\`\`\`\n\n`;
-  if (parsed && parsed.argsBlock.length) {
-    body += `## Arguments\n\n${fmtBlock(parsed.argsBlock)}\n`;
-  }
-  if (parsed && parsed.optsBlock.length) {
-    body += `## Options\n\n${fmtBlock(parsed.optsBlock)}\n`;
-  }
-  const example = `forgeplan ${parent} ${subName}${positional.length ? ' ' + positional.join(' ') : ''}`;
-  body += `## Example\n\n\`\`\`bash\n${example}\n\`\`\`\n\n`;
-  body += `## See also\n\n`;
-  body += `- [\`forgeplan ${parent}\`](/docs/cli/${parent}/)\n`;
-  body += `- [CLI overview](/docs/cli/)\n`;
+function pageFor(command, help) {
+  const title = `forgeplan ${command.join(' ')}`;
+  const synopsis = parseHelp(help).description;
+  let body = `---\ntitle: ${title}\ndescription: ${JSON.stringify(`Captured CLI help for ${title}.`)}\n---\n\n`;
+  body += `Captured from ${REVIEWED_VERSION} help. This is tool output, not behavioral verification.\n\n`;
+  if (synopsis) body += `## Captured help synopsis\n\n\`\`\`text\n${synopsis}\n\`\`\`\n\n`;
+  body = refreshContracts(body, help);
+  body += '## See also\n\n- [CLI reference](/docs/cli/)\n';
   return body;
 }
 
-function writeOverview(commands) {
-  let body = `---\ntitle: CLI Reference\ndescription: "Complete reference for all ${commands.length} Forgeplan CLI commands."\n---\n\n`;
-  body += `Forgeplan ships with **${commands.length} top-level commands** covering the full Shape→Validate→ADI→Code→Evidence→Activate lifecycle.\n\n`;
-  body += `All commands are listed below grouped by purpose. Click any command for full usage, arguments and examples.\n\n`;
-  const groups = {
-    'Workspace & setup': ['init', 'setup-skill', 'migrate', 'import', 'export'],
-    'Creating artifacts': ['new', 'generate', 'capture', 'promote'],
-    'Reading artifacts': ['list', 'get', 'tree', 'search', 'recall', 'log', 'journal', 'session', 'progress', 'graph', 'order'],
-    'Editing artifacts': ['update', 'delete', 'tag', 'untag', 'link', 'unlink'],
-    'Quality & validation': ['validate', 'score', 'fgr', 'review', 'estimate', 'calibrate', 'calibrate-estimate', 'decay', 'stale'],
-    'Lifecycle transitions': ['activate', 'supersede', 'deprecate', 'renew', 'reopen'],
-    'Reasoning & AI': ['reason', 'decompose', 'context', 'route'],
-    'Dashboards & health': ['health', 'status', 'gaps', 'blocked', 'blindspots', 'drift', 'coverage'],
-    'Indexing & sync': ['scan', 'scan-import', 'reindex', 'embed', 'watch', 'git-sync'],
-    'Memory': ['remember', 'discover'],
-    'FPF knowledge base': ['fpf'],
-    'MCP server': ['serve'],
+function catalogSummary(page, existing) {
+  let description = existing?.match(/^description:[ \t]*(.+)$/m)?.[1].trim();
+  if (description?.startsWith('"')) {
+    try {
+      description = JSON.parse(description);
+    } catch {
+      description = null;
+    }
+  } else if (description?.startsWith("'") && description.endsWith("'")) {
+    description = description.slice(1, -1).replaceAll("''", "'");
+  }
+  if (!description || /^[>|]/.test(description)) {
+    description = `Help synopsis: ${parseHelp(page.help).description.split('\n')[0] || page.command.join(' ')}`;
+  }
+  return description.replaceAll('|', '\\|').replaceAll('\n', ' ');
+}
+
+// Existing catalog rows and summaries are authored. Only missing command links
+// are appended, using an existing page's description or a labelled help synopsis.
+function refreshIndex(before, pages, documents) {
+  const missing = pages.filter(page => !before?.includes(`](/docs/cli/${page.name}/)`));
+  if (!missing.length) return before;
+  const heading = before ? '## Additional commands' : '## Commands';
+  const rows = missing.map(page => `| [\`forgeplan ${page.command.join(' ')}\`](/docs/cli/${page.name}/) | ${catalogSummary(page, documents.get(page.name))} |`).join('\n');
+  const body = before ?? '---\ntitle: CLI Reference\ndescription: "Forgeplan CLI command reference."\n---\n';
+  return `${body}${body.endsWith('\n') ? '\n' : '\n\n'}${heading}\n\n| Command | Description |\n|---|---|\n${rows}\n`;
+}
+
+function generationReport(outputs, pages, version) {
+  return {
+    binary: options.binary,
+    published_version: version,
+    commands_captured: pages.map(page => page.command.join(' ')),
+    command_count: pages.length,
+    files: outputs.map(({ path, before, body }) => ({
+      path: relative(REPO_ROOT, path),
+      status: before === body ? 'unchanged' : before === null ? 'created' : 'changed',
+      reason: before === body ? 'Existing content retained.' : 'Refreshed captured help blocks or added missing catalog entries; no authored prose migration.',
+    })),
+    new_files: outputs.filter(output => output.before === null).map(output => relative(REPO_ROOT, output.path)),
+    deleted_files: [],
+    verification: 'Documentation generation only; not behavioral verification.',
   };
-  for (const [group, names] of Object.entries(groups)) {
-    const rows = names
-      .map(n => commands.find(c => c.name === n))
-      .filter(Boolean);
-    if (!rows.length) continue;
-    body += `### ${group}\n\n`;
-    body += `| Command | Description |\n|---|---|\n`;
-    for (const c of rows) {
-      body += `| [\`forgeplan ${c.name}\`](/docs/cli/${c.name}/) | ${c.short} |\n`;
-    }
-    body += `\n`;
-  }
-  const seen = new Set(Object.values(groups).flat());
-  const others = commands.filter(c => !seen.has(c.name));
-  if (others.length) {
-    body += `### Other\n\n| Command | Description |\n|---|---|\n`;
-    for (const c of others) {
-      body += `| [\`forgeplan ${c.name}\`](/docs/cli/${c.name}/) | ${c.short} |\n`;
-    }
-    body += `\n`;
-  }
-  writeFileSync(resolve(OUT_DIR, 'index.md'), stripEmDashes(body));
 }
 
 function main() {
-  if (!existsSync(BINARY)) {
-    // Fallback to cargo run if release binary missing
-    console.error(`[cli-gen] release binary not found at ${BINARY}; trying cargo run`);
-    process.env.FORGEPLAN_VIA_CARGO = '1';
+  if (!existsSync(options.binary)) throw new Error(`Binary not found: ${options.binary}. Build or install it separately.`);
+  const version = run(['--version']).trim();
+  if (version !== REVIEWED_VERSION) {
+    throw new Error(`Unsupported binary version: ${version}; review the reference before changing ${REVIEWED_VERSION}`);
+  }
+  const pages = [];
+  for (const name of parseTopLevel(run(['--help']))) {
+    const help = run(['help', name]);
+    pages.push({ name, command: [name], help });
+    for (const sub of parseTopLevel(help)) {
+      pages.push({ name: `${name}-${sub}`, command: [name, sub], help: run(['help', name, sub]) });
+    }
   }
 
-  // Ensure out dir exists; clean previous generated files (keep health.md if present).
+  // Prepare every requested output before writing. RU synchronization refreshes
+  // help blocks in existing translations only; it never translates prose/examples.
+  const outputs = [];
+  const documents = new Map();
+  for (const page of pages) {
+    const path = resolve(OUT_DIR, `${page.name}.md`);
+    const before = existsSync(path) ? readFileSync(path, 'utf8') : null;
+    documents.set(page.name, before);
+    outputs.push({ path, before, body: before === null ? pageFor(page.command, page.help) : refreshContracts(before, page.help) });
+    if (options.syncRu) {
+      const path = resolve(RU_DIR, `${page.name}.md`);
+      if (!existsSync(path)) throw new Error(`Missing translation: ${path}`);
+      const before = readFileSync(path, 'utf8');
+      outputs.push({ path, before, body: refreshContracts(before, page.help, true) });
+    }
+  }
+  const indexPath = resolve(OUT_DIR, 'index.md');
+  const indexBefore = existsSync(indexPath) ? readFileSync(indexPath, 'utf8') : null;
+  outputs.push({ path: indexPath, before: indexBefore, body: refreshIndex(indexBefore, pages, documents) });
+  if (options.syncRu) {
+    const path = resolve(RU_DIR, 'index.md');
+    if (!existsSync(path)) throw new Error(`Missing translation: ${path}`);
+    const before = readFileSync(path, 'utf8');
+    outputs.push({ path, before, body: before });
+  }
+
   mkdirSync(OUT_DIR, { recursive: true });
-  for (const f of readdirSync(OUT_DIR)) {
-    if (f.endsWith('.md') && f !== 'health.md' && f !== 'index.md') {
-      unlinkSync(resolve(OUT_DIR, f));
-    }
+  for (const { path, before, body } of outputs) {
+    if (body !== before) writeFileSync(path, body);
   }
-
-  const topHelp = process.env.FORGEPLAN_VIA_CARGO
-    ? execFileSync('cargo', ['run', '--quiet', '--bin', 'forgeplan', '--', '--help'], { cwd: REPO_ROOT, encoding: 'utf8' })
-    : run(['--help']);
-  const commands = parseTopLevel(topHelp);
-  console.log(`[cli-gen] found ${commands.length} commands`);
-
-  for (const cmd of commands) {
-    let help;
-    try {
-      help = process.env.FORGEPLAN_VIA_CARGO
-        ? execFileSync('cargo', ['run', '--quiet', '--bin', 'forgeplan', '--', 'help', cmd.name], { cwd: REPO_ROOT, encoding: 'utf8' })
-        : run(['help', cmd.name]);
-    } catch (err) {
-      console.error(`[cli-gen] ${cmd.name}: help failed: ${err.message}`);
-      continue;
-    }
-    const page = pageFor(cmd.name, help);
-    writeFileSync(resolve(OUT_DIR, `${cmd.name}.md`), stripEmDashes(page));
-
-    // Nested subcommands (fpf, help etc.)
-    const parsed = parseHelp(help);
-    if (parsed.subBlock.length) {
-      for (const sub of parsed.subBlock) {
-        const m = sub.match(/^\s{2}([a-z][a-z0-9-]*)\s{2,}(.*)$/);
-        if (!m) continue;
-        const subName = m[1];
-        if (subName === 'help') continue;
-        const subDesc = m[2].trim();
-        let subHelp = '';
-        try {
-          subHelp = process.env.FORGEPLAN_VIA_CARGO
-            ? execFileSync('cargo', ['run', '--quiet', '--bin', 'forgeplan', '--', 'help', cmd.name, subName], { cwd: REPO_ROOT, encoding: 'utf8' })
-            : run(['help', cmd.name, subName]);
-        } catch (err) {
-          console.error(`[cli-gen] ${cmd.name} ${subName}: help failed: ${err.message}`);
-        }
-        const page2 = pageForSubcommand(cmd.name, subName, subDesc, subHelp);
-        writeFileSync(resolve(OUT_DIR, `${cmd.name}-${subName}.md`), stripEmDashes(page2));
-      }
-    }
+  if (options.report) {
+    writeFileSync(options.report, `${JSON.stringify(generationReport(outputs, pages, version), null, 2)}\n`);
   }
-
-  writeOverview(commands);
-  console.log(`[cli-gen] wrote ${readdirSync(OUT_DIR).filter(f => f.endsWith('.md')).length} files to ${OUT_DIR}`);
+  console.log(`[cli-gen] captured ${pages.length} command help pages; preserved authored content`);
 }
 
 main();

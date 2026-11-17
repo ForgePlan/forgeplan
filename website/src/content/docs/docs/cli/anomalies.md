@@ -35,11 +35,10 @@ forgeplan anomalies [OPTIONS]
 1. Opens the workspace store and runs the canonical detector from
    `forgeplan_core::anomalies`.
 2. Compares the detected set against `.forgeplan/anomalies-journal.jsonl`,
-   the append-only record of every anomaly id and the timestamp it was first
-   seen at.
-3. Applies the `--kind`, `--severity`, and `--since` filters.
-4. Persists the refreshed journal (atomic tempfile + rename) so the next run
-   can report a diff rather than a full snapshot.
+   retaining first-seen timestamps for still-live anomaly IDs.
+3. Removes journal entries for resolved anomalies and atomically rewrites the
+   journal on a best-effort basis. It is not an append-only audit log.
+4. Applies the `--kind`, `--severity`, and `--since` filters to the report.
 5. Renders the human-readable table, or the structured payload with `--json`.
 
 ## Anomaly catalog
@@ -57,7 +56,7 @@ ADR-020 score-laundering guard.
 | `missing_must_section` | A `status=active` artifact still carries stub markers (`TODO`, `TBD`, `placeholder`, `XXX`) |
 | `expired_evidence` | `valid_until` is in the past while the evidence still informs an active artifact |
 | `weakest_link_unresolvable` | R_eff collapsed to 0 through a hard CL penalty further up the chain |
-| `phase_mismatch` | `status=active` but the lifecycle phase is still Shape or Validate |
+| `phase_mismatch` | `status=active` but the lifecycle phase is still Shape, Validate, or ADI |
 | `circular_dependency` | Two artifacts are `based_on` each other |
 | `duplicate_artifact` | Two artifacts with equivalent titles and overlapping bodies |
 | `hypothesis_duplicate` | Two hypotheses with title-token Jaccard of 0.6 or more |
@@ -104,9 +103,13 @@ it is meant to be read by the orchestrator that consumes the report:
 
 | Tier | Meaning | Who acts |
 |---|---|---|
-| `auto` | Low severity, unambiguous | The orchestrator fixes it silently |
-| `adi` | Medium ambiguity | An FPF ADI loop in the orchestrator or agent |
-| `user` | High severity, irreversible, or ambiguous | Escalate with a question |
+| `auto` | Unambiguous suggested action | The consuming orchestrator may apply the suggestion under its own policy |
+| `adi` | Investigation or choice among plausible fixes | An FPF ADI loop in the orchestrator or agent |
+| `user` | Operator judgment or authorization needed | Escalate with a question |
+
+Tier recommends resolution handling independently of severity: for example,
+`stuck_draft` can have `severity: "medium"` and `tier: "auto"`.
+`anomalies` itself does not apply fixes, run ADI, ask the user, or launch workers.
 
 Passing `--tier` is a hard error:
 
@@ -194,6 +197,8 @@ The trailing hint is chosen from the tier counts: `auto` wins first, then
 forgeplan anomalies --json
 ```
 
+
+Illustrative values, not a captured run:
 ```json
 {
   "_next_action": "1 anomaly(ies) detected — 1 require user input. Run `forgeplan_get <id>` on affected artifacts to review.",

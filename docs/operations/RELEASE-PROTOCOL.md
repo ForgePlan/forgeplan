@@ -87,7 +87,9 @@ isn't required to generate notes.
 `--since v0.30.0` for a v0.31.0 cut. The tool walks
 `.forgeplan/{prds,problems,evidence,rfcs,adrs,specs,epics,solutions}/`
 between the two refs, resolves slugs and `KIND-NNN` IDs, and emits a
-Keep-a-Changelog-shaped section.
+Keep-a-Changelog-shaped section. By default it includes artifacts with
+`status == active` **or** `r_eff_score > 0`; `--draft` disables that filter.
+It is a draft from committed artifacts, not a completeness or security audit.
 
 ### 4. Polish the draft into `CHANGELOG.md`
 
@@ -112,7 +114,7 @@ of `CHANGELOG.md`. Tasks:
 
 ### 5. Bump versions across the workspace
 
-Four ref types to update — `cargo check` will scream if you miss one:
+Update the workspace version and all four intra-workspace dependency references:
 
 ```toml
 # Cargo.toml (workspace root)
@@ -151,6 +153,15 @@ every turn).
 
 ### 7. Commit on a release branch
 
+**Owner-consent checkpoint — before any remote write in steps 7–10:**
+obtain explicit approval for the named release-branch push and PR creation,
+tag publication (which triggers cargo-dist), and sync-branch push and PR
+creation. Approval must cover each intended effect; pause for any effect
+not yet authorized. A playbook that performs these operations needs the
+same approval **before launch**; its local `--yes`/`--allow-shell` flags
+are execution acknowledgements, not permission to publish. PR merges
+still require the applicable review, CI, and repository merge policy.
+
 ```bash
 git checkout -b release/vX.Y.Z
 git add Cargo.toml Cargo.lock CHANGELOG.md CLAUDE.md README.md \
@@ -174,18 +185,21 @@ gh pr create \
 RED LINE #2 still applies: don't merge without explicit user approval
 after they've reviewed the PR.
 
-CI must be fully green — this includes the `smoke-e2e` job, license
-audit (`cargo deny`), and the MCP tool-count drift detector. If any
-fails, fix on the release branch and re-push; do not push directly to
-`main`.
+PR CI must be fully green — including `smoke-e2e`, the embedding correctness
+oracle, and `Check MCP tool count drift` in `ci.yml`. `security.yml`
+(`cargo deny`) runs on pushes to `dev`/`main`, not PRs; inspect the security
+result for the release SHA before tagging. Fix failures on the release
+branch and re-push; do not push directly to `main`.
 
 ### 9. Tag after merge, let cargo-dist publish
 
 ```bash
 git fetch origin
 git checkout main && git pull --ff-only
-MERGE_SHA=$(git log -n 1 --format=%H)
-git tag vX.Y.Z $MERGE_SHA
+MERGE_SHA=$(git rev-parse HEAD)
+gh run list --branch main --commit "$MERGE_SHA"
+# Confirm the applicable checks passed for this exact SHA before tagging.
+git tag vX.Y.Z "$MERGE_SHA"
 git push origin vX.Y.Z
 ```
 
@@ -197,14 +211,20 @@ off; if it doesn't, check that the tag actually landed on the remote
 **Verify the published binary carries the features it is supposed to.**
 Successful publication does not prove correct composition — PROB-088 sat
 undetected for months precisely because the binaries built and shipped
-fine, just without `semantic-search`. Download one published artifact and
-check the linkage marker rather than trusting the build:
+fine, just without `semantic-search`. Download a published artifact and
+run it in a disposable initialized workspace containing a new artifact:
 
 ```bash
-# Ask the binary. Refusing means the feature is absent; anything else
-# (a progress bar, an embedding run) means it is present.
-/path/to/downloaded/forgeplan embed 2>&1 | head -3
+/path/to/downloaded/forgeplan embed
 ```
+
+Keep the full output. `Embedding not available — this build was compiled
+without the semantic-search feature` proves the feature is absent.
+Workspace, cache, or model-download errors do **not** prove its presence
+or correctness. For a functional check, require a completed embedding
+with at least one artifact embedded and `0 failed`, then search for it.
+This may download the ~2.1 GB model on first use; an empty or already-current
+workspace does not exercise inference.
 
 **The old linkage check no longer works and must not be revived.** Until
 RFC-013 the marker was `libc++` in `otool -L`, present because the C++
@@ -237,8 +257,10 @@ and the next release creates merge conflicts on the manifest.** See PR
 #262 (sync-after-v0.30.0) and PR #285 (sync-after-v0.31.0) as the
 canonical examples — every release ships with one.
 
-Approve and merge the sync-PR yourself after CI passes (low-risk
-mechanical sync; user approval is for the release PR, not this).
+Complete the sync-PR after CI and the required approvals, following the
+repository's merge policy. Mandatory synchronization is not an exception
+to owner consent for its push/PR or to review and merge requirements;
+calling the sync low-risk does not authorize it.
 
 ---
 
@@ -274,10 +296,10 @@ Symptom: `cargo publish` (if used) errors on dependency version
 mismatch. Or end-users installing via `cargo install --git` get
 inconsistent linkage warnings.
 
-Fix: step 5 lists exactly four `version = "X.Y.Z"` locations. After
-editing, `cargo check --workspace` will fail loud if you missed one
-(it'll resolve the path dep but warn the explicit `version =` field is
-no longer satisfied). Treat that warning as a hard error — re-grep with
+Fix: step 5 lists four intra-workspace dependency references **plus** the
+workspace package version. After editing, run `cargo check --workspace`
+and inspect all manifest versions; Cargo compatibility ranges are not an
+exact-version equality check. Search for the previous version with
 `grep -rn 'version = "<PREV>"' Cargo.toml crates/*/Cargo.toml`.
 
 ### Hand-writing CHANGELOG instead of running `release-notes`
@@ -295,11 +317,10 @@ the artifacts you committed; hand-writing diverges from ground truth.
 Symptom: tag landed, binaries don't publish, users report 404 on the
 brew bottle.
 
-Fix: never tag before CI on `main` is fully green. Step 9 reads `git
-checkout main && git pull --ff-only` first; the only way that succeeds
-after merging the release PR is if the merge commit is on `main`'s tip,
-and the only way *that* tip is safe to tag is if its CI passed. Check
-`gh run list --branch main --limit 3` before `git tag`.
+Fix: never tag before the applicable checks for the exact `main` SHA are
+green. `git pull --ff-only` updates the checkout; it does not wait for CI
+or prove that CI ran. Step 9 captures the SHA and lists its runs before
+creating the tag.
 
 ### Dependabot alerts at release time (RED LINE #10)
 
@@ -323,8 +344,8 @@ means contributors who upgraded `forgeplan` between releases do NOT
 automatically receive newly-shipped workspace files (e.g. `.gitkeep`
 placeholders from PRD-077 FR-001, `secrets.env` template from FR-002).
 
-`forgeplan init --force` is the migration entry point. It is **strictly
-additive** (PROB-068 contract):
+`forgeplan init --force` refreshes the workspace skeleton. Its additive
+guarantee covers artifact bodies, **not** the active configuration:
 
 - Existing artifact `.md` bodies are NEVER overwritten.
 - `config.yaml` is regenerated (the previous version is moved aside as
@@ -346,8 +367,9 @@ For existing workspaces created before vX.Y.Z, run:
     git pull
     forgeplan init --force
 
-This is idempotent and additive — your artifact bodies, custom
-config.yaml edits, and existing secrets.env keys are preserved.
+Artifact bodies and existing secrets.env keys are preserved. config.yaml
+is replaced with defaults; compare its timestamped backup and reapply
+custom settings before using the workspace.
 ```
 
 ---

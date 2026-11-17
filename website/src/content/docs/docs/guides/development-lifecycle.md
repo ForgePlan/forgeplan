@@ -5,20 +5,23 @@ description: Complete cycle from idea to production - Observe → Route → Shap
 
 ## The Full Cycle
 
-Every non-trivial task follows this lifecycle:
+Use this cycle to organize non-trivial work. The CLI stores, validates, and
+scores artifacts; an agent host or a human performs implementation, testing,
+independent review, and delivery. The public marketplace supplies optional
+orchestrators, not extra phases automatically run by the CLI.
 
 ```
 OBSERVE → ROUTE → SHAPE → BUILD → PROVE → SHIP
 ```
 
-| Phase | What happens | Forgeplan commands |
-|-------|-------------|-------------------|
-| **Observe** | Understand current state | `forgeplan health`, `memory_recall` |
-| **Route** | Determine depth + pipeline | `forgeplan route "task"` |
-| **Shape** | Create artifacts, fill requirements | `forgeplan new prd`, `forgeplan validate` |
-| **Build** | Implement + test | `cargo test`, `pytest`, `pnpm test` |
-| **Prove** | Create evidence, score | `forgeplan new evidence`, `forgeplan score` |
-| **Ship** | Activate, commit, PR, merge | `forgeplan activate`, `gh pr create` |
+| Phase | What happens | Commands / integrations |
+|-------|-------------|-------------------------|
+| **Observe** | Understand current state | `forgeplan health`, optional Hindsight recall |
+| **Route** | Suggest depth and pipeline | `forgeplan route "task"`; marketplace `/smith` selects a methodology |
+| **Shape** | Fill and validate requirements; independently review planning handoffs | `forgeplan new prd "Title"`, `forgeplan update ID --body @body.md`, `forgeplan validate ID` |
+| **Build** | Implement and test in the project's stack | `cargo test`, `pytest`, or the project's test command |
+| **Prove** | Record actual checks and review results, link evidence, inspect score | `forgeplan new evidence "Title"`, `forgeplan link`, `forgeplan score ID` |
+| **Ship** | Review/activate completion claims, commit, PR, merge | `forgeplan review ID`, `forgeplan activate ID`, Git/hosting tools |
 
 ```mermaid
 flowchart LR
@@ -33,17 +36,17 @@ flowchart LR
 Before doing anything - understand what's happening:
 
 ```bash
-# 1. Restore context from memory
-memory_recall("project name")
-
-# 2. Check project health
+forgeplan status
+forgeplan session
 forgeplan health
-# → Shows: blind spots, orphans, stale artifacts
-
-# 3. Check current tasks
-# Orchestra: mcp__orch__query_entities(status: "in_progress")
-# Or: check TODO.md
+# Also read your task tracker or TODO.md.
 ```
+
+Hindsight and Orchestra are separate optional integrations, not shell
+commands in Forgeplan. For public `fpl-hsmem` 3.7, memory requires an explicit
+project `.hindsight.json` with `url`, allowed `banks`, and `defaultBank`;
+selected banks must already exist on the server. Hooks default off. Use its
+MCP recall tool if configured; do not paste `memory_recall(...)` into a shell.
 
 **Rule**: if health shows blind spots or orphans - **fix them FIRST**, before starting new work.
 
@@ -53,17 +56,18 @@ Determine the right level of rigor:
 
 ```bash
 forgeplan route "add payment processing"
-# → Depth: Deep
-# → Pipeline: PRD → Spec → RFC → ADR
-# → Confidence: 92%
 ```
 
-| Depth | What to do | Time |
-|-------|-----------|------|
-| Tactical | Just code, no artifacts | Minutes |
-| Standard | PRD → RFC → code → evidence | Hours |
-| Deep | PRD → Spec → RFC → ADR → code → evidence | Days |
-| Critical | Epic → PRD[] → Spec[] → RFC[] → ADR[] | Weeks |
+Level 0 (default) classifies keywords; `--level 1` uses a configured LLM.
+Read the returned recommendation rather than assuming a fixed depth or
+confidence for a phrase.
+
+| Depth | Typical scope |
+|-------|---------------|
+| Tactical | Small reversible change; no artifact required, verification still required |
+| Standard | PRD → RFC where needed → code → evidence |
+| Deep | PRD → Spec → RFC → ADR where needed → code → evidence |
+| Critical | Initiative split into Epic/PRDs/Specs/RFCs/ADRs with explicit dependencies |
 
 **Tactical = skip to Build.** Everything else = continue to Shape.
 
@@ -75,29 +79,32 @@ Create the right artifacts and fill them:
 # Create artifact
 forgeplan new prd "Payment Processing"
 
-# Fill MUST sections: Problem, Goals, Non-Goals, Target Users, FR
+# Fill MUST sections: Problem, Goals, Non-Goals, Target Users, FR, Related Artifacts
 # Each FR: "[Actor] can [capability]" - no tech names
+# Save the complete body in payment-prd-body.md; use the returned ID:
+forgeplan update PRD-001 --body @payment-prd-body.md
 
 # Validate
 forgeplan validate PRD-001
-# → PASS (0 MUST errors)
+# Continue only if the actual validator reports 0 MUST errors; fix findings otherwise.
 ```
 
 ### ADI Reasoning (Standard+)
 
-Before coding - reason through alternatives:
+Before coding, examine alternatives. With a configured LLM:
 
 ```bash
-forgeplan reason PRD-001
-# → 3+ hypotheses
-# → Predictions for each
-# → Evidence check
+forgeplan reason PRD-001 --save
 ```
 
-If all hypotheses converge → code with confidence.
-If competing approaches → discuss with team before coding.
+This generates hypotheses, predictions, and a synthesis; `--save` stores a
+linked Note. It does not run the predicted experiments or verify the code.
+Without an LLM the command errors; a human can write an explicit ADI record
+instead, without claiming an automated run.
 
-**Deep/Critical: ADI is MANDATORY.** Skipping it is a methodology violation.
+ADI is recommended at Standard and required by this methodology at
+Deep/Critical. The agent pipeline's planning reviews must pass before the
+next phase; a model's confident recommendation is not that review.
 
 ## Phase 3: Build
 
@@ -108,9 +115,8 @@ Implement the solution:
 git checkout dev && git pull origin dev
 git checkout -b feat/payment-processing
 
-# 2. Code
-# - Test every new public function IMMEDIATELY
-# - Don't move to next function without test
+# 2. Implement against requirements and check behavior with tests.
+# For enforced test-first work, use the TDD sub-cycle described below.
 
 # 3. Format + lint
 cargo fmt && cargo fmt -- --check   # Rust
@@ -125,46 +131,57 @@ pnpm test          # TypeScript
 
 ### Audit (Standard+)
 
-```bash
-# Run multi-expert audit (4 agents: logic, architecture, security, tests)
+```text
 /audit
-
-# Fix all HIGH/CRITICAL findings
-# Then RE-RUN tests after fixes - don't trust previous run
 ```
+
+This is a marketplace skill, not a built-in shell command. Its orchestrator
+dispatches independent reviewers for the relevant risks. Keep generator and
+verifier in separate contexts, fix blocking/high-severity findings, and rerun
+affected checks after the fix. Review evidence must name what was actually
+checked; do not invent findings or claim four agents ran when they did not.
 
 ## Phase 4: Prove
 
 Create evidence that the solution works:
 
 ```bash
-# Create evidence pack
-forgeplan new evidence "Payment: 15 tests pass, Stripe benchmark 200ms"
-
-# Add structured fields to body (REQUIRED):
-# verdict: supports
-# congruence_level: 3
-# evidence_type: test
-
-# Link to decision
+forgeplan new evidence "Payment processing verification"
+# Save actual results plus the structured fields in payment-evidence.md.
+forgeplan update EVID-001 --body @payment-evidence.md
 forgeplan link EVID-001 PRD-001 --relation informs
-
-# Check score
 forgeplan score PRD-001
-# → R_eff = 1.00
 ```
 
+Use the IDs returned by `new`; examples assume fresh counters. A supporting
+test pack might declare:
+
+```text
+verdict: supports
+congruence_level: 3
+evidence_type: test
+```
+
+Use those values only when the observed result supports them. Record commands,
+outcomes, context, limits, and verifier identity. For code-change claims,
+include actual `base_sha`, `result_sha`, and `changed_paths`; the provenance
+gate checks the Git delta, not test correctness, and defaults to `warn`.
+
 :::caution
-Without structured fields (verdict, congruence_level, evidence_type), R_eff parser assigns CL0 = 0.9 penalty. **Always add them.**
+Missing/unknown verdict or missing congruence declaration fails closed to CL0. A fresh supporting test/measurement pack at CL0 scores 0.1; recursive scoring also deducts 0.1 for benchmark or 0.2 for audit, so those CL0 packs score 0. Expired eligible evidence instead scores 0.1 before verdict/CL/type deductions. CLI `score` takes the minimum of own current evidence and eligible dependency scores after relation penalties. Terminal evidence is excluded; draft evidence still counts. A positive R_eff is not independent proof that a feature works.
 :::
 
 ## Phase 5: Ship
 
-Activate the artifact and create PR:
+After actual verification of the completion claim, activate explicitly.
+Planning artifacts may already be active because an earlier independent
+review froze the inputs for Build; that does not mean implementation shipped.
 
 ```bash
 # 1. Review + activate
+forgeplan activate EVID-001
 forgeplan review PRD-001
+# Run the next line only if this PRD is still draft; do not reactivate an active plan.
 forgeplan activate PRD-001
 
 # 2. Push + PR
@@ -174,8 +191,8 @@ gh pr create --base dev --title "[PRD-001] Payment Processing"
 # 3. After merge - sync
 git checkout dev && git pull origin dev
 
-# 4. Save to memory
-memory_retain("Payment processing: implemented, 15 tests, R_eff=1.00")
+# 4. Optionally retain a concise decision/lesson through configured Hindsight MCP.
+# Do not use memory_retain(...) as a shell command or copy an invented score.
 
 # 5. Update progress
 # - RFC checkboxes: [x]
@@ -186,11 +203,18 @@ memory_retain("Payment processing: implemented, 15 tests, R_eff=1.00")
 
 ### Greenfield (new module from scratch)
 
-```
-Research → PRD → Spec → RFC → ADR → Build → Audit → Evidence
+The public `agents-bmad` plugin is for a **brand-new product or service**,
+not any feature that happens to add a new module:
+
+```text
+/bmad-init
+/bmad <greenfield brief>
 ```
 
-Everything is unknown. Need all artifacts. Start with Research.
+The walk is Analyst → PM → Architect → Scrum-Master → Dev → QA, with independent
+PRD, architecture/RFC, and implementation-readiness gates before code. Run
+`/bmad-init` once to configure file classification and enable the blocking
+write hook; without its stack configuration the BMAD gate is dormant.
 
 ### Brownfield (existing code)
 
@@ -203,34 +227,78 @@ Explore → Identify → {
 }
 ```
 
-Code already exists. Start with **Explore** (understand what's there).
+Start with **Explore**. Legacy modernization routes through `/smith` to
+Strangler Fig + DDD. A single feature in an existing active system uses
+`agents-sparc` instead:
+
+```text
+/sparc <one well-scoped feature>
+```
+
+SPARC walks Specification → Pseudocode → Architecture → Refinement →
+Completion. The main session executes the walk, dispatches phase agents and
+independent reviewers, and explicitly activates reviewed artifacts between
+phases. It has **no dedicated blocking hook** and no `/sparc-init`; enforcement
+is phase ordering. Pseudocode is reviewed at the Architecture gate rather than
+frozen as production logic. MICRO scope can omit Pseudocode, not independent
+code review.
+
+### TDD inside Build
+
+`agents-tdd` owns plan → RED → independent test validation/freeze → GREEN →
+lint, then hands off to the separate code Audit stage.
+
+```text
+/tdd-init
+/tdd
+```
+
+Run `/tdd-init` before the first cycle (and after stack changes). Entry requires
+an **active PRD and active SPEC with `#### Scenario` blocks**. A separate
+`tdd-test-validator` certifies valid RED: tests compile, execute an assertion,
+and fail on that assertion, not on setup/import errors. Only then is the
+normalized SPEC hash frozen and GREEN unlocked. The active hook blocks test
+edits and SPEC drift during GREEN; missing branch state means TDD is not active,
+not that the branch is protected. SPARC Refinement can delegate here when test
+immutability matters.
+
+In each pipeline, **generator ≠ verifier**: phase agents produce, independent
+contexts review, and the main orchestrator handles activation. Evidence must
+carry the review verdict and identity; its mere presence is not a PASS.
 
 ### Mixed
 
-```
-New bounded context  → Greenfield pipeline
-Existing module      → Brownfield pipeline
-```
+Choose by the **task**, not the repository label:
 
-Choose pipeline **by context**, not by project.
+- A brand-new product/service can use BMAD.
+- A feature in an active system can use SPARC, even if it adds a new module.
+- Legacy modernization starts with exploration and a Strangler-style plan.
+- TDD is a Build sub-cycle, not a replacement for product/architecture planning.
+
+The CLI's `phase`/`phase-advance` markers are advisory. They neither enforce
+this order nor install the marketplace hooks; claims are coordination signals,
+not file-write enforcement.
 
 ## Forge-Cycle Command
 
-The `/forge-cycle` command runs all phases automatically:
+`/forge-cycle` comes from the public `forgeplan-workflow` plugin. Install it
+in a compatible host; CLI installation alone does not provide this command.
+Other public packs (`fpl-skills`, `agents-bmad`, `agents-sparc`, `agents-tdd`,
+and the relevant specialist agents) supply their own skills and contracts.
 
-```
+```text
+/plugin marketplace add ForgePlan/marketplace
+/plugin install forgeplan-workflow@ForgePlan-marketplace
 /forge-cycle PRD-001
-
-Phase 0: OBSERVE   → forgeplan health
-Phase 1: ROUTE     → forgeplan route
-Phase 2: SPRINT    → /sprint (plan waves)
-Phase 3: BUILD     → /team-up (implement)
-Phase 4: AUDIT     → /audit (adversarial review)
-Phase 5: FIXES     → fix HIGH/CRITICAL
-Phase 6: EVIDENCE  → forgeplan new evidence + score
-Phase 7: COMMIT    → git commit + PR
-Phase 8: NEXT      → forgeplan health → next task
 ```
+
+The loaded template guides the orchestrator through health/routing, shape,
+planning, build, independent audit, fixes, evidence, activation, and delivery.
+Tokens such as `/sprint`, `/team-up`, and `/audit` in the template are
+**semantic markers**, not automatically chained slash commands. The main
+session performs equivalent dispatches and tool calls. Availability, host
+permissions, approval gates, and project configuration determine what can run;
+do not describe this as unattended automatic execution.
 
 ## Scope Lock
 
@@ -245,14 +313,14 @@ If you notice scope drift → bookmark progress → start a new session of the r
 
 - [ ] Artifact filled (MUST sections)
 - [ ] Validation PASS
-- [ ] ADI reasoning done (Standard+)
+- [ ] ADI recorded (recommended at Standard, required at Deep/Critical)
 - [ ] Code implemented
 - [ ] Tests pass
 - [ ] Format + lint clean
 - [ ] Audit: 0 HIGH/CRITICAL
-- [ ] Evidence created with structured fields
-- [ ] R_eff > 0
-- [ ] Artifact activated
+- [ ] Real evidence records checks, limits, verifier identity, and structured fields
+- [ ] R_eff inspected against the claim, not treated as a code verifier
+- [ ] Required handoffs and completion claim explicitly reviewed and activated
 - [ ] PR created and merged
 - [ ] Progress updated (RFC checkboxes, TODO.md)
 - [ ] Memory retained (if significant)

@@ -13,6 +13,10 @@ Run it before [`forgeplan playbook run`](/docs/cli/playbook-run/). A playbook
 that fails here fails at run time too; `validate` only moves the failure to a
 place where it costs nothing.
 
+## Forgeplan 0.38.0
+
+Version 0.37.0 examples below are retained captures from the earlier release. The current published binary is 0.38.0; argument and option blocks come from it. Installing the binary does not install every named playbook: confirm TARGET with playbook list or provide an existing YAML path.
+
 ## What it does
 
 1. **Resolves** the `TARGET`. An argument containing a `/` or a `\`, or ending in
@@ -23,9 +27,7 @@ place where it costs nothing.
 2. **Reads under a bound.** The file must be at most 1 MiB (`1048576` bytes)
    and contain at most 256 `{` or `[` characters. Both checks run before the
    parser, so an oversized or deeply nested file is refused, not parsed.
-3. **Parses** the YAML into the SPEC-003 shape. Malformed YAML, missing
-   required fields, unknown top-level fields, and unknown `delegate_to:` `type`
-   values are all errors.
+3. **Parses** the YAML into the SPEC-003 shape. Malformed YAML, missing required fields, unknown top-level or delegation fields, and unknown `delegate_to:` `type` values are errors. Unknown fields on a step object are accepted and ignored without a warning in 0.38.0; a misspelled optional step field therefore need not fail validation.
 4. **Checks the structural invariants** - see the matrix below.
 5. **Reports.** `OK: <name> (<n> steps)` and exit 0 on success; a headline, the
    offending detail, and a `Fix:` hint on failure.
@@ -81,14 +83,15 @@ forgeplan playbook validate [OPTIONS] <TARGET>
 | a cycle in the `requires:` graph | error |
 | `mapping:` set without `produces_at:` | error |
 | `schema_version` outside `>=1.0.0, <2.0.0` | error |
-| malformed YAML, unknown field, unknown delegate `type` | error |
+| malformed YAML, unknown top-level or delegation field, unknown delegate `type` | error |
 | file above 1 MiB, or more than 256 `{` / `[` characters | error, refused before parsing |
 | `produces_at:` set without `mapping:` | warning only |
 | a step whose `delegate_to:` is `type: command` | warning only - the shell gate lives in `run` |
+| unknown field on a step object | accepted and ignored; no warning |
 
 Warning-level conditions do not change the verdict. A playbook containing a
 `command:` delegate validates as `OK` and exits 0 - that gate is enforced at
-run time, where the step fails unless `--allow-shell` is passed.
+run time. Execution additionally needs `--yes` and, for command delegates, `--allow-shell` or the workspace `playbook.allow_shell` setting.
 
 ## Discovery roots
 
@@ -150,8 +153,7 @@ forgeplan playbook validate audit --json
 }
 ```
 
-`passed` is the machine-readable verdict, `source_path` is the resolved
-absolute file, and `_next_action` is the dry run that should come next.
+`passed` is the machine-readable verdict. `source_path` is the selected path, not necessarily absolute: a supplied relative path remains relative. `_next_action` uses the playbook's name, which may not resolve if you validated an external file by path; in that case pass that path to the dry run.
 
 ### Example 4: a cycle in the dependency graph
 
@@ -209,8 +211,7 @@ Error: playbook bad/huge.yaml is too large (1100111 bytes; limit 1048576 bytes)
 Fix: split or trim the playbook below 1048576 bytes, or run a custom build
 ```
 
-The `Fix:` hint here asks for a different playbook, not a corrected one - the
-size bound is a resource guard, not a schema rule.
+The size bound is a resource guard, not a schema rule. Split or trim the supplied file; a custom binary is not required to correct the input.
 
 ### Example 7: failure as JSON
 
@@ -252,7 +253,7 @@ payload when you need to tell them apart.
 - The check is purely structural. A `delegate_to:` naming a plugin, agent, or
   skill that is not installed is not an error here.
 - Nothing is written: no run journal entry, no artifact, no index change.
-- `-V` reports the subcommand-scoped version, `forgeplan-playbook-validate 0.37.0`.
+- The earlier capture reports `forgeplan-playbook-validate 0.37.0`; the published release is 0.38.0.
 
 ## See also
 

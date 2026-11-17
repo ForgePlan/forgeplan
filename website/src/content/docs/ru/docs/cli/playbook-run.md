@@ -7,6 +7,10 @@ description: "Запуск плейбука - последовательное �
 
 Два независимых гейта стоят между вами и выполнением. `--yes` подтверждает, что вы действительно хотели запустить плейбук. `--allow-shell` (или эквивалент в рабочем пространстве) отдельно авторизует шаги `delegate_to: command`, которые порождают произвольные процессы. Оба существуют, потому что плейбук - это данные, которые вы могли получить от кого-то другого; ни один не подразумевает другой.
 
+## Forgeplan 0.38.0
+
+В 0.38.0 delegate_to: skill — только сигнальная интеграция: печатает [skill-invoke], возвращает success=true и заданный produces_at, но не загружает skill, не проверяет его установку и не создаёт обещанный файл. Нужен внешний harness, который действительно обработает сигнал; наличие результата проверяйте независимо. --dry-run подтверждает лишь разбор плана. Имена/пути из сохранённых примеров требуют соответствующего локального YAML или обнаруженного пакета: установка бинарника не устанавливает все плейбуки.
+
 ## Что делает
 
 1. **Отказывает без подтверждения.** Если `--yes` отсутствует и `--dry-run` не установлен, команда завершается с кодом 2 и подсказкой `Fix:` до разрешения чего-либо.
@@ -22,23 +26,24 @@ description: "Запуск плейбука - последовательное �
 
 ```text
 forgeplan playbook run [OPTIONS] <TARGET>
+```
 
 ## Аргументы
 
 ```text
-  <TARGET>  Имя или путь плейбука
+  <TARGET>  Playbook name or path
 ```
 
 ## Опции
 
 ```text
-      --yes          Подтвердить выполнение (обязательно - предотвращает случайные запуски)
-      --allow-shell  Разрешить выполнение шагов `Delegation::Command` (shell-exec). PROB-053 / PRD-074 §FR-1: гейт с запретом по умолчанию для поверхности CWE-78. Подразумевает `--yes`. Альтернатива: установить `[playbook] allow_shell = true` в `config.yaml` рабочего пространства
-      --dry-run      Вывести шаги без выполнения
-      --step <STEP>  Начать с конкретного шага (нумерация с 1)
-      --json         Вывод в формате JSON
-  -h, --help         Вывести справку
-  -V, --version      Вывести версию
+      --yes          Confirm execution (required — prevents accidental runs)
+      --allow-shell  Allow `Delegation::Command` (shell-exec) steps to run. PROB-053 / PRD-074 §FR-1: default-deny gate for the CWE-78 surface. Implies `--yes`. Alternative: set `[playbook] allow_shell = true` in workspace `config.yaml`
+      --dry-run      Print steps without executing
+      --step <STEP>  Start from specific step (1-indexed)
+      --json         Output as JSON
+  -h, --help         Print help
+  -V, --version      Print version
 ```
 
 ## Гейт для shell
@@ -48,7 +53,7 @@ forgeplan playbook run [OPTIONS] <TARGET>
 Когда гейт закрыт, шаг **проваливается** с соответствующим сообщением:
 
 ```
-step `say-hello` uses `delegate_to: command` - pass `--allow-shell` (or set `[playbook] allow_shell = true` in workspace config) to acknowledge arbitrary shell execution
+step `say-hello` uses `delegate_to: command` — pass `--allow-shell` (or set `[playbook] allow_shell = true` in workspace config) to acknowledge arbitrary shell execution
 ```
 
 Это именно провал, а не пропуск, и он учитывается в счётчике `failed` — поэтому запуск, который наткнулся на гейт, завершается с кодом 1 и не может быть ошибочно принят за чистый запуск в конвейере.
@@ -91,6 +96,7 @@ Done.
 ```yaml
 playbook:
   allow_shell: true
+```
 
 С этим на месте, один `--yes` удовлетворяет оба гейта - согласие на shell теперь приходит из файла
 - и CLI громко сообщает об этом при запуске:
@@ -164,9 +170,9 @@ Source:  /private/tmp/agent-playbook/.forgeplan/playbooks/greenfield-kickoff.yam
   [6] prd-feature-3: delegate=forgeplan_core:new
   [7] scaffold-docs: delegate=skill:forge-scaffolder (pack: brownfield-docs-pack)
 
-```bash
-forgeplan playbook run greenfield-kickoff --yes
+Next: forgeplan playbook run greenfield-kickoff --yes
 ```
+
 
 `--dry-run` ничего не выполняет и не требует `--yes` (удаление флага даёт идентичный
 вывод). Строка `Next:` убирает `--dry-run`, что является единственным различием между чтением и
@@ -191,7 +197,7 @@ Run summary: demo-shell
   skipped: 1
 
   [FAIL] say-hello
-       step `say-hello` uses `delegate_to: command` - pass `--allow-shell` (or set `[playbook] allow_shell = true` in workspace config) to acknowledge arbitrary shell execution
+       step `say-hello` uses `delegate_to: command` — pass `--allow-shell` (or set `[playbook] allow_shell = true` in workspace config) to acknowledge arbitrary shell execution
   [SKIP] after
        skipped: prior step failed with on_error: abort
 
@@ -231,7 +237,7 @@ forgeplan playbook run demo-shell --yes --allow-shell --json
 }
 ```
 
-`_next_action` имеет значение `null` при успешном выполнении и содержит имя последующей команды в противном случае. В JSON-режиме человекочитаемые строки прогресса (`Running playbook:`, предупреждения `! shell-exec:`) подавляются, поэтому stdout содержит ровно один JSON-документ — безопасно для передачи в `jq`.
+`_next_action` имеет значение `null` при успешном выполнении и содержит имя последующей команды в противном случае. В JSON-режиме человекочитаемые строки прогресса (`Running playbook:`, предупреждения `! shell-exec:`) подавляются, но skill-диспетчер печатает `[skill-invoke]` в stdout даже с `--json`. Такой запуск не является одним чистым JSON-документом; success не доказывает выполнение skill.
 
 ### Возобновление с более позднего шага
 
@@ -265,6 +271,7 @@ forgeplan playbook run greenfield-kickoff --yes --step 99
 ```
 Error: --step out of range: requested 99, playbook has 7 step(s) (1..=7)
 Fix: forgeplan playbook show greenfield-kickoff
+```
 
 `--step` индексируется с 1, и `0` находится вне диапазона так же, как и `99`.
 

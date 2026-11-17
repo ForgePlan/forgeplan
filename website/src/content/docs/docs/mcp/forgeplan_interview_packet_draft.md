@@ -1,16 +1,11 @@
 ---
 title: forgeplan_interview_packet_draft
-description: "experimental: draft an interview packet to validate brownfield hypotheses. STUB - the full implementation ships with the `forgeplan-brownfield-pack` plugin (marketplace issue #79). Without the plugin installed this tool echoes a `not_implemented` envelope so agents can detect the gap and surface the install hint."
+description: "Experimental core 0.38 stub: returns not_implemented after workspace checks, regardless of marketplace-pack installation."
 ---
 
-**This tool is an experimental stub.** It is registered on the MCP surface, its parameter schema is
-final, and it does nothing yet: the real implementation ships with the
-[`forgeplan-brownfield-pack`](/docs/marketplace/forgeplan-brownfield-pack/) plugin (marketplace
-issue #79). Calling it today returns a `not_implemented` envelope so an agent can detect the gap and
-surface the install hint instead of silently getting an empty answer.
+**Forgeplan 0.38.0 returns `not_implemented` after successful workspace resolution and locking.** Installing [`forgeplan-brownfield-pack`](/docs/marketplace/forgeplan-brownfield-pack/) does not replace or enable the core handler: it has no plugin-dispatch path. The install hint in its runtime description and response is not evidence that the MCP call can generate a packet.
 
-Do not build a workflow that depends on this returning a packet. Treat it as a capability probe and
-a fixed contract for the eventual implementation.
+Use the published `interview-packager` skill separately for interview preparation. Do not build an integration that expects this MCP tool to return questions.
 
 **Category**: Other
 
@@ -18,11 +13,11 @@ a fixed contract for the eventual implementation.
 
 Exactly this:
 
-1. Resolves the workspace through the write path, which also validates that the workspace exists
-   and produces the same "no workspace" error every other tool emits.
+1. Resolves the workspace through the write path. Resolution failures can be JSON-RPC errors.
 2. Acquires the workspace lock.
 3. Returns the stub envelope, with the resolved workspace trace injected and a `_next_action` hint
-   appended:
+   appended. This is a successful MCP text-content JSON result, not `isError: true`.
+   The workspace path and resolution method below are illustrative:
 
 ```json
 {
@@ -30,60 +25,50 @@ Exactly this:
   "marketplace_issue": 79,
   "message": "Install forgeplan-brownfield-pack plugin to enable; or invoke via shell pipeline temporarily.",
   "resolved_via": "param",
-  "resolved_workspace": "/private/tmp/agent-enrichmcpf/.forgeplan",
+  "resolved_workspace": "/work/project/.forgeplan",
   "status": "not_implemented"
 }
 ```
 
-It reads no artifacts, writes no artifacts, and generates no questions.
+It reads no artifacts for interview generation, writes no interview artifacts, and generates no questions. Workspace resolution may open the store; acquiring the lock can fail with a plain-text tool error.
 
-## What it will do
+## Separate marketplace workflow
 
-The plugin's `interview-packager` skill clusters parked hypotheses and open questions into
-structured Domain Owner interview packets - the document a human answers so an agent can convert
-inferred claims into verified or refuted ones. The parameters below exist to drive that packet:
-`domain` scopes question generation, `seed_ids` seeds the agenda from artifacts the workspace
-already has.
+The published `forgeplan-brownfield-pack` includes an `interview-packager` skill. It describes draft, prioritization, clustering and ingestion modes for Domain Owner interview packets. Those are agent-driven skill instructions, not an implementation injected into this MCP endpoint.
 
-The schema is frozen now, ahead of the implementation, so that agents adopting the brownfield
-workflow do not have to relearn the call when the plugin lands. That is also why the fields are
-documented as accepted even though the stub never reads them.
+`domain` and `seed_ids` are accepted by the advertised input schema but are not read by the 0.38.0 core stub. Only workspace resolution, locking and the fixed response occur here.
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
-| `domain` | `string` | no | Target domain or feature area the packet should cover. Used by the plugin to scope question generation. Not read by the stub. |
-| `seed_ids` | `string[]` | no | Existing artifact ids (HYP / UC / INV) that seed the interview agenda. Defaults to an empty list, which means "discover from scratch". Not read by the stub. |
-| `workspace` | `string` | no | Explicit workspace directory for this call, so an agent in a git worktree can target its own `.forgeplan/` instead of the server's launch directory. Absolute or tilde-expanded path. Read by the stub. |
+| `domain` | `string \| null` | no | Target domain or feature area the interview packet should cover. Used by the plugin to scope question generation. Schema default: `null`. |
+| `seed_ids` | `array<string>` | no | Optional list of existing artifact ids (HYP / UC / INV) that seed the interview agenda. Empty means "discover from scratch". Schema default: `[]`. |
+| `workspace` | `string \| null` | no | Optional explicit workspace directory for this call. When set, the MCP server resolves the `.forgeplan/` projection from this path instead of the server's startup CWD. Use this when the calling agent is running in a git worktree separate from the MCP server's launch directory. PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. Schema default: `null`. |
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::InterviewPacketDraftParams`_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Example invocation
 
-What a real call will look like:
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
 
 ```json
 {
   "domain": "billing",
-  "seed_ids": ["HYP-001", "HYP-004"]
+  "seed_ids": [
+    "HYP-001"
+  ]
 }
 ```
 
-Which today returns the `not_implemented` envelope above, with `"marketplace_issue": 79`.
-
 ## Notes
 
-- **The schema is a contract, not a hint.** Field names and optionality are fixed by the frozen wire
-  shape, so an integration written against this page keeps working once the stub is replaced by the
-  real implementation.
-- **The stub takes the workspace lock** even though it writes nothing. That is deliberate
-  future-proofing so the plugin implementation inherits correct locking rather than adding it later.
-- **The stub echoes the resolved workspace** (`resolved_via`, `resolved_workspace`). Few tools do
-  this; here it is the cheapest way for an agent to prove which workspace the call was routed to
-  before it commits to a brownfield session.
-- **The MCP schema advertises it as idempotent and not read-only.** Calling it repeatedly is
-  harmless, and it is not a read tool in the annotation sense.
+- **Schema acceptance is not implementation.** The listed keys and optionality describe the current input contract, not a guarantee that a future implementation will preserve every behavior.
+- **The stub takes the workspace lock** even though it creates no interview artifacts.
+- **The stub echoes the resolved workspace** (`resolved_via`, `resolved_workspace`); do not infer that other tools emit the same trace.
+- **The annotations mark it idempotent and not read-only.** That does not remove workspace-resolution or locking failures.
 - **What to use instead, today:** the brownfield discovery protocol
   ([`forgeplan_discover_start`](/docs/mcp/forgeplan_discover_start/)) is the live path for mapping an
   existing codebase, and the plugin's skills can be driven directly as the envelope's message
@@ -95,4 +80,4 @@ Which today returns the `not_implemented` envelope above, with `"marketplace_iss
 - [`forgeplan_interview_packet_ingest`](/docs/mcp/forgeplan_interview_packet_ingest/) - the ingest half of this workflow, also a stub
 - [`forgeplan_discover_start`](/docs/mcp/forgeplan_discover_start/) - the brownfield discovery protocol that works today
 - [`forgeplan_hypothesis_status`](/docs/mcp/forgeplan_hypothesis_status/) - which parked hypotheses an interview should target
-- [`forgeplan-brownfield-pack`](/docs/marketplace/forgeplan-brownfield-pack/) - the plugin that will implement this tool
+- [`forgeplan-brownfield-pack`](/docs/marketplace/forgeplan-brownfield-pack/) - separate interview workflow skills

@@ -1,22 +1,9 @@
 ---
 title: forgeplan blocked
-description: "Показывает заблокированные артефакты и то, что их блокирует"
+description: "Показывает неразрешённые структурные зависимости одного артефакта или всего графа. К структурным относятся based_on, refines, supersedes; informs не задаёт порядок работ. Зависимости со статусом active, deprecated, superseded считаются разрешёнными."
 ---
 
-Перечисляет артефакты, которые не могут быть продвинуты, потому что одна или несколько их зависимостей ещё не `active` (или, что хуже, `deprecated`/`stale`). Для каждого заблокированного артефакта выводится цепочка блокировщиков, чтобы вы могли точно видеть, что нужно разблокировать.
-
-## Когда использовать
-
-- Начало спринта - выявление застрявшей работы до её назначения
-- Ежедневный стендап - "что ждёт меня?"
-- Гейт CI - сбой, если что-либо критической глубины заблокировано
-- Аудит зависимостей во время заморозки релиза
-
-## Не использовать, когда
-
-- Вам нужен полный порядок выполнения → используйте [`forgeplan order`](/docs/cli/order/)
-- Вам нужны слепые пятна качества → используйте [`forgeplan blindspots`](/docs/cli/blindspots/)
-- Вам нужен необработанный граф зависимостей → используйте [`forgeplan graph`](/docs/cli/graph/)
+Показывает неразрешённые структурные зависимости одного артефакта или всего графа. К структурным относятся `based_on`, `refines`, `supersedes`; `informs` не задаёт порядок работ. Зависимости со статусом active, deprecated, superseded считаются разрешёнными.
 
 ## Использование
 
@@ -27,75 +14,37 @@ forgeplan blocked [OPTIONS] [ID]
 ## Аргументы
 
 ```text
-  [ID]  Конкретный ID артефакта для проверки (необязательно)
+  [ID]  Specific artifact ID to check (optional)
 ```
 
 ## Опции
 
 ```text
-      --json     Вывод в формате JSON для машинной обработки
-  -h, --help     Вывести справку
-  -V, --version  Вывести версию
+      --json     Output as JSON for machine consumption
+  -h, --help     Print help
+  -V, --version  Print version
 ```
 
 ## Примеры
 
-Показать всё, что заблокировано в рабочем пространстве:
-
 ```bash
 forgeplan blocked
-```
-
-Проверить один конкретный артефакт:
-
-```bash
 forgeplan blocked PRD-046
+forgeplan blocked --json | jq '.blocked[] | .id'
+forgeplan blocked PRD-046 --json | jq '.blocked, .blocked_by'
 ```
 
-Машиночитаемый формат для дашборда:
+## Вывод и автоматизация
 
-```bash
-forgeplan blocked --json | jq '.[] | .id'
-```
+JSON пространства содержит записи `blocked` с `id` и `blocked_by`, а также `ready`, `ready_count`, `blocked_count`, `cycles`, `_next_action`, `hints`. Для одного артефакта поля — `id`, `blocked`, `blocked_by`, `_next_action`, `hints`. Наличие блокировок не меняет код завершения на 1. Для проверки зависимостей явно разбирайте JSON. Для порогов состояния используйте текстовый `health --ci`: в 0.38.0 сочетание `health --json --ci` возвращает результат до применения порогов CI (#545).
 
-## Интерпретация вывода
+## Планирование
 
-```
-PRD-046  Docs v0.18.0 catch-up         [draft]
-  blocked by:
-    RFC-005  Graph expansion           [draft]     ← ещё не active
-    ADR-008  Cloudflare Pages choice   [draft]     ← ещё не active
-
-RFC-007  Embed cache policy            [draft]
-  blocked by:
-    EVID-019 Benchmark results         [missing]   ← ссылка, но не существует
-```
-
-| Индикатор | Значение |
-|---|---|
-| `[draft]` | Блокировщик существует, но ещё не `active` |
-| `[stale]` | Блокировщик превысил дату `valid_until` |
-| `[deprecated]` | Блокировщик был `deprecated` - обновите связь |
-| `[missing]` | Указанный ID не существует - неработающая ссылка |
-
-Код выхода 0, если ничего не заблокировано, 1 в противном случае - удобно для гейтов CI.
-
-## Как это вписывается
-
-`blocked` - это _runtime_ представление графа зависимостей:
-
-```
-order    →  planned sequence (игнорирует статус)
-blocked  →  current obstacles (учитывает статус)
-graph    →  полная картина
-```
-
-Комбинируйте с [`order`](/docs/cli/order/) для перепланирования с учётом блокировщиков и с
-[`health`](/docs/cli/health/), чтобы увидеть, какая часть проекта застряла.
+Используйте `order` для последовательности и `graph` для всех типов связей. Если зависимость отсутствует или образует цикл, проверьте связь, а не активируйте блокирующий артефакт вслепую.
 
 ## См. также
 
-- [`forgeplan order`](/docs/cli/order/) - топологическая последовательность
-- [`forgeplan graph`](/docs/cli/graph/) - полный граф зависимостей
-- [`forgeplan blindspots`](/docs/cli/blindspots/) - решения без доказательств
-- [`forgeplan health`](/docs/cli/health/) - сводка по проекту
+- [`forgeplan order`](/ru/docs/cli/order/) - топологическая последовательность
+- [`forgeplan graph`](/ru/docs/cli/graph/) - полный граф зависимостей
+- [`forgeplan blindspots`](/ru/docs/cli/blindspots/) - решения без доказательств
+- [`forgeplan health`](/ru/docs/cli/health/) - сводка по проекту

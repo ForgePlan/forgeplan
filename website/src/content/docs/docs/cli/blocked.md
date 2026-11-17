@@ -1,25 +1,9 @@
 ---
 title: forgeplan blocked
-description: "Show blocked artifacts and what is blocking them"
+description: "Report unresolved structural dependencies for one artifact or the whole graph. Structural relations include based_on, refines, and supersedes; informs is not a scheduling dependency. Active, deprecated, and superseded dependencies are treated as resolved."
 ---
 
-List artifacts that cannot make progress because one or more of their
-dependencies is not yet `active` (or worse - `deprecated`/`stale`). For each
-blocked artifact, the blocker chain is printed so you can see exactly what
-to unblock.
-
-## When to use
-
-- Sprint start - identify work that is stuck before assigning
-- Daily standup - "what is waiting on me?"
-- CI gate - fail if anything critical-depth is blocked
-- Dependency audit during a release freeze
-
-## Not to use when
-
-- You want full execution order → use [`forgeplan order`](/docs/cli/order/)
-- You want quality blind spots → use [`forgeplan blindspots`](/docs/cli/blindspots/)
-- You want raw dependency graph → use [`forgeplan graph`](/docs/cli/graph/)
+Report unresolved structural dependencies for one artifact or the whole graph. Structural relations include `based_on`, `refines`, and `supersedes`; `informs` is not a scheduling dependency. Active, deprecated, and superseded dependencies are treated as resolved.
 
 ## Usage
 
@@ -43,58 +27,20 @@ forgeplan blocked [OPTIONS] [ID]
 
 ## Examples
 
-Show everything that is blocked in the workspace:
-
 ```bash
 forgeplan blocked
-```
-
-Check one specific artifact:
-
-```bash
 forgeplan blocked PRD-046
+forgeplan blocked --json | jq '.blocked[] | .id'
+forgeplan blocked PRD-046 --json | jq '.blocked, .blocked_by'
 ```
 
-Machine-readable for a dashboard:
+## Output and automation
 
-```bash
-forgeplan blocked --json | jq '.[] | .id'
-```
+Workspace JSON includes `blocked` entries with `id` and `blocked_by`, plus `ready`, `ready_count`, `blocked_count`, `cycles`, `_next_action`, and `hints`. Single-artifact JSON has `id`, `blocked`, `blocked_by`, `_next_action`, and `hints`. Finding blockers does not make this command exit 1. Inspect JSON explicitly when building a dependency gate. For health thresholds use text-mode `health --ci`; in 0.38.0, `health --json --ci` returns before applying CI thresholds (#545).
 
-## Output interpretation
+## Planning
 
-```
-PRD-046  Docs v0.18.0 catch-up         [draft]
-  blocked by:
-    RFC-005  Graph expansion           [draft]     ← not yet active
-    ADR-008  Cloudflare Pages choice   [draft]     ← not yet active
-
-RFC-007  Embed cache policy            [draft]
-  blocked by:
-    EVID-019 Benchmark results         [missing]   ← referenced but does not exist
-```
-
-| Indicator  | Meaning                                              |
-|------------|------------------------------------------------------|
-| `[draft]`  | Blocker exists but is not yet active                 |
-| `[stale]`  | Blocker exceeded its `valid_until` date              |
-| `[deprecated]` | Blocker was deprecated - update the edge         |
-| `[missing]` | Referenced ID does not exist - broken link          |
-
-Exit code is 0 if nothing is blocked, 1 otherwise - handy for CI gates.
-
-## How it fits
-
-`blocked` is the _runtime_ view of the dependency graph:
-
-```
-order    →  planned sequence (ignores status)
-blocked  →  current obstacles (considers status)
-graph    →  complete picture
-```
-
-Combine with [`order`](/docs/cli/order/) to re-plan around blockers, and with
-[`health`](/docs/cli/health/) to see how much of the project is stuck.
+Pair with `order` for execution sequence and `graph` for all relation types. A missing dependency or cycle requires reviewing the actual edge, not blindly activating the blocker.
 
 ## See also
 

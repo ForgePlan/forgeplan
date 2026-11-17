@@ -3,7 +3,7 @@ title: forgeplan setup-skill
 description: "Install the /forge skill into Claude Code so AI agents can drive the Forgeplan workflow"
 ---
 
-`forgeplan setup-skill` installs the `/forge` Claude Code skill **user-globally** by writing a single markdown file to `~/.claude/skills/forge/SKILL.md`. Once installed, Claude Code can invoke the full Forgeplan workflow (route → shape → validate → ADI → code → evidence → activate) through a single `/forge` slash command in **any** project, with all methodology rules loaded as context via the bundled skill definition.
+`forgeplan setup-skill` writes the bundled methodology instructions to `~/.claude/skills/forge/SKILL.md`, replacing an existing file. It prepares a user-level Claude Code skill; the host must discover and load it. The bundled frontmatter names the skill `forgeplan-methodology`, while the installer and directory use `/forge`; inspect the client's available commands instead of assuming the alias.
 
 The skill file is embedded directly into the `forgeplan` binary at compile time - the command performs **no network access**, does **not** fetch anything from the marketplace, and does **not** modify the current project's `.forgeplan/` or `.claude/` directories.
 
@@ -43,7 +43,7 @@ forgeplan init -y
 forgeplan setup-skill
 ```
 
-Typical bootstrap sequence: create the workspace, then install the Claude Code skill so `/forge` is immediately available in the next chat session.
+Typical bootstrap sequence: create the workspace, then install the instruction file. Reload or start a new client session if needed and inspect its discovered skills.
 
 ### Example 2: Refresh the skill after upgrading
 
@@ -52,7 +52,7 @@ cargo install forgeplan  # or brew upgrade forgeplan
 forgeplan setup-skill
 ```
 
-Re-runs the installer so the skill markdown matches the new binary version. Safe to run repeatedly - it overwrites `~/.claude/skills/forge/SKILL.md`.
+Re-runs the installer so the file matches the binary's bundled definition. It overwrites local changes without prompting or making a backup.
 
 ### Example 3: Verify installation
 
@@ -70,11 +70,11 @@ This is a one-shot setup command, not part of the artifact lifecycle. It belongs
 
 1. `forgeplan init -y` - create workspace
 2. `forgeplan setup-skill` - install Claude Code integration
-3. Configure `.forgeplan/config.yaml` - LLM provider + API key
-4. `forgeplan health` - sanity check
-5. Open Claude Code and call `/forge` - methodology-aware workflow kicks in
+3. Configure MCP integration separately if needed (`forgeplan mcp install`).
+4. Configure `.forgeplan/config.yaml` for LLM-backed commands; keyed providers need credentials, keyless providers their own runtime or authenticated CLI.
+5. Open or reload Claude Code, confirm the skill is discovered, and invoke the command the client exposes.
 
-Inside Claude Code, `/forge` gives AI agents the same routing, validation, and evidence discipline described in [the methodology guide](/docs/methodology/overview/).
+These are instructions for the agent, not automatic enforcement by the core. Installing the file does not run routing, build code, produce evidence, configure an MCP server, or invoke a provider.
 
 ## Safety notes
 

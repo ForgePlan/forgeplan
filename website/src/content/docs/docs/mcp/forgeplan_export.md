@@ -1,9 +1,9 @@
 ---
 title: forgeplan_export
-description: "Export all artifacts and relations to a JSON bundle. Returns the exported data directly for programmatic use, or writes it to a file path. Safe, read-only snapshot suitable for backup, migration, and cross-machine transfer."
+description: "Export all artifacts and relations to a JSON bundle. Returns the exported data directly for programmatic use, or writes to a file path."
 ---
 
-Produces a complete JSON snapshot of the workspace: every artifact (PRD, RFC, ADR, Epic, Spec, Note, Problem, Solution, Evidence, Refresh), their frontmatter, their markdown bodies, and the full relation graph. The result can be written to a file or returned inline so the agent can embed it in a response, pipe it into migration tooling, or attach it to an audit trail.
+Produces a JSON bundle of stored artifact records, their Markdown bodies and the relation graph. It is an artifact-data export, not a complete backup of every workspace file. Return it inline for programmatic use or write it to an explicitly selected path; review the content before sharing it.
 
 **Category**: Workspace & Data
 
@@ -17,68 +17,34 @@ Produces a complete JSON snapshot of the workspace: every artifact (PRD, RFC, AD
 
 ## Safety notes
 
-- The export is **read-only**. It never mutates the workspace.
-- **API keys and local config are NOT exported.** `.forgeplan/config.yaml` is gitignored and lives outside the artifact domain; the export contains only artifacts + relations. You still need to reconfigure LLM providers after `forgeplan_import`.
-- Derived indexes (`.forgeplan/lance/`, `.fastembed_cache/`) are **not** included - they rebuild on demand via `forgeplan scan-import`.
-- The export is the canonical backup format. Never `rm -rf .forgeplan` without calling `forgeplan_export` first.
+- Reading artifacts does not change them, but `output` writes a file and overwrites an existing destination without prompting. Relative paths resolve from the project directory containing the selected `.forgeplan/`; absolute paths are accepted. Parent directories must already exist.
+- Local config/provider credentials, advisory phases, claims, discovery sessions, recovery receipts and derived indexes are not included. Artifact bodies are exported verbatim and may themselves contain sensitive information.
+- The handler reads records and relations without a mutation lock; do not assume an atomic snapshot while other writers are active.
+- Use CLI `forgeplan reindex` to rebuild a derived artifact index from tracked projections. `scan-import` imports arbitrary Markdown, not this export bundle.
+- Preserve the export and separately required local files before a destructive operation. A returned hint is not permission to commit a sensitive bundle, reinitialize a surviving workspace or run an import automatically.
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
-| `output` | `string` | no | Destination file path. If omitted, the tool returns the JSON bundle inline in the response. If provided, the tool writes to disk and returns a small success summary. |
+| `output` | `string \| null` | no | Optional output file path. If omitted, returns JSON directly. Schema default: `null`. |
+| `workspace` | `string \| null` | no | Optional explicit workspace directory for this call. When set, the MCP server resolves the `.forgeplan/` projection from this path instead of the server's startup CWD. Use this when the calling agent is running in a git worktree separate from the MCP server's launch directory. PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. Schema default: `null`. |
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::ExportParams`_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
 
-**With `output`:**
+With `output`, the payload contains `written_to` (resolved destination), `artifacts` and `relations` (counts), plus `_next_action`.
 
-```json
-{
-  "written": "/Users/me/forgeplan-backup-2026-04-11.json",
-  "artifacts": 187,
-  "relations": 312,
-  "bytes": 648321
-}
-```
+Without `output`, it contains `version: 1`, `artifacts` and `relations` arrays, plus `_next_action`. This version is the export format, not the Forgeplan release. Each artifact object has `id`, `kind`, `status`, `title`, `body`, `depth`, `author`, `parent_epic`, `r_eff_score`, `valid_until`, `created_at` and `updated_at`. Relation objects have `source`, `target` and `relation`.
 
-**Without `output`** (inline mode):
-
-```json
-{
-  "version": 1,
-  "generated_at": "2026-04-11T12:04:18Z",
-  "artifacts": [
-    {
-      "id": "PRD-001",
-      "kind": "prd",
-      "status": "active",
-      "depth": "standard",
-      "title": "Auth system",
-      "body": "# PRD-001: Auth system\n\n## Problem\n…",
-      "tags": ["auth"],
-      "valid_until": null,
-      "updated_at": "2026-04-08T10:00:00Z"
-    }
-  ],
-  "relations": [
-    { "from": "EVID-012", "to": "PRD-001", "type": "informs" }
-  ]
-}
-```
-
-Inline mode is convenient for small workspaces; for large ones prefer writing to a file to avoid bloating MCP response payloads.
+Neither path adds workspace trace fields. Store/read/write failures are errors, not an empty successful bundle. For large workspaces prefer a file to avoid an oversized MCP text response.
 
 ## Example invocation
 
-Write to file (recommended for backups):
-
-```json
-{ "output": "/tmp/forgeplan-backup-2026-04-11.json" }
-```
-
-Return inline (for programmatic consumption):
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
 
 ```json
 {}
@@ -86,19 +52,9 @@ Return inline (for programmatic consumption):
 
 ## Typical sequence
 
-```
-forgeplan_export (output=backup.json)       ← safety snapshot
-…perform risky operation…
-forgeplan_import (data=<contents of backup.json>)   ← restore if things go wrong
-```
+Backup: call `forgeplan_export` with a chosen `output` → preserve the bundle and separately required workspace files → perform only the authorized operation.
 
-For migration:
-
-```
-[machine A] forgeplan_export → bundle.json
-[transfer bundle.json]
-[machine B] forgeplan init → forgeplan_import (data=bundle.json)
-```
+For migration, initialize only a genuinely fresh destination, read the saved bundle and pass its **JSON contents as the `data` string** to `forgeplan_import`. If a clone already contains tracked artifact projections, use CLI `forgeplan reindex` instead of reinitializing it.
 
 ## CLI equivalent
 

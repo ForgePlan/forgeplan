@@ -3,7 +3,7 @@ title: forgeplan_coverage_business
 description: "Issue #287 Phase C - compute extract_score (0.0-1.0) for a Domain Model. Reads the DM's ## Composition section to derive expected counts of glossary / use_cases / invariants / scenarios / hypotheses; counts actuals across the workspace; returns weighted extract_score. Canonical fields (DDL/SDL/pseudo-code) default to 0/false until marketplace#79 Phase E lands."
 ---
 
-Issue #287 Phase C - compute extract_score (0.0-1.0) for a Domain Model. Reads the DM's `## Composition` section to derive expected counts of glossary / use_cases / invariants / scenarios / hypotheses; counts actuals across the workspace; returns weighted extract_score. Canonical fields (DDL/SDL/pseudo-code) default to 0/false until marketplace#79 Phase E lands.
+Compute `extract_score` (0.0–1.0) for a Domain Model from its `## Composition` expectations, workspace-wide artifact counts, scenario links, and hypothesis states. The core handler always returns zero/false canonical-readiness fields; installing a marketplace pack does not turn these defaults into compiler or reproducibility results.
 
 One call answers "how much of this domain model has actually been extracted into artifacts". It is a coverage ratio, not a correctness measure - a workspace can score 1.0 and still be wrong, and it can score 0.4 legitimately while the model is still being discovered.
 
@@ -11,17 +11,14 @@ One call answers "how much of this domain model has actually been extracted into
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
-| `domain_model_id` | `string` | yes | The `DM-` artifact to measure. Must resolve to an artifact of kind `domain_model`. |
-| `workspace` | `string` | no | Resolve the workspace from this directory instead of the MCP server's startup CWD. Absolute or tilde-expanded. Useful when the agent runs in a git worktree separate from the server. |
+| `domain_model_id` | `string` | yes | Required DM- artifact id. The Composition section of that Domain Model artifact provides the `expected` counts; this tool counts what's actually present in the workspace. |
+| `workspace` | `string \| null` | no | Optional explicit workspace directory for this call. When set, the MCP server resolves the `.forgeplan/` projection from this path instead of the server's startup CWD. Use this when the calling agent is running in a git worktree separate from the MCP server's launch directory. PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. Schema default: `null`. |
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::CoverageBusinessParams` (the shared DTOs live in `crates/forgeplan-mcp/src/types.rs`)_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
 
-Two failure modes are worth knowing, because both are returned as MCP errors with a fix hint rather than empty data:
-
-- The id resolves to a different kind - the response says which kind it found and tells you to pass a `DM-` id.
-- The id does not exist - the response is an artifact-not-found error.
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Where `expected` comes from
 
@@ -60,21 +57,23 @@ Details that change what a score of, say, 0.62 means:
 
 ## Returns
 
+Success is JSON in MCP `content[0].text`. Illustrative complete report:
+
 ```json
 {
-  "glossary": { "count": 12, "expected": 14, "rate": 0.857 },
-  "use_cases": { "count": 9, "expected": 12, "rate": 0.75 },
-  "invariants": { "count": 7, "expected": 9, "rate": 0.778 },
-  "scenarios": { "per_use_case_avg": 1.44, "coverage_rate": 0.667 },
+  "glossary": { "count": 1, "expected": 1, "rate": 1.0 },
+  "use_cases": { "count": 1, "expected": 1, "rate": 1.0 },
+  "invariants": { "count": 1, "expected": 1, "rate": 1.0 },
+  "scenarios": { "per_use_case_avg": 1.0, "coverage_rate": 1.0 },
   "hypotheses": {
     "by_state": {
-      "parked": 1,
-      "inferred": 4,
-      "strong_inferred": 2,
-      "verified": 3,
-      "refuted": 1
+      "parked": 0,
+      "inferred": 0,
+      "strong_inferred": 0,
+      "verified": 1,
+      "refuted": 0
     },
-    "total": 11
+    "total": 1
   },
   "canonical": {
     "ddl_compile": false,
@@ -82,45 +81,43 @@ Details that change what a score of, say, 0.62 means:
     "pseudo_code_coherence": 0.0,
     "reproducibility": 0.0
   },
-  "extract_score": 0.71,
-  "_next_action": "Next: extract_score = 0.71. Improve coverage by adding artifacts referenced in DM-001's Composition section."
+  "extract_score": 1.0,
+  "_next_action": "Next: extract_score = 1.00. Improve coverage by adding artifacts referenced in DM-001's Composition section."
 }
 ```
 
 Field notes:
 
-- `canonical` is a placeholder block in v1. All four fields return their defaults (`false`, `false`, `0.0`, `0.0`) until the marketplace brownfield plugin (#79, Phase E) populates the DDL compile, SDL parse, pseudo-code coherence and reproducibility checks. Do not read them as results.
-- `hypotheses.by_state` keys are the five lifecycle states in their field spelling (`parked`, `inferred`, `strong_inferred`, `verified`, `refuted`); each value is parsed from a hypothesis's `## Lifecycle State` section, where the canonical form is kebab-case (`strong-inferred`). A body whose state cannot be parsed counts as `parked`.
+- `canonical` always contains defaults (`false`, `false`, `0.0`, `0.0`) in this core implementation. They are not executed checks.
+- `hypotheses.by_state` uses `parked`, `inferred`, `strong_inferred`, `verified`, `refuted`. Counts read `hypothesis_state` from frontmatter, not the audit text in `## Lifecycle State`; missing/unparseable states count as `parked`.
 - `glossary`, `use_cases` and `invariants` share the same triple shape: `count`, `expected`, `rate`.
 - `_next_action` always states the score and names the composition section as the place to add artifacts.
+- Reported `rate` can exceed 1.0; only its contribution to `extract_score` is clamped. Counts include terminal artifacts and artifacts outside the selected DM's Composition.
+- A missing DM returns a plain-text tool error; an existing record of a different kind returns a tool error explaining that `domain_model` is required. Workspace, lock, and snapshot-read failures also return tool errors, not zero-coverage reports.
 
 ## Example invocation
 
-Score a domain model in the default workspace:
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
 
 ```json
-{ "domain_model_id": "DM-001" }
-```
-
-Score a domain model in a worktree rather than the server's startup CWD:
-
-```json
-{ "domain_model_id": "DM-002", "workspace": "~/work/forgeplan-feature-branch" }
+{
+  "domain_model_id": "DM-001"
+}
 ```
 
 ## When an agent calls this
 
 - **After `forgeplan_discover_complete`** - turn a finished discovery session into one number for the report.
 - **Before declaring a domain model extracted** - the score is the honest answer to "is anything missing".
-- **While draining the orphan buckets** - re-run after linking scenarios or triangulating hypotheses to see the score move.
+- **While resolving orphan findings** — compare the complementary reports, but do not expect every orphan fix to change the score.
 - **In a dashboard or CI trend** - the same workspace yields a deterministic score, so deltas are meaningful.
 
 ## Typical sequence
 
-1. `forgeplan_orphans` - the four buckets tell you *which* artifacts are missing; this tool tells you *how much*.
+1. Read `forgeplan_orphans` for unsupported use cases/invariants, unused terms, and textual triangulation gaps. These are complementary findings, not the components of `extract_score`.
 2. `forgeplan_coverage_business` with the `DM-` id - record the baseline score.
 3. Add the artifacts the composition expects, then link the scenarios.
-4. Re-run and compare - `extract_score` should move, and the per-component `rate` tells you which component moved.
+4. Re-run and compare component values. Artifact counts, use-case scenario coverage, and hypothesis frontmatter states affect the score; glossary usage, invariant-to-scenario links, and textual triangulation references are not independently scored. Fixing those orphan findings can leave `extract_score` unchanged.
 5. Keep `scenarios.coverage_rate` and `hypotheses.by_state` in the report: they expose gaps the score alone hides.
 
 ## Safety notes
@@ -133,8 +130,8 @@ Score a domain model in a worktree rather than the server's startup CWD:
 
 ## See also
 
-- [`forgeplan_orphans`](/docs/mcp/forgeplan_orphans/) - the four buckets behind this score.
-- [`forgeplan_anomalies`](/docs/mcp/forgeplan_anomalies/) - the same gaps as actionable anomalies.
+- [`forgeplan_orphans`](/docs/mcp/forgeplan_orphans/) — complementary four-bucket heuristic report, not a breakdown of this score.
+- [`forgeplan_anomalies`](/docs/mcp/forgeplan_anomalies/) — unified findings with suggested resolution tiers.
 - [`forgeplan_coverage`](/docs/mcp/forgeplan_coverage/) - decision coverage per code module, a different measure.
 - [`forgeplan_discover_complete`](/docs/mcp/forgeplan_discover_complete/) - close a discovery session before scoring it.
 - [Methodology guide](/docs/methodology/overview/) - where brownfield inspectors sit in the cycle.

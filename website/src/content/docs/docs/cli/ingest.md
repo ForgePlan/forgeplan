@@ -3,15 +3,15 @@ title: forgeplan ingest
 description: "Ingest engine (PRD-066 / SPEC-004) - apply mapping YAML to plugin outputs, generate forge artifacts with file:line source refs"
 ---
 
-`forgeplan ingest` is the bridge from foreign tool output to native forgeplan artifacts. It takes a mapping YAML (a SPEC-004 recipe) and a source path, walks the source for files matching the mapping's patterns, runs every matching transformation rule, and writes the resulting drafts as notes, problems, or other forge artifacts - each one carrying a hallucination-proof `## Sources` section that points back at the originating file and line range.
+`forgeplan ingest` transforms external tool output into workspace artifacts using a mapping YAML and a source path. Matching rules render draft bodies and a mandatory `## Sources` section with file/line references. These references provide provenance, not proof that the mapped content is true.
 
 This is the CLI side of the Wave-3 ingest pipeline. The MCP surface (`forgeplan_ingest`) is dry-run-only by design: it validates paths, echoes parameters, and emits a planned view pointing back at this command. Full execution, including the write to LanceDB and the markdown projection, happens here.
 
 ## When to use
 
 - When a C4 model, an Obsidian vault, an ADR pack from another tool, or any plugin output needs to land in this workspace as first-class artifacts.
-- As a Wave-3 dry-run surface: pair `--dry-run --json` with a CI gate to validate that a mapping + source set produce the expected drafts before writing.
-- For repeatable re-imports: pass `--update` to refresh existing artifacts when the source content has changed; re-running without `--update` is a safe no-op on hash-equal sources.
+- Preview mappings with `--dry-run --json` before writing. Inspect the `errors` array explicitly: dry-run can return exit `0` with rule-application errors.
+- For repeatable re-imports with usable stored hash markers: unchanged hash inputs skip; `--update` permits body replacement when the hash changes. Keep `sources_section.source_hash: true` in mappings used for this workflow.
 
 ## When NOT to use
 
@@ -25,10 +25,20 @@ This is the CLI side of the Wave-3 ingest pipeline. The MCP surface (`forgeplan_
 2. Parses the mapping YAML into a `Mapping` (sources, rules, optional guards, optional error policy). Unknown top-level fields are rejected.
 3. Walks the source (a file or recursively a directory), and for every file picks the first `SourceSpec` whose pattern matches. Hidden directories (those starting with `.`) are descended into so layouts like `.local/spike-*.md` are reachable.
 4. Runs every `Rule` whose `when` selectors match the parsed source. Non-matching rules silently skip the file (recorded in the `skipped` array of the report).
-5. Renders the artifact body from the rule's templates (Tera 1.x with a fixed filter whitelist). Writes a `## Sources` section per artifact using the rule's `sources_section` format and a source content hash for idempotency.
-6. With `--dry-run`: prints the report (text or JSON) and exits. No files are written.
-7. Without `--dry-run`: idempotently writes each draft to LanceDB and its markdown projection. Existing artifacts with a matching source hash are skipped; existing artifacts whose source hash differs are skipped with a "differs but --update not passed" message unless `--update` is set, in which case they are rewritten.
-8. Adds every auto-link declared by the rule (subject to the per-link `if_exists` policy).
+5. Renders the artifact body from the rule's templates (Tera 1.x with a fixed filter whitelist) and a mandatory `## Sources` section. With `sources_section.source_hash: true`, the section includes the marker used for repeat imports.
+6. With `--dry-run`: prints the report (text or JSON) and exits without artifact writes.
+7. Otherwise matches existing artifacts by kind and case-insensitive title, then compares source hashes. Equal hashes skip; changed hashes skip without `--update`, or replace the body with it. A title change can create a new artifact. Writes are file-first, then indexed in LanceDB.
+8. Attempts auto-links using `if_exists` handling. Link failures are not collected into `write_errors`; even `if_exists: error` can print a message without failing the run.
+
+Reuse requires a same-kind/title match **and a usable stored hash marker**.
+Without a usable marker, the CLI creates another artifact, even with `--update`.
+The hash covers the rule ID and full source text, not the rendered template:
+template-only edits leave it unchanged, so the existing body is skipped even
+with `--update`. Changing the title can also cause creation rather than reuse.
+Keep `sources_section.source_hash: true` explicitly for the examples below.
+With `false`, the Sources renderer omits the marker, although body assembly
+adds a fallback when the whole body contains no `source_hash:` substring.
+Do not treat that fallback as a check that an existing marker is usable.
 
 ## Usage
 
@@ -50,7 +60,7 @@ forgeplan ingest [OPTIONS] --mapping <MAPPING> --source <SOURCE>
 
 ## Examples
 
-The examples below use `crates/forgeplan-cli/tests/fixtures/c4-to-forge-test.yaml`, the Phase-5 Wave-4 test mapping, plus the two-component `c4-mini/` source fixture. Both ship with the repository.
+Illustrative examples below use the repository's C4 mapping/source fixtures. Copy the mapping to `mapping.yaml` and make the matching `c4-mini/` source tree available before using these commands. IDs, paths, hashes, counts, and output values are illustrative, not results of a run on your workspace.
 
 ### Example 1: Dry-run, text mode
 
@@ -109,7 +119,7 @@ forgeplan ingest --mapping mapping.yaml --source c4-mini --dry-run --json
 
 ### Example 3: Real write
 
-Without `--dry-run`, drafts are written to `.forgeplan/<kind>/<ID>-<slug>.md` and indexed in LanceDB.
+Without `--dry-run`, new drafts are written under the kind's projection directory (for example `.forgeplan/notes/`) and indexed in LanceDB.
 
 ```bash
 forgeplan ingest --mapping mapping.yaml --source c4-mini
@@ -125,7 +135,7 @@ forgeplan ingest --mapping mapping.yaml --source c4-mini
 Next: forgeplan validate NOTE-001
 ```
 
-The body of `NOTE-001` carries the SPEC-004 hallucination-proof `## Sources` section:
+The illustrative body of `NOTE-001` carries the mandatory `## Sources` section:
 
 ```
 ---
@@ -153,7 +163,7 @@ The `## Sources` line points back at the source file and line range; the HTML co
 
 ### Example 4: Re-running on unchanged sources
 
-Re-running with the same source content and no `--update` is a hash-match no-op.
+For this mapping with `source_hash: true`, an existing same-kind/title artifact and an intact matching marker, re-running on the same source content is a no-op, with or without `--update`.
 
 ```bash
 forgeplan ingest --mapping mapping.yaml --source c4-mini
@@ -173,7 +183,7 @@ Exit code `0`.
 
 ### Example 5: Source changed, no `--update`
 
-Modify the source file (even by a byte) and the existing artifact's hash no longer matches. Without `--update`, the run refuses to overwrite and tells you so:
+With the same rule ID and title and a usable existing marker, modifying the source file changes the hash. Without `--update`, the run skips overwriting and reports it:
 
 ```bash
 printf '\n<!-- tweak -->\n' >> c4-mini/components/auth.md
@@ -190,7 +200,7 @@ forgeplan ingest --mapping mapping.yaml --source c4-mini
 Done.
 ```
 
-Pass `--update` to refresh the differing artifact:
+Pass `--update` to replace the differing artifact's body, provided the same-kind/title match has a usable stored marker. It does not force a rewrite for template-only edits or repair a missing marker:
 
 ```bash
 forgeplan ingest --mapping mapping.yaml --source c4-mini --update
@@ -208,7 +218,10 @@ forgeplan ingest --mapping mapping.yaml --source c4-mini --update
 Next: forgeplan validate NOTE-001
 ```
 
-The `forbid_overwrite_active: true` guard (set in the mapping's `guards:` block) refuses to overwrite an *active* artifact even with `--update`; only drafts can be refreshed this way.
+Do not rely on `guards.forbid_overwrite_active: true` for protection in 0.38.0:
+the engine accepts this field but does not enforce it, and the CLI update
+path does not check status. `--update` can replace an active artifact's body.
+Review targets and preserve needed edits before allowing updates.
 
 ### Example 6: Single-file source
 
@@ -231,15 +244,17 @@ Exit code `0`. Useful when debugging a single rule against a single source.
 
 Both files are bounded before parsing:
 
-- Mapping YAML: 1 MiB max, 256 levels of opener nesting (`{`/`[`).
-- Source files: 10 MiB max, 256 levels of opener nesting.
+- Mapping YAML: 1 MiB maximum and at most 256 `{`/`[` opener tokens in total
+  (a conservative token count, not actual nesting depth).
+- Source files: 10 MiB maximum and a string-aware peak bracket-depth cap of 256.
 
-A file that exceeds either cap is rejected before `serde_yaml` ever sees it, so an adversarial 10 MiB source cannot stack-overflow the parser.
+These are parser resource bounds, not a general guarantee against every
+malformed source.
 
 ## Notes
 
-- `--source` is matched against the mapping's `sources[].pattern` field textually. The path you pass is walked recursively and the discovered files are compared as-is. A leading `./` or an absolute path on `--source` makes the discovery succeed but the glob match fail silently with `no files matched mapping patterns under <path>` and exit code `0` - verify the pattern and the source prefix agree. Single-file `--source` skips directory-mode glob matching and falls back to the first declared spec.
-- The MCP surface (`forgeplan_ingest`) is dry-run-only by Wave-3 design: it validates paths, echoes parameters, and emits a planned JSON view that points back at this CLI. Wave-4 wiring will move full execution into the MCP surface.
+- Directory enumeration tests both paths relative to `--source` and the discovered path against `sources[].pattern`. Rule selectors then match the parsed source path. A mismatched prefix can produce a successful empty result; use patterns consistent with both discovery and rule selectors rather than assuming every absolute path or `./` prefix fails.
+- The MCP surface in 0.38.0 validates inputs and returns a planned view; it does not run the CLI engine or persist drafts.
 - Filter whitelist: only the ten filters declared in `forgeplan_core::ingest::types::ALLOWED_FILTERS` are available inside templates. Anything else is a deserialisation error at mapping load time.
 - Templates use Tera 1.x syntax. Note the `default` filter requires a named argument (`default(value="...")`), unlike Tera 2.x; the fixture mapping shows the correct form.
 - A mapping with zero `sources:` or zero `rules:` is rejected at load. Every rule must declare a non-empty `fields:` map.
@@ -247,7 +262,7 @@ A file that exceeds either cap is rejected before `serde_yaml` ever sees it, so 
 
 ## Mapping file shape (minimal)
 
-The two-rule fixture used in the examples:
+Minimal one-rule excerpt from the fixture family (not the full two-rule mapping used for the illustrative counts above):
 
 ```yaml
 schema_version: "1.0"
@@ -280,14 +295,28 @@ rules:
       source_hash: true
 ```
 
-The `format` template uses Tera variables for the path and line range; this is what becomes the `## Sources` line in the rendered artifact.
+`sources_section.format` substitutes the literal placeholders `{path}`, `{line_start}`, and `{line_end}`. It is not evaluated as a Tera template.
+
+## Exit status and JSON after writes
+
+Missing paths, invalid mappings, collection failures, and fatal engine errors
+exit `2`. A real write with collected rule/write errors emits its report then
+exits `1`; ordinary skips and no matched files succeed. Dry-run reports
+rule errors but returns `0`, so CI must inspect `.errors`.
+
+Real-write JSON adds `written`, `skipped_existing`, and `write_errors` to
+`drafts`, `skipped`, `errors`, and `_next_action`. A written entry contains
+`id`, `kind`, `title`, `rule_id`, and `source_path`. Draft JSON omits body text
+and includes links with `target`, `relation`, and `if_exists`. An empty-source
+JSON report also includes `written: []`. Early structured errors use
+`error` and `_next_action`; unexpected I/O/config errors may use ordinary CLI stderr.
 
 ## Related commands
 
 - [`forgeplan plugins list`](/docs/cli/plugins-list/) - browse the mapping packs bundled with marketplace plugins.
 - [`forgeplan validate`](/docs/cli/validate/) - verify the structural completeness of an ingested draft before activation.
 - [`forgeplan reindex`](/docs/cli/reindex/) - rebuild the derived search index after a bulk ingest.
-- [`forgeplan scan-import`](/docs/cli/scan-import/) - rebuild the LanceDB index from on-disk markdown after a manual rewrite.
+- [`forgeplan reindex`](/docs/cli/reindex/) - rebuild the LanceDB index from on-disk markdown after a manual rewrite.
 
 ## See also
 

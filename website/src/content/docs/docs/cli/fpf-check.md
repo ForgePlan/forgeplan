@@ -3,22 +3,22 @@ title: forgeplan fpf check
 description: "Check which FPF rules match a given artifact and what action they recommend"
 ---
 
-`forgeplan fpf check <ID>` evaluates every active **First Principles Framework** rule against a single artifact and prints the matches - grouped by action (EXPLORE / INVESTIGATE / EXPLOIT) and annotated with the FPF section each rule is derived from.
+`forgeplan fpf check <ID>` evaluates the active **First Principles Framework** rules for one artifact. It prints the winning rule first, then other matches in ascending priority order; it does not group by action or load cited KB sections.
 
 It's the per-artifact projection of [`fpf rules`](/docs/cli/fpf-rules/) and [`fpf dashboard`](/docs/cli/fpf-dashboard/).
 
 ## When to use
 
-- **Before activating a PRD/RFC/ADR** - confirm no INVESTIGATE rules are still firing.
-- **When `forgeplan validate` passes but you want deeper reasoning review** - rules catch things validation can't (e.g. "too few hypotheses for Deep depth").
-- **While debugging a stuck artifact** - see exactly which rule is blocking progress.
+- **Before activating a PRD/RFC/ADR** - inspect the reasoning recommendation alongside the separate lifecycle review.
+- **When structural validation is not enough** - inspect configured rule conditions and their matched/unmatched results.
+- **While debugging a recommendation** - see the first matching rule that wins.
 - **During adversarial review** - use rule output as a structured critique checklist.
 
 ## When NOT to use
 
 - For syntactic / structural checks - use [`forgeplan validate`](/docs/cli/validate/).
 - For project-wide views - use [`fpf dashboard`](/docs/cli/fpf-dashboard/).
-- On Tactical-depth items where FPF reasoning is deliberately bypassed.
+- To grant activation permission: recommendations are not lifecycle guards, at any depth.
 
 ## Usage
 
@@ -29,7 +29,7 @@ forgeplan fpf check [OPTIONS] <ID>
 ## Arguments
 
 ```text
-  <ID>   Artifact ID (e.g. PRD-041)
+  <ID>  Artifact ID (e.g. PRD-041)
 ```
 
 ## Options
@@ -54,34 +54,28 @@ forgeplan fpf check PRD-019 --verbose
 forgeplan fpf check ADR-005 --json
 ```
 
-## How explore / investigate / exploit thresholds work
+## Rules, output, and limits
 
-Each bounded context the artifact belongs to has three derived R_eff values:
+Non-empty `fpf.rules` in `.forgeplan/config.yaml` replaces the default rule
+set. Rules are sorted by ascending numeric priority, and the first match wins.
+Conditions use stored artifact data and derived trust/link/F-G-R signals;
+`explore_reff`, `investigate_reff`, and `exploit_reff` are configuration
+thresholds, not three separate per-context scores. There is no universal
+depth-by-action gate table enforced by this command.
 
-- **`explore_reff`** - how well-covered the hypothesis space is. Low → EXPLORE rules fire ("generate alternatives").
-- **`investigate_reff`** - how strong the evidence is for the hypotheses that exist. Low → INVESTIGATE rules fire ("attach better evidence").
-- **`exploit_reff`** - whether the chosen path clears the "ready to commit" bar. High → EXPLOIT rules unlock activation.
+`--json` contains `artifact_id`, `kind`, `status`, `matched`, `unmatched`,
+`winning`, `summary`, and `_next_action`. Each matched/winning rule has
+`name`, `priority`, `action`, and `message`; `winning` is null when none
+matches. `unmatched` is an array of rule names and is present in JSON
+regardless of `--verbose`.
 
-Thresholds are calibrated per depth:
+The suggested command is `activate` for EXPLOIT, `reason` for EXPLORE or
+INVESTIGATE, or `get` when no rule matches. These are advice, not execution.
+Checking succeeds with exit `0` regardless of the recommended action;
+missing artifacts or checking failures exit `1`. The command requires a
+workspace, but not an ingested FPF knowledge base. Run `review` separately
+for activation findings; `activate` still applies its own guards.
 
-| Depth     | Needs EXPLORE clear | Needs INVESTIGATE clear | Needs EXPLOIT clear |
-|-----------|---------------------|-------------------------|---------------------|
-| Tactical  | -                   | -                       | -                   |
-| Standard  | recommended         | recommended             | required            |
-| Deep      | required            | required                | required            |
-| Critical  | required + review   | required + review       | required + review   |
-
-For Deep/Critical artifacts, `fpf check` is effectively a pre-activation gate: fix INVESTIGATE rules before calling `forgeplan activate`.
-
-## How it fits
-
-`fpf check` reads:
-
-1. The artifact row from LanceDB (kind, depth, status, R_eff, linked evidence).
-2. The active rule set from the FPF rule engine (PRD-041).
-3. FPF KB sections cited by each rule (PRD-042).
-
-...and produces a human-readable report plus a machine-readable summary consumed by `fpf dashboard` and `forgeplan validate` (PRD-043 methodology integrity).
 
 ## See also
 

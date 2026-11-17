@@ -24,9 +24,10 @@ installed anywhere.
 ## When NOT to use
 
 - For execution - that is [`forgeplan playbook run`](/docs/cli/playbook-run/).
-- For a schema verdict on a file you just edited - that is
-  [`forgeplan playbook validate`](/docs/cli/playbook-validate/); `show` only fails on files that
-  cannot be loaded at all.
+- For a schema verdict on a file you just edited, use
+  [`forgeplan playbook validate`](/docs/cli/playbook-validate/).
+  `show` uses the same loader and can also reject structural errors such as
+  duplicate step IDs, cycles, unknown dependencies, or mapping/output inconsistency.
 - For discovery across the workspace - that is [`forgeplan playbook list`](/docs/cli/playbook-list/).
 
 ## Usage
@@ -55,10 +56,9 @@ forgeplan playbook show [OPTIONS] <TARGET>
    as a filesystem path first; anything else is looked up by name across the three discovery
    roots. A miss prints `no playbook named ... and no file at that path` plus a
    `Fix: forgeplan playbook list` hint and exits 2.
-2. Reads the file under the input caps - 1 MiB, and 256 `{` / `[` nesting brackets. Either
-   violation is reported as a structured error with a `Fix:` hint, before the YAML parser ever
-   sees the content. The file is opened only after a metadata pre-check, so an adversarial
-   multi-gigabyte file never enters memory.
+2. Reads the file under the input caps — 1 MiB and at most 256 `{` / `[`
+   opener tokens in total. This conservative count is not true nesting depth.
+   Violations are reported before YAML parsing.
 3. Parses the YAML against the SPEC-003 schema. A loader error is printed with the offending
    file path and a runnable remediation command.
 4. Prints the header block: `Playbook`, `Title`, `Description`, and the resolved `Source` path.
@@ -73,11 +73,15 @@ Nothing is dispatched, nothing is written, and no journal entry is created.
 
 ## Examples
 
-### Read a canonical pack before running it
+### Read an installed kickoff playbook before running it
 
 ```bash
 forgeplan playbook show greenfield-kickoff
 ```
+
+Illustrative output, assuming a discoverable playbook with the following
+steps and metadata. This is not a claim that this pack or its printed
+install hint exists in the current public catalog:
 
 ```
 Playbook: greenfield-kickoff
@@ -119,10 +123,10 @@ Steps (7):
 Next: forgeplan playbook run greenfield-kickoff --yes --dry-run
 ```
 
-Read the shape before the details. Steps 4, 5, and 6 all `requires: kickoff-epic`, so a failure
-at step 3 skips three steps at once. Step 7 is a `skill:` delegate with a `fallback_hint`, which
-means a missing skill is a soft failure with an install instruction rather than a dead run. Only
-the final step has a `fallback_hint` at all - the other six can only succeed or fail.
+Steps 4–6 declare a dependency on step 3. `show` displays that structure; it
+does not simulate whether execution aborts or continues. A `fallback_hint`
+is install guidance, not a guarantee of a soft failure: execution depends
+on `on_error` and the delegate result.
 
 ### Point at a file that is not installed
 
@@ -150,12 +154,17 @@ while a name target shows the absolute path discovery resolved to. The `command:
 delegate label is the signal that this playbook will hit the shell gate on
 [`playbook run`](/docs/cli/playbook-run/#the-shell-gate).
 
+`--yes` and `--allow-shell` are independent. Merely printing a `command:`
+delegate here does not authorize execution.
+
 ### Machine-readable structure
 
 ```bash
 forgeplan playbook show demo-shell --json
 ```
 
+
+Illustrative values for the two-step example above:
 ```json
 {
   "_next_action": "forgeplan playbook run demo-shell --yes --dry-run",
@@ -174,6 +183,15 @@ forgeplan playbook show demo-shell --json
         },
         "id": "say-hello",
         "on_error": "abort"
+      },
+      {
+        "delegate_to": {
+          "command": ["echo", "second"],
+          "type": "command"
+        },
+        "id": "after",
+        "requires": ["say-hello"],
+        "on_error": "abort"
       }
     ],
     "title": "Shell-gate demo"
@@ -183,9 +201,9 @@ forgeplan playbook show demo-shell --json
 ```
 
 The `playbook` object is the parsed model, so fields the text renderer does not surface -
-`schema_version`, `on_error`, `input`, `timeout_seconds`, `budget_usd`, `allowed_tools` - are
-all visible here. Use `--json` when the question is "what did the loader actually accept?",
-and the text mode when the question is "what will this do?".
+`schema_version`, `on_error`, `input`, `timeout_seconds`, `budget_usd`, `allowed_tools` —
+are visible when set (optional fields are omitted when absent). A field being
+accepted by the loader does not mean every delegate enforces it.
 
 ### Unknown target
 
@@ -222,6 +240,10 @@ its own, without the resolution layer in the way.
 - `requires plugins:` and `requires skills:` sections are omitted entirely when the playbook
   declares no prerequisites - an absent section means "nothing declared", not "nothing loaded".
 - `--json` and text mode carry the same `_next_action`, which is always the dry-run command.
+- The suggested dry-run uses `pb.name`, even when you loaded an external file
+  by path. If that name is not discoverable, run with the original path instead.
+  `--yes` is consent to the run; it does not grant shell permission.
+  Command delegation has a separate `--allow-shell` opt-in on `playbook run`.
 
 ## See also
 

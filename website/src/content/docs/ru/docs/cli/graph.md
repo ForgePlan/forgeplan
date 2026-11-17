@@ -4,9 +4,13 @@ description: "Генерирует граф зависимостей связа�
 ---
 
 Выводит граф зависимостей всех связанных артефактов в формате Mermaid. В отличие от
-[`tree`](/docs/cli/tree/), который показывает только иерархию родитель/потомок, `graph`
-отображает каждую типизированную связь (`informs`, `supersedes`, `blocks`, `relates_to`
-и т.д.) как ребро - полный DAG решений.
+[`tree`](/ru/docs/cli/tree/), который показывает только иерархию родитель/потомок, `graph`
+отображает каждую типизированную связь (`informs`, `supersedes`, `based_on`, `refines`, `contradicts`
+и т.д.) как ребро - полный граф решений; циклы возможны.
+
+## Forgeplan 0.38.0
+
+`--brownfield-only` ограничивает Mermaid-визуализацию brownfield-артефактами. В JSON 0.38.0 флаг только отражается в brownfield_only: массив edges остаётся полным, без фильтрации. Массив nodes отсутствует. Текстовый вывод также содержит строку `Next:`, не являющуюся Mermaid; примеры записи в файл ниже удаляют её. Для графа одного артефакта сначала изучите связи через `get`: позиционного ID у graph нет.
 
 ## Когда использовать
 
@@ -17,9 +21,9 @@ description: "Генерирует граф зависимостей связа�
 
 ## Когда не использовать
 
-- Вам нужна только декомпозиция родитель/потомок → используйте [`forgeplan tree`](/docs/cli/tree/)
-- Вам нужен порядок выполнения → используйте [`forgeplan order`](/docs/cli/order/)
-- Вам нужен плоский список → используйте [`forgeplan list`](/docs/cli/list/)
+- Вам нужна только декомпозиция родитель/потомок → используйте [`forgeplan tree`](/ru/docs/cli/tree/)
+- Вам нужен порядок выполнения → используйте [`forgeplan order`](/ru/docs/cli/order/)
+- Вам нужен плоский список → используйте [`forgeplan list`](/ru/docs/cli/list/)
 
 ## Использование
 
@@ -30,9 +34,10 @@ forgeplan graph [OPTIONS]
 ## Опции
 
 ```text
-      --json     Вывод в формате JSON для машинной обработки
-  -h, --help     Вывести справку
-  -V, --version  Вывести версию
+      --json             Output as JSON for machine consumption
+      --brownfield-only  Issue #287 Phase F: filter edges to brownfield kinds only (UC / GLOS / INV / SCEN / HYP / DM). Pipeline edges (PRD / RFC / ADR / EPIC / SPEC) are dropped from output. Domain-model subgraph clusters are preserved
+  -h, --help             Print help
+  -V, --version          Print version
 ```
 
 ## Примеры
@@ -46,13 +51,13 @@ forgeplan graph
 Перенаправить в файл и вставить в GitHub:
 
 ```bash
-forgeplan graph > deps.mmd
+forgeplan graph | grep -v '^Next:' > deps.mmd
 ```
 
 Рендеринг в PNG с помощью mermaid-cli:
 
 ```bash
-forgeplan graph > deps.mmd && mmdc -i deps.mmd -o deps.png
+forgeplan graph | grep -v '^Next:' > deps.mmd && mmdc -i deps.mmd -o deps.png
 ```
 
 JSON для пользовательского интерфейса:
@@ -71,8 +76,8 @@ graph TD
   PRD_039[PRD-039<br/>BM25 production]
   RFC_004[RFC-004<br/>Layered search]
   EVID_018[EVID-018<br/>Benchmark]
-  EPIC_003 --> PRD_039
-  PRD_039 --> RFC_004
+  PRD_039 -->|belongs_to| EPIC_003
+  RFC_004 -->|based_on| PRD_039
   EVID_018 -.informs.-> PRD_039
 ```
 
@@ -80,26 +85,24 @@ graph TD
 
 | Синтаксис          | Значение                                            |
 |-----------------|----------------------------------------------------|
-| `A --> B`       | Родитель/потомок (структурная связь)               |
+| `A --> B` | Потомок A → родитель B для связи `belongs_to` |
 | `A -.informs.-> B` | Типизированное ребро из фронтматтера ссылки      |
-| `A -.supersedes.-> B` | Ребро жизненного цикла, новое замещает старое |
+| `A -.supersedes.-> B` | Ребро жизненного цикла, старый ID указывает на замену |
 | Метка узла      | `<ID><br/><title>`                                 |
 
-Активные артефакты получают сплошную обводку; замещённые/устаревшие - пунктирную
-(если ваш рендерер поддерживает определения классов, выводимые в начале
-графа).
+Диаграммы ниже иллюстративны: ID узлов, стили, подписи и связи зависят от пространства. Связь с родителем — `belongs_to`, от потомка к родителю.
 
-С опцией `--json` оболочка имеет вид `{ nodes: [...], edges: [...] }` - готово для
+С опцией `--json` оболочка имеет вид `{ edges: [{from, to, relation}], brownfield_only, _next_action }` - готово для
 Cytoscape, D3 или любой другой библиотеки графов.
 
 ### Пример отрисованной диаграммы
 
 ```mermaid
 graph TD
-  EPIC_003["EPIC-003\nSearch & Discovery"] --> PRD_039["PRD-039\nSmart Search v2"]
-  EPIC_003 --> PRD_035["PRD-035\nBrownfield Discovery"]
-  PRD_039 --> RFC_006["RFC-006\nSearch Architecture"]
-  RFC_006 --> ADR_004["ADR-004\nBM25 Engine Choice"]
+  PRD_039["PRD-039\nSmart Search v2"] -->|belongs_to| EPIC_003["EPIC-003\nSearch & Discovery"]
+  PRD_035["PRD-035\nBrownfield Discovery"] -->|belongs_to| EPIC_003
+  RFC_006["RFC-006\nSearch Architecture"] -->|based_on| PRD_039
+  ADR_004["ADR-004\nBM25 Engine Choice"] -->|based_on| RFC_006
   EVID_052["EVID-052"] -.informs.-> PRD_039
   EVID_060["EVID-060"] -.informs.-> PRD_035
 ```
@@ -109,15 +112,15 @@ graph TD
 `graph` представляет собой полное реляционное представление. Для разных вопросов:
 
 ```
-graph   →  все рёбра              (реляционная картина)
-tree    →  только родитель/потомок (иерархия)
-order   →  топологический обход    (выполнение)
-blocked →  неразрешённые зависимости (планирование)
+graph   →  all edges              (relational picture)
+tree    →  parent/child only       (hierarchy)
+order   →  topological walk        (execution)
+blocked →  unresolved dependencies (planning)
 ```
 
 ## См. также
 
-- [`forgeplan tree`](/docs/cli/tree/) - иерархическое представление
-- [`forgeplan order`](/docs/cli/order/) - топологический порядок
-- [`forgeplan blocked`](/docs/cli/blocked/) - блокирующие зависимости
-- [`forgeplan link`](/docs/cli/link/) - создание типизированных рёбер
+- [`forgeplan tree`](/ru/docs/cli/tree/) - иерархическое представление
+- [`forgeplan order`](/ru/docs/cli/order/) - топологический порядок
+- [`forgeplan blocked`](/ru/docs/cli/blocked/) - блокирующие зависимости
+- [`forgeplan link`](/ru/docs/cli/link/) - создание типизированных рёбер

@@ -1,17 +1,18 @@
 ---
 title: forgeplan ci-assign-id
-description: "PROB-060 Phase 0b - атомарный CI-присвоитель `assigned_number`. Обходит `.forgeplan/**/*.md` в `--head`, находит кандидатов с `assigned_number: null`, вычисляет `next = max(assigned_number)+1` для каждого вида из `--base` git ref, переписывает frontmatter (без переименования файла - Phase 2.1). Без LanceDB согласно ADR-003. В продакшене обёрнут в `.github/workflows/assign-id.yml` с `concurrency: forgeplan-id-assign`"
+description: "Назначает assigned_number по рабочему дереву и --base, обновляет frontmatter и имя файла; без LanceDB."
 ---
 
-Генерирует числовую половину идентификатора артефакта (`assigned_number`) для каждого
-нового артефакта с `assigned_number: null` в pull request, чтобы два PR никогда не претендовали
-на один и тот же номер. Это CI-бот половина истории идентификации PROB-060: бинарник
-выполняет нумерацию, workflow делает коммит и push.
+Назначает числовую часть идентификатора (`assigned_number`) кандидатам рабочего дерева по максимуму каждого типа в `--base`. Бинарник нумерует файлы; обёртывающий workflow делает commit и push. Это не служба глобального резервирования: два запуска по одной неизменившейся базе могут выбрать один следующий номер.
 
 Путь записи намеренно узкий. `ci-assign-id` никогда не трогает LanceDB
 (красная линия #8 ADR-003), никогда не читает таблицу `change_log` (изоляция
 PROB-061), не выполняет сетевых вызовов и никогда не запускает `git commit` или
 `git push` - это делает обёртывающий workflow.
+
+## Forgeplan 0.38.0
+
+Справка 0.38.0 всё ещё говорит «no file rename», но runtime переименовывает файл после назначения номера. Это отдельные файловые шаги, не атомарная транзакция всей партии. Коллизии пропускаются с предложением; `--auto-suffix` не применяет суффикс, хотя меняет итоговый код на 0. Опубликованный assign-id.yml в режиме dry-run использует неподдерживаемый --dry-run-only: при адаптации workflow замените его на --dry-run. Просмотрите план, действия и Git diff перед коммитом; индекс обновляйте через reindex. Выводы фикстур ниже сохранены как исторические примеры, не результаты текущего запуска.
 
 ## Использование
 
@@ -22,16 +23,16 @@ forgeplan ci-assign-id [OPTIONS]
 ## Опции
 
 ```text
-      --pr <PR>                Номер PR (информационный, используется в сообщении коммита). Обязателен в CI [по умолчанию: 0]
-      --repo <REPO>            Слаг репозитория "owner/name" (информационный). По умолчанию: определяется из origin
-      --base <BASE>            Git ref для состояния "назначения" для поиска max(assigned_number) [по умолчанию: origin/dev]
-      --head <HEAD>            Git ref для состояния "входящего" PR [по умолчанию: HEAD]
-      --workspace <WORKSPACE>  Корень рабочего пространства. По умолчанию: cwd
-      --dry-run                Не записывать frontmatter; вывести, что изменилось бы
-      --auto-suffix            При коллизии slug (slug уже существует в --base), предложить переименование в `<slug>-<assigned_number>`. Фаза 0b: только предупреждение
-      --json                   Выводить машиночитаемый JSON в stdout
-  -h, --help                   Вывести справку
-  -V, --version                Вывести версию
+      --pr <PR>                PR number (informational, used in commit message). Required in CI [default: 0]
+      --repo <REPO>            Repo slug "owner/name" (informational). Default: detect from origin
+      --base <BASE>            Git ref for "destination" state for max(assigned_number) lookup [default: origin/dev]
+      --head <HEAD>            Git ref for "incoming" PR state [default: HEAD]
+      --workspace <WORKSPACE>  Workspace root. Default: cwd
+      --dry-run                Do not write frontmatter; print what would change
+      --auto-suffix            On slug collision (slug already exists on --base), suggest `<slug>-<assigned_number>` rename. Phase 0b: warning only
+      --json                   Emit machine-readable JSON to stdout
+  -h, --help                   Print help
+  -V, --version                Print version
 ```
 
 ## Что делает
@@ -63,7 +64,7 @@ concurrency:
 ```
 
 - **group** сериализует каждый запуск в репозитории, так что второй PR ждёт, пока запуск нумерации первого PR выполняется.
-- **`cancel-in-progress: false`** - это несущая половина: отмена запуска в очереди оставила бы этот PR без номера, поэтому группа ставит в очередь вместо замены.
+- **`cancel-in-progress: false`** не отменяет выполняющийся job, но не гарантирует сохранение всех ожидающих запусков. Сериализация не резервирует номера: следующая операция должна видеть базу с уже принятыми назначениями. Проверяйте интеграцию merge/очереди и при необходимости повторяйте нумерацию.
 - Job срабатывает только на `pull_request: [labeled]` с меткой `ready-to-merge` на не-черновике PR, нацеленном на `dev`, или на `workflow_dispatch`. Гейт по метке сделан намеренно - workflow компилирует код, контролируемый PR, с активным `GITHUB_TOKEN`.
 - Workflow получает базу с помощью `git fetch origin dev:refs/remotes/origin/dev --no-tags --depth=200`, затем коммитит результат как `forgeplan-bot` и пушит его обратно в ветку head PR.
 
@@ -90,7 +91,7 @@ post-merge squash), и откатывается на `fs::rename` вне реп�
 Операция идемпотентна: если имя уже совпадает, переименование не выполняется.
 
 Сгенерированный текст справки всё ещё содержит формулировку Phase 0b "no file rename -
-Phase 2.1", но Phase 2.2 rename - это то, что 0.37.0 фактически делает. Поле JSON
+Phase 2.1", но Phase 2.2 rename - это поведение опубликованной реализации 0.38.0. Поле JSON
 `action` различает случаи:
 
 | `action` | Значение |
@@ -111,6 +112,7 @@ Phase 2.1", но Phase 2.2 rename - это то, что 0.37.0 фактичес�
 
 ```bash
 forgeplan ci-assign-id --base origin/dev --head HEAD --dry-run --pr 1234
+```
 
 Типичный вывод:
 
@@ -148,6 +150,7 @@ forgeplan ci-assign-id --base origin/dev --head HEAD --pr 1234
 ci-assign-id (PR #1234, base=origin/dev, head=HEAD)
   [skipped_already_assigned] PRD-001 (prd-widget-auth): /private/tmp/agent-ciid2/.forgeplan/prds/PRD-001-widget-auth.md
 Summary: 1 candidates, 0 assigned, 0 skipped, 0 collisions (exit 0)
+```
 
 ### Пример 4: JSON-вывод
 
@@ -203,8 +206,9 @@ forgeplan ci-assign-id --base origin/dev --head HEAD --pr 77 --json
   },
   "commit_message_suggested": "chore(ci): assign artifact IDs for PR #77\n\nAssigned: PRD-004 (prd-fourth)\n\nRefs: PROB-060, PRD-076, RFC-009 §Phase 0b"
 }
+```
 
-Пути к рабочему пространству здесь сокращены до `…`; бинарник выводит их абсолютными.
+В сохранённых выводах фикстуры пути сокращены до `…`. Текущая реализация выводит пути внутри пространства относительно него; исторические абсолютные пути не являются контрактом.
 
 `commit_message_suggested` строится только из назначений, чьё действие —
 `assigned` или `would_assign`, поэтому запуск, который только переименовал или пропустил файлы, оставляет это поле пустым. Рабочий процесс читает это поле из JSON и передаёт его в
@@ -237,6 +241,7 @@ Summary: 1 candidates, 0 assigned, 0 skipped, 1 collisions (exit 1)
 
 ```bash
 forgeplan ci-assign-id --base origin/dev --head HEAD
+```
 
 Типичный вывод:
 
@@ -256,19 +261,18 @@ Caused by:
   файл находится внутри рабочего пространства (CWE-200: структура CI не попадает в логи).
 - Ошибка парсинга frontmatter выводит
   `ci-assign-id: skipping <path>: frontmatter parse failed` и продолжает
-  обработку оставшихся кандидатов, так что один плохой файл не блокирует CI.
-- Код завершения: `0`, когда каждому кандидату был присвоен ID, он был переименован или пропущен;
-  `1` при коллизии без `--auto-suffix` или при ошибке обнаружения кандидатов.
+  обработку оставшихся кандидатов, поэтому изучайте предупреждения, не считайте завершение доказательством успешного чтения каждого файла.
+- Коды завершения: `0` для завершённого плана (также для неразрешённых коллизий с `--auto-suffix`); `1` для коллизий без него или обычных ошибок команды; `2` при отсутствии кандидатов; `3` при недопустимых Git refs; `4` при нарушении инварианта назначения. Изучайте список коллизий JSON, не только exit 0.
 - `--pr` и `--repo` носят только информационный характер. `--pr` по умолчанию равен `0`; когда
   `--repo` опущен, слаг определяется из `git remote get-url origin`.
 - Поскольку бинарник никогда не трогает индекс, запустите
-  [`forgeplan scan-import`](/ru/docs/cli/scan-import/) после этого, если долгоживущему
+  [`forgeplan reindex`](/ru/docs/cli/reindex/) после этого, если долгоживущему
   рабочему пространству нужно обновить хранилище.
 
 ## См. также
 
 - [Обзор CLI](/ru/docs/cli/)
 - [`forgeplan reconcile-ids`](/ru/docs/cli/reconcile-ids/) - устранение дрейфа, оставленного обойдённым присвоителем
-- [`forgeplan scan-import`](/ru/docs/cli/scan-import/) - перестроение индекса после переименования вне системы
+- [`forgeplan reindex`](/ru/docs/cli/reindex/) - перестроение индекса после переименования вне системы
 - [`forgeplan migrate-dry-run`](/ru/docs/cli/migrate-dry-run/) - диагностика семейства идентичности, которая предварительно просматривает миграцию перед её запуском
 - [Руководство по методологии](/ru/docs/methodology/overview/)

@@ -18,6 +18,10 @@ description: "Среда выполнения плейбуков (PRD-065 / SPEC
 
 `forgeplan playbook` - родительская команда. Она содержит четыре подкоманды плюс `help`.
 
+## Forgeplan 0.38.0
+
+Примеры версии 0.37.0 ниже — сохранённый вывод прежнего релиза. Текущий опубликованный бинарный файл — 0.38.0; таблицы аргументов и опций получены из него. Наличие бинарного файла не означает установку всех упомянутых плейбуков: сначала убедитесь, что TARGET доступен через playbook list или задайте существующий YAML-путь.
+
 ## Что она делает
 
 1. **Обнаруживает** каждый `*.yaml` / `*.yml` в корневых каталогах поиска и парсит его по
@@ -36,7 +40,7 @@ description: "Среда выполнения плейбуков (PRD-065 / SPEC
 
 - **Повторяемый онбординг** - `brownfield-code`, `brownfield-docs` и `greenfield-kickoff`
   кодируют первый час проекта как исполняемую последовательность.
-- **Мультиагентные ревью** - `audit.yaml` распределяет ревью между специализированными агентами.
+- **Мультиагентные ревью** — плейбук может вызывать специалистов; runtime выполняет шаги последовательно, а не распределяет их автоматически параллельно.
 - **Механика релизов** - `release.yaml` запускает предполётные гейты (`cargo fmt --check`,
   `cargo clippy`, тестовый набор рабочего пространства, `forgeplan health`) в фиксированном порядке.
 - **CI и бутстрап агентов** - вывод `--json` плюс код завершения процесса позволяют конвейеру трактовать
@@ -59,18 +63,18 @@ forgeplan playbook <COMMAND>
 ## Опции
 
 ```text
-  -h, --help     Вывести справку
-  -V, --version  Вывести версию
+  -h, --help     Print help
+  -V, --version  Print version
 ```
 
 ## Подкоманды
 
 ```text
-  list      Список доступных плейбуков (встроенные + установленные паки) с применимыми рекомендациями на основе сигналов проекта
-  show      Показать структуру плейбука (шаги, делегирования, требования)
-  validate  Валидировать YAML плейбука по схеме SPEC-003
-  run       Запустить плейбук — последовательное выполнение шагов с делегированием
-  help      Вывести это сообщение или справку по указанной подкоманде
+  list      List available playbooks (built-in + installed packs) with applicable recommendations based on project signals
+  show      Show playbook structure (steps, delegations, requires)
+  validate  Validate playbook YAML against SPEC-003 schema
+  run       Run a playbook — sequential step execution with delegations
+  help      Print this message or the help of the given subcommand(s)
 ```
 
 ## Справочник подкоманд
@@ -93,17 +97,15 @@ forgeplan playbook <COMMAND>
 
 | `type` | Поля | Что запускается |
 |---|---|---|
-| `plugin` | `name`, `target` | Внешняя команда плагина, вызываемая через инструмент Task |
-| `agent` | `name` | Именованный агент, вызываемый через инструмент Task |
-| `skill` | `name`, опциональный `pack` | Навык, загруженный в контекст вызывающего |
+| `plugin` | `name`, `target` | Подпроцесс `claude --print --agent <target>` (при пустом target берётся name) |
+| `agent` | `name` | Подпроцесс `claude --print --agent <name>` |
+| `skill` | `name`, опциональный `pack` | Печатает `[skill-invoke] /…`; ядро не загружает и не выполняет навык |
 | `command` | `command` как список argv | Произвольный процесс - **только с явным разрешением**, см. ниже |
 | `forgeplan_core` | `target` | Встроенная операция: `ingest`, `new`, `validate`, `activate` или `search` |
 
 `forgeplan playbook show` отображает их как компактные метки `delegate=`, например
 `delegate=plugin:<name>#<target>`, `delegate=skill:forge-scaffolder (pack: brownfield-docs-pack)`,
-`delegate=command:echo hello` или `delegate=forgeplan_core:new`. Только типизированные делегаты несут
-собственную границу разрешений; `command` открыт по конструкции, поэтому именно он
-требует отдельного подтверждения.
+`delegate=command:echo hello` или `delegate=forgeplan_core:new`. Для plugin и agent нужны установленный Claude CLI с действующей авторизацией и доступный агент; используется сессия CLI, а не LLM-провайдер Forgeplan. Ограничение релизного skill-диспетчера: он возвращает успех после trace, не проверяя установку и не создавая выходной файл. Хост может интерпретировать trace, но ядро этого не гарантирует.
 
 ## Обнаружение и разрешение
 
@@ -128,11 +130,9 @@ forgeplan playbook <COMMAND>
 ## Примечания по безопасности
 
 - **Шаги `command:` запрещены по умолчанию.** `forgeplan playbook run` отклоняет их, если не передан
-  `--allow-shell` или рабочее пространство не устанавливает `[playbook] allow_shell = true`. Отклонение -
-  это сбой шага, а не молчаливый пропуск.
+  `--allow-shell` или в `.forgeplan/config.yaml` не задано `playbook: { allow_shell: true }`. Проверка безопасности отказывает до dispatch, а не молча пропускает команду.
 - **`run` отказывается без `--yes`.** Этот гейт независим от разрешения оболочки - см.
-  [`forgeplan playbook run`](/ru/docs/cli/playbook-run/) для наблюдаемого поведения каждой
-  комбинации.
+  [`forgeplan playbook run`](/ru/docs/cli/playbook-run/) о двух независимых гейтах. CLI не позволяет принудительно запретить оболочку, если разрешение включено в конфигурации.
 - **Ввод ограничен перед парсингом.** Файл плейбука размером более 1 МиБ (1048576 байт) или с
   более чем 256 скобками `{` / `[` отклоняется со строкой `warn:` при обнаружении и
   структурированной ошибкой от `show` / `run`.
@@ -163,9 +163,9 @@ Commands:
 Трёхкомандная форма первого контакта с паком:
 
 ```bash
-forgeplan playbook list                                    # что доступно отсюда?
-forgeplan playbook show greenfield-kickoff                 # что он на самом деле делает?
-forgeplan playbook run greenfield-kickoff --yes --dry-run  # во что это обойдётся?
+forgeplan playbook list                                    # what is reachable from here?
+forgeplan playbook show greenfield-kickoff                 # inspect a listed target
+forgeplan playbook run greenfield-kickoff --dry-run        # enumerate; no execution
 ```
 
 Каждая подкоманда также принимает `-V` / `--version`, которая сообщает строку версии,

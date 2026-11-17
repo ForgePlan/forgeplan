@@ -4,6 +4,9 @@
 
 Справочник терминов, используемых в проекте Forgeplan. Термины сгруппированы по категориям.
 
+Описание runtime относится к Forgeplan **0.38.0**. Методологические понятия
+и процессы marketplace отмечены отдельно; установка CLI не устанавливает их.
+
 ---
 
 ## Артефакты
@@ -12,7 +15,7 @@
 Запись архитектурного решения с контекстом, rationale, альтернативами. Фиксирует **почему** было принято решение, а не только **что** решили.
 
 ### Artifact DAG
-Directed Acyclic Graph артефактов: Proposal → Specs → Design → Tasks. Из OpenSpec. Граф зависимостей без циклов — каждый артефакт знает своих родителей и потомков.
+Направленный ациклический граф зависимостей для упорядочивания работ. Forgeplan хранит типизированные связи и вычисляет порядок через `forgeplan order`, блокировки — через `forgeplan blocked`. Не каждая связь является зависимостью; `informs` — информационная.
 
 ### DDR (Detailed Decision Record)
 Расширенный ADR с invariants, rollback plan, valid_until, pre/post-conditions. Из Quint-code. Четырёхкомпонентная структура: Problem Frame → Decision → Rationale → Consequences.
@@ -27,10 +30,10 @@ Directed Acyclic Graph артефактов: Proposal → Specs → Design → T
 Набор доказательств: тесты, benchmarks, measurements. Тип артефакта (`evid-`). Подкрепляет решения измеримыми данными.
 
 ### ID формат
-Каноничный формат: `TYPE-NNN` (uppercase). Примеры: `PRD-001`, `EPIC-042`, `ADR-007`, `PROB-003`, `SOL-001`, `SPEC-015`, `RFC-128`. Для файлов: `TYPE-NNN-kebab-case-title.md` (например `PRD-001-social-login.md`). В коде Rust используется lowercase prefix с датой: `prd-20260321-001`.
+Отображаемые ID имеют формат `TYPE-NNN` (uppercase): `PRD-001`, `EPIC-042`, `ADR-007`, `PROB-003`, `SOL-001`, `SPEC-015`, `RFC-128`. Проекция — `TYPE-NNN-kebab-case-title.md`. При создании также записываются стабильный `slug` из названия и метаданные присвоения номера. Используйте ID/slug, возвращённый CLI/MCP, а не придуманный ID с датой; см. [присвоение ID](ID-ASSIGNMENT.ru.md).
 
 ### Note
-Микро-решение. Не требует rationale. Авто-истекает через 90 дней. Самый лёгкий тип артефакта. Префикс: `note-`.
+Микрорешение или наблюдение без обязательного обоснования. Лёгкий тип `note` создаётся как `draft`. Шаблон упоминает соглашение о 90 днях, но создание не вычисляет срок; автоматическое истечение предполагать нельзя.
 
 ### PRD (Product Requirements Document)
 Документ требований: **что**, **зачем**, **для кого**. Определяет scope и acceptance criteria. Не описывает реализацию. Префикс: `prd-`.
@@ -56,14 +59,14 @@ Directed Acyclic Graph артефактов: Proposal → Specs → Design → T
 | CL0 | 0.9 | Противоположный контекст |
 
 ### DerivedStatus
-Вычисляемый статус артефакта. **Никогда** не хранится напрямую — всегда рассчитывается на основе текущего состояния:
+Вычисляется по артефакту и его связям отдельно от сохранённого поля жизненного цикла `status`. Выпущенное ядро использует состояния:
 
 ```
-UNDERFRAMED → FRAMED → EXPLORING → COMPARED → DECIDED → APPLIED → REFRESH_DUE
+STUB → SHAPED → VALIDATED → EVIDENCED → ACTIVATED
 ```
 
 ### Evidence Decay
-Доказательства имеют TTL (`valid_until`). Истёкшие доказательства получают score = 0.1 (слабые, но не отсутствующие). Graduated epistemic debt — чем дольше истёк срок, тем менее надёжно.
+Доказательство может содержать `valid_until`. После истечения срока оно получает 0.1 независимо от того, сколько времени прошло. `forgeplan decay` показывает влияние на решения; непрерывного уменьшения score с возрастом нет.
 
 ### F-G-R Trust Calculus
 Три оси оценки качества знания из FPF:
@@ -79,16 +82,16 @@ UNDERFRAMED → FRAMED → EXPLORING → COMPARED → DECIDED → APPLIED → RE
 ```
 R_eff = min(evidence_scores) с CL penalties
 ```
-Trust = weakest link, **НИКОГДА** average. Надёжность решения определяется самым слабым из *текущих* доказательств, а не средним. Пакеты с терминальным статусом (`superseded`/`deprecated`) исключаются из min (ADR-020); активный `refutes` по-прежнему обнуляет score.
+Доверие определяется слабейшим звеном, **не средним**. Учитываются *текущие* доказательства. Терминальные пакеты (`superseded`/`deprecated`) исключаются; draft evidence участвует. Неистёкший `refutes` получает ноль. В теле задаются `verdict: supports|weakens|refutes`, `congruence_level: 0|1|2|3`, `evidence_type: test|measurement|benchmark|audit`. Отсутствующий/нераспознанный verdict или отсутствие данных о конгруэнтности дают CL0; обычный текст или успешный заголовок не дают 1.0.
 
 ### Stepping Stone
 Вариант, открывающий будущие возможности даже если не оптимален сейчас. Boolean flag в SolutionPortfolio. Учитывается при выборе варианта наряду с R_eff.
 
 ### Valid Until
-TTL артефакта или evidence. По истечении срока:
-- Статус → `REFRESH_DUE`
-- Evidence score → 0.1
-- Требуется переоценка через RefreshReport
+Необязательная дата актуальности. `forgeplan stale` сообщает об истечении,
+но не заменяет сохранённый статус на `REFRESH_DUE` автоматически.
+Истёкшее evidence получает 0.1. Перед `renew` или `reopen` нужна переоценка;
+эти команды выполняют явные переходы lifecycle.
 
 ### Verification Gate
 5-точечная проверка перед закрытием решения:
@@ -110,7 +113,7 @@ TTL артефакта или evidence. По истечении срока:
 Протокол ревью, применяется на уровнях Deep и Critical. Ревьюер активно ищет контрпримеры и противоречия, фиксирует находки с severity / местоположением / последствием / состоянием и может завершить ревью **PASS с нулём реальных дефектов** только когда выполнены семь условий из [`QUALITY-GATES.ru.md` §2](./QUALITY-GATES.ru.md#2-adversarial-review-protocol) на текущем полном candidate (generator ≠ verifier, закреплена текущая версия, достаточные покрытие и доказательства, сохранены действующие gates, конечный отчёт). Ревьюер не выдумывает находки ради ненулевого счётчика и не принимает риск за владельца; неразрешённые `HIGH` / `Critical` означают `BLOCKER`. См. [`QUALITY-GATES.ru.md` §2](./QUALITY-GATES.ru.md#2-adversarial-review-protocol) — канонический core-протокол.
 
 ### Contextual Chain
-Паттерн из BMAD: выход каждой фазы = вход следующей. Автоматическая передача контекста без потерь. Гарантирует, что ни один результат промежуточного шага не теряется.
+Паттерн BMAD: результат одной фазы становится входом следующей. В агентском процессе оркестратор явно передаёт артефакты и evidence; ядро Forgeplan не гарантирует передачу контекста между агентами без потерь.
 
 ### Depth Calibration
 4 уровня глубины документирования, определяющих набор создаваемых артефактов:
@@ -122,11 +125,17 @@ TTL артефакта или evidence. По истечении срока:
 | Deep | Новый модуль, 1–2 недели | PRD → Spec → RFC → ADR |
 | Critical | Подсистема, кросс-команда | Epic → PRD[] → Spec[] → RFC[] → ADR[] |
 
+Это четыре уровня методологии. Конвейеры ядра: `tactical` (без обязательных
+артефактов), `standard` (PRD → RFC), `deep` (PRD → Spec → RFC → ADR).
+Реализация принимает `update --depth critical`, но понимает это значение как
+Deep; help перечисляет только три обычные глубины. Особые требования ревью
+для Critical остаются правилами методологии.
+
 ### Forge Cycle
-Полный FPF-aligned цикл разработки: Observe → Route → Shape → Sprint → Build → Audit → Fix → Evidence → Commit → PR → Activate → Next. Реализован как `/forge-cycle` команда в Claude Code. Автоматически разрешает конфликты через ADI + WLNK + Reversibility.
+Процесс от артефакта до поставки из отдельного плагина `forgeplan-workflow`, команда `/forge-cycle`. Оркестратор выполняет маршрутизацию, подготовку, реализацию, ревью, evidence и активацию. Названия slash-команд внутри шаблона — смысловые инструкции, а не автоматические вложенные вызовы skills. Установка CLI или `setup-skill` сама этот процесс не устанавливает.
 
 ### Forge Mode
-Модель разрешений для AI агентов с 3 зонами доверия (FPF B.3): Green (авто — cargo, forgeplan, git read), Yellow (acceptEdits — файлы), Red (blocked — force push, rm -rf). Реализован через whitelist в settings + PreToolUse blacklist hook.
+Проектное соглашение о разрешениях агентского окружения: чтение/разрешённые команды, правки файлов, запрещённые опасные операции. Защита зависит от настроек хоста и установленных хуков, а не от режима разрешений CLI Forgeplan. Перед использованием проверьте реальную конфигурацию проекта.
 
 ### Invariants
 Что **ДОЛЖНО** выполняться всегда. Ненарушимые ограничения. Часть DDR. Если invariant нарушен — решение считается невалидным и требует пересмотра.
@@ -142,10 +151,10 @@ TTL артефакта или evidence. По истечении срока:
 | deep | Необратимое, security-critical решение |
 
 ### Scope Drift
-Незаметное переключение из одного типа работы в другой (тактика → стратегия). Anti-pattern в FPF B.4. Решение: Scope Lock в `/forge-cycle` Phase 0 фиксирует тип сессии и предупреждает при drift.
+Незаметный переход от согласованной задачи к другой работе. Агент должен сообщить об изменении и согласовать scope, а не молча расширять задание.
 
 ### Scope Lock
-Механизм в `/forge-cycle` Phase 0: фиксирует SESSION_SCOPE (tactical/strategic). При переключении — предупреждение с вариантами: вернуться, bookmark, разделить сессию, осознанно переключиться.
+Соглашение процесса: зафиксировать границы задачи и сравнивать с ними изменения. Это не блокировка CLI и не гарантия, что `/forge-cycle` отклонит правки вне scope.
 
 ---
 
@@ -158,32 +167,41 @@ Abduction (3+ гипотез) → Deduction (логическая проверк
 «Операционная система мышления». Транс-дисциплинарная архитектура для рассуждений. Источник ADI cycle, F-G-R Trust Calculus, Verification Gate и других паттернов Forgeplan.
 
 ### FPF auto-resolve
-Автоматическое разрешение конфликтов/выборов во время `/forge-cycle` Build фазы. Использует ADI цикл: Abduction (3 гипотезы) → Deduction (последствия каждой) → Induction (WLNK + Reversibility → выбор). Спрашивает юзера только при необратимых решениях.
+Выбор с помощью агента, ADI, анализа слабейшего звена и обратимости. Опубликованный процесс может записывать самостоятельные решения в Notes; это не разрешает обходить защиту хоста, делать необратимые изменения или принимать риск за владельца.
 
 ### LanceDB
-Embedded база данных: structured tables + vector embeddings в одной DB. Source of truth для Forgeplan. Позволяет комбинировать точный поиск по полям и семантический поиск по содержимому.
+Встроенный производный индекс метаданных, связей и векторов. Источник истины Forgeplan — markdown-проекции. `forgeplan reindex` пересобирает индекс из них; обычные изменения идут через CLI/MCP.
+
+### Hindsight
+Опциональный сервис межсессионной памяти, подключаемый через `fpl-hsmem` 3.7.0, не ядро Forgeplan. Проект явно задаёт `.hindsight.json` с `url`, `banks`, `defaultBank`; банки уже должны существовать. Хуки recall/retain по умолчанию выключены, клиентский BankGate не является серверной авторизацией. Команды Forgeplan `remember`/`recall` управляют отдельными простыми артефактами памяти, не Hindsight.
 
 ---
 
 ## См. также
 
-- [ARTIFACT-MODEL.md](ARTIFACT-MODEL.md) — иерархия артефактов и lifecycle
-- [PRD-RFC-ADR-FLOW.md](PRD-RFC-ADR-FLOW.md) — decision tree: какой документ создать
+- [ARTIFACT-MODEL.ru.md](ARTIFACT-MODEL.ru.md) — иерархия артефактов и lifecycle
+- [PRD-RFC-ADR-FLOW.ru.md](PRD-RFC-ADR-FLOW.ru.md) — дерево решений: какой документ создать
 - [VISION.md](../../VISION.md) — архитектура и data model
 
 ## Lifecycle статусы по типу артефакта
 
-| Тип | Lifecycle |
-|-----|-----------|
-| PRD | Draft → Review → Approved → Implementing → Implemented → Closed (или Rejected) |
-| Epic | Draft → Active → Done → Archived (или Cancelled) |
-| Spec | Draft → Approved → Implemented |
-| RFC | Draft → Discussion → Accepted → Implemented → Superseded |
-| ADR | Proposed → Accepted → Deprecated → Superseded |
-| ProblemCard | Draft → Active → Resolved |
-| SolutionPortfolio | Draft → Active → Decided |
-| EvidencePack | Draft → Active → Expired |
-| Note | Active → Expired (auto-expires 90 days) |
-| RefreshReport | Draft → Complete |
+В релизе хранится общий lifecycle, а не отдельные машины состояний
+с `approved`, `implemented` или `expired` для каждого типа:
 
-**Важно**: это type-specific lifecycles. Не путать с DerivedStatus (UNDERFRAMED→...→APPLIED), который вычисляется автоматически по полноте цепочки ProblemCard→SolutionPortfolio→ADR→EvidencePack и НЕ хранится как поле.
+| Переход | Команда / значение |
+|---|---|
+| `draft → active` | `forgeplan activate ID` |
+| `active → superseded` | `forgeplan supersede ID --by NEW-ID` |
+| `active/stale → deprecated` | `forgeplan deprecate ID --reason "..."` |
+| `active → stale` | Явный переход в stale; отчёт об истечении срока сам статус не меняет |
+| `stale → active` | `forgeplan renew ID --reason "..." --until YYYY-MM-DD` |
+| Пересмотреть старое решение | `forgeplan reopen ID --reason "..."` создаёт новый draft и выводит старый артефакт из действия |
+
+`superseded` и `deprecated` — терминальные состояния обычного lifecycle.
+Нельзя обходить гейты через `update --status active|superseded|deprecated`.
+Полные гейты содержимого/evidence действуют для PRD/Epic/Spec/RFC/ADR;
+у лёгких типов не все эти проверки есть.
+
+**DerivedStatus** (STUB → SHAPED → VALIDATED → EVIDENCED → ACTIVATED)
+вычисляется отдельно от сохранённого lifecycle `status`. Состояние проверки
+brownfield Hypothesis тоже отдельно; для него используется `hypothesis promote`.

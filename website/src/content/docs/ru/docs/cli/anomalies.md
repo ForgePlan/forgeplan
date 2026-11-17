@@ -22,24 +22,23 @@ forgeplan anomalies [OPTIONS]
 ## Опции
 
 ```text
-      --kind <KIND>          Фильтр по типу аномалии (snake_case: stuck_draft, orphan_link, mistyped_based_on, missing_must_section, expired_evidence, weakest_link_unresolvable, phase_mismatch, circular_dependency, duplicate_artifact)
-      --severity <SEVERITY>  Фильтр по серьёзности (low, medium, high)
-      --since <SINCE>        Возвращать только аномалии, обнаруженные в указанную или после указанной RFC 3339 метки времени
-      --json                 Вывод в формате JSON вместо человекочитаемой таблицы
-  -h, --help                 Вывести справку
-  -V, --version              Вывести версию
+      --kind <KIND>          Filter by anomaly kind (snake_case: stuck_draft, orphan_link, mistyped_based_on, missing_must_section, expired_evidence, weakest_link_unresolvable, phase_mismatch, circular_dependency, duplicate_artifact)
+      --severity <SEVERITY>  Filter by severity (low, medium, high)
+      --since <SINCE>        Only return anomalies observed at or after this RFC 3339 timestamp
+      --json                 Output as JSON instead of human-readable table
+  -h, --help                 Print help
+  -V, --version              Print version
 ```
 
 ## Что делает
 
 1. Открывает хранилище рабочего пространства и запускает канонический детектор из
    `forgeplan_core::anomalies`.
-2. Сравнивает обнаруженный набор с `.forgeplan/anomalies-journal.jsonl`,
-   журналом append-only, содержащим каждый id аномалии и метку времени первого
-   обнаружения.
-3. Применяет фильтры `--kind`, `--severity` и `--since`.
-4. Сохраняет обновлённый журнал (атомарный tempfile + rename), чтобы следующий запуск
-   мог сообщить о разнице, а не о полном снимке.
+2. Сравнивает набор с `.forgeplan/anomalies-journal.jsonl`, сохраняя время
+   первого обнаружения всё ещё существующих ID аномалий.
+3. Удаляет записи устранённых аномалий и атомарно перезаписывает журнал
+   в режиме best-effort. Это не неизменяемый append-only аудит.
+4. Применяет фильтры `--kind`, `--severity`, `--since` к отчёту.
 5. Отображает человекочитаемую таблицу или структурированный пейлоад при `--json`.
 
 ## Каталог аномалий
@@ -54,7 +53,7 @@ forgeplan anomalies [OPTIONS]
 | `missing_must_section` | Артефакт со `status=active` всё ещё содержит маркеры-заглушки (`TODO`, `TBD`, `placeholder`, `XXX`) |
 | `expired_evidence` | `valid_until` в прошлом, но доказательство всё ещё связано с активным артефактом |
 | `weakest_link_unresolvable` | R_eff упал до 0 из-за жёсткого штрафа CL выше по цепочке |
-| `phase_mismatch` | `status=active`, но фаза жизненного цикла всё ещё Shape или Validate |
+| `phase_mismatch` | `status=active`, но фаза жизненного цикла всё ещё Shape, Validate или ADI |
 | `circular_dependency` | Два артефакта связаны друг с другом через `based_on` |
 | `duplicate_artifact` | Два артефакта с эквивалентными заголовками и пересекающимися телами |
 | `hypothesis_duplicate` | Две гипотезы с Jaccard-индексом токенов заголовка 0.6 или выше |
@@ -97,9 +96,14 @@ Valid severities: low, medium, high
 
 | Tier | Значение | Кто действует |
 |---|---|---|
-| `auto` | Низкая серьёзность, однозначно | Оркестратор исправляет молча |
-| `adi` | Средняя неоднозначность | Цикл ADI в FPF в оркестраторе или агенте |
-| `user` | Высокая серьёзность, необратимо или неоднозначно | Эскалация с вопросом |
+| `auto` | Однозначное предлагаемое действие | Оркестратор может применить рекомендацию по собственной политике |
+| `adi` | Исследование или выбор среди вариантов исправления | Цикл ADI в FPF в оркестраторе или агенте |
+| `user` | Нужно решение или разрешение оператора | Эскалация с вопросом |
+
+Tier задаёт способ обработки независимо от серьёзности: например,
+`stuck_draft` может иметь `severity: "medium"` и `tier: "auto"`.
+Сама команда `anomalies` не исправляет находки, не запускает ADI,
+не задаёт вопросы и не запускает исполнителей.
 
 Передача `--tier` - жёсткая ошибка:
 
@@ -177,6 +181,8 @@ Next: forgeplan get <affected-id>  # review user-tier anomalies
 forgeplan anomalies --json
 ```
 
+
+Значения условные, это не запись выполненного запуска:
 ```json
 {
   "_next_action": "1 anomaly(ies) detected — 1 require user input. Run `forgeplan_get <id>` on affected artifacts to review.",

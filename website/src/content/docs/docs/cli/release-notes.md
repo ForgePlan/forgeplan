@@ -33,8 +33,8 @@ forgeplan release-notes [OPTIONS]
 
 1. Locates the workspace (`.forgeplan/`) and uses its parent as the git repo root.
 2. Resolves the ref range: `--since` defaults to `git describe --tags --abbrev=0`
-   and **falls back to `HEAD~50` when the repo has no tags**; `--until`
-   defaults to `HEAD`.
+   and **falls back to `HEAD~50` when tag discovery fails**; `--until`
+   defaults to `HEAD`. A repository with fewer than 51 commits may not resolve that fallback; pass a real starting commit/tag explicitly.
 3. Runs `git log --name-only --pretty=format:'COMMIT %H' --diff-filter=AM
    <since>..<until> -- <dirs>` over the artifact directories, keeping only
    `.md` files and the commit SHA that touched each one.
@@ -78,8 +78,8 @@ preview a release while unevidenced artifacts are still in flight.
 |---|---|
 | `prd` | Added |
 | `problem` | Fixed |
-| `evidence` linked 1-hop to a `security`-tagged artifact | Security |
-| `evidence` with no security neighbour | Internal |
+| `evidence` itself tagged `security`, or linked 1-hop to a `security`-tagged artifact | Security |
+| `evidence` with no such security tag on itself or neighbours | Internal |
 | `rfc`, `adr`, `spec`, `epic`, `solution` | Changed |
 | anything else | Internal |
 | `note`, `memory`, `refresh` | never emitted |
@@ -89,6 +89,8 @@ Internal; empty sections are skipped in markdown and text but are still
 present as keys in the JSON payload.
 
 ## Examples
+
+Output values below are illustrative, not results of an executed release check. Text/Markdown blocks show the formatted notes; the CLI can append its terminal hint marker.
 
 ### Example 1: the gate filters everything out
 
@@ -128,9 +130,7 @@ Typical output:
 - Ingest worker transport (RFC-001, commit 5453008)
 ```
 
-Each entry carries the title, the artifact id, and the short SHA of the
-commit that touched the file. When a closing evidence pack is attached, its
-id is inserted before the commit.
+Each entry carries the current stored title and artifact ID, an optional incoming EvidencePack ID (`evid` in JSON), and a seven-character SHA selected from commits that touched the file. When several commits touched it, selection is lexicographic by full SHA, not necessarily the newest commit. The evidence choice is an incoming ID-prefix match, not proof of a closing verification or current evidence quality.
 
 ### Example 3: plain text for a terminal preview
 
@@ -248,10 +248,11 @@ Error: unsupported --output "xml"; expected one of: text, markdown, json
 - A basename is mapped to an id in three shapes: `KIND-NNN-slug.md` and
   `KIND-NNN.md` become uppercase ids (`PRD-074`), while the pre-merge slug
   form is passed through lowercased as-is.
+- Git history selects touched paths, but status, title, score, and links come from the current artifact store, not snapshots at `--until`. Synchronize the store before generating notes and do not treat a historical range as a historical-state reconstruction.
 
 ## Related commands
 
-- [`forgeplan tag`](/docs/cli/tag/) - tags drive the default `--since` ref.
+- Git tags (created with `git tag`, not the artifact `forgeplan tag` command) drive the default `--since` ref.
 - [`forgeplan drift`](/docs/cli/drift/) - the other git-history-backed
   report: which decisions' files moved after the decision was recorded.
 - [`forgeplan health`](/docs/cli/health/) - run before cutting a release so

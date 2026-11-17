@@ -1,6 +1,6 @@
 ---
-title: "Spec is not PRD, it's the taste test - intent vs behavior, and why the difference is huge in practice"
-description: "A recipe can sound delicious and still be unworkable. The final taste of a dish is only verified by eating it. A PRD is the recipe. A Specification is the taste test: verifiable system behavior, a delta format for changes like commit messages, a dependency graph between related specs."
+title: "PRD is the recipe, spec is the taste test: why intent and behavior differ in practice"
+description: "A recipe can sound delicious and still be unworkable. You only know how the dish tastes when you eat it. A PRD is the recipe. A Specification is the taste test: verifiable system behavior, a delta format for changes like commit messages, a dependency graph between related specs."
 slug: spec-vs-prd-tasting-test
 lang: en
 publishedAt: 2026-05-22
@@ -25,7 +25,7 @@ On one side, the developer. They built exactly what was written in the PRD. If a
 
 On the other, the manager. The final product feels different from how it was supposed to. Somewhere between "requirement" and "implementation" a shift occurred, and both sides missed it, because both were looking at different documents.
 
-I've seen this situation in a dozen teams. It almost always has one root cause: the Product Requirements Document (PRD) says **what we want**, not **how the system should behave**. These two things sound similar, but the difference is enormous. I want to walk through examples, show a spec format that closes the gap, and explain why a dependency graph between specifications works a lot like commit messages in a repository.
+I've seen this situation in a dozen teams. It almost always has one root cause: the Product Requirements Document (PRD) says **what we want**, not **how the system should behave**. These two things sound similar, but the difference is enormous. A spec format closes that gap, and a dependency graph between specifications works a lot like commit messages in a repository.
 
 ## Intent and behavior
 
@@ -72,7 +72,7 @@ The delta format is borrowed from `git diff`. A spec change is described as a se
 - **MODIFIED** - what changed. With the split: "the behavior was X, now it's Y." Without the split, it's unclear what exactly shifted.
 - **REMOVED** - what was dropped. Always with a reason: "removed the minimum tag length requirement because we added support for emoji tags."
 
-This format gives you two things. First - a requirement history you can read the same way you'd read commit messages in a code repository. "When did we add that constraint? Why?" Open the delta, see the date and reason. Second - a way for adjacent teams to learn about a meaningful change without re-reading the entire spec.
+This format gives you a requirement history you can read the same way you'd read commit messages in a code repository. "When did we add that constraint? Why?" Open the delta, see the date and reason. It also lets adjacent teams learn about a meaningful change without re-reading the entire spec.
 
 In a team that uses the delta format, changing a spec becomes as disciplined as changing a public API: you can't just rewrite, you have to explain what and why.
 
@@ -86,11 +86,11 @@ Without a dependency graph, changing one spec triggers an invisible chain reacti
 
 With a dependency graph - a spec change automatically opens up linked specs for review. You change the schema, and the system says "you should check the search and migration specs - they depended on the old schema." The team looks in fifteen minutes, sees that migration is fine but search isn't. They open the search spec, update it, record the delta. Two hours later, all three specs are in sync.
 
-The graph isn't "yet another document to maintain." It's automatic protection against desynchronization, without which your spec system degrades into ten parallel truths.
+The graph provides automatic protection against desynchronization. Without it, your spec system degrades into ten parallel truths; treating the graph as "yet another document to maintain" misses that purpose.
 
 ## R_eff inside a specification
 
-In a previous post in this series I walked through the R_eff formula - a reliability rating for a decision through its weakest evidence link, weighted by context-match level. The same logic applies inside a spec.
+R_eff rates a decision's reliability through its weakest evidence link, weighted by context-match level. The same logic applies inside a spec.
 
 Each requirement in a spec rests on evidence. "Tag search under 200ms" rests on either your own measurement (CL3), a colleague's benchmark (CL2), vendor documentation (CL1), or the author's intuition (CL0).
 
@@ -100,9 +100,9 @@ The difference matters at the point of approving the spec. If R_eff is low - it'
 
 ## A concrete example: the notes tagging spec
 
-Let me tell one case, details changed.
+Here's a case with the details changed.
 
-The Vault team - the same one that, in the previous post, was designing the tag feature through the four phases of BMAD. They came out with a contract document - a PRD with 13 sections. Then the team sits down to write the spec.
+The Vault team designed the tag feature through the four phases of BMAD and produced a contract document: a PRD with 13 sections. Then the team sits down to write the spec.
 
 I'll call it `notes-tagging-spec`. Four sections:
 
@@ -111,7 +111,7 @@ I'll call it `notes-tagging-spec`. Four sections:
 - **Review triggers**: the spec must be revisited if the tag-per-note maximum is reached by more than 5% of users; or if tag search time exceeds 200ms at the 95th percentile.
 - **Out of scope**: tag hierarchy, colors, cross-device sync, sharing a tag with another user.
 
-The spec - two pages. Through it, the developer knows what to write. The project manager knows what to accept. Six months later, when load grows, the review triggers fire on their own - the system says "the 5% trigger has been exceeded, the spec needs a review." The team sits down, looks - yes, it's time to add indexes. They update with a delta.
+The spec is two pages long. It tells the developer what to write and the project manager what to accept. Six months later, when load grows, the review triggers fire on their own - the system says "the 5% trigger has been exceeded, the spec needs a review." The team sits down, looks - yes, it's time to add indexes. They update with a delta.
 
 That's what a spec working as a living contract looks like, rather than "a document we wrote and forgot."
 
@@ -119,7 +119,7 @@ That's what a spec working as a living contract looks like, rather than "a docum
 
 An AI agent is good at generating the first draft of a spec from a PRD plus examples. Give it the PRD for the tag feature and one existing spec for a similar endpoint - in a minute it'll produce a draft with four sections and input/output examples.
 
-Two final things belong to a human.
+A human needs to make the final call on two things.
 
 **The "out of scope" section.** The agent doesn't know which neighboring specs exist in your project and what was deliberately split out into separate documents. Without that knowledge it either forgets the "out of scope" section entirely, or fills it with obvious things ("out of scope: automatic AI-based categorization"). A useful "out of scope" list is always about specifically named related specs.
 
@@ -137,7 +137,7 @@ This is the sixth post in the series. Previous posts:
 - [A motivation section for an architectural decision](/blog/decision-record-with-expiry)
 - [The architect doesn't start with blueprints](/blog/architect-doesnt-start-with-blueprints)
 
-Coming next:
+Related topics:
 
 - What Forgeplan is and how it holds four ways of working in one plane.
 - The full cycle on one task - from a chat message to a decision record with a reopen condition.

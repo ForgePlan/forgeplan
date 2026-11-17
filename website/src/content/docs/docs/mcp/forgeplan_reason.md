@@ -3,66 +3,48 @@ title: forgeplan_reason
 description: "Analyze an artifact using FPF ADI reasoning cycle: Abduction (3+ hypotheses) → Deduction (evaluate each) → Induction (synthesize recommendation). Requires LLM provider."
 ---
 
-Runs the FPF ADI (Abduction → Deduction → Induction) reasoning cycle against an artifact, optionally seeded with FPF Knowledge Base context. Abduction generates 3+ competing hypotheses, Deduction produces testable predictions for each, and Induction synthesizes a conclusion with justified confidence. For Deep and Critical depth artifacts, ADI is **mandatory** - the agent should never commit code until `forgeplan_reason` has been consulted.
+Runs the FPF ADI (Abduction → Deduction → Induction) reasoning cycle against an artifact using the configured LLM provider. It asks for competing hypotheses, testable predictions and a synthesized conclusion. The MCP handler passes artifact context but no optional FPF knowledge-base seed; it has no `fpf` input flag. The CLI's `--fpf` option is a separate surface.
 
 **Category**: Reasoning & AI
 
 ## When an agent calls this
 
-- After `forgeplan_validate` PASS but before coding a Deep/Critical artifact - the mandatory ADI gate.
+- After validation and before implementation when the team's workflow calls for ADI. Deep/Critical ADI is a workflow policy, not a mandatory gate enforced by this handler.
 - When the user is hesitating between two approaches - ADI produces comparable predictions.
 - During adversarial review: re-reason with different constraints to stress-test the current decision.
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
-| `id` | `string` | yes | Artifact ID to analyze with the ADI reasoning cycle. |
+| `id` | `string` | yes | Artifact ID to analyze with ADI reasoning cycle |
+| `workspace` | `string \| null` | no | Optional explicit workspace directory for this call. When set, the MCP server resolves the `.forgeplan/` projection from this path instead of the server's startup CWD. Use this when the calling agent is running in a git worktree separate from the MCP server's launch directory. PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. Schema default: `null`. |
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::ReasonParams`_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
 
-A structured ADI report. The `hypotheses` array has 3+ entries, each with predictions. `induction` contains the synthesized recommendation and a confidence score the agent should surface verbatim.
+The payload contains `artifact_id`, `artifact_title`, `analysis`, `provider`, `model`, the workspace trace and `_next_action`. Read the generated `analysis` text: this endpoint does not expose separate `hypotheses`, `deduction` or `induction` JSON arrays.
 
-Example response shape:
+LLM output is a proposal, not measured evidence. Review its reasoning and validate the artifact before relying on it.
 
-```json
-{
-  "id": "PRD-042",
-  "hypotheses": [
-    { "id": "H1", "claim": "Use JWT with 15m access / 7d refresh", "predictions": ["..."] },
-    { "id": "H2", "claim": "Use server-side sessions with Redis", "predictions": ["..."] },
-    { "id": "H3", "claim": "OAuth2 device flow for CLI clients", "predictions": ["..."] }
-  ],
-  "deduction": [
-    { "hypothesis": "H1", "supported_by": ["..."], "risks": ["..."] }
-  ],
-  "induction": {
-    "recommendation": "H1 with session blacklist fallback",
-    "confidence": 0.78,
-    "rationale": "Aligns with existing infrastructure; lowest rollback cost."
-  }
-}
-```
+The handler loads LLM configuration with environment overrides and calls the provider. It does not save the analysis into the artifact or create evidence. Missing IDs return an MCP error; provider failures return `isError` with text and a configuration/login hint, not a substitute analysis.
 
 ## Example invocation
 
-```json
-{ "id": "PRD-001", "fpf": true }
-```
-
-With typical agent context:
-
-> PRD-042 is Deep depth. Agent runs ADI with FPF KB context before letting code happen.
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
 
 ```json
-{ "id": "PRD-042", "fpf": true }
+{
+  "id": "PRD-001"
+}
 ```
 
 ## Typical sequence
 
-`forgeplan_validate` PASS → `forgeplan_reason` (Deep/Critical must) → agent presents hypotheses to user → user picks direction (or concurs with induction) → code. If induction confidence is low (< 0.5), the agent should surface the uncertainty rather than forge ahead.
+Suggested workflow: `forgeplan_validate` → `forgeplan_reason` → review the hypotheses and uncertainty with the user → update the decision or gather evidence → implementation. The tool does not enforce user selection, a confidence threshold, or an automatic transition to coding.
 
 ## CLI equivalent
 

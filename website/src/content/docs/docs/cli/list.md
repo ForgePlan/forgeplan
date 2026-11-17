@@ -4,9 +4,7 @@ description: "List artifacts with filters - primary inventory command"
 ---
 
 List artifacts in the current workspace, optionally filtered by kind, status,
-tag, or creation date. This is the primary inventory command - use it to
-answer "what do we have in this project?" before planning, routing, or
-searching.
+or tag. This is the primary inventory command - use it to answer "what do we have in this project?" before planning, routing, or searching. For a date filter, `search --since` requires the semantic path in 0.38.0: CLI keyword search currently ignores `--since`, `--status`, and `--limit` (#544).
 
 ## When to use
 
@@ -70,9 +68,7 @@ Default output is a table with four columns:
 | `STATUS` | Lifecycle: draft / active / superseded / deprecated / stale |
 | `TITLE`  | Human-readable title from frontmatter                     |
 
-Rows are sorted by `created` descending (newest first). With `--json`, each
-record includes full frontmatter plus `score` and `R_eff` where available -
-useful piped into `jq` for dashboards.
+JSON is a bare array of `id`, `kind`, `status`, and `title` records. Use `get --json` for body and metadata.
 
 ## How it fits
 

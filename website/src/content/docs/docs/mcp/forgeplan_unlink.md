@@ -7,16 +7,26 @@ Remove a typed relation between two artifacts. Mirror of `forgeplan_link` for un
 
 **Category**: Editing Artifacts
 
-`forgeplan_link` is additive and `forgeplan_unlink` is subtractive: nothing is replaced in place. To change an edge from `based_on` to `refines` you either link with `replace: true` or unlink here and link again. Every edge this tool removes changes the dependency graph that R_eff, `forgeplan_order` and `forgeplan_health` read, so the source artifact's score is recomputed before the call returns.
+`forgeplan_unlink` removes a selected typed edge; it does not replace it in place. To change `based_on` to `refines`, use `forgeplan_link` with an authorized `replace: true`, or unlink then link again. Removal changes the graph used by R_eff, `forgeplan_order` and `forgeplan_health`; source score recomputation is attempted, not guaranteed.
+
+## Example invocation
+
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
+
+```json
+{
+  "source": "EVID-001",
+  "target": "PRD-001",
+  "relation": "informs"
+}
+```
 
 ## What it does
 
-1. **Takes the exclusive workspace lock.** The same lock discipline as `forgeplan_link`, so a concurrent writer cannot interleave with the graph rewrite.
-2. **Validates the relation value.** `relation` is a typed enum, so a value outside the five-variant set is rejected by the protocol layer before the handler runs.
-3. **Loads the source artifact's outgoing edges** from the store.
-4. **Verifies the edge exists.** The pair must match on both target and relation. This check exists precisely because LanceDB's delete is idempotent - without it a typo'd relation would look like a successful removal.
-5. **Deletes the edge and rewrites the markdown projection** in one operation, so the `## Related` block in the source artifact's file matches the store immediately.
-6. **Recomputes R_eff on the source.** Removing an edge can remove the artifact's weakest-link parent, so the score is refreshed. A failure here does not fail the call: it is logged and the response still reports the unlink as done.
+1. Takes the workspace write lock and decodes `relation`, defaulting to `informs`. Values outside the five-variant MCP enum fail at the protocol boundary.
+2. Loads the source's outgoing relations and requires a matching target/relation. A missing edge is an error, including a repeated unlink; no separate artifact-existence check is performed.
+3. Syncs the source projection and deletes the stored edge. Target pre-sync and rendering both endpoints are best-effort, not an atomic guarantee that Markdown and store match immediately.
+4. Attempts source score recomputation. Failure is logged without failing an otherwise successful unlink; ancestor scores are not certified by the success hint.
 
 ## When an agent calls this
 
@@ -27,23 +37,16 @@ Remove a typed relation between two artifacts. Mirror of `forgeplan_link` for un
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
-| `source` | `string` | yes | Source artifact ID (the artifact the edge points out of). |
-| `target` | `string` | yes | Target artifact ID (the artifact the edge points at). |
-| `relation` | `string` | no (default: `"informs"`) | Relation to remove. Exact snake_case values only: `informs`, `based_on`, `supersedes`, `contradicts`, `refines`. |
-| `workspace` | `string` | no | Explicit workspace directory. When set, the server resolves `.forgeplan/` from this path instead of its startup CWD. PRD-078 / ADR-015. |
+| `relation` | `string` | no | Relationship type to remove (default: informs) Enum: `"informs"`, `"based_on"`, `"supersedes"`, `"contradicts"`, `"refines"`. |
+| `source` | `string` | yes | Source artifact ID |
+| `target` | `string` | yes | Target artifact ID |
+| `workspace` | `string \| null` | no | Optional explicit workspace directory for this call. When set, the MCP server resolves the `.forgeplan/` projection from this path instead of the server's startup CWD. Use this when the calling agent is running in a git worktree separate from the MCP server's launch directory. PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. Schema default: `null`. |
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::UnlinkParams`_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
 
-The `relation` field is a typed enum, so the accepted values are enforced by the JSON Schema the client sees - an agent sampling against the schema cannot invent a relation. Anything else comes back as a protocol error rather than a tool result:
-
-```text
-failed to deserialize parameters: unknown variant `based-on`,
-expected one of `informs`, `based_on`, `supersedes`, `contradicts`, `refines`
-```
-
-Kebab-case and capitalised spellings are both rejected here, even though the underlying relation parser accepts kebab-case from other callers. Use the exact strings above.
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
 
@@ -56,7 +59,7 @@ Kebab-case and capitalised spellings are both rejected here, even though the und
 }
 ```
 
-`resolved_via` and `resolved_workspace` are the workspace trace every mutating tool returns, so the caller can confirm which `.forgeplan/` directory was edited. The human-readable `message` names the exact edge that was removed.
+`resolved_via` and `resolved_workspace` identify the workspace for this handler; not every mutating MCP tool returns those fields. `message` identifies the selected edge, and `_next_action` is advisory text. In particular, `forgeplan_score_all` in the release hint is not a registered MCP tool.
 
 ## Refusals
 
@@ -94,9 +97,10 @@ forgeplan_link   (EVID-057, PRD-042, informs)       ← correct edge added
 
 ## Notes
 
-- The tool declares `idempotent_hint = true` and `destructive_hint = true`. Repeated calls are safe in the sense that they never corrupt the graph, but a second identical call on the same edge **fails** with the not-found error above rather than reporting success again. Treat the error as "already done".
-- The CLI accepts the wider relation set that includes the brownfield relations (`supports`, `demonstrates`, `covers`, `triangulates`, `references`, `belongs_to`). This tool does not: with the MCP surface, those edges cannot be removed. Use the CLI for them.
-- Both artifacts keep their status. Unlinking never activates, deprecates or supersedes anything.
+- The tool declares `idempotent_hint = true` and `destructive_hint = true`, but a second unlink of the same edge returns not-found. That error alone does not prove a previous call removed the intended edge; check the IDs and stored graph before treating the operation as complete.
+- The CLI accepts a wider relation set, including `supports`, `demonstrates`, `covers`, `triangulates`, `references`, `belongs_to`. The MCP enum cannot remove those edges; use the appropriate CLI surface.
+- **0.38.0 casing limit:** the preflight target comparison is case-insensitive, while the deletion predicate matches stored strings exactly. Use canonical stored source/target IDs; a success message with different target casing is not proof that the edge disappeared.
+- Statuses are not changed: unlinking does not activate, deprecate or supersede either artifact. There is no extra confirmation flag; authorize the selected graph removal before calling.
 
 ## CLI equivalent
 

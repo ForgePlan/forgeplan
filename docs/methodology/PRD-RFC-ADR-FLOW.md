@@ -2,6 +2,8 @@
 
 # PRD → RFC → ADR Flow — Decision Tree
 
+Runtime reference: **Forgeplan 0.38.0**. The tree below helps choose documents; arrows describe an authoring process, not automatic creation or lifecycle transitions. RFC proposes a technical approach; ADR records a consequential decision; use a Note when neither applies.
+
 ## Quick Decision: Which Document to Create?
 
 ```
@@ -21,7 +23,7 @@ You have a task. Start here:
                │          │        │
                │          ▼        ▼
                │      ┌──────┐  ┌──────┐
-               │      │ RFC  │  │ ADR  │
+               │      │ RFC  │  │ NOTE │
                │      └──────┘  └──────┘
                │
         ┌──────┴──────┐
@@ -57,97 +59,78 @@ You have a task. Start here:
 
 ### Path 1: New Feature (Full Path)
 
-```
-1. /research [topic]          ← study the problem
-2. /write-doc prd [topic]     ← describe WHAT and WHY
-3. Review PRD                 ← adversarial review
-4. /write-doc spec [topic]    ← describe API/data model (if needed)
-5. /write-doc rfc [topic]     ← describe HOW to build
-6. /write-doc adr [decision]  ← document WHY this way
-7. /sprint RFC-NNN Phase X    ← implement
-8. /audit                     ← verify
-9. memory_retain()            ← save to memory
-```
+1. Investigate the user problem; use `/research` when the public `fpl-skills` plugin is installed.
+2. Run `forgeplan route "Describe the task"` and review the suggested depth and pipeline.
+3. Create a PRD with `forgeplan new prd "Feature title"` and fill its requirements and outcomes. The CLI creates a template; it does not conduct the interview or implement the feature.
+4. Create a SPEC when a contract is needed. Core accepts structural API/data contracts **or** behavioural requirements/scenarios. Public `/spec-author` produces and reviews the latter for scenario-driven implementation.
+5. Create an RFC for design/implementation planning and an ADR for significant decisions, according to depth and task scope.
+6. Validate each artifact with `forgeplan validate <ID> --ci`; resolve MUST findings and review SHOULD findings. `forgeplan reason <ID>` needs a configured LLM provider and generates ADI reasoning, not independent verification.
+7. Obtain independent review before freezing the contract. Public `agents-tdd` `/tdd` requires active PRD + active scenario-bearing SPEC; its test validator certifies RED tests before GREEN. Do not rewrite scenarios or frozen tests to fit code.
+8. Implement and verify using the project's tooling; `/sprint`, `/build` and `/audit` are marketplace orchestration skills, not core CLI commands.
+9. Record the actual review/test results in EVID, link to the target, score and use the appropriate lifecycle command. A specification-review EVID can justify freezing a contract before code exists; do not label it implementation-test evidence.
 
 ### Path 2: Refactoring / Tech Debt (Quick Path)
 
-```
-1. /research [topic]          ← study current state
-2. /write-doc adr [decision]  ← document decision + plan
-3. /sprint ADR-NNN Phase X    ← implement
-```
+Investigate the current behaviour and choose depth. Record a consequential choice in an ADR and a plan in an RFC when needed; do not invent a user-facing PRD for purely internal work. Preserve behaviour with explicit contracts and verification.
 
 ### Path 3: Bug / Incident
 
-```
-1. Investigate               ← find root cause
-2. /write-doc adr [fix]      ← document the decision
-3. Fix + PR                  ← implement
-```
+Investigate the root cause, record a Problem or Note when useful, fix and verify it. An ADR is appropriate only if the fix introduces a decision worth preserving; it is not compulsory for every bug.
 
 ### Path 4: Roadmap / Large Initiative
 
-```
-1. /deep-research [topic]     ← deep research
-2. Create Epic                ← strategic initiative
-3. N × /write-doc prd         ← PRD for each part
-4. N × /write-doc rfc         ← RFC for each PRD
-5. N × /sprint                ← implementation in phases
-```
+Create an Epic to group multiple deliverables; create the PRDs, SPECs, RFCs and ADRs each part actually needs. Set parent metadata / graph links explicitly and track implementation with checkboxes.
 
 ## When to Use What
 
-| I want to... | Create | Command |
-|--------------|--------|---------|
-| Describe a new feature for users | PRD | `/write-doc prd` |
-| Describe API contracts | SPEC | `/write-doc spec` |
-| Propose an architectural solution | RFC | `/write-doc rfc` |
-| Document an accepted decision | ADR | `/write-doc adr` |
-| Combine multiple PRDs/RFCs into an initiative | Epic | `/write-doc epic` |
-| Quickly study a topic | — | `/research` |
-| Deep study before major work | — | `/deep-research` |
-| Implement in phases | — | `/sprint` |
-| Verify quality | — | `/audit` |
+| Need | Artifact / public entry point |
+|------|-------------------------------|
+| User problem, outcomes and product requirements | `forgeplan new prd "Title"` |
+| Checkable API/data or behavioural contract | `forgeplan new spec "Title"`; `/spec-author` for scenario authoring |
+| Proposed technical approach | `forgeplan new rfc "Title"` |
+| Decision and consequences | `forgeplan new adr "Title"` |
+| Multi-artifact initiative | `forgeplan new epic "Title"` |
+| Research, implementation, review orchestration | Public marketplace `/research`, `/sprint`, `/build`, `/audit`, as installed |
+
+Slash skills require the matching plugin/harness. Installing the CLI alone does not install those orchestrators.
 
 ## Artifact Lifecycle
 
 ```
-             Draft
-               │
-         ┌─────┴─────┐
-         ▼            ▼
-      Review       (skip for
-         │          tactical)
-         ▼
-     Approved ──────────────────→ Rejected
-         │                         (with reason)
-         ▼
-   Implementing
-         │
-         ▼
-   Implemented ─→ verify ─→ Closed
+draft ──activate──→ active ──supersede──→ superseded
+                      ├────deprecate──→ deprecated
+                      └────mark stale─→ stale ──renew──→ active
+                                          └─deprecate→ deprecated
 ```
+
+`superseded` and `deprecated` are terminal in the lifecycle state machine. `reopen` creates a new draft from active/stale and retires the old artifact; it does not revive a terminal one. The advisory `phase` marker (shape/validate/adi/code/test/audit/evidence/done) is separate and permits out-of-order manual changes. Neither an `active` artifact nor a `done` phase proves the implementation shipped.
+
+Expiry detection (`forgeplan stale`) only reports overdue dates; it does not persist `status: stale`. For a persisted stale record, `renew` follows the stale→active transition; an expired active record is not automatically in that state.
+
+Activation normally checks MUST validation and, for PRD/Epic/SPEC/RFC/ADR, body length, evidence presence and stubs. Use lifecycle verbs; `update --status active|superseded|deprecated` cannot bypass them. `--force` is an explicit methodology-gate override, not evidence of verification.
 
 ## Linking Rules
 
-| Link | Description | Example |
-|------|-------------|---------|
-| PRD → SPEC | PRD produces a specification | PRD-001 → SPEC-001 |
-| PRD → RFC | PRD produces architecture | PRD-001 → RFC-042 |
-| RFC → ADR | RFC produces decisions | RFC-042 → ADR-007 |
-| PRD → Epic | PRD belongs to an epic | PRD-001 → EPIC-003 |
-| ADR supersedes ADR | Decision replaces another | ADR-012 supersedes ADR-007 |
+| Relationship | CLI example (existing IDs) |
+|--------------|----------------------------|
+| SPEC refines product needs | `forgeplan link SPEC-001 PRD-001 --relation refines` |
+| RFC depends on product needs | `forgeplan link RFC-042 PRD-001 --relation based_on` |
+| ADR follows design | `forgeplan link ADR-007 RFC-042 --relation based_on` |
+| Evidence supports a target | `forgeplan link EVID-001 PRD-001 --relation informs` |
+| Replacement retires an active decision | `forgeplan supersede ADR-007 --by ADR-012` |
+
+The public typed relations are `informs`, `based_on`, `supersedes`, `contradicts`, `refines`. Epic membership is `parent_epic`, not a `belongs_to` link accepted by `forgeplan link`. A body table does not create an edge.
 
 ## Depth Calibration (from Quint-code)
 
-| Signal | Depth | What to Create |
-|--------|-------|----------------|
-| Quick fix, 1 file | **Tactical** | Nothing or Note |
-| Feature for 1-3 days | **Standard** | PRD (tactical) → RFC |
-| New module, 1-2 weeks | **Deep** | PRD → SPEC → RFC → ADR |
-| New subsystem, cross-team | **Critical** | Epic → PRD[] → SPEC[] → RFC[] → ADR[] |
+| Depth | Core route pipeline |
+|-------|---------------------|
+| Note / Tactical | No required artifact pipeline |
+| Standard | PRD → RFC |
+| Deep | PRD → SPEC → RFC → ADR |
+| Critical | Accepted input alias for Deep; no additional core Epic gate |
 
-**Rule**: when in doubt, choose one level higher. An extra PRD is better than having to redo things later.
+This is a routing recommendation, not automatic pipeline creation. An Epic / expanded hierarchy for strategic work is methodology guidance. See [DEPTH-CALIBRATION.md](DEPTH-CALIBRATION.md) for actual runtime signals and gates.
 
 ## Checklist Before Starting Implementation
 

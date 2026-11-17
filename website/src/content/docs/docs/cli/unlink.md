@@ -1,12 +1,9 @@
 ---
 title: forgeplan unlink
-description: "Remove a relation between two artifacts"
+description: "Remove one directed, typed relation without deleting either artifact. Source, target, and relation must identify an existing edge. Unlike an idempotent “remove if present” operation, CLI 0.38.0 refuses a missing edge."
 ---
 
-Remove a typed relation between two artifacts. The inverse of
-[`forgeplan link`](/docs/cli/link/). Use `unlink` to fix mistakes - wrong
-direction, wrong relation type, stale edge left over from a superseded
-decision - without rewriting markdown by hand.
+Remove one directed, typed relation without deleting either artifact. Source, target, and relation must identify an existing edge. Unlike an idempotent “remove if present” operation, CLI 0.38.0 refuses a missing edge.
 
 ## Usage
 
@@ -29,79 +26,29 @@ forgeplan unlink [OPTIONS] <SOURCE> <TARGET>
   -V, --version              Print version
 ```
 
-## What it does
+## Matching and identifiers
 
-1. Looks up the relation in the LanceDB `links` table keyed on
-   `(source, target, relation)`.
-2. Deletes the row if found.
-3. Refreshes any derived caches - `score`, `graph`, and `blocked` will reflect
-   the change on next run.
-4. Exits cleanly even if no matching relation exists, making the command
-   idempotent and safe to script.
-
-Unlinking does **not** delete either artifact. It only removes the edge.
+`--relation` defaults to `informs`. A different type or reversed direction does not match: the command returns a relation-not-found error rather than succeeding as a no-op. This path compares stored IDs case-insensitively but does not resolve slugs like `link` does; copy the stored IDs from `get` or `graph --json`. Repeating a successful unlink fails because the edge is now absent.
 
 ## Examples
 
-Fix a wrong-direction link:
-
 ```bash
+# Inspect real endpoints and relation types first:
+forgeplan get PRD-001
+forgeplan graph --json
+# Only if this wrong-direction edge actually exists:
 forgeplan unlink PRD-001 EVID-001 --relation informs
 forgeplan link EVID-001 PRD-001 --relation informs
+forgeplan score PRD-001
 ```
 
-Remove a stale `based_on` after superseding the parent:
+## Side effects and recovery
 
-```bash
-forgeplan unlink RFC-006 PRD-025 --relation based_on
-forgeplan link RFC-006 PRD-030 --relation based_on
-```
+The command deletes the relation and refreshes both participants’ Markdown projections on a best-effort basis. It requests a cached-score refresh for the source; explicitly score the affected decision after changing evidence links. Other graph reports reflect the new edge set when run again. It logs the unlink; it does not delete artifacts or undo a lifecycle transition. Removing a self-edge that was never created also fails as missing.
 
-Drop a `contradicts` edge that was recorded in error:
+## Prefer relation commands to manual edits
 
-```bash
-forgeplan unlink EVID-017 ADR-004 --relation contradicts
-```
-
-## Relation type must match
-
-The `--relation` flag must match the type of the edge you want to remove. If
-you linked `EVID-001 → PRD-001` with `--relation informs`, calling
-`forgeplan unlink EVID-001 PRD-001 --relation based_on` will be a no-op because
-no such edge exists.
-
-When in doubt, inspect the graph first:
-
-```bash
-forgeplan graph PRD-001         # see all edges touching PRD-001
-forgeplan get PRD-001            # read the artifact and its incoming links
-```
-
-## Self-link guard (PROB-019)
-
-Since self-links cannot be created (see [`forgeplan link`](/docs/cli/link/)),
-`forgeplan unlink PRD-001 PRD-001` will never find a match and exits as a
-no-op.
-
-## Side effects
-
-- [`forgeplan score`](/docs/cli/score/) recomputes R_eff for the target. If
-  you remove the only supporting `informs` edge, the score drops to 0 and the
-  artifact becomes a blind spot on [`forgeplan health`](/docs/cli/health/).
-- [`forgeplan blocked`](/docs/cli/blocked/) and
-  [`forgeplan order`](/docs/cli/order/) re-run topological sort.
-- The Mermaid graph from [`forgeplan graph`](/docs/cli/graph/) loses the edge.
-
-## Notes
-
-- Unlink is idempotent - running it twice has the same effect as running it
-  once. No error on a missing edge.
-- To remove an artifact entirely (including all its links), use
-  [`forgeplan delete`](/docs/cli/delete/) - it cascade-deletes relations in a
-  single pass.
-- Direct edits to `.forgeplan/<kind>s/<id>.md` never touch the `links` table.
-  If you need to hand-edit relations, run
-  [`forgeplan scan-import`](/docs/cli/scan-import/) afterward.
+Use `link --replace` to change a relation type on an existing source/target pair, or `unlink` followed by `link` to change direction. Reindex adds missing frontmatter links, but removing a link from Markdown alone does not necessarily delete the stored edge. Do not rely on reindex as a replacement for unlink.
 
 ## See also
 

@@ -1,9 +1,9 @@
 ---
 title: forgeplan_graph
-description: "Generate a mermaid dependency graph of all linked artifacts. Includes explicit links and parent_epic belongs_to edges."
+description: "Generate a mermaid dependency graph of all linked artifacts. Includes explicit links and parent_epic belongs_to edges. Issue #287 Phase F: pass `brownfield_only: true` to filter to UC/GLOS/INV/SCEN/HYP/DM edges only."
 ---
 
-Generate a Mermaid `graph TD` of all linked artifacts in the workspace. Includes explicit typed links (`based_on`, `refines`, `supersedes`, `contradicts`, `informs`) plus implicit `belongs_to` edges from the `parent_epic` frontmatter field.
+Generate a Mermaid `graph LR` of linked artifacts in the workspace. Includes explicit typed links (`based_on`, `refines`, `supersedes`, `contradicts`, `informs`) plus implicit child-to-parent `belongs_to` edges from `parent_epic`. Domain Model Composition sections add clusters and their members; this is not an inventory of every isolated artifact.
 
 **Category**: Dashboards & Graph
 
@@ -14,28 +14,37 @@ Generate a Mermaid `graph TD` of all linked artifacts in the workspace. Includes
 - **Documentation generation** - embed the diagram in a README or website page.
 - **Review prep** - eyeball cycles or missing edges before a release.
 
-The output is raw Mermaid markdown - render it in any Markdown viewer that supports Mermaid (GitHub, Starlight, VS Code preview, etc.).
+The response is JSON in MCP `content[0].text`; extract `mermaid` and render that string in a Mermaid-capable viewer.
 
 ## Input parameters
 
-_No input parameters. Call this tool with an empty object `{}`._
+| Name | JSON type | Required | Description / constraints |
+|---|---|---|---|
+| `brownfield_only` | `boolean \| null` | no | Filter edges to brownfield kinds (UC / GLOS / INV / SCEN / HYP / DM) only. Defaults to false (show all edges including pipeline). Schema default: `null`. |
+| `workspace` | `string \| null` | no | Optional explicit workspace directory for this call. When set, the MCP server resolves the `.forgeplan/` projection from this path instead of the server's startup CWD. Use this when the calling agent is running in a git worktree separate from the MCP server's launch directory. PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. Schema default: `null`. |
+
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
 
+The object contains `mermaid` and `_next_action`, not node/edge arrays or `node_count`/`edge_count`. This tool renders a report and does not add links or mutate artifacts. The hint's edge count is computed before the optional brownfield filter.
+
+Illustrative empty-graph response:
+
 ```json
 {
-  "mermaid": "graph TD\n  EPIC-003[EPIC-003] --> PRD-035[PRD-035]\n  EPIC-003 --> PRD-039[PRD-039]\n  PRD-039 --> RFC-006[RFC-006]\n  RFC-006 --> ADR-004[ADR-004]\n  EVID-052[EVID-052] -.informs.-> PRD-039\n",
-  "node_count": 184,
-  "edge_count": 312
+  "mermaid": "graph LR\n    %% No links found between artifacts\n",
+  "_next_action": "No links yet — isolated artifacts. Inspect orphans: `forgeplan_blindspots`."
 }
 ```
 
-Edge styles:
-- Solid (`-->`) - structural (`based_on`, `refines`, `parent_epic`).
-- Dashed (`-.->`) - informational (`informs`, `weakens`, `supports`).
-- Red (`==>`) - `contradicts`.
+Edges normally use labelled solid arrows, including `informs` and `contradicts`. `belongs_to` uses an unlabelled solid arrow; `references` uses a dashed arrow. Brownfield edges can receive additional `linkStyle` overrides, and hypothesis nodes are coloured by state. Do not interpret every rendered edge as a blocking dependency: `order` and `blocked` use structural relations only.
 
 ## Example invocation
+
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
 
 ```json
 {}

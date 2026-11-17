@@ -263,8 +263,8 @@
   <p class="eyebrow">Цикл одного проекта · теория</p>
   <h1>Forgeplan как operational layer</h1>
   <p class="lead">
-    <b class="k">Forgeplan</b> - CLI плюс MCP-сервер, который стоит рядом
-    с репо и забирает на себя механическую часть, оставляя вам только содержательные решения.
+    <b class="k">Forgeplan</b> - CLI и MCP-сервер, который работает рядом
+    с репозиторием и берёт на себя механическую работу. Вам остаются содержательные решения.
   </p>
 
   <!-- ============ MINI-PIPELINE ============ -->
@@ -300,18 +300,18 @@
       оформить</b>.
     </p>
     <p class="analogy">
-      Forgeplan - это POS для методологий. Конкретно - CLI плюс MCP-сервер, который встаёт рядом
-      с репо и берёт на себя механическую часть FPF, BMAD, OpenSpec и QuintCode. Вы решаете,
-      какую фичу строить. Forgeplan помнит, какие секции требует BMAD PRD, какой формат ожидает
-      OpenSpec от delta, какую структуру имеет ADR с FPF reasoning, какие оси R_eff проставить
-      на evidence.
+      Forgeplan - это POS для методологий: CLI и MCP-сервер, который работает рядом
+      с репозиторием и берёт на себя механическую часть FPF, BMAD, OpenSpec и QuintCode. Вы решаете,
+      какую фичу строить. Forgeplan помнит, какие секции требует BMAD PRD, какой формат delta
+      ожидает OpenSpec, как устроен ADR с FPF reasoning и какие оси R_eff указать
+      у evidence.
     </p>
 
     <!-- POS split: что в голове vs что в инструменте -->
     <div class="pos-split">
       <div class="pos-col head">
         <div class="pos-tag">В голове · до</div>
-        <div class="pos-title">Что приходится помнить руками</div>
+        <div class="pos-title">Что приходится помнить самим</div>
         <ul class="pos-list">
           <li>13 секций PRD из BMAD</li>
           <li>Формат delta-spec ADDED / MODIFIED / REMOVED</li>
@@ -360,8 +360,8 @@
       Файл создаётся с готовой структурой: frontmatter с <code>depth</code> и
       <code>related_artifacts</code>, секция «Рассмотренные гипотезы» (минимум три, как требует
       FPF), секция «Evidence» (с F-G-R, как требует QuintCode), секция «Условия пересмотра»
-      (как требует Evidence Decay). Остаётся заполнить по существу - не помнить, какие секции
-      должны быть.
+      (как требует Evidence Decay). Остаётся заполнить секции по существу: вспоминать их
+      состав не нужно.
     </p>
 
     <p style="margin-top: 14px;">
@@ -405,7 +405,7 @@
         <div class="art-tag">PRD</div>
         <div class="art-prefix">prefix · prd-</div>
         <div class="art-q"><strong>Что?</strong> Что строим и для кого</div>
-        <div class="art-desc">Продуктовые требования. Выход фазы Delivery в BMAD. Каждое FR в формате «[Actor] can [capability]», без implementation leakage.</div>
+        <div class="art-desc">Продуктовые требования. Результат фазы Delivery в BMAD. Каждое FR в формате «[Actor] can [capability]», без implementation leakage.</div>
       </div>
       <div class="art-card">
         <div class="art-tag">RFC</div>
@@ -417,13 +417,13 @@
         <div class="art-tag">ADR</div>
         <div class="art-prefix">prefix · adr-</div>
         <div class="art-q"><strong>Почему?</strong> Почему именно так</div>
-        <div class="art-desc">Принятое архитектурное решение. Immutable после активации. Ссылается на RFC и Evidence. Меняется только через supersede.</div>
+        <div class="art-desc">Принятое архитектурное решение. Неизменяемое после активации. Ссылается на RFC и Evidence. Меняется только через supersede.</div>
       </div>
       <div class="art-card">
         <div class="art-tag">Spec</div>
         <div class="art-prefix">prefix · spec-</div>
         <div class="art-q"><strong>Контракт?</strong> Как ведёт себя система</div>
-        <div class="art-desc">API-контракты и data models. OpenSpec-формат с ADDED / MODIFIED / REMOVED для delta. См. <i>spec-cycle.html</i> для деталей.</div>
+        <div class="art-desc">API-контракты и модели данных. OpenSpec-формат с ADDED / MODIFIED / REMOVED для delta. Подробности в <i>spec-cycle.html</i>.</div>
       </div>
       <div class="art-card">
         <div class="art-tag">Epic</div>
@@ -435,7 +435,7 @@
         <div class="art-tag">Evidence</div>
         <div class="art-prefix">prefix · evid-</div>
         <div class="art-q"><strong>Работает?</strong> Какие данные подтверждают</div>
-        <div class="art-desc">Бенчмарк, скриншот мониторинга, цитата документации, A/B-тест. С F-G-R из QuintCode. Считается в R_eff = min(scores).</div>
+        <div class="art-desc">Бенчмарк, скриншот мониторинга, цитата документации, A/B-тест. С F-G-R из QuintCode. Учитывается в R_eff = min(scores).</div>
       </div>
     </div>
 
@@ -546,11 +546,11 @@
   <h2>03 · Depth calibration и quality gates</h2>
   <div class="concept">
     <div class="concept-tag">Концепция 03 · аналогия досмотра в аэропорту</div>
-    <h3 class="concept-h">Полный конвейер ко всему - остановит работу. Никакого - обрушит качество. Нужна калибровка</h3>
+    <h3 class="concept-h">Полный конвейер для всех задач остановит работу. Полное отсутствие конвейера обрушит качество. Нужна калибровка</h3>
     <p class="analogy">
-      Даже с одним инструментом остаётся вопрос: на какой задаче применять полный конвейер, а
-      на какой коммитить без артефактов? Переименование переменной не требует PRD. Переход на
-      новую базу - требует всего. Между ними - континуум.
+      Даже с одним инструментом остаётся вопрос: для какой задачи нужен полный конвейер, а
+      для какой можно коммитить без артефактов? Переименование переменной не требует PRD. Переход на
+      новую базу требует всего конвейера. Между ними много промежуточных случаев.
     </p>
     <p class="analogy">
       Аналогия - досмотр в аэропорту. Внутренний рейс - быстрая проверка. Международный -
@@ -587,7 +587,7 @@
     </div>
 
     <p style="margin-top: 22px;">
-      Калибровка не делается на глаз - её считает CLI:
+      Уровень глубины определяет CLI, а не человек на глаз:
     </p>
 
     <div class="code-block">
@@ -607,7 +607,7 @@
     <p style="margin-top: 14px;">
       Спорить можно, но <b class="k">с CLI</b>. Это убирает бесконечное «а нужен ли тут RFC?».
       CLI знает правила (security → минимум deep, cross-team → минимум standard) и выдаёт ответ
-      за полсекунды. Экономится не час работы - <b class="k">когнитивная нагрузка на сомнения</b>.
+      за полсекунды. Вы экономите не час работы: снижается <b class="k">умственная нагрузка от постоянных сомнений</b>.
     </p>
 
     <!-- Quality gates table -->
@@ -631,14 +631,14 @@
       <div class="gate-row">
         <span class="g-num">03</span>
         <span class="g-name">FPF reasoning</span>
-        <span class="g-desc">В ADR минимум 3 гипотезы. Отвергнутые альтернативы имеют причину отказа. Evidence с F-G-R.</span>
+        <span class="g-desc">В ADR минимум 3 гипотезы. Для отвергнутых альтернатив указана причина отказа. Evidence с F-G-R.</span>
         <span class="g-status pass">pass</span>
       </div>
     </div>
 
     <p style="margin-top: 14px;">
-      Все три прошли - <span style="color: var(--ok)">PASS</span>. Хотя бы один упал - CLI
-      возвращает конкретные pointers «что и где починить». Не «общая ошибка» - а строка и
+      Все три проверки прошли, результат <span style="color: var(--ok)">PASS</span>. Если хотя бы одна не прошла, CLI
+      возвращает конкретные указания «что и где починить». Вместо сообщения «общая ошибка» вы получаете строку и
       название секции, в которой что-то не так.
     </p>
 
@@ -673,9 +673,9 @@
       <p>
         После <code>forgeplan activate adr-001</code> файл нельзя править. Только
         <code>forgeplan supersede adr-001 --by adr-002</code> создаёт замену с новым ID и явной
-        ссылкой на superseded. Это даёт <b class="k">честную историю</b>: видно, что решено
-        тогда, что решено потом, в каком порядке. Не перезаписанный файл без следов
-        изменений - а immutable timeline решений.
+        ссылкой на superseded. Это сохраняет <b class="k">историю решений</b>: видно, что решено
+        тогда, что решено потом, в каком порядке. Файл не перезаписывается бесследно:
+        хронология решений остаётся неизменной.
       </p>
     </div>
   </div>
@@ -695,7 +695,7 @@
       <div class="step-num">02 · new prd</div>
       <div class="step-content">
         <h4><code>forgeplan new prd "Streaming endpoint for Vault queries"</code></h4>
-        <p>Создаётся файл с 13 секциями BMAD: Context, Problem, Goals, Non-Goals, Success Metrics, Target Users, User Stories, Acceptance Criteria, Technical Requirements, Risks, Dependencies, Open Questions, Timeline. Frontmatter автоматически: <code>depth: deep</code>, <code>parent: epic-001</code>.</p>
+        <p>Создаётся файл с 13 секциями BMAD: Context, Problem, Goals, Non-Goals, Success Metrics, Target Users, User Stories, Acceptance Criteria, Technical Requirements, Risks, Dependencies, Open Questions, Timeline. В frontmatter автоматически указаны <code>depth: deep</code>, <code>parent: epic-001</code>.</p>
       </div>
     </div>
     <div class="worked-step">
@@ -723,7 +723,7 @@
       <div class="step-num">06 · activate</div>
       <div class="step-content">
         <h4><code>forgeplan activate ADR-001</code> · точка невозврата</h4>
-        <p>R_eff &gt; 0, все gates pass. ADR-001 уходит в <code>status: activated</code>. Файл immutable. Через год, если evidence протухнет - <code>forgeplan supersede adr-001 --by adr-002</code> создаст замену с явной ссылкой. Timeline честный, история не теряется.</p>
+        <p>R_eff &gt; 0, все проверки пройдены. ADR-001 переходит в <code>status: activated</code>. Файл неизменяемый. Через год, если evidence устареет, <code>forgeplan supersede adr-001 --by adr-002</code> создаст замену с явной ссылкой. Хронология решений сохраняется, история не теряется.</p>
       </div>
     </div>
   </div>

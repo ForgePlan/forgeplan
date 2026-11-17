@@ -12,11 +12,11 @@ translations:
   ru: how-to-use-fpf
 ---
 
-The [first post](/blog/what-is-fpf/) covered what FPF is: where it comes from, how the basic vocabulary works, and how it differs from a textbook. The [situation catalog](/blog/where-fpf-helps/) looked at 25 concrete cases where FPF patterns solve real problems.
+You can start using FPF without taking a course, reading the 7-megabyte file first, or setting up a special environment. The protocol takes three steps. Two examples show how it works in different contexts, followed by traps to watch for, especially one that catches nearly everyone on their first LLM + FPF attempt.
 
-This post answers the third question: how to start. No course, no prior study of a 7-megabyte file, no special environment. Three steps, two examples, and a list of traps - especially one that catches nearly everyone on the first LLM + FPF attempt.
+For background on FPF's origins, basic vocabulary, and differences from a textbook, see [What FPF is](/blog/what-is-fpf/). The [situation catalog](/blog/where-fpf-helps/) covers 25 concrete cases where its patterns solve real problems.
 
-Key framing: FPF is not a tool you need to master. It is an instruction the LLM reads. Your task remains your task: describe the situation, ask the question, get a response with disciplined structure rather than generic advice. The model handles everything else.
+You don't need to master FPF as a tool before using it: the LLM reads it as an instruction. Your job is to describe the situation, ask a question, and get a response with a disciplined structure rather than generic advice. The model handles the rest.
 
 ## The minimal protocol: three steps
 
@@ -26,7 +26,7 @@ The FPF specification lives in an open repository: [github.com/ailev/FPF](https:
 
 One detail that affects quality: if you are also working with your own document - a PRD, spec, technical brief, postmortem - attach it first, then FPF. An LLM's context window is processed in order, so earlier content carries more weight. Your task should be in focus; FPF is the instruction layered on top.
 
-No special prompt engineering needed. Just the file and a question. If the model responds superficially, repeat the question and ask it to "use patterns from FPF." One clarification usually does it.
+You don't need special prompt engineering. Attach the file and ask a question. If the model responds superficially, repeat the question and ask it to "use patterns from FPF." One clarification usually does it.
 
 ### Step 2. Formulate a task about your project immediately
 
@@ -38,7 +38,7 @@ Keep conversations focused on one task. Cramming five questions into one chat di
 
 ### Step 3. Work in pieces
 
-The algorithm for one working iteration:
+For one working iteration:
 
 1. Formulate the task and send it
 2. Get a response with FPF patterns
@@ -85,15 +85,15 @@ Name Card: StudioResident / studio resident
    before and after, the participant holds a different role
 ```
 
-This is not a final answer. It is a draft for discussion: does "resident" fit, is the emphasis on "studio" right, does it collide with other roles in the program's ecosystem? What follows are iterations through dialogue: "give me a variant without the word 'studio'," "show how the Name Card changes if the time boundary is removed," "what is the risk of the short form 'resident' without context."
+Treat this as a draft for discussion, not a final answer: does "resident" fit, is the emphasis on "studio" right, does it collide with other roles in the program's ecosystem? Refine it through dialogue: "give me a variant without the word 'studio'," "show how the Name Card changes if the time boundary is removed," "what is the risk of the short form 'resident' without context."
 
-The key difference from a typical LLM suggestion: the F.18 structure exists in the FPF specification, so it can be cited, compared, and challenged. The answer has both form and content: a card with named fields, reviewable as a working artifact rather than something to take on faith.
+Unlike a typical LLM suggestion, this answer follows the F.18 structure defined in the FPF specification. You can cite, compare, and challenge it. The named fields let you review both form and content as a working artifact rather than take the answer on faith.
 
 In practice: bringing this Name Card to a team meeting is far easier than arriving with "we talked it over and landed on 'resident.'" The `risky aliases` field explains why "intern" cannot stay even as informal shorthand. The `Boundary` field shows the label only works inside the program - graduates need a separate card. Each field becomes its own focused conversation, not one undifferentiated "do we like it."
 
 ## Example two: renaming a role on an IT team
 
-The same pattern, context closer to product teams.
+The same pattern also applies to product teams.
 
 Situation: a SaaS company had a "Developer Advocate" role. During a restructuring, the main focus shifted from marketing-driven content to contributions to open-source projects and community-driven content. The old title carries marketing associations - a new name is needed that reflects the changed nature of the work.
 
@@ -125,13 +125,13 @@ Name Card: CommunityEngineer / community engineer
 
 Here F.18 surfaces something easy to miss in a brainstorm: the `risky aliases` section shows which terms are not interchangeable because they carry old meanings. "Open Source Engineer" describes part of the work but drops the community half. "Developer Advocate" is the retiring title; running both names in parallel breeds organizational confusion.
 
-A draft, not a verdict - but a draft with structure: concrete fields to discuss, a form ready for review.
+This is still a draft, but its concrete fields give the team something to discuss and review.
 
-Pattern F.18 is identical across both cases - the education program and the SaaS company. The two industries differ in domain, but the pattern is the same: designing names as such, independent of industry. Field content changes; form stays. That is what a pattern language means: a shared framework, concrete content.
+F.18 uses the same format in the education program and the SaaS company because it covers naming regardless of industry. The field content changes; the form stays. A pattern language provides that shared framework for concrete content.
 
 ## Anti-pattern: the LLM pretending to use FPF
 
-The main trap when working with LLM + FPF is not the complexity of the patterns. It is that an LLM can generate responses that look like FPF application on the surface but are actually an imitation.
+The main trap with LLM + FPF is imitation: the model can produce a response that looks like it applies FPF without using the patterns themselves. Their complexity is not the main obstacle.
 
 Signs of hollow output:
 
@@ -146,7 +146,7 @@ A second filter: ask the same question twice, a few messages apart. Substantiall
 
 A third check: ask the LLM to cite the specific line or heading in the FPF file where the pattern is described. If it names a section, locate it in your downloaded copy and compare. Explanation instead of citation usually means the pattern was invented on the fly.
 
-This is not a reason to avoid LLMs. It is a reason not to accept a nicely formatted response as automatically correct. Verification through specifics takes one or two minutes and filters most hallucination cases. Early attempts are where this surfaces most: the model sees a large file, infers the expected response style, but does not anchor to the actual content. Form looks right; substance is generic.
+You can keep using LLMs without treating a nicely formatted response as automatically correct. Checking specifics takes one or two minutes and filters most hallucination cases. Early attempts are where this surfaces most: the model sees a large file and infers the expected response style without grounding the answer in its content. The form looks right; the substance is generic.
 
 ## Frequently asked questions
 

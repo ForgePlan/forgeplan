@@ -59,7 +59,7 @@
 ├── В repo X → создавай issue в X
 ├── В upstream dependency (Y) → создавай issue в Y
 │   └── Если workaround есть в X → отдельный issue в X
-│       label: cross-repo + downstream:Y
+│       label: cross-repo + upstream:Y
 │       body: "Workaround for Y#NNN — remove when upstream fixes"
 └── Не понятно где → создавай в X, label: triage
 ```
@@ -75,8 +75,10 @@
    - Issue #2 в repo B (follow-up)
      label: cross-repo + upstream:A
      body: "Depends on A#NNN"
-3. PR в repo A merge'ит #1 + crossrefs #2 ("see also B#MMM")
-4. PR в repo B merge'ит #2 + closes "Closes A#NNN B#MMM"
+3. PR в repo A реализует #1 и ссылается на #2 ("see also Org/B#MMM")
+4. PR в repo B реализует #2 и ссылается на upstream ("Refs Org/A#NNN")
+5. Каждый PR закрывает свой issue полным closing keyword; автоматическое
+   закрытие происходит при merge в default branch соответствующего PR
 ```
 
 ### Documentation update в downstream repo после upstream fix
@@ -119,7 +121,13 @@ GitHub поддерживает синтаксис:
 ```
 Closes ForgePlan/marketplace#86
 ```
-В PR body для cross-repo closure. Используй это вместо `Closes #86` если PR в другом repo.
+В PR body указывай полный путь вместо `Closes #86`, если issue в другом
+репозитории. GitHub обрабатывает closing keywords, только когда PR
+направлен в **default branch**: merge в `dev`, если default branch —
+`main`, не закрывает issue автоматически. Для нескольких issues повторяй
+keyword: `Closes Org/A#123, closes Org/B#456`. По этому протоколу
+upstream и downstream задачи закрываются своими PR после выполнения
+их критериев, а чужие задачи связываются через `Refs`.
 
 ### Referencing without closing
 
@@ -143,10 +151,15 @@ Refs ForgePlan/forgeplan#292
 2. **Read git state** (branch, recent commits)
 3. **Inbox sweep** для всех repos в org:
    ```bash
-   for repo in $(gh repo list ForgePlan --json name -q '.[].name'); do
-     gh issue list --repo ForgePlan/$repo --state open --label "cross-repo,severity:high,severity:critical" --json number,title,labels
+   for repo in $(gh api --paginate 'orgs/ForgePlan/repos?per_page=100' --jq '.[].name'); do
+     printf '\nForgePlan/%s\n' "$repo"
+     gh api --paginate "repos/ForgePlan/$repo/issues?state=open&per_page=100" \
+       --jq '.[] | select(has("pull_request") | not) | select(any(.labels[]; .name == "cross-repo" or .name == "severity:high" or .name == "severity:critical")) | {number, title, labels: [.labels[].name]}'
    done
    ```
+   Это объединение трёх категорий, а не требование всех трёх labels
+   одновременно. `--paginate` нужен и для репозиториев, и для issues;
+   issue endpoint также возвращает PR, поэтому они исключены явно.
 4. **Triage to user**: показать summary `N open issues across M repos (X critical, Y cross-repo)`. Спросить:
    - "Хочешь review каждый?"
    - "Сразу build sprint plan из них?"
@@ -163,12 +176,17 @@ Refs ForgePlan/forgeplan#292
 - **Skill**: `cross-repo-inbox` skill activates когда user открывает session и spawn'ит triage prompt
 - **MCP tool**: `forgeplan_inbox` или `orchestra_inbox` — единая точка sweep
 
+Эти три пункта — предложение, не поставляемая автоматизация. В CLI/MCP
+Forgeplan 0.38.0 нет `forgeplan_inbox`; в публичном marketplace
+`b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7` нет `cross-repo-inbox`
+или указанного SessionStart-хука. Ручной sweep выше не требует их установки.
+
 ## Best practices summary
 
 1. **Один issue — один repo** (где будет fix), даже если bug surfaced в другом
 2. **Cross-repo dependencies явно labeled** — `cross-repo` + `upstream:<repo>` / `downstream:<repo>`
 3. **Body ВСЕГДА содержит cross-refs** на partner issues
-4. **PR closes issues across repos** через `Closes Org/repo#NNN` синтаксис
+4. **Closing keywords требуют default branch**; чужие незавершённые задачи связывай через `Refs Org/repo#NNN`
 5. **Documentation cleanup** в downstream repo — отдельный issue с reference на upstream fix
 6. **Session start = inbox sweep** перед началом работы, не после
 7. **Labels org-wide consistent** — taxonomy одинакова для всех repos в org

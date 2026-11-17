@@ -8,9 +8,15 @@ Model Context Protocol. It is **not** a tool you call from agents - its subcomma
 the host machine to wire the binary into client config files (`mcp install`) or to start
 the stdio server when launched manually (`mcp serve`, an alias for [`forgeplan serve`](/docs/cli/serve/)).
 
-Forgeplan is MCP-first: most of the day-to-day surface area (73 tools) is exposed via
-the server. This parent command exists so a one-shot `forgeplan mcp install --client claude`
-gets you from a fresh `brew install forgeplan` to a working agent without hand-editing JSON.
+The server exposes the `forgeplan_*` tools listed in the [MCP reference](/docs/mcp/). `forgeplan mcp install --client claude` writes client configuration; it does not install the agent client, grant client permissions, or guarantee that a running session reloads the server.
+
+## Subcommands
+
+```text
+  serve    Start MCP server (alias for `forgeplan serve`)
+  install  Install forgeplan MCP config into a client (Claude / Cursor / Windsurf)
+  help     Print this message or the help of the given subcommand(s)
+```
 
 ## When to use
 

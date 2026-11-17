@@ -1,9 +1,9 @@
 ---
 title: forgeplan_journal
-description: "Show decision journal - chronological timeline of ADR, Note, Problem, Solution artifacts with R_eff scores and evidence status."
+description: "Decision timeline for ADR, Note, PRD, RFC, Epic, Spec, Problem and Solution by default, with flat R_eff and evidence counts. The explicit kind filter accepts only adr, note, problem or solution."
 ---
 
-Show the decision journal - a chronological timeline of ADR, Note, Problem and Solution artifacts, each annotated with its current `R_eff` score and linked evidence. Use this to reconstruct **why** something was decided and **how strong** that decision currently is.
+Show the decision journal: without `kind`, the timeline includes ADR, Note, PRD, RFC, Epic, Spec, Problem and Solution artifacts, annotated with flat `R_eff` and evidence counts. The explicit `kind` filter accepts only `adr`, `note`, `problem` or `solution`; its four-value enum does not limit the unfiltered default. Use `forgeplan_get` to read an entry's rationale and supporting links.
 
 **Category**: Dashboards & Graph
 
@@ -16,47 +16,45 @@ Show the decision journal - a chronological timeline of ADR, Note, Problem and S
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
-| `kind` | `string` | no | Filter by kind: `adr`, `note`, `problem`, or `solution`. Omit for all. |
-| `risk` | `bool` | no | When `true`, show only at-risk decisions (weak R_eff or expired evidence). |
+| `kind` | `string \| null` | no | Filter by artifact kind (decision-kinds only) string: Enum: `"adr"`, `"note"`, `"problem"`, `"solution"`. |
+| `risk` | `boolean \| null` | no | Show only at-risk decisions Schema default: `null`. |
+| `workspace` | `string \| null` | no | Optional explicit workspace directory for this call. When set, the MCP server resolves the `.forgeplan/` projection from this path instead of the server's startup CWD. Use this when the calling agent is running in a git worktree separate from the MCP server's launch directory. PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. Schema default: `null`. |
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::JournalParams`_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
 
-An ordered list of journal entries, newest first:
+Success is JSON in MCP `content[0].text`: `entries`, `total`, and `_next_action`. Each entry contains exactly `id`, `title`, `kind`, `created_at`, `r_eff`, `evidence_count`, `has_stale_evidence`. The internal entry has a status, but the MCP serializer does not expose it. There are no evidence-ID arrays or per-entry `at_risk` fields.
+
+Entries are ordered by `created_at` string descending, with all lifecycle statuses included. `risk` defaults to false; true keeps entries with no evidence, flat `r_eff < 0.3`, or expired eligible evidence. The hint separately counts risk using `< 0.5`, so its count can differ from the risk-filter definition. `evidence_count` includes terminal linked packs, although their scores/expiry are excluded from the flat aggregate. This is a fresh flat-evidence calculation, not the cached recursive score; it does not persist scores or mutate artifacts.
+
+Illustrative response for one ADR without evidence:
 
 ```json
 {
   "entries": [
-    {
-      "id": "ADR-005",
-      "kind": "adr",
-      "title": "Lifecycle v2 - terminal deprecated/superseded",
-      "created_at": "2026-04-03",
-      "status": "active",
-      "r_eff": 0.82,
-      "evidence": ["EVID-047", "EVID-051"],
-      "at_risk": false
-    },
-    {
-      "id": "PROB-034",
-      "kind": "problem",
-      "title": "F1/F2 validator penalizes bmad density",
-      "created_at": "2026-04-09",
-      "r_eff": 0.0,
-      "evidence": [],
-      "at_risk": true
-    }
-  ]
+    {"id": "ADR-005", "kind": "adr", "title": "Storage design", "created_at": "2026-04-03T00:00:00Z", "r_eff": 0.0, "evidence_count": 0, "has_stale_evidence": false}
+  ],
+  "total": 1,
+  "_next_action": "1 at-risk of 1 entries. Score the worst: `forgeplan_score ADR-005`."
 }
 ```
 
+Workspace errors return plain-text tool errors; journal/store failures can be JSON-RPC errors, not empty successful timelines.
+
 ## Example invocation
 
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
+
 ```json
-{ "kind": "adr", "risk": true }
+{
+  "kind": "adr",
+  "risk": true
+}
 ```
 
 ## Typical sequence

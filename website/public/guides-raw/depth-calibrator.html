@@ -217,10 +217,10 @@
   <h1>Depth Calibrator</h1>
   <p class="lead">
     «Нужен ли тут PRD?» «А RFC?» «Можно ли просто закоммитить?» Эти споры съедают часы, и
-    обычно сходятся на той же логике: чем выше сложность × обратимость × радиус, тем тяжелее
-    конвейер. Forgeplan делает эту логику CLI-командой <code>forgeplan route</code>. Ниже -
-    тот же routing в виде калькулятора: <b class="k">подвиньте слайдеры, увидьте депт-уровень
-    и обязательные артефакты в реальном времени</b>.
+    обычно участники сходятся на одном: чем выше сложность × обратимость × радиус, тем тяжелее
+    конвейер. В Forgeplan для этого есть CLI-команда <code>forgeplan route</code>. Ниже -
+    тот же routing в виде калькулятора: <b class="k">подвиньте слайдеры, и сразу увидите уровень глубины
+    и обязательные артефакты</b>.
   </p>
 
   <!-- MINI-PIPELINE -->
@@ -233,7 +233,7 @@
     <div class="pipe-arrow">→</div>
     <div class="pipe-box">
       <div class="step-tag">02 · rules</div>
-      <div class="step-title">Депт-формула</div>
+      <div class="step-title">Формула глубины</div>
       <div class="step-desc">cost = (complexity + blast + cost-of-reverse) / 3 · плюс гейты</div>
     </div>
     <div class="pipe-arrow">→</div>
@@ -250,20 +250,20 @@
     <div class="concept-tag">аналогия досмотра в аэропорту</div>
     <h3 class="concept-h">«Полный конвейер ко всему» остановит работу. «Никакого конвейера» обрушит качество</h3>
     <p class="analogy">
-      В аэропорту три процедуры: внутренний рейс - быстрая проверка, международный - полный,
-      transit - отдельная. Применить «полный» ко всем - аэропорт остановится. Применить
+      В аэропорту три процедуры: для внутреннего рейса быстрая проверка, для международного полная,
+      для transit отдельная. Применить «полный» ко всем - аэропорт остановится. Применить
       «быстрый» - безопасность рухнет. Нужна <b class="k">калибровка под ситуацию</b>.
     </p>
     <p class="analogy">
-      Forgeplan делает то же самое для разработки: депт-уровень определяется по характеристикам
-      задачи, а конвейер (какие артефакты создавать) выводится из уровня. Спорить можно - но
-      с CLI, не друг с другом. Калькулятор ниже - это та же формула, только наглядно.
+      Forgeplan делает то же самое для разработки: уровень глубины определяется по характеристикам
+      задачи, а конвейер (какие артефакты создавать) зависит от уровня. Спорить можно - но
+      с CLI, не друг с другом. Калькулятор ниже показывает ту же формулу наглядно.
     </p>
   </div>
 
   <!-- ============ THE CALCULATOR ============ -->
   <h2>Калькулятор</h2>
-  <p>Подвиньте слайдеры или кликните чекбоксы. Маркер на шкале и конвейер внизу обновятся мгновенно. Пресеты сверху загружают типовые сценарии.</p>
+  <p>Подвиньте слайдеры или поставьте галочки. Маркер на шкале и конвейер внизу обновятся мгновенно. Готовые сценарии можно выбрать кнопками сверху.</p>
 
   <div class="calc">
     <div class="calc-head">
@@ -298,7 +298,7 @@
             <input type="range" min="1" max="10" value="3" step="1" id="i-blast">
             <span class="ic-val" id="v-blast">3</span>
           </div>
-          <div class="ic-extremes"><span>1 · internal только</span><span>10 · все пользователи</span></div>
+          <div class="ic-extremes"><span>1 · только внутри системы</span><span>10 · все пользователи</span></div>
         </div>
 
         <div class="input-card">
@@ -396,18 +396,18 @@
   </div>
 
   <!-- TIERS REFERENCE -->
-  <h2>Четыре tier'а · что значит каждый</h2>
-  <p>Шпаргалка по типам артефактов и quality gates на каждом уровне.</p>
+  <h2>Четыре уровня глубины · что значит каждый</h2>
+  <p>Шпаргалка по типам артефактов и проверкам качества на каждом уровне.</p>
   <div class="tiers">
     <div class="tier-card tac">
       <div class="tc-tag">● tactical</div>
       <div class="tc-pipe none">конвейер: пусто</div>
-      <div class="tc-when">Косметика, переименования, тривиальный баг-фикс. Достаточно commit message. Quality gates не запускаются.</div>
+      <div class="tc-when">Косметика, переименования, тривиальное исправление ошибки. Достаточно commit message. Quality gates не запускаются.</div>
     </div>
     <div class="tier-card std">
       <div class="tc-tag">● standard</div>
       <div class="tc-pipe">PRD → RFC → Evidence</div>
-      <div class="tc-when">Новая фича внутри одной команды без breaking changes. ADI рекомендован, validation gate - да.</div>
+      <div class="tc-when">Новая функция внутри одной команды без breaking changes. ADI рекомендован, validation gate применяется.</div>
     </div>
     <div class="tier-card deep">
       <div class="tc-tag">● deep</div>
@@ -417,15 +417,15 @@
     <div class="tier-card crit">
       <div class="tc-tag">● critical</div>
       <div class="tc-pipe">Epic → PRD[] → Spec[] → RFC[] → ADR[] → Adversarial Review</div>
-      <div class="tc-when">Security, cross-team, регуляторика. Полный evidence-граф + adversarial review в чистой сессии.</div>
+      <div class="tc-when">Security, cross-team, регуляторные требования. Полный evidence-граф + adversarial review в чистой сессии.</div>
     </div>
   </div>
 
   <div class="insight">
     <div class="insight-tag">Калькулятор - это не приговор</div>
     <p>
-      Хард-гейты (security / cross-team / public API) форсят минимум, потому что цена ошибки
-      высока даже при низкой сложности. Слайдеры - это эвристика, а не закон. Если вы видите
+      Хард-гейты (security / cross-team / public API) задают минимальный уровень, потому что цена ошибки
+      высока даже при низкой сложности. Оценка по слайдерам - эвристика, а не закон. Если вы видите
       «standard», но интуиция кричит «нужен ADR» - создайте ADR. Если калькулятор говорит
       «deep», а задача обратима за один <code>git revert</code> - упростите. CLI знает правила,
       но решение принимаете вы.
@@ -471,10 +471,10 @@
     // Hard gates first
     if (s.security) {
       depth = 'crit';
-      reasons.push({ type: 'gate', text: 'security или regulatory impact → форсит CRITICAL' });
+      reasons.push({ type: 'gate', text: 'security или regulatory impact → требует CRITICAL' });
     } else if (s.crossteam) {
       depth = 'crit';
-      reasons.push({ type: 'gate', text: 'cross-team coordination → форсит CRITICAL' });
+      reasons.push({ type: 'gate', text: 'cross-team coordination → требует CRITICAL' });
     }
 
     // Score-based base depth (also use this if no critical gate)
@@ -491,7 +491,7 @@
     if (s.public && (depth === 'tac' || depth === 'std')) {
       const oldDepth = depth;
       depth = 'deep';
-      reasons.push({ type: 'gate', text: 'public API change → форсит ≥ DEEP (был ' + oldDepth.toUpperCase() + ')' });
+      reasons.push({ type: 'gate', text: 'public API change → требует ≥ DEEP (был ' + oldDepth.toUpperCase() + ')' });
     }
 
     // Score-based reasoning
@@ -509,7 +509,7 @@
     }
 
     if (s.public && reasons.findIndex(r => r.text.includes('public API')) === -1) {
-      reasons.push({ type: 'score', text: 'public API change учтён · уже на ' + depth.toUpperCase() });
+      reasons.push({ type: 'score', text: 'Изменение public API учтено · уже на ' + depth.toUpperCase() });
     }
 
     return { depth, reasons, cost: costRounded };
@@ -517,7 +517,7 @@
 
   // Pipeline definitions
   const pipelines = {
-    tac:  { artifacts: [], extras: ['commit message достаточно', 'без validation gate', 'без ADI'] },
+    tac:  { artifacts: [], extras: ['достаточно commit message', 'без validation gate', 'без ADI'] },
     std:  { artifacts: ['PRD', 'RFC', 'Evidence'], extras: ['validation gate · да', 'ADI · рекомендован'] },
     deep: { artifacts: ['PRD', 'Spec', 'RFC', 'ADR', 'Evidence', 'Review'], extras: ['validation gate · да', 'ADI · обязателен', '3 quality gates'] },
     crit: { artifacts: ['Epic', 'PRD[]', 'Spec[]', 'RFC[]', 'ADR[]', 'Evidence', 'Adversarial Review'], extras: ['validation gate · да', 'ADI · обязателен', 'adversarial review в чистой сессии', 'полный evidence-граф'] },

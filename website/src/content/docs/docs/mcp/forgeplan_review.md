@@ -3,7 +3,7 @@ title: forgeplan_review
 description: "Review an artifact - run validation and show lifecycle checklist. Shows MUST/SHOULD findings and whether artifact can be activated."
 ---
 
-Review a single artifact - runs validation (depth-aware MUST / SHOULD rules), checks lifecycle prerequisites (evidence, R_eff, linked relations), and returns a clear verdict on whether the artifact is ready to activate. This is the combined "can I activate?" gate used before calling `forgeplan_activate`.
+Review one stored artifact using validation and shared methodology activation gates. For lifecycle kinds these include minimum body length, stub detection, and evidence links; linked draft targets also produce warnings. Review does not recompute R_eff or change status, and it does not run the activation handler's projection sync or provenance gate. `can_activate` is therefore a readiness report, not a guarantee that a later activation succeeds.
 
 **Category**: Quality
 
@@ -16,54 +16,49 @@ Review a single artifact - runs validation (depth-aware MUST / SHOULD rules), ch
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
-| `id` | `string` | yes | Artifact ID to review. |
+| `id` | `string` | yes | Artifact ID to review |
+| `workspace` | `string \| null` | no | Optional explicit workspace directory for this call. When set, the MCP server resolves the `.forgeplan/` projection from this path instead of the server's startup CWD. Use this when the calling agent is running in a git worktree separate from the MCP server's launch directory. PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. Schema default: `null`. |
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::ReviewParams`_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
+
+Success is JSON encoded in MCP `content[0].text`: `artifact_id`, `can_activate`, `must_findings`, `should_findings`, `warnings`, and `_next_action`. Findings and warnings are arrays of strings, not nested `validation`/`lifecycle` objects. No `verdict`, `status`, `kind`, `depth`, or R_eff value is returned.
+
+`can_activate` requires no MUST findings and all shared methodology gates passing. Gate failures appear in `warnings`, so a false result can have an empty `must_findings` array. The handler's hint counts MUST findings only; inspect `warnings` too. A missing artifact or lifecycle failure returns a plain-text MCP tool error (`isError: true`); a blocked readiness report is not itself a tool error.
+
+Illustrative ready response:
 
 ```json
 {
   "artifact_id": "PRD-042",
-  "kind": "prd",
-  "depth": "standard",
-  "status": "draft",
-  "validation": {
-    "must_errors": [],
-    "should_warnings": ["density < 50 words in section Goals"]
-  },
-  "lifecycle": {
-    "r_eff": 0.72,
-    "has_evidence": true,
-    "ready_to_activate": true
-  },
-  "verdict": "PASS - ready to activate"
-}
-```
-
-If blocked:
-
-```json
-{
-  "verdict": "FAIL",
-  "validation": { "must_errors": ["Missing section: Problem"] },
-  "lifecycle": { "ready_to_activate": false }
+  "can_activate": true,
+  "must_findings": [],
+  "should_findings": [],
+  "warnings": [],
+  "_next_action": "Ready. Activate: `forgeplan_activate prd-042`."
 }
 ```
 
 ## Example invocation
 
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
+
 ```json
-{ "id": "PRD-042" }
+{
+  "id": "PRD-001"
+}
 ```
 
 ## Typical sequence
 
-1. `forgeplan_review` → if `FAIL`, fix issues.
+1. `forgeplan_review` → if `can_activate` is false, inspect findings and warnings.
 2. `forgeplan_update` to patch the body.
-3. `forgeplan_review` again → expect `PASS`.
+3. `forgeplan_review` again → inspect `can_activate`.
 4. `forgeplan_activate` - flip draft → active.
 
 ## CLI equivalent

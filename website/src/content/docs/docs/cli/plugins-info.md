@@ -14,6 +14,10 @@ gives you as a verdict. `info` answers "what is this plugin, and what would I
 type to get it" for a name you already have - the registry holds 12 entries in
 0.37.0.
 
+## Forgeplan 0.38.0
+
+The detection registry compiled into CLI 0.38.0 has 12 entries and is not the public marketplace catalog. Public catalog 1.187.1 at b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7 has 23 plugins. Output below containing 0.37.0 is retained as previously captured examples, not a current installation inventory. The bundled hint `forgeplan skill install brownfield-docs-pack` is not a working CLI 0.38.0 command: no skill install command exists. Other install strings are static recommendations, not proof that a pack exists in the public catalog; consult that catalog and the selected plugin’s instructions.
+
 ## What it does
 
 1. **Looks the name up in the registry.** This is an exact, case-sensitive match
@@ -28,7 +32,7 @@ type to get it" for a name you already have - the registry holds 12 entries in
 4. **Prints the detection block**: `Installed: yes` with the resolved path and
    version, or `Installed: no`.
 5. **Prints the hint**: `Done.` when the plugin is installed, otherwise
-   `Next: <install command>` - the exact string to paste.
+   `Next: <install command>`. This is a compiled-in hint, not a verified working installation recipe; check the current catalog before using it.
 
 ## Fields
 
@@ -38,7 +42,7 @@ type to get it" for a name you already have - the registry holds 12 entries in
 | `Source` | how it is detected - `ClaudePlugin`, `AgentSkills`, `Cursor`, `Forgeplan`, or `Manual` in text mode |
 | `Version req` | the semver requirement the doctor compares against, for example `>=1.0` or `*` |
 | `Description` | the registry's one-line summary |
-| `Install` | the command that installs it (`(built-in)` for Forgeplan itself) |
+| `Install` | static installation recommendation (`(built-in)` for Forgeplan itself), not execution or availability proof |
 | `Expected paths` | printed only when the entry declares paths; each is resolved under the source's roots |
 | `Installed` | the detection result for this machine |
 | `Path` | where detection found it, relative when the match came from a project-local root |
@@ -162,8 +166,7 @@ forgeplan plugins info brownfield-docs-pack
 Done.
 ```
 
-The path in that block is project-local: the same plugin is invisible when the
-command runs from a directory that has no `.agentskills/` directory.
+The sample path is project-local. Detection also searches user-global AgentSkills roots, so another installation can remain visible outside that project.
 
 ### Example 4: machine-readable
 
@@ -246,7 +249,7 @@ Or: forgeplan plugins list
 - A registry entry that another entry already covers - a sub-agent of a pack,
   for example - has its own row and its own expected paths, so
   `info c4-context` answers for the sub-agent rather than for the pack.
-- `-V` reports the subcommand-scoped version, `forgeplan-plugins-info 0.37.0`.
+- The retained earlier capture uses `forgeplan-plugins-info 0.37.0`; the published binary version is 0.38.0.
 
 ## See also
 

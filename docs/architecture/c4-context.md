@@ -12,9 +12,9 @@ Forgeplan is a Rust-based CLI tool and MCP server that brings structure, evidenc
 
 The system solves three interrelated problems: (1) decisions are made but never recorded, making "why did we choose X?" unanswerable six months later; (2) AI agents produce work without a methodological paper trail, making their output shallow and unverifiable; (3) documentation exists in theory but never gets written because the friction is too high.
 
-Forgeplan's core value is its **methodological layer**: the R_eff weakest-link trust formula, FPF trust calculus, ADI (Abduction–Deduction–Induction) reasoning cycles, lifecycle gates that prevent activating unproven decisions, typed inter-artifact links, and evidence decay that honestly marks stale artifacts. Local semantic search via BGE-M3 embeddings runs entirely offline — no network, no API keys.
+Forgeplan's core value is its **methodological layer**: the R_eff weakest-link trust formula, FPF trust calculus, ADI (Abduction–Deduction–Induction) reasoning cycles, validation and activation gates, typed inter-artifact links, and evidence decay. Local semantic inference uses BGE-M3 on `tract`; it needs no API key, but the model must first be downloaded (~2.1 GB).
 
-As an orchestrator, Forgeplan does not generate documents itself for complex analysis tasks. Instead, it delegates to specialized plugins (c4-architecture, autoresearch, ddd-domain-expert, sparc:specification) through Playbook/Mapping primitives, then ingests their outputs into the artifact graph with scoring and lifecycle tracking.
+The CLI provides artifact templates and optional LLM-backed generation and reasoning. Playbooks can delegate analysis to separately installed plugins and agents, then CLI mappings can ingest their output. Marketplace skills such as `/smith` guide the host agent's orchestration; they are not autonomous behavior of the core binary.
 
 The system is distributed as a single binary (brew, install.sh, cargo) and a stdio-transport MCP server that any MCP-compatible AI agent (Claude Code, Cursor, Aider, Continue) can connect to through 73 tools.
 
@@ -29,16 +29,16 @@ The system is distributed as a single binary (brew, install.sh, cargo) and a std
 - Typed dependency graph with link traversal
 - Local semantic search (BGE-M3 on tract, pure-Rust, offline)
 - MCP server (stdio transport, 73 tools)
-- Multi-agent dispatch: file-overlap detection, skill-based routing, parallel/serial bucketing
-- Playbook runtime for orchestrating external plugin delegations
-- Ingest engine for mapping external plugin outputs to forge artifacts
-- CLI (76 commands, alias `fpl`)
+- Multi-agent assignment planning: file-overlap detection, optional skill matching, parallel/serial bucketing; the host starts agents
+- Playbook runtime for explicit external delegations, with separate confirmation and shell-execution gates
+- CLI ingest engine for mapping external outputs to artifacts; MCP ingest only validates inputs and returns a plan
+- CLI (82 top-level commands, 103 including nested commands; alias `fpl`)
 
 **Outside the system boundary:**
 - LLM inference (delegates to external providers via config)
 - Code generation, CI/CD, deployment pipelines
 - Project management task tracking (complementary to tools like Orchestra)
-- Document generation for structural/domain analysis (delegates to c4-architecture, autoresearch, ddd-domain-expert)
+- Structural/domain analysis performed by separately installed agents or plugins (not bundled analysis engines)
 - Team synchronization or notification systems
 
 ---
@@ -71,7 +71,7 @@ The system is distributed as a single binary (brew, install.sh, cargo) and a std
 - **Type**: Human User
 - **Description**: An engineer or team lead joining an existing codebase (potentially large — tens of thousands of lines) with no prior documentation, who needs to quickly reconstruct the decision map.
 - **Goals**: Extract ADRs and bounded contexts from existing code and git history; build an artifact graph from scratch without manual artifact-by-artifact creation; identify undocumented decisions.
-- **Key Features Used**: Scan-import, Playbook runtime (brownfield migration playbooks), Ingest engine (c4-to-forge, ddd-to-forge, git-to-forge mappings), Search
+- **Key Features Used**: Scan-import for existing documents, Discover for guided extraction, installed Playbooks and CLI ingest mappings, Search
 
 ### Greenfield Starter
 
@@ -91,7 +91,7 @@ The system is distributed as a single binary (brew, install.sh, cargo) and a std
 
 - **Type**: Programmatic User
 - **Description**: An orchestrating agent (or human-in-the-loop supervisor) that coordinates 2–5 sub-agents sharing one Forgeplan workspace, assigning work to minimize file conflicts and respect dependencies.
-- **Goals**: Dispatch a batch of draft artifacts across N agents with no double-work, no merge conflicts, and correct serial/parallel ordering; monitor claims; release stale claims.
+- **Goals**: Plan work across N agents using declared affected files and dependencies; monitor claims and release expired ownership. The plan is advisory, not a guarantee against undeclared overlap or merge conflicts.
 - **Key Features Used**: `forgeplan_dispatch`, `forgeplan_claim`, `forgeplan_release`, `forgeplan_claims`
 
 ---
@@ -105,32 +105,32 @@ The system is distributed as a single binary (brew, install.sh, cargo) and a std
 
 ### Artifact Lifecycle Management
 
-- **Description**: Full CRUD for 10 artifact types with a formal state machine (draft → active → superseded/deprecated/stale). Validation gates prevent activation without evidence. Lifecycle transitions are explicit commands (`activate`, `supersede`, `deprecate`, `renew`, `reopen`).
+- **Description**: CRUD for 17 artifact kinds, including six brownfield kinds and lightweight memory. Decision kinds (PRD, Epic, Spec, RFC, ADR) have activation validation and methodology gates. Lifecycle transitions use explicit commands (`activate`, `supersede`, `deprecate`, `renew`, `reopen`); `update --status` cannot substitute for active or terminal transitions.
 - **Users**: All human personas, AI Agent via MCP
 
 ### Quality Scoring (R_eff and F-G-R)
 
-- **Description**: Computes artifact trust as the minimum evidence score across all linked evidence items (weakest-link formula). Applies congruence-level penalties (CL0–CL3) and evidence decay (expired `valid_until` → score 0.1). F-G-R measures formality, granularity, and reliability independently.
+- **Description**: Computes trust from the minimum score of current evidence (weakest-link). Superseded/deprecated evidence is excluded; draft evidence still counts. Applies congruence-level penalties (CL0–CL3) and expiry (`valid_until` passed → 0.1). F-G-R measures formality, granularity, and reliability independently.
 - **Users**: Tech Lead, AI Agent via MCP, Multi-Agent Orchestrator
 
 ### ADI Reasoning Cycles
 
-- **Description**: Forces 3+ competing hypotheses through Abduction → Deduction → Induction before recording a decision. Available via `forgeplan reason <id>` and the `forgeplan_reason` MCP tool. Mandatory for Deep and Critical depth artifacts.
+- **Description**: Generates and evaluates 3+ competing hypotheses through Abduction → Deduction → Induction via `forgeplan reason <id>` or `forgeplan_reason`, using a configured LLM provider. This produces analysis for review, not independently verified proof. The methodology requires ADI for Deep and Critical work.
 - **Users**: Tech Lead, AI Agent via MCP
 
 ### Semantic Search
 
-- **Description**: Local vector search over all artifacts using BGE-M3 embeddings (1024 dimensions) via fastembed. Runs entirely offline with no external API calls. Supports hybrid text + semantic queries.
-- **Users**: All personas, AI Agent via MCP
+- **Description**: The CLI performs local vector retrieval using BGE-M3 embeddings (1024 dimensions) on the pure-Rust `tract` engine. It requires a `semantic-search` build and downloaded model weights; first-use model acquisition needs network access. `forgeplan embed` generates or refreshes artifact vectors. In 0.38.0, MCP `forgeplan_search` smart/semantic modes pass no vector scores and do not perform vector retrieval (core #546); embedding artifacts does not complete that missing wiring.
+- **Users**: Human CLI users and agents invoking the CLI. MCP agents can use keyword/smart retrieval, but not BGE-M3 vector retrieval through that tool in 0.38.0.
 
 ### Typed Dependency Graph
 
-- **Description**: Artifacts are connected through typed links (informs, based_on, supersedes, blocks, etc.). Graph traversal powers coverage analysis, drift detection, and blocking-artifact identification.
+- **Description**: Artifacts are connected through five public relation types: `informs`, `based_on`, `supersedes`, `contradicts`, and `refines`. Structural relations power dependency ordering and blocking analysis; links also support coverage and provenance.
 - **Users**: Tech Lead, AI Agent via MCP
 
 ### Evidence and Decay Management
 
-- **Description**: EvidencePacks attach test results, benchmarks, and measurements to artifacts. Each evidence item carries a `valid_until` TTL. Expired evidence forces artifacts to stale. Structured fields (`verdict`, `congruence_level`, `evidence_type`) are required for R_eff to register non-zero scores.
+- **Description**: EvidencePacks record real tests, benchmarks, measurements, and audits. `valid_until` is optional; expiry affects scores and stale reports, not an automatic write to lifecycle status. Fill `verdict`, `congruence_level`, and `evidence_type` explicitly: missing verdict/CL is treated as weak CL0 evidence (0.1), not a fully trusted result.
 - **Users**: Tech Lead, Solo Developer, AI Agent via MCP
 
 ### MCP Server Integration
@@ -140,17 +140,17 @@ The system is distributed as a single binary (brew, install.sh, cargo) and a std
 
 ### Multi-Agent Dispatch
 
-- **Description**: Given a list of draft artifacts and N agents with optional skill profiles, produces a conflict-free assignment: parallel buckets (no file overlap) and a serial queue. Uses Jaccard similarity on affected file sets for overlap detection.
+- **Description**: Given draft artifacts and N agents, computes assignment buckets and a serial queue using declared affected-file sets, Jaccard overlap, and live claims. It does not launch agents, enforce exclusive file access, or guarantee conflict-free work when file declarations are incomplete.
 - **Users**: Multi-Agent Orchestrator, Tech Lead
 
 ### Brownfield Migration (Playbook + Ingest)
 
-- **Description**: Declarative Playbooks define multi-step migration strategies that delegate structural analysis, domain modeling, and history mining to specialized plugins. The Ingest engine applies Mapping files to translate plugin outputs (C4-Documentation/, domain-model.md, git log) into draft Forgeplan artifacts with line-level source links.
+- **Description**: Installed Playbooks can delegate structural analysis, domain modeling, and history mining. CLI ingest applies Mapping files to external outputs and writes draft artifacts with source references. Mappings and analyzers must exist locally; `forgeplan_ingest` on MCP validates paths and returns a planned response with empty drafts, deferring execution to the CLI.
 - **Users**: Brownfield Adopter, Tech Lead
 
 ### Health and Drift Monitoring
 
-- **Description**: `forgeplan health` surfaces blind spots (code areas without covering ADRs), orphaned artifacts, and stale decisions. `forgeplan drift` detects when recent code changes appear to violate an active ADR.
+- **Description**: `forgeplan health` reports blind spots (active decisions without linked evidence), unlinked artifacts, stale decisions, and other graph signals. `forgeplan coverage` maps decisions to declared code areas. `forgeplan drift` flags affected files changed after an active ADR/RFC was created; it does not prove a semantic violation.
 - **Users**: Tech Lead, AI Agent via MCP, QA / Reviewer
 
 ---
@@ -163,15 +163,15 @@ A solo developer starts a new feature and wants to record their decision trail.
 
 1. **Install**: `brew install ForgePlan/tap/forgeplan` — single binary, no server required
 2. **Initialize workspace**: `forgeplan init -y` — creates `.forgeplan/` directory in the project root
-3. **Route the task**: `forgeplan route "Add OAuth2 authentication"` — system returns depth=Standard, pipeline=PRD → RFC
-4. **Shape the PRD**: `forgeplan new prd "OAuth2 Authentication"` — receives a pre-filled markdown template with required sections
-5. **Fill required sections**: Problem, Goals, Non-Goals, Target Users, Functional Requirements — directly in the markdown file
-6. **Validate**: `forgeplan validate PRD-001` — gate checks all MUST sections are present; PASS or error list
-7. **Run ADI reasoning**: `forgeplan reason PRD-001` — system generates 3+ competing implementation hypotheses
+3. **Route the task**: `forgeplan route "Add OAuth2 authentication"` — returns a recommended depth and pipeline; inspect the actual result rather than assuming a fixed classification
+4. **Shape the PRD**: `forgeplan new prd "OAuth2 Authentication"` — receives a template and artifact ID
+5. **Fill required sections**: Problem, Goals, Non-Goals, Target Users, Functional Requirements — submit the complete body with `forgeplan update <ID> --body @/path/to/body.md`
+6. **Validate**: `forgeplan validate <ID> --ci` — exit 1 on MUST failures
+7. **Run ADI reasoning**: `forgeplan reason <ID>` — requires a configured LLM provider; review the generated hypotheses
 8. **Implement the feature** — writes code following the chosen hypothesis
-9. **Record evidence**: `forgeplan new evidence "18 tests pass, auth flow p95=180ms"` → `forgeplan link EVID-001 PRD-001`
-10. **Score**: `forgeplan score PRD-001` — verifies R_eff > 0 (evidence structured fields are valid)
-11. **Activate**: `forgeplan activate PRD-001` — artifact transitions from draft to active; becomes immutable
+9. **Record evidence**: `forgeplan new evidence "OAuth2 verification results"` — fill actual methods/results and structured evidence fields, then `forgeplan link <EVID-ID> <PRD-ID> --relation informs`
+10. **Score**: `forgeplan score <PRD-ID>` — inspect the evidence breakdown and R_eff
+11. **Activate**: `forgeplan activate <PRD-ID>` — explicit transition after gates pass; activation is not a filesystem immutability guarantee
 
 ### Journey 2: AI Agent via Claude Code MCP
 
@@ -184,27 +184,27 @@ An AI coding agent (Claude Code) handles a sprint, following the Forgeplan metho
 5. **Create artifact**: `forgeplan_new` with kind=prd — agent receives template; fills sections programmatically
 6. **Validate**: `forgeplan_validate` — must return PASS before proceeding to code
 7. **Reason**: `forgeplan_reason` — generates ADI hypotheses; agent presents options to human for decision
-8. **Implement**: writes code; after changes runs `forgeplan_drift` to detect any ADR violations
+8. **Implement**: writes code; after changes uses `forgeplan_drift` to identify affected ADR/RFC files for review, not to certify compliance
 9. **Create and link evidence**: `forgeplan_new` (kind=evidence) → `forgeplan_link` with relation=informs
 10. **Score and activate**: `forgeplan_score` checks R_eff; `forgeplan_activate` transitions the artifact
-11. **Stamp identity**: each write tool call stamps `last_modified_by` with the agent's MCP client identity (Claude Code / version)
+11. **Record identity**: artifact write handlers best-effort stamp `last_modified_by` and `last_modified_at` from the initialized MCP client identity; missing identity or a stamp failure does not make the operation fail
 
 ### Journey 3: Team Runs Brownfield Migration Audit Cycle
 
 A tech lead joins a 100K-LOC codebase with no prior documentation and needs to build a decision map.
 
 1. **Initialize**: `forgeplan init -y` in the existing repository root
-2. **Run health check**: `forgeplan health` — reveals 0 artifacts, all code is "blind modules"
-3. **Detect installed plugins**: Forgeplan detects c4-architecture, ddd-domain-expert, sparc:specification in the local plugin cache
-4. **Select brownfield playbook**: `forgeplan playbook list` → selects `brownfield-migration` playbook
-5. **Run structural analysis step**: Playbook delegates to `c4-architecture` — generates `C4-Documentation/` with container and component diagrams
-6. **Run domain analysis step**: Playbook delegates to `ddd-domain-expert` — generates bounded context map
-7. **Ingest C4 output**: `forgeplan ingest --mapping c4-to-forge.yaml --source C4-Documentation/` — produces draft ADRs, Epics, and Notes from the C4 artifacts
-8. **Ingest domain model**: `forgeplan ingest --mapping ddd-to-forge.yaml --source domain-model.md` — produces draft PRDs per bounded context
-9. **Dispatch audit to agents**: `forgeplan dispatch --agents 3` — assigns draft artifacts across 3 agents without file conflicts
-10. **Agents validate and enrich**: each agent runs `forgeplan_validate`, adds evidence, runs `forgeplan_reason` on key ADRs
-11. **Tech lead reviews**: `forgeplan score` across all artifacts; activates those with R_eff > 0 threshold
-12. **Health re-check**: `forgeplan health` now shows coverage across all previously blind modules
+2. **Run health check**: `forgeplan health` — an initialized empty workspace is reported as empty, not as a code-coverage audit
+3. **Inspect installed analyzers**: `forgeplan plugins list` — discovery reports local plugins; it does not install them
+4. **Select a shipped local playbook**: `forgeplan playbook list` and `forgeplan playbook show <name>`; a Forgeplan source checkout includes `brownfield-code` and `brownfield-docs`
+5. **Inspect prerequisites and steps**: analyzers, mapping schema, and expected output paths must match core 0.38.0; similarly named local and published-pack mappings are not interchangeable. Dry-run the selected playbook.
+6. **Run approved analysis**: `forgeplan playbook run <name> --yes`; command delegations also need `--allow-shell` or trusted workspace configuration
+7. **Preview ingestion**: `forgeplan ingest --mapping /path/to/mapping.yaml --source /path/to/output --dry-run` — inspect the actual drafts and source references
+8. **Write reviewed drafts**: repeat the CLI ingest command without `--dry-run`; MCP ingest does not perform these writes
+9. **Plan agent work**: `forgeplan dispatch --agents 3` — the host reviews the assignment and launches the agents
+10. **Agents validate and enrich**: fill artifacts, collect evidence, and review generated ADI analysis on key decisions
+11. **Tech lead reviews**: score and explicitly activate completed decisions after checking the evidence
+12. **Re-check health and coverage**: use `forgeplan health` and `forgeplan coverage`; compare the declared code coverage rather than assuming every module was covered
 
 ---
 
@@ -213,37 +213,44 @@ A tech lead joins a 100K-LOC codebase with no prior documentation and needs to b
 ### LLM Providers (OpenAI, Anthropic Claude, Google Gemini, Ollama, OpenRouter)
 
 - **Type**: External API / Local service
-- **Description**: Language model providers used for ADI reasoning generation, task routing classification (L1/L2), and FPF KB semantic assistance. All are optional — the system degrades gracefully to rule-based routing when no LLM is configured.
-- **Integration Type**: HTTP API (OpenAI-compatible endpoint for all providers including Claude and Gemini via compat shim; Ollama via local HTTP)
-- **Purpose**: Generate multi-hypothesis ADI reasoning, assist with depth calibration for ambiguous tasks, power FPF semantic search when configured
+- **Description**: Optional providers for LLM-backed generation and ADI reasoning. Task routing can fall back to rules without an LLM; commands that require an LLM do not become functional merely because it is absent.
+- **Integration Type**: Provider-specific HTTP APIs, OpenAI-compatible endpoints, Ollama, or explicitly configured local CLI providers
+- **Purpose**: Generate and assess hypotheses and classify tasks. FPF semantic retrieval uses the local embedding model, not an external reasoning provider.
 
 ### LanceDB (Embedded)
 
 - **Type**: Embedded database (co-located, not a network service)
-- **Description**: A columnar vector database embedded directly in the Forgeplan process. Stores derived artifact records and BGE-M3 embeddings for semantic search. The `.forgeplan/lance/` directory is gitignored — it is rebuilt from markdown source files via `forgeplan scan-import`.
+- **Description**: A columnar vector database embedded directly in the Forgeplan process. Stores derived records and embeddings. `.forgeplan/lance/` is gitignored; `forgeplan reindex` rebuilds the index from existing workspace markdown. Refresh embeddings separately with `forgeplan embed`.
 - **Integration Type**: In-process library (lancedb Rust crate)
 - **Purpose**: Power semantic search across artifacts; serve as a fast query layer over the markdown source of truth (per ADR-003 — markdown is authoritative, LanceDB is derived)
 
 ### Git (Local Repository)
 
 - **Type**: Version control system
-- **Description**: The underlying storage mechanism for Forgeplan artifact markdown files. Artifact history, authorship, and collaboration are handled entirely through standard git operations. The `.forgeplan/` directory (excluding `lance/`, `config.yaml`, `.fastembed_cache/`) is committed to the repository.
+- **Description**: Git tracks artifact markdown and shared `.forgeplan/config.yaml` (environment-variable references, not secrets). Derived indexes, model caches, session/state/lock files, logs, trash, and `secrets.env` remain untracked. Artifact review and collaboration use ordinary Git operations.
 - **Integration Type**: Filesystem (git-tracked markdown files); `git log` read for brownfield history mining
 - **Purpose**: Provide artifact versioning, collaboration via PRs, and the `git-to-forge` history mining input for brownfield migration
 
 ### fastembed / BGE-M3 Model (Local)
 
-- **Type**: Local ML model (offline, bundled)
-- **Description**: The fastembed library with the BGE-M3 embedding model (1024 dimensions) provides fully offline semantic embedding for all artifacts. Model weights are cached in `.forgeplan/.fastembed_cache/` (gitignored). No network calls are made during embedding.
-- **Integration Type**: In-process library (fastembed Rust crate, feature-gated)
+- **Type**: Downloaded model weights plus an in-process inference engine
+- **Description**: BGE-M3 produces 1024-dimensional vectors on `tract`. Weights are not bundled in the release binary. Cache resolution is `FORGEPLAN_MODEL_CACHE`, then the platform user-cache directory, then `./.fastembed_cache` if no platform cache is available; `HF_HOME` can override Hugging Face storage.
+- **Integration Type**: Pure-Rust `tract` inference, behind `semantic-search`
 - **Purpose**: Enable semantic similarity search across artifacts without external API keys or data egress
 
 ### c4-architecture Plugin
 
 - **Type**: External agent plugin (claude-code-workflows marketplace)
-- **Description**: A Claude Code plugin that generates C4 model documentation (Context, Container, Component, Code levels) from codebase analysis. Forgeplan integrates with it through the `c4-to-forge.yaml` mapping, ingesting its output into the artifact graph.
-- **Integration Type**: Filesystem output mapping (Forgeplan reads `C4-Documentation/` produced by the plugin)
-- **Purpose**: Structural architecture analysis for brownfield migration — produces the container and component view that Forgeplan ingests as ADRs and Epics
+- **Description**: A separately installed plugin that generates C4 documentation from codebase analysis. The Forgeplan checkout's `marketplace/mappings/c4-to-forge.yaml` imports component/code documentation as **Notes**, optionally linked to the mapping's existing Epic target; it does not create ADRs or a new Epic.
+- **Integration Type**: Filesystem output mapping over `C4-Documentation/code/` and `C4-Documentation/components/`; inspect and adapt the configured existing-Epic target before use
+- **Purpose**: Capture structural observations with source references as Notes for later review and enrichment, not automatically promote them to architectural decisions
+
+The public `forgeplan-brownfield-pack` 1.7.1 at
+`b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7` contains a different
+`mappings/c4-to-forge.yaml`. It uses the legacy `mapping_name`,
+`source_plugin`, and `mappings` schema, which core 0.38.0 rejects.
+Adapt it to the current Mapping schema before CLI ingestion; it is not
+a drop-in alternative to the checkout mapping described above.
 
 ### autoresearch Plugin
 
@@ -272,6 +279,12 @@ A tech lead joins a 100K-LOC codebase with no prior documentation and needs to b
 - **Description**: Marketplaces for distributing Forgeplan Packs (Playbook + Skill + Agent + Mapping bundles). Users install Packs from these marketplaces to extend Forgeplan's playbook capabilities.
 - **Integration Type**: Package installation (agent-skills standard, `skills-lock.json`)
 - **Purpose**: Distribution channel for Forgeplan methodology Packs and the plugins Forgeplan orchestrates
+
+The external analyzers above describe integration roles, not a bundled
+plugin inventory. In the public ForgePlan marketplace snapshot
+`b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7`, `agents-pro:ddd-domain-expert`
+and `agents-sparc:specification` are supplied agents. `c4-architecture`
+and `autoresearch` are external integrations, not included ForgePlan plugins.
 
 ### Homebrew Tap / install.sh / cargo (Distribution)
 
@@ -320,7 +333,7 @@ C4Context
     Rel(forgeplan, ddd_plugin, "Delegates domain modeling; ingests bounded context output", "Playbook delegation + filesystem mapping")
     Rel(forgeplan, autoresearch_plugin, "Delegates research and adversarial reasoning", "Playbook delegation + filesystem mapping")
     Rel(forgeplan, sparc_plugin, "Delegates formal specification generation", "Playbook delegation + filesystem mapping")
-    Rel(forgeplan, marketplace, "Installs Packs; distributes Forgeplan methodology extensions", "agent-skills standard")
+    Rel(forgeplan, marketplace, "Discovers installed extensions; operators install through their host", "Local plugin/skill discovery")
 ```
 
 ---
@@ -329,8 +342,8 @@ C4Context
 
 - [Container Documentation](./c4-container.md)
 - [Component Documentation](./c4-component.md)
-- [Methodology Guide](../docs/methodology/FORGEPLAN-GUIDE.md)
-- [Usage by Role](../docs/methodology/USAGE-BY-ROLE.md)
-- [Multi-Agent Workflow](../docs/operations/MULTI-AGENT.md)
-- [ADR-009: Forgeplan as Orchestrator](../.forgeplan/adrs/ADR-009-forgeplan-as-orchestrator-playbook-skill-agent-mapping-pack-marketplace-model.md)
-- [ADR-003: Markdown as Source of Truth](../.forgeplan/adrs/ADR-003-markdown-files-as-source-of-truth-lancedb-as-index-layer.md)
+- [Methodology Guide](../methodology/FORGEPLAN-GUIDE.md)
+- [Usage by Role](../methodology/USAGE-BY-ROLE.md)
+- [Multi-Agent Workflow](../operations/MULTI-AGENT.md)
+- [ADR-009: Forgeplan as Orchestrator](../../.forgeplan/adrs/ADR-009-forgeplan-as-orchestrator-playbook-skill-agent-mapping-pack-marketplace-model.md)
+- [ADR-003: Markdown as Source of Truth](../../.forgeplan/adrs/ADR-003-markdown-files-as-source-of-truth-lancedb-as-index-layer.md)

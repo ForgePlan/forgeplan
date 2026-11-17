@@ -1,20 +1,16 @@
 ---
 title: forgeplan journal
-description: "Decision journal - chronological timeline of activations with R_eff"
+description: "Show decision artifacts by creation date with current linked-evidence counts and flat R_eff. This is not a lifecycle event log."
 ---
 
-Show the **decision journal** - a chronological timeline of when artifacts
-were activated, superseded, deprecated, or renewed, annotated with their
-R_eff scores. Unlike [`log`](/docs/cli/log/), which records every mutation,
-`journal` shows only decision events - the story you tell a new teammate.
+Show decision artifacts ordered by `created_at`, newest first, with current linked-evidence counts and a flat evidence-helper R_eff calculation. Without a type filter, the journal includes ADR, Note, PRD, RFC, Epic, Spec, Problem, and Solution. It is not a stream of activation, renewal, supersession, or deprecation events; use [`log`](/docs/cli/log/) for mutation history.
 
 ## When to use
 
 - Onboarding - "how did we get here?"
 - Retrospectives - which decisions aged well vs. got superseded
-- `--risk` mode: find active decisions without evidence (blind spots) on a
-  time axis
-- Preparing release notes - extract everything activated since tag
+- `--risk` mode: inspect artifacts with zero linked evidence, R_eff below 0.3, or expired eligible evidence.
+- Review the most recently created decisions before preparing a retrospective.
 
 ## Not to use when
 
@@ -50,7 +46,7 @@ Only ADRs - architectural record, smaller set:
 forgeplan journal --type adr
 ```
 
-Risk mode - active decisions without evidence or with stale proof:
+Risk mode — not limited to active artifacts:
 
 ```bash
 forgeplan journal --risk
@@ -58,25 +54,11 @@ forgeplan journal --risk
 
 ## Output interpretation
 
-One line per decision event, newest first:
+Each entry prints its creation date, ID, kind, and title. If evidence is linked, a second line shows `R_eff: … | … evidence` and any risk marker. The output does not include an event column or a superseding-artifact arrow.
 
-```
-2026-04-11  ACTIVATE    PRD-046  R_eff=0.85   Docs v0.18.0 catch-up
-2026-04-09  ACTIVATE    ADR-007  R_eff=1.00   Choose bm25 crate v2.3.2
-2026-04-08  SUPERSEDE   PRD-018  → PRD-042    FPF KB vector search
-2026-04-07  DEPRECATE   RFC-003  R_eff=0.10   (replaced by RFC-004)
-```
+`--risk` retains an entry when evidence count is zero, the flat helper R_eff is `< 0.3`, or eligible evidence is stale. It does not filter lifecycle status. Terminal evidence is counted as a linked pack but excluded from the helper's scoring minimum and stale-evidence flag. A zero score therefore does not prove that no evidence is linked.
 
-| Column    | Meaning                                                    |
-|-----------|------------------------------------------------------------|
-| Date      | Date of the lifecycle event                                |
-| Event     | ACTIVATE / SUPERSEDE / DEPRECATE / RENEW / REOPEN          |
-| Artifact  | ID of the decision                                         |
-| R_eff     | Effective trust (`min(evidence_scores)`), 0.00–1.00        |
-| Title     | Short title                                                |
-
-`R_eff = 0.00` on an active decision is a red flag - it means no evidence is
-linked at all. `--risk` surfaces exactly these.
+This flat calculation is not the recursive dependency-aware result of `forgeplan score`. The command prints text only; there is no `--json` option.
 
 ## How it fits
 

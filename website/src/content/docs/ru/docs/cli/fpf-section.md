@@ -13,8 +13,8 @@ description: "Показать конкретный раздел FPF по ID (н
 
 ## Когда НЕ использовать
 
-- Для обнаружения - используйте [`forgeplan fpf search`](/docs/cli/fpf-search/), если вы ещё не знаете ID раздела.
-- Для полного индекса - используйте [`forgeplan fpf list`](/docs/cli/fpf-list/).
+- Для обнаружения - используйте [`forgeplan fpf search`](/ru/docs/cli/fpf-search/), если вы ещё не знаете ID раздела.
+- Для полного индекса - используйте [`forgeplan fpf list`](/ru/docs/cli/fpf-list/).
 
 ## Использование
 
@@ -25,49 +25,49 @@ forgeplan fpf section [OPTIONS] <ID>
 ## Аргументы
 
 ```text
-  <ID>   ID раздела (например, "B.3", "C.2.2")
+  <ID>  Section ID (e.g. "B.3", "C.2.2")
 ```
 
 ## Опции
 
 ```text
-      --summary  Показать только краткое содержание (первые 500 символов)
-  -h, --help     Вывести справку
-  -V, --version  Вывести версию
+      --summary  Show summary only (first 500 chars)
+  -h, --help     Print help
+  -V, --version  Print version
 ```
 
 ## Примеры
 
 ```bash
-# Trust Calculus (раздел FPF B.3, который определяет семантику R_eff)
+# Trust calculus (the FPF B.3 section that defines R_eff semantics)
 forgeplan fpf section B.3
 
-# Только первые 500 символов, если вам нужна только суть
+# Just the first 500 chars when you only need the gist
 forgeplan fpf section B.3 --summary
 
-# Рассуждения о поиске/использовании
+# Canonical evolution loop (if this section is loaded)
 forgeplan fpf section B.4
 
-# Цикл ADI
-forgeplan fpf section C.1
+# Canonical reasoning / ADI cycle in the published FPF corpus
+forgeplan fpf section B.5
 ```
 
 ## Как это работает
 
-Разделы - атомарная единица базы знаний FPF. Именно их ранжирует `fpf search`, их разбивает на части `fpf ingest`, на них ссылается `fpf check` при объяснении, почему правило сработало, и их `forgeplan reason --fpf` использует в качестве контекста.
+Разделы ранжируются в `fpf search` и загружаются из исходного Markdown через `fpf ingest`. Сначала загрузите корпус и скопируйте ID из `fpf list`; отсутствующий ID вызывает `FPF section '<id>' not found`. Полный текст выводится в stdout без pager, затем `Done.`. `--summary` выводит первые 500 Unicode-символов и подсказку для полного чтения. Число оставшихся символов рассчитывается по байтам, поэтому для не-ASCII текста оно неточно. Проверка правил использует конфигурацию/встроенные правила, не тела разделов этой базы.
 
 Типичный рабочий процесс:
 
 ```bash
-forgeplan fpf search "congruence level"   # найти кандидатов
-forgeplan fpf section B.3                 # прочитать победителя полностью
+forgeplan fpf search "congruence level"   # find candidates
+forgeplan fpf section B.3                 # read the winner in full
 forgeplan new adr "Evidence grading policy"
-# ...сослаться на B.3 в тексте ADR
+# ...cite B.3 in the ADR body
 ```
 
 ## Смотрите также
 
-- [`forgeplan fpf`](/docs/cli/fpf/) - родительская команда
-- [`forgeplan fpf search`](/docs/cli/fpf-search/) - найти разделы по содержимому
-- [`forgeplan fpf list`](/docs/cli/fpf-list/) - все разделы с первого взгляда
-- [Руководство по методологии](/docs/methodology/overview/)
+- [`forgeplan fpf`](/ru/docs/cli/fpf/) - родительская команда
+- [`forgeplan fpf search`](/ru/docs/cli/fpf-search/) - найти разделы по содержимому
+- [`forgeplan fpf list`](/ru/docs/cli/fpf-list/) - все разделы с первого взгляда
+- [Руководство по методологии](/ru/docs/methodology/overview/)

@@ -26,7 +26,7 @@ Shared structure is the missing piece. When thirty arguments fly without a share
 
 Anatoly Levenchuk is a Russian systems engineer, faculty at the Russian School of Systems Management, and author of several textbooks on systems thinking. He spent years studying why intelligent, well-meaning people reach different conclusions from the same data - and what to do about it.
 
-FPF (First Principles Framework) is his answer. Not a textbook and not a methodology like Agile. Closer to a pattern language in the sense Christopher Alexander introduced - the architect who described principles of building through a catalog of named patterns. The idea is the same: if people share a vocabulary of patterns, they can talk about complex things without reinventing terms each time.
+FPF (First Principles Framework) is his answer. It is a pattern language, rather than a textbook or a methodology like Agile. Christopher Alexander, the architect who described principles of building through a catalog of named patterns, introduced the idea: people who share a vocabulary of patterns can discuss complex things without reinventing terms each time.
 
 The current version is from May 2026. Seven megabytes of normative specification, roughly 3,195 section headings. Status: "perpetual alpha" - already used in real projects, still evolving.
 
@@ -34,7 +34,7 @@ The current version is from May 2026. Seven megabytes of normative specification
 
 ## 3. The core idea: one argument, many readers
 
-The real problem isn't that people lack intelligence. It's that one decision has to simultaneously answer very different audiences.
+Even intelligent people run into this problem: one decision has to answer questions from very different audiences at once.
 
 An engineer sees a feature as API + dependencies + edge cases. A PM sees deadline and budget. The auditor cares about one thing: how to roll it back if it breaks. And the customer, honestly, doesn't care - they want to know if the price goes up. This isn't four features. It's one, viewed from different angles.
 
@@ -42,7 +42,7 @@ If you maintain four documents - one for each reader - they diverge within a wee
 
 FPF proposes one underlying argument, from which projections for different readers are published. The argument is the single source; projections are slices at a particular angle. If the argument changes, all projections change automatically.
 
-A separate question is how the argument stays consistent when different people touch it. FPF calls this "no semantic drift" - a word means the same thing in one context as in another, and if the meaning shifts, the shift is visible and explicit. FPF introduces several mechanisms for this. Three are worth unpacking: holons, `Strict Distinction`, and `Open/Closed World Assumption`.
+A separate question is how the argument stays consistent when different people work on it. FPF calls this "no semantic drift": a word means the same thing in one context as in another, and if the meaning shifts, the shift is visible and explicit. Several mechanisms address this, including holons, `Strict Distinction`, and `Open/Closed World Assumption`.
 
 ## 4. Holons
 
@@ -56,7 +56,7 @@ Most design mistakes are level confusions. When the team says "let's optimize ch
 
 **In everyday life**: dinner of meatballs and mashed potatoes is a holon. Inside the meatballs: ground meat, onion, egg, seasoning. Outside: part of the week's meal plan. If your partner says "can you handle dinner?" that's the holon-level of dinner, not meatballs. Starting to cook from scratch is the right answer at one level and the wrong one if there were leftovers in the fridge and the request was "just heat something up." A dispute about level.
 
-FPF requires explicitly naming the holon you are working with right now. Not "we're discussing the feature" but "we're discussing the feature as part of the strategy" or "we're discussing the feature as a set of tasks." This is not bureaucracy - it removes half the arguments that were actually running on different levels about the same object.
+FPF requires explicitly naming the holon you are working with right now: "we're discussing the feature as part of the strategy" or "we're discussing the feature as a set of tasks." Saying only "we're discussing the feature" leaves the level unclear. This isn't bureaucracy: naming the level removes half the arguments about the same object that were actually happening at different levels.
 
 ## 5. Bounded context and strict distinction
 
@@ -115,13 +115,13 @@ More on how reliability is calculated and why averages lie: [Averages Lie](/blog
 
 ## 8. Where this works in practice
 
-Up to here it may sound abstract. A few concrete situations to anchor the ideas - across engineering and other fields.
+These situations show how the patterns apply in engineering and other fields.
 
 **A payments API mixes prohibitions, obligations, and penalties in one document.** Integrators break on every other integration. The fix is pattern `A.6 Boundary Discipline (L/A/D/E)` - route each statement by type: Law / Admissibility / Deontic / Effect. The lawyer then reads only L+D, SRE reads only E, the QA engineer writes separate suites for prohibitions and for obligations.
 
 **A radiologist writes "lesion, most likely benign".** The clinician reads it as a diagnosis and defers further imaging. A year later the case is reopened: this was one of three hypotheses considered, and not the strongest one. The fix is `B.5.2.1 Creative Abduction` - return a Pareto front with weights, not a single winner. The report contains three hypotheses with criteria that discriminate between them.
 
-**A performance review reads "Anna does good work".** At calibration, the manager can't justify the promotion. The fix is `A.15 Role-Method-Work` - separate Role / Capability / Work. The review template demands: which new Capabilities were acquired, which Work was completed solo, how the Role expanded. "Good work" is no longer currency.
+**A performance review reads "Anna does good work".** At calibration, the manager can't justify the promotion. The fix is `A.15 Role-Method-Work`: separate Role / Capability / Work. The review template demands: which new Capabilities were acquired, which Work was completed solo, how the Role expanded. "Good work" no longer justifies a promotion on its own.
 
 **A couple has been debating relocation for three months.** Every conversation drifts to a different level: kids vs schools, taxes vs visas, climate vs in-laws. The fix is `A.1 Holon + A.7 Strict Distinction` - write out 4-5 explicit holons and discuss each separately. "Endless argument" becomes a structured decision over a weekend.
 
@@ -129,7 +129,7 @@ The full catalogue of 25 situations is in a separate post: [Where FPF helps: 25 
 
 ## 9. When FPF gets in the way - and when it doesn't
 
-Not every task needs a full pattern language. Here is an honest breakdown.
+Not every task needs a full pattern language.
 
 **FPF is overkill if:**
 - the task is small and isolated
@@ -155,6 +155,6 @@ If you want to try it right now, the minimal three-step protocol is in a separat
 
 FPF itself: the [ailev/FPF](https://github.com/ailev/FPF) repository on GitHub - README with an introductory explanation, and seven megabytes of normative specification for anyone who wants the full picture.
 
-If you're curious how FPF ideas are implemented in a working tool - [our methodology docs](/docs/methodology/overview) cover the concrete practices.
+For concrete practices that implement FPF ideas in a working tool, see [our methodology docs](/docs/methodology/overview).
 
-If you'd prefer a short visual introduction without going into the spec - the [FPF overview guide](/guides/fpf-overview/).
+For a short visual introduction without going into the spec, see the [FPF overview guide](/guides/fpf-overview/).

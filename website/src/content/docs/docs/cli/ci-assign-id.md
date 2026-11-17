@@ -1,17 +1,18 @@
 ---
 title: forgeplan ci-assign-id
-description: "PROB-060 Phase 0b - atomic CI assigner of `assigned_number`. Walks `.forgeplan/**/*.md` in `--head`, finds candidates with `assigned_number: null`, computes `next = max(assigned_number)+1` per kind from `--base` git ref, rewrites frontmatter (no file rename - Phase 2.1). LanceDB-free per ADR-003. Wrapped in production by `.github/workflows/assign-id.yml` `concurrency: forgeplan-id-assign`"
+description: "Assign numbers from the working tree and --base; update frontmatter and filenames without LanceDB."
 ---
 
-Mint the numeric half of an artifact's identity (`assigned_number`) for every
-new `assigned_number: null` artifact in a pull request, so two PRs never claim
-the same number. This is the CI-bot half of the PROB-060 identity story: the
-binary does the numbering, the workflow does the commit and push.
+Mint the numeric half of artifact identity (`assigned_number`) from candidates in the working tree and the per-kind maximum in `--base`. The binary numbers files; the wrapping workflow commits and pushes. It is not a global reservation service: two runs against the same unchanged base can choose the same next number.
 
 The write path is deliberately narrow. `ci-assign-id` never touches LanceDB
 (ADR-003 red line #8), never reads the `change_log` table (PROB-061
 isolation), performs no network calls, and never runs `git commit` or
 `git push` - the wrapping workflow does that.
+
+## Forgeplan 0.38.0
+
+The 0.38.0 help still says “no file rename”, but runtime renames files after numbering. These are separate filesystem steps, not one atomic batch transaction. Collisions are skipped with a suggestion; --auto-suffix does not apply a suffix even though it changes the final exit to 0. The shipped assign-id.yml dry-run branch uses unsupported --dry-run-only: change it to --dry-run when adapting that workflow. Review the plan, actions, and Git diff before committing; refresh the index with reindex. Fixture captures below are retained historical examples, not results of a current run.
 
 ## Usage
 
@@ -66,9 +67,7 @@ concurrency:
 
 - The **group** serializes every run in the repository, so a second PR waits
   while the first PR's numbering run is in flight.
-- **`cancel-in-progress: false`** is the load-bearing half: cancelling a
-  queued run would leave that PR unnumbered, so the group queues instead of
-  replacing.
+- **`cancel-in-progress: false`** prevents cancellation of the running job, but does not guarantee that every pending run is retained. Serialization does not reserve numbers: the next assignment must see a base containing previously accepted assignments. Review merge/queue integration and rerun numbering when needed.
 - The job only fires on `pull_request: [labeled]` with the `ready-to-merge`
   label on a non-draft PR targeting `dev`, or on `workflow_dispatch`. The
   label gate is deliberate - the workflow compiles PR-controlled code with
@@ -110,7 +109,7 @@ the post-merge squash) and falls back to `fs::rename` outside a repository.
 It is idempotent: if the name already matches, no rename is attempted.
 
 The generated help text still carries the Phase 0b phrasing "no file rename -
-Phase 2.1", but the Phase 2.2 rename is what 0.37.0 actually does. The JSON
+Phase 2.1", but the Phase 2.2 rename is what the released 0.38.0 implementation does. The JSON
 `action` field distinguishes the cases:
 
 | `action` | Meaning |
@@ -227,7 +226,7 @@ forgeplan ci-assign-id --base origin/dev --head HEAD --pr 77 --json
 }
 ```
 
-Workspace paths are abbreviated to `…` here; the binary emits them absolute.
+These retained fixture captures abbreviate paths to `…`. Current reporting redacts in-workspace paths to workspace-relative form; do not parse the historical absolute paths as a contract.
 
 `commit_message_suggested` is built only from assignments whose action is
 `assigned` or `would_assign`, so a run that only renamed or skipped leaves it
@@ -281,20 +280,18 @@ Caused by:
   file lives inside the workspace (CWE-200: CI layout stays out of logs).
 - A frontmatter parse failure prints
   `ci-assign-id: skipping <path>: frontmatter parse failed` and continues
-  with the remaining candidates, so one bad file does not block CI.
-- Exit status: `0` when every candidate was assigned, renamed, or skipped;
-  `1` on a collision without `--auto-suffix`, or on a candidate-discovery
-  error.
+  with the remaining candidates, so inspect warnings rather than treating a completed run as proof that every file parsed.
+- Exit status: `0` for a completed plan (also unresolved collisions when `--auto-suffix` is set); `1` for collisions without that flag or ordinary command errors; `2` when no candidates are found; `3` for invalid Git refs; `4` for the assignment invariant violation. Inspect the JSON collision list, not only exit 0.
 - `--pr` and `--repo` are informational only. `--pr` defaults to `0`; when
   `--repo` is omitted the slug is detected from `git remote get-url origin`.
 - Because the binary never touches the index, run
-  [`forgeplan scan-import`](/docs/cli/scan-import/) afterwards if a long-lived
+  [`forgeplan reindex`](/docs/cli/reindex/) afterwards if a long-lived
   workspace needs its store refreshed.
 
 ## See also
 
 - [CLI overview](/docs/cli/)
 - [`forgeplan reconcile-ids`](/docs/cli/reconcile-ids/) - clean up the drift a bypassed assigner leaves behind
-- [`forgeplan scan-import`](/docs/cli/scan-import/) - rebuild the index after an out-of-band rename
+- [`forgeplan reindex`](/docs/cli/reindex/) - rebuild the index after an out-of-band rename
 - [`forgeplan migrate-dry-run`](/docs/cli/migrate-dry-run/) - the identity-family diagnostic that previews a migration before it runs
 - [Methodology guide](/docs/methodology/overview/)

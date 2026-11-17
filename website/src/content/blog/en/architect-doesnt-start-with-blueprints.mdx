@@ -25,7 +25,7 @@ Then the concept: how many floors, where's the kitchen, where are the bedrooms, 
 
 Then materials: reinforced concrete or glulam timber, what kind of windows, how to insulate. This is already an engineering choice with tradeoffs: cheaper but noisier; more expensive but warmer.
 
-And only then - working blueprints for the crew that will actually build.
+Only then come the working blueprints for the crew that will build the house.
 
 Skip any phase and you get either a house without a foundation (skipped the concept, went straight to blueprints), or a kitchen with no window (skipped the brief, didn't account for how the family actually lives), or a bathroom above the neighbor's bedroom (skipped materials selection and drainage planning).
 
@@ -35,19 +35,19 @@ Product development has the same four phases. The difference is that in building
 
 For a feature you're adding to a product, the four phases have simple names: expand, structure, choose, document.
 
-**Expanding the solution space**. Input: one problem statement from a Slack message. Output: three or four ways to solve it, each with a brief list of pros and cons. This is the same "three versions" logic from the diagnostic post, applied at the product-decision level. This phase takes 30 minutes to an hour. The key is not letting your brain immediately lock onto the first obvious approach.
+**Expanding the solution space**. Start with one problem statement from a Slack message and produce three or four ways to solve it, each with a brief list of pros and cons. This is the same "three versions" logic from the diagnostic post, applied to a product decision. This phase takes 30 minutes to an hour. Resist the urge to lock onto the first obvious approach.
 
 **Structuring: breaking it into parts and edge cases**. Take the chosen area and break it into components. What's separate, what's together. Which scenarios are the main path, which are edge cases. What happens when the user does the "wrong" thing. This phase catches 80% of future bugs at the document stage. One hour spent on edge cases saves ten hours of code.
 
-**Choosing an option with tradeoffs**. From the three options in phase one, pick one. With clearly stated reasons for the choice and conditions under which the choice would have been different. This is the same logic as a DDR - just applied at the feature level rather than a single architectural decision.
+**Choosing an option with tradeoffs**. Pick one of the three options from phase one. State why you chose it and under what conditions you would have chosen differently. This is the same logic as a DDR, applied to a feature rather than a single architectural decision.
 
-**The contract document**. The final phase - a PRD (Product Requirements Document), a product document in 13 sections. What the team reads when they sit down to implement. What the stakeholder checks when they accept the work.
+**The contract document**. The final phase produces a PRD (Product Requirements Document), a product document in 13 sections. The team reads it when they sit down to implement; the stakeholder checks it when accepting the work.
 
-Four phases for a building takes months. For a feature - a day or two of a product manager's work. But they must be run **before code starts**, otherwise the brick is already on an unprepared foundation.
+For a building, these four phases take months. For a feature, they take a day or two of a product manager's work. But they must happen **before code starts**, otherwise the brick is already on an unprepared foundation.
 
 ## A concrete example: "tags for notes"
 
-Let me take a concrete case. A team is building a note-taking app (I'll call it Vault). A requirement comes in: "add tags to notes."
+A team is building a note-taking app (I'll call it Vault). A requirement comes in: "add tags to notes."
 
 Without the four phases, the developer goes to write. First they add a `tags` column to the notes table, storing it as a JSON array of strings. Ships in two days. Two weeks later: "search notes by tag." JSON search in the database is slow; the team refactors to a separate many-to-many table. Two more weeks. A month later: "delete a tag from all notes at once." Another rebuild. Two months in, the "tags" feature has consumed four weeks of work instead of the original two-day estimate.
 
@@ -67,7 +67,7 @@ This is not theory. I've seen this difference play out on ten teams. Hours at th
 
 ## Thirteen PRD sections - this is not bureaucracy
 
-A 13-section PRD is often perceived as "extra work that takes time away from engineers." In reality it's a **pilot's pre-flight checklist**.
+A 13-section PRD is often perceived as "extra work that takes time away from engineers." It works like a **pilot's pre-flight checklist**.
 
 Before takeoff, the pilot runs through forty items. Not forty-one, not thirty-nine. Each item represents a failure mode that killed people in the past. Skip any one - the same thing can happen again. Forty items look like bureaucracy until you understand they're a hundred years of collective aviation experience, measured in disasters.
 
@@ -87,7 +87,7 @@ Three of the thirteen sections are skipped most often, and they're exactly the o
 
 **Risks**. What could break on launch. "Risk: migrating existing notes to the new tag structure could take up to thirty minutes per user - we need either a phased rollout or a background migration plan." The risk list is insurance against "we already shipped, now we're patching production."
 
-Three sections. Ten to fifteen minutes to fill in. Effect - two or three weeks of saved work untangling what was left unsaid.
+These three sections take ten to fifteen minutes to fill in and save two or three weeks of work untangling what was left unsaid.
 
 ## Who writes it, who reads it
 
@@ -95,7 +95,7 @@ A PRD is written by the product manager. Not the developer, not the designer, no
 
 A PRD is a contract. The developer reads it and says "this is clear, I can start from this." The designer reads it and says "I need three mockups here." The stakeholder reads it and says "yes, this is what I wanted."
 
-If the developer wrote the PRD - it will be full of technical detail with no business context. If the stakeholder wrote it - no edge cases. If the designer wrote it - no numbers or metrics. One person responsible for the whole document is insurance against a document with holes.
+If the developer writes the PRD, it will be full of technical detail with no business context. If the stakeholder writes it, it will lack edge cases. If the designer writes it, it will lack numbers or metrics. Having one person responsible for the whole document guards against these gaps.
 
 An AI agent (BMAD - a method for structured document generation from context) drafts the first version of the PRD in a minute from the problem statement and project context. Input: "tags feature for a notes app" plus links to related features (search, filters, note organization). Output: a filled-in template with notes like "needs clarification here" and "metrics needed here." The product manager's job from there: fill in the gaps, cut the bloat, sharpen the vague.
 
@@ -103,11 +103,11 @@ An AI agent (BMAD - a method for structured document generation from context) dr
 
 The final step before approving a PRD - a review in a clean session.
 
-Authors don't catch their own blind spots. Not from laziness - it's how perception works. When you wrote the document, you carried an internal context, and the phrases felt clear. Twenty minutes later that context is gone, and the same phrases become "readable two different ways."
+Authors miss their own blind spots because of how perception works, not because they're lazy. While writing, you have context in your head that makes the phrases feel clear. Twenty minutes later that context is gone, and the same phrases become "readable two different ways."
 
-A regular proofread doesn't fix this. What fixes it is a **clean-session review** - either by someone who wasn't involved in the discussion, or with a fresh AI session with an explicit framing: "find at least three problems, don't praise, don't suggest improvements."
+A regular proofread doesn't fix this. A **clean-session review** means asking someone who wasn't involved in the discussion, or starting a fresh AI session with an explicit instruction: "find at least three problems, don't praise, don't suggest improvements."
 
-A clean session turns up 5-7 issues. After filtering - 2-3 real edits. Twenty minutes of work - two or three bugs that never reach the code.
+A clean session turns up 5-7 issues, of which 2-3 survive filtering as real edits. Twenty minutes of work keep two or three bugs out of the code.
 
 The framing matters: without it, an AI session defaults to "praise the document." With the "adversary" framing, it looks for holes the way a good code reviewer does.
 
@@ -125,16 +125,16 @@ If AI fills the PRD 100% - you have a polished template with three problems a hu
 
 ## What to read next
 
-This is the fifth post in the series. Previous posts:
+Post five in the series. Previous posts:
 
 - [The decision graveyard](/blog/decision-graveyard)
 - [Before fixing - write three versions](/blog/before-fixing-write-three-versions)
 - [Averages lie](/blog/averages-lie-trust-calculus)
 - [The motivation section for an architectural decision](/blog/decision-record-with-expiry)
 
-Coming next:
+Coming next in the series:
 
-- How a spec differs from a PRD and why that gap matters enormously in practice.
+- How a spec differs from a PRD and why that gap matters so much in practice.
 - What it looks like when four methodologies are held in one plane.
 
-This post comes with an interactive task-depth calculator: enter a short description of what you're building and get a recommendation - "tactical" / "standard" / "deep" / "critical" - with an explanation of which records are needed. It lives at [/guides](/guides).
+The interactive task-depth calculator at [/guides](/guides) takes a short description of what you're building and recommends "tactical" / "standard" / "deep" / "critical", with an explanation of which records are needed.

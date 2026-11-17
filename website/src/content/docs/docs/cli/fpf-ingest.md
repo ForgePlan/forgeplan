@@ -3,22 +3,22 @@ title: forgeplan fpf ingest
 description: "Ingest the FPF spec into the local knowledge base (one-time setup)"
 ---
 
-`forgeplan fpf ingest` loads the **First Principles Framework** specification into the workspace knowledge base. It parses the 204-section corpus (A/B/C parts), chunks it, generates embeddings via the same BGE-M3 pipeline used by artifact search, and writes the result into a LanceDB table under `.forgeplan/lance/`.
+`forgeplan fpf ingest` loads separately installed **First Principles Framework** section files into the workspace's `fpf_spec` table under `.forgeplan/lance/`. It creates one row per nonempty Markdown file in immediate section subdirectories, excluding `_index.md`; top-level Markdown and deeper nested files are not scanned. The number of sections depends on the installed corpus.
 
-Run it **once per workspace**, typically right after `forgeplan init -y`. After ingest, `fpf search`, `fpf section`, `fpf list`, `fpf rules`, and `fpf check` all become available.
+Run it after initializing a workspace when you need `fpf search`, `fpf section`, or `fpf list`. `fpf rules`, `fpf check`, and `fpf dashboard` use artifact data and configuration, so they do not need the KB to be ingested.
 
 ## When to use
 
 - **Right after `forgeplan init -y`** - seed the KB before doing any reasoning work.
-- **After wiping `.forgeplan/lance/`** - because lance is gitignored, fresh clones need re-ingest.
-- **After a Forgeplan upgrade** that ships new FPF sections - re-ingest to refresh the corpus.
+- **In a fresh clone** - the derived LanceDB KB is gitignored and must be populated locally.
+- **After updating the separately installed FPF corpus** - a binary upgrade alone does not supply new section files.
 - **When `fpf status` reports the KB as stale or empty.**
 
 ## When NOT to use
 
 - You don't need to run it before every reasoning session; the KB persists across invocations.
 - Don't run it in parallel with `forgeplan reason --fpf` - let ingest finish first.
-- Not a replacement for `forgeplan scan-import` - that rebuilds the **artifact** index, not the FPF KB.
+- Not a replacement for `forgeplan reindex` - that scans workspace **artifact** projections, not the FPF KB. It imports new records, syncs differing bodies, adds missing links, and removes orphans; it does not completely refresh existing-record metadata or remove obsolete links between surviving records.
 
 ## Usage
 
@@ -68,28 +68,25 @@ forgeplan fpf ingest --path ./fpf-sections/
 ## What happens
 
 1. Forgeplan locates the FPF sections: the installed skill, or whatever `--path` points at.
-2. Sections are parsed into structured chunks (ID, title, part, body).
-3. Embeddings are generated via BGE-M3 (feature-gated - falls back gracefully if `semantic-search` is disabled).
-4. LanceDB writes one row per section into the `fpf_kb` table.
-5. A status record is stamped with ingest timestamp and section count.
+2. Files are parsed into IDs, parent-section names, titles, bodies, line counts, and source paths.
+3. Existing FPF rows are cleared before encoding and insertion. This replaces the KB rather than appending; it does not clear the artifact index.
+4. Builds with `semantic-search` encode section title and body with BGE-M3 (1024 dimensions; about 2.1 GB downloaded on first use). A build without that feature inserts keyword-only rows. With the feature enabled, model/encoding failures abort ingest; there is no runtime keyword-only fallback for this command.
+5. Rows are inserted with a `created_at` timestamp. There is no separate ingest-status record.
 
-On a warm fastembed cache the whole operation takes a few seconds; cold runs pay the model download cost once.
+Do not run ingest concurrently with readers. A failure after clearing the table can leave the KB empty; fix the source/model problem and re-ingest. No LLM provider or API key is needed. Cached weights avoid another download but do not eliminate CPU encoding work.
 
 ## How it fits
 
-Ingest is the bootstrap step for everything else under `forgeplan fpf`:
+Ingest prepares the KB retrieval commands:
 
-```
-forgeplan fpf ingest      ← one-time
-  ├── fpf search          ← works after ingest
+```text
+forgeplan fpf ingest
+  ├── fpf search
   ├── fpf section B.3
-  ├── fpf list
-  ├── fpf rules
-  ├── fpf check PRD-XXX
-  └── fpf dashboard
+  └── fpf list
 ```
 
-It's also a prerequisite for `forgeplan reason --fpf`, which pulls first-principles context into the ADI prompt.
+It also enables optional KB context for `forgeplan reason <ID> --fpf`. If no matching sections are available, `reason --fpf` reports that and continues without KB context; ingest is not a hard reasoning guard. `fpf status` compares source-file and row counts, not content hashes, so equal counts do not prove the corpus is unchanged.
 
 ## See also
 

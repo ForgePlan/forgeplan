@@ -42,21 +42,28 @@ Fifteen kinds are detected in total: ten pipeline-side detectors run inside `det
 A few detection rules worth knowing before you act on the output:
 
 - `unbacked_displacement` fires when an evidence pack with a `refutes` / `weakens` verdict was terminated (superseded or deprecated) without a `supersedes` successor edge while a target it informed is still live.
-- `duplicate_artifact` compares titles plus body overlap; `hypothesis_duplicate` is title-token Jaccard only and is the same finding that [`forgeplan_contradictions`](/docs/mcp/forgeplan_contradictions/) reports on its own.
+- `duplicate_artifact` compares tokenized titles of same-kind records, excluding deprecated/superseded records; it does not compare bodies. `hypothesis_duplicate` separately uses hypothesis title-token Jaccard and is also reported by [`forgeplan_contradictions`](/docs/mcp/forgeplan_contradictions/). Inspect both artifacts before acting on either heuristic.
 - `uncovered_use_case`, `unverified_invariant`, `orphan_glossary_term` and `untriangulated_hypothesis` are the four buckets of [`forgeplan_orphans`](/docs/mcp/forgeplan_orphans/), re-shaped into the canonical anomaly envelope.
+- `expired_evidence` checks expiry and outgoing `informs`/`based_on` links but does not actually filter the evidence or targets by lifecycle status, despite its “active parent(s)” description.
+- `circular_dependency` detects reciprocal `based_on` pairs, not arbitrary longer cycles. Use the structural graph tools for broader cycle analysis.
+- `weakest_link_unresolvable` reads cached R_eff and walks at most 16 hops. It can report no named weakest link when the walk revisits a node, reaches its cap, or finds only skipped/positive ancestors; that is not proof of a cycle.
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
-| `kind` | `string` | no | Keep a single anomaly kind, by its snake_case name (for example `orphan_link`). An unknown value returns an error listing the valid kinds instead of silently widening the result. |
-| `severity` | `string` | no | Exact-match severity filter: `low`, `medium` or `high`. Anything else returns an error naming the three valid values. |
-| `since` | `string` | no | RFC 3339 timestamp. Only anomalies whose `observed_at` is at or after it are returned - see the journal notes under Returns. A non-RFC-3339 value returns an error with an example. |
-| `workspace` | `string` | no | Resolve the workspace from this directory instead of the MCP server's startup CWD. Absolute or tilde-expanded. Useful when the agent runs in a git worktree separate from the server. |
+| `kind` | `string \| null` | no | Issue #289: filter by anomaly kind. Accepts the same snake_case names emitted in the response (`stuck_draft`, `orphan_link`, …). When `None`, all detected anomalies are returned. Schema default: `null`. |
+| `severity` | `string \| null` | no | Filter by severity (`low` / `medium` / `high`). Exact match. Schema default: `null`. |
+| `since` | `string \| null` | no | ISO 8601 cutoff - only return anomalies observed at or after this timestamp. Useful for diff-style polling. Schema default: `null`. |
+| `workspace` | `string \| null` | no | Optional explicit workspace directory for this call. When set, the MCP server resolves the `.forgeplan/` projection from this path instead of the server's startup CWD. Use this when the calling agent is running in a git worktree separate from the MCP server's launch directory. PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. Schema default: `null`. |
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::AnomaliesParams` (the shared DTOs live in `crates/forgeplan-mcp/src/types.rs`)_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
+
+Success is JSON in MCP `content[0].text`. The values below are illustrative, not a test result from this review. Invalid `kind`, `severity`, or RFC 3339 `since` returns an `isError: true` tool result containing plain text and a recovery hint. Counts describe the filtered report.
 
 ```json
 {
@@ -80,11 +87,11 @@ _Schema source: `crates/forgeplan-mcp/src/server.rs::AnomaliesParams` (the share
 }
 ```
 
-That payload was captured from `forgeplan anomalies --json` in a throwaway workspace holding a single link to a non-existent target; the MCP tool returns the same report object, and both surfaces inject the same `_next_action` string (PRD-071 parity). Field notes:
+The MCP tool and CLI share the report builder and `_next_action` helper. Field notes:
 
 - `id` is derived from the kind plus the affected ids, so re-running the scan yields the same id - that is your dedupe and tracking key.
-- `affected[0]` is the primary artifact (the draft itself for `stuck_draft`, the source for `mistyped_based_on`).
-- `description` is human-readable and capped at 200 chars.
+- Most `affected` arrays start with the primary artifact; the brownfield detector-cap anomaly has an empty array and no concrete target.
+- `description` is human-readable; the struct comment suggests 200 characters, but construction does not enforce a length cap.
 - `evidence` is free-form per kind; the shape is documented per variant in `crates/forgeplan-core/src/anomalies.rs`.
 - `suggested_resolution` is `null` for the kinds that need operator judgement, and otherwise carries `tier`, `action`, `target` and a one-line `rationale`.
 - Entries are sorted by severity (high first), then by `id`, so the output is stable across runs.
@@ -92,40 +99,16 @@ That payload was captured from `forgeplan anomalies --json` in a throwaway works
 
 ## Example invocation
 
-All anomalies in the default workspace:
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
 
 ```json
 {}
 ```
 
-Only orphan links:
-
-```json
-{ "kind": "orphan_link" }
-```
-
-Only high-severity findings:
-
-```json
-{ "severity": "high" }
-```
-
-Diff mode - everything first observed after a known timestamp:
-
-```json
-{ "since": "2026-09-16T00:00:00Z" }
-```
-
-Reporting against a worktree instead of the server CWD:
-
-```json
-{ "workspace": "~/work/forgeplan-feature-branch" }
-```
-
 ## Typical sequence
 
 1. `forgeplan_anomalies` - read `by_tier`, not just `total`.
-2. `by_tier.auto > 0` - the orchestrator resolves those without prompting (a complete stuck draft is safe to activate).
+2. `by_tier.auto > 0` — inspect the suggested action and apply the calling agent's authorization policy. The tier is a recommendation, not permission, and this tool never executes the fix.
 3. `by_tier.adi > 0` - run the FPF ADI loop: several plausible fixes exist, pick one and record why.
 4. `by_tier.user > 0` - escalate with `NEED_USER_INPUT`; `forgeplan_get` the affected ids first so the question carries context.
 5. Re-run with `since` set to the start of the cycle to confirm nothing new landed while you worked.
@@ -137,7 +120,7 @@ Reporting against a worktree instead of the server CWD:
 - The journal is what gives `since` its diff semantics: an anomaly first seen in an earlier scan keeps its original `observed_at`. Entries for anomalies that no longer appear are garbage-collected.
 - A missing or corrupt journal degrades gracefully - every anomaly is treated as freshly observed that scan (pre-0.33 behaviour), and journal write failures are warned, never fatal.
 - The journal is a heuristic store, not a source of truth. The deterministic `id` is the identity of an anomaly.
-- No LLM call and no network access. This is a pure scan of the local workspace.
+- No LLM call. The handler reads the configured workspace store and local journal; it does not invoke the suggested MCP tools.
 
 ## CLI equivalent
 

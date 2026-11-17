@@ -52,7 +52,7 @@ Prints rows ordered by total time spent (highest first) - the most time-consumin
 forgeplan activity-stats --since-hours 720
 ```
 
-Use this for monthly retrospectives or when investigating a slow workflow that may have started days ago. `720` hours (30 days) is the maximum window allowed.
+Use this for monthly retrospectives or when investigating a slow workflow that may have started days ago. `720` hours (30 days) is the largest effective window: the handler clamps `--since-hours` to 1..=720 rather than rejecting out-of-range unsigned values.
 
 ### Example 3: Find slow tools (p95 > 1 second)
 
@@ -61,6 +61,8 @@ forgeplan activity-stats --json | jq '.stats[] | select(.p95_ms > 1000)'
 ```
 
 Filters to tools where the slow-tail (p95) duration exceeds 1000 ms (1 second). A typical first cut when investigating "the agent feels slow today" - these are the tools dragging the experience down.
+
+JSON has `stats`, `total_calls`, `total_errors`, `total_ms`, `since_hours`, `_next_action`, and `hints`. Each stats row has `tool`, `count`, `err_count`, `p50_ms`, `p95_ms`, and `total_ms`. Error counts include every status other than `ok`; percentiles use nearest rank. This reports logged durations and call counts, not token usage or monetary costs.
 
 ## How it fits the workflow
 

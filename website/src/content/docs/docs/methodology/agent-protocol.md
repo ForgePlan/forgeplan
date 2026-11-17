@@ -5,7 +5,7 @@ description: How agents read Forgeplan's deterministic next-action hints across 
 
 > Status: **Active** since Forgeplan v0.25.0 (PRD-071, 2026-04-27)
 
-Forgeplan v0.25.0 introduced a **unified 5-rule hint contract** so any agent (Claude Code, Cursor, Windsurf, custom orchestrators) can read its output without re-discovering the methodology each time. This page is the canonical agent-facing reference.
+Forgeplan introduced a five-rule hint contract in v0.25.0. This page explains the intended protocol and the actual CLI/MCP boundaries in **0.38.0**. Hints help choose the next operation; they are not executable authority or a replacement for the task's evidence and review requirements.
 
 ## Why This Matters
 
@@ -15,47 +15,49 @@ Forgeplan is a methodology engine. Each command/tool call is one step in a longe
 - Guess and sometimes hallucinate
 - Loop on the same step
 
-Each costs tokens and risks correctness. The contract eliminates ambiguity by guaranteeing every output carries an explicit, deterministic next-action.
+Hints reduce repeated discovery, but do not guarantee that every response is a complete command. In 0.38.0 some values are prose, some include placeholders, and some commands omit a marker. Inspect the returned result and the actual command/tool schema.
 
 ## The 5-Rule Contract
 
-Every Forgeplan output, regardless of surface, satisfies these:
+These are the **design rules**, not a claim of complete coverage by every 0.38.0 response:
 
-1. **PRESENCE** - every response either emits a next-action OR is explicitly terminal. No silent gaps.
-2. **ACTIONABILITY** - the next-action is a full, copy-pasteable command with real IDs, never a fragment or placeholder.
-3. **DETERMINISM** - same input state always produces the same hint string. No randomness.
-4. **CONDITIONALITY** - hints appear only when actionable. Terminal states emit `Done.` rather than fake "all done!".
-5. **CONSISTENCY** - text and JSON renderings carry the same semantic content. CLI mirrors MCP semantics.
+1. **PRESENCE** — provide a next action or an explicit terminal signal.
+2. **ACTIONABILITY** — prefer a full command with actual artifact references; detect unresolved placeholders before execution.
+3. **DETERMINISM** — workflow hints are derived from state. LLM-generated analysis and routing are not made deterministic by the hint protocol.
+4. **CONDITIONALITY** — stop suggesting operations when this tool's workflow has nothing further to do.
+5. **CONSISTENCY** — preserve the intended next step across surfaces, without assuming identical transport or argument syntax.
 
 ## The 5 Hint Markers
 
 | Marker | When emitted | Agent action |
 |---|---|---|
-| `Next: <full command>` | Primary action - recommended next step | Execute exactly as written |
-| `Or: <command>` | Alternate when primary blocks (e.g. claim held) | Use only if primary fails |
-| `Wait: <condition>` | Async/TTL state | Retry after the condition |
-| `Done.` | Workflow complete (terminal) | Move on, do not loop |
-| `Fix: <command>` | Error remediation (paired with `Error:`) | Run the fix command immediately |
+| `Next: <full command>` | Recommended next step | Check scope, prerequisites, and actual arguments, then execute if authorized |
+| `Or: <command>` | Alternative if primary blocks | Choose the applicable alternative; do not run both blindly |
+| `Wait: <condition>` | Async/TTL condition | Wait for the condition rather than retrying immediately |
+| `Done.` | No further action in this tool's workflow | Stop that loop; not proof the user's entire task is complete |
+| `Fix: <command>` | Error remediation | Read the error and confirm the remediation is relevant and authorized |
 
 ## Where to read the hint
 
 | Surface | Location | Format |
 |---|---|---|
-| **CLI text (success)** | last lines of stdout | `Next: <full command>` plus optional rationale |
-| **CLI text (error)** | after `Error:` line | `Fix: <full command>` |
-| **CLI JSON** | top-level field | `{"_next_action": "<command>" \| null, ...}` |
-| **MCP success** | top-level field | `_next_action: "<command>" \| null` |
-| **MCP error** | error data field | `error.data._next_action: "<command>"` |
+| **CLI text (success)** | Usually final stdout lines | `Next:`, `Done.`, or other markers |
+| **CLI text (error)** | Error output, generally stderr | Read the error and any `Fix:` / `Wait:` text |
+| **CLI JSON** | Object payload when provided | `_next_action` may be a command, prose, or null; array outputs have no top-level field |
+| **MCP success** | Tool result content, often serialized JSON text | Parse content and read `_next_action` when present; it may contain prose or MCP notation |
+| **MCP error** | `isError` tool-result content or protocol error | Hinted errors may contain a text `_next_action:` line; `error.data._next_action` is not a universal envelope |
 
-**Special case**: `forgeplan list --json` and `forgeplan tree --json` preserve bare-array stdout (backward compat for `jq '.[]'` consumers). The hint is emitted to **stderr** in JSON mode.
+**Special cases**: `forgeplan list --json` and `forgeplan tree --json` preserve bare-array stdout; read their hint on **stderr**. Other array/no-result paths may omit `_next_action`. Null means no suggested action in that payload, not proof that all acceptance criteria passed.
 
 ## Good hints vs. bad hints
 
 ### Good ✅
 
+Illustrative hint shapes below, not a captured run:
+
 ```
 Next: forgeplan score PRD-001
-  R_eff is 0 - link evidence to enable activation
+  Inspect the score and its factors before choosing the next operation.
 ```
 Specific, full command, real ID, rationale explains *why*.
 
@@ -72,6 +74,8 @@ Fix: forgeplan activate PRD-001
 Error has clear, executable remediation.
 
 ### Bad ❌ (pre-v0.25.0 patterns - should never appear in v0.25.0+ output)
+
+This heading preserves the original contract expectation. The patterns remain anti-patterns, but 0.38.0 does not guarantee their absence.
 
 ```
 suggested next: adi
@@ -91,78 +95,66 @@ Three options, none chosen as primary. Paradox of choice.
 
 ## Agent reading protocol
 
-When an agent receives any Forgeplan output:
+When an agent receives Forgeplan output:
 
-1. **Look for the next-action**.
-   - CLI text: scan for `Next:`, `Fix:`, `Wait:`, or `Done.` line
-   - CLI JSON: read `_next_action` field (or stderr `Next:` for list/tree)
-   - MCP: read `_next_action` field of response
-2. **Execute primary if present**.
-   - If `Next:` or `Fix:` - execute the command **exactly as written**
-   - Do not paraphrase, do not substitute placeholders
-   - Do not split into multiple commands
-3. **Use `Or:` only if primary blocks**.
-4. **On `Wait:`, retry after condition**.
-5. **On `Done.`, the workflow is complete** - move to next task, do not loop.
-6. **On no hint and not terminal - report a contract violation**. This is a bug in Forgeplan. Do not improvise.
+1. **Read success/failure and the substantive result first**, including warnings and partial failures.
+2. **Locate the hint** in CLI stdout/stderr or parsed MCP content. Do not assume a protocol-level field.
+3. **Resolve the actual operation**. CLI examples and MCP notation are not interchangeable schemas. Use the real ID/slug returned for the artifact; replace template titles and other unresolved placeholders with task-specific values before execution.
+4. **Check scope and authorization**. A hint does not authorize `--force`, deletion, sending data to an LLM, or writing in another worktree.
+5. **Use one applicable primary action**, with `Or:` only if needed; on `Wait:`, wait for the condition.
+6. **On `Done.`, stop this loop**, then assess the user's remaining acceptance criteria.
+7. **If a required hint is missing or malformed**, report the gap. Do not fabricate output or repeatedly run the same operation hoping the next step changes.
 
 ## What NOT to Do
 
-1. **Don't paraphrase the hint** - full command is given for a reason
-2. **Don't combine `Next:` + `Or:`** in same call - pick one
-3. **Don't ignore `Done.`** - explicit terminal signal
-4. **Don't substitute `EVID-NNN` placeholders** - first run `forgeplan_new evidence`, then use the real ID
-5. **Don't panic on `Wait:`** - async/TTL is normal; just retry
+1. **Do not execute hint text as an uninspected shell script.**
+2. **Do not combine primary and fallback blindly.**
+3. **Do not treat `Done.` as evidence that code or tests were checked.**
+4. **Do not pass literal `EVID-NNN`/`<title>` placeholders** — create the record, then use its returned reference.
+5. **Do not force-release another agent's claim merely because a hint suggests it.** Claims coordinate ownership; the orchestrator handles an abandoned claim deliberately.
 
 ## Practical workflow patterns
 
 ### Pattern A: Shape → Validate → Activate
 
+Illustrative command sequence, not a transcript. PRD-042 and EVID-017 stand for references actually returned by `new`.
+
+```bash
+forgeplan route "add OAuth login" --level 0
+forgeplan new prd "OAuth login support"
+# Fill all applicable sections in oauth-prd.md.
+forgeplan update PRD-042 --body @oauth-prd.md
+forgeplan validate PRD-042
+# Complete design, implementation, and required independent reviews.
+# Create and fill evidence with real results and structured fields.
+forgeplan new evidence "OAuth verification results"
+forgeplan update EVID-017 --body @oauth-evidence.md
+forgeplan link EVID-017 PRD-042 --relation informs
+forgeplan score PRD-042
+forgeplan review PRD-042
+# Under the marketplace policy, guardian PASS is required before this call.
+forgeplan activate PRD-042
 ```
-forgeplan_route("add OAuth login")
-  → Next: forgeplan new prd "<title>"
 
-forgeplan_new(kind: "prd", title: "OAuth login support")
-  → Next: forgeplan validate PRD-042
-
-forgeplan_validate("PRD-042")
-  → Next: forgeplan activate PRD-042   (if PASS)
-  → Fix: forgeplan validate PRD-042    (if errors)
-
-forgeplan_activate("PRD-042")
-  → Done.
-```
+`validate` passing does not imply the evidence gate passed. `activate` may suggest parent reconciliation rather than print `Done.`. The full marketplace cycle also requires ADI Evidence at Standard+; this abbreviated sequence is not a way to skip that gate.
 
 ### Pattern B: Recovery from Error
 
-```
-forgeplan_activate("PRD-042")
-  → Error: No evidence linked
-  → Fix: forgeplan validate PRD-042
-
-forgeplan_validate("PRD-042")
-  → Result: PASS
-  → Next: forgeplan score PRD-042
-```
+If activation reports "No evidence linked", repeating validation alone cannot supply evidence. Create a pack, fill its result and fields, link it to the decision, inspect `score`, and re-run `review`. Avoid `--force` as routine remediation.
 
 ### Pattern C: Multi-Agent Dispatch
 
+```bash
+forgeplan dispatch --agents 3
+# The orchestrator selects a returned assignment; IDs below are illustrative.
+forgeplan claim PRD-054 --agent worker-1 --ttl-minutes 30
 ```
-forgeplan_dispatch(--agents 3)
-  → Next: forgeplan claim PRD-054 --agent worker-1 --ttl 30
-  → Or:   forgeplan list --status draft
 
-forgeplan_claim("PRD-054")
-  → Error: Already held by worker-2
-  → Or: forgeplan release PRD-054 --force
-```
+If worker-2 already holds the claim, inspect `forgeplan claims` and coordinate or choose unclaimed work. Do not automatically execute `release --force`. A claim is a soft coordination signal, not an enforcement lock on every artifact operation.
 
 ## Drift Prevention
 
-The contract is enforced by:
-
-1. **Integration test** `crates/forgeplan-cli/tests/hint_contract.rs` - 36 tests, fails CI if any command lacks contract marker
-2. **Audit script** `scripts/audit-hints.sh` - coverage metric, target 100%, currently 90.0% (72/80 commands audited; 8 newer commands still lack a contract marker)
+The release contains integration coverage in `crates/forgeplan-cli/tests/hint_contract.rs` and the audit script `scripts/audit-hints.sh`. Their existence does not establish complete marker coverage, valid prerequisites, or semantic equivalence of every CLI/MCP hint. Coverage figures from earlier audits are historical, not a current 0.38.0 measurement.
 
 ## Quick reference card
 
@@ -170,11 +162,11 @@ The contract is enforced by:
 ┌─────────────────────────────────────────────────────────┐
 │  FORGEPLAN HINT CONTRACT (v0.25.0+)                     │
 ├─────────────────────────────────────────────────────────┤
-│  Next:  <command>   → execute as-is                     │
-│  Or:    <command>   → fallback if primary blocks        │
-│  Wait:  <condition> → retry after condition             │
-│  Done.              → workflow complete, move on        │
-│  Fix:   <command>   → error remediation (with Error:)   │
+│  Next:  <command>   → inspect, then act in scope           │
+│  Or:    <command>   → applicable fallback                  │
+│  Wait:  <condition> → wait for condition                   │
+│  Done.              → stop this tool-workflow loop         │
+│  Fix:   <command>   → inspect error and remediation        │
 ├─────────────────────────────────────────────────────────┤
 │  Read from: stdout (text), _next_action (JSON/MCP)      │
 │  Special:   list/tree --json → hint on stderr           │
@@ -183,16 +175,14 @@ The contract is enforced by:
 
 ## For Plugin Users
 
-The marketplace plugin **`forgeplan-workflow` v1.5.0+** teaches Claude Code agents to read these markers automatically. After installing:
+The published **`forgeplan-workflow` 1.23.1** contains `/forge-cycle` and the methodology skill. **`fpl-skills` 1.75.1** provides `/smith`, `/gate-check`, and `/wrap`; **`agents-pro` 1.30.0** provides smith and guardian. These are separate plugins, not capabilities automatically installed by `forgeplan setup-skill`.
 
-```
-/plugin marketplace update ForgePlan-marketplace
-```
+The main session reads the cycle and executes its operations. Smith recommends a Plan; authors create artifacts and reviewers produce Evidence; guardian reviews the full chain and returns PASS / CONCERNS / BLOCKER. **The orchestrator activates**, not smith or guardian. `/gate-check` is a between-stage gate, not the activation command.
 
-Your agent will read `Next:`/`Fix:` hints across `/forge-cycle`, the `forge-advisor` agent, and the methodology skill - no manual configuration needed.
+Artifact `phase` markers are advisory. MCP `forgeplan_guard` checks the separate session-phase machine with `target_session_phase`; it does not verify artifact phase completion, tests, or guardian approval. A helpful `_next_action` never substitutes for those checks.
 
 ## Related
 
 - **Forgeplan v0.25.0 release** - first version shipping the contract ([CHANGELOG](/docs/changelog/))
-- **Marketplace plugin forgeplan-workflow v1.5.0** - agent-side awareness layer
+- **Published marketplace workflow** — agent-side policy layered on the CLI/MCP operations
 - **Lifecycle model** ([read more](/docs/methodology/lifecycle/)) - hints integrate with status transitions (draft → active → terminal)

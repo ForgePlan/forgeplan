@@ -1,12 +1,9 @@
 ---
 title: forgeplan embed
-description: "Generate vector embeddings for all artifacts (semantic search)"
+description: "Generate semantic-search vectors for artifacts whose title and body have changed. Content hashes let the command skip up-to-date embeddings. If there is nothing to embed, it returns without loading the model."
 ---
 
-Generate vector embeddings for every artifact in the workspace so semantic
-search can find related work by meaning, including synonyms and paraphrases. Embeddings are
-stored alongside the LanceDB metadata and used by `forgeplan search --semantic`
-and semantic MCP tools.
+Generate semantic-search vectors for artifacts whose title and body have changed. Content hashes let the command skip up-to-date embeddings. If there is nothing to embed, it returns without loading the model.
 
 ## Usage
 
@@ -21,66 +18,36 @@ forgeplan embed
   -V, --version  Print version
 ```
 
-## Feature flag
+## Published binaries and cache
 
-`embed` is gated behind the `semantic-search` Cargo feature flag. The default
-Forgeplan binary ships **without** semantic search to keep the download small
-and avoid bundling an ML model. To enable it, build from source:
-
-```bash
-cargo install --path crates/forgeplan-cli --features semantic-search
-```
-
-Without the flag the command is a no-op stub that prints a hint pointing to
-BM25 keyword search (which is already production-grade as of v0.18.0).
+Forgeplan 0.38.0 release binaries include semantic search. BGE-M3 weights are a separate first-use download of about 2.1 GB. The released tract engine uses CPU inference, not CUDA or Metal. A custom build without `semantic-search` rejects this command; it is not a successful no-op.
 
 ## What it does
 
-1. Loads the BGE-M3 embedding model via [fastembed-rs](https://github.com/Anush008/fastembed-rs).
-2. Walks every artifact in LanceDB and concatenates title + body + tags.
-3. Computes a 1024-dim vector per artifact.
-4. Writes vectors to the `embedding` column of the `artifacts` table.
-5. Caches the model weights in `.forgeplan/.fastembed_cache/` (gitignored).
+The command embeds the title plus the first `embedding.chunk_size` body characters (default 2000), then updates one vector and a content hash per artifact in LanceDB. It truncates the body preview; it does not create multiple searchable chunks. BGE-M3 produces 1024-dimensional vectors. This command does not populate the separate FPF knowledge base.
 
-First run downloads ~500MB of model weights - subsequent runs reuse the cache.
-Embedding a typical 100-artifact workspace takes 10-60 seconds depending on
-your hardware (CPU fallback by default, CUDA/Metal if available).
+## Cache location
 
-## When you need it
-
-- You want **semantic search** - "find artifacts about trust decay" should
-  surface R_eff / evidence work even if those exact words don't appear.
-- You're building **AI agent workflows** where an MCP tool retrieves related
-  context by similarity rather than keyword.
-- You use **FPF KB vector search** (PRD-042) against the methodology corpus.
-
-## When you don't need it
-
-- Your corpus is small (<50 artifacts) - keyword search (BM25 + Russian
-  morphology, v0.18.0) finds everything.
-- You prefer a minimal install without an ML dependency.
-- You want reproducible builds without a ~500MB model download on first run.
-
-Default `forgeplan search "query"` now uses production BM25 (v0.18.0) which
-handles Russian stemming, English, and template noise stripping - it's a
-strong keyword baseline and may be enough on its own.
+The model is shared across projects: `~/Library/Caches/forgeplan/models` on macOS, `~/.cache/forgeplan/models` on Linux, and the platform cache directory on Windows. `FORGEPLAN_MODEL_CACHE` overrides it. Project-local `.fastembed_cache/` is legacy, not the default.
 
 ## Example
 
 ```bash
-# Build with semantic search enabled
-cargo install --path crates/forgeplan-cli --features semantic-search
-
-# Generate embeddings for the whole workspace
+# Optional: download the model before the first search.
+forgeplan setup --skip-alias --skip-hooks
 forgeplan embed
-
-# Now semantic search works
 forgeplan search "trust calculus" --semantic
 ```
+
+## When keyword search is enough
+
+BM25 keyword search does not require embeddings. Use it when downloads, network access, or inference cost are undesirable. Missing or unusable model files can prevent semantic search; do not treat an embedding failure as success.
+
+Per-artifact encoding failures are printed as `FAIL` and counted in the final summary, but the loop still returns success. Inspect the failed count and stderr rather than using exit status alone as proof that every artifact was embedded.
 
 ## See also
 
 - [CLI overview](/docs/cli/)
 - [`forgeplan search`](/docs/cli/search/) - keyword + semantic retrieval
-- [`forgeplan reindex`](/docs/cli/reindex/) - rebuild metadata (doesn't touch embeddings)
+- [`forgeplan reindex`](/docs/cli/reindex/) - scan projections and sync bodies/new records; not a full metadata refresh for existing records or an embedding refresh
 - [`forgeplan fpf search`](/docs/cli/fpf-search/) - search FPF knowledge base

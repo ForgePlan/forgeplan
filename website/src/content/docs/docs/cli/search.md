@@ -55,7 +55,7 @@ forgeplan search [OPTIONS] <QUERY>
 
 ## Examples
 
-Smart default - BM25 + semantic + graph expansion:
+Smart default — BM25/substring keyword channels, optional semantic scores, and graph expansion:
 
 ```bash
 forgeplan search "authentication flow"
@@ -75,20 +75,40 @@ forgeplan search "rate limit" --no-evidence
 
 ## Output interpretation
 
-Default output is a ranked list:
+Smart text output starts with `Found N result(s) … (smart search)`.
+Each hit shows the combined score, `ID [kind|status] "title"`, then
+`kw`, `sem`, `r`, and `g` signal values. Expanded hits add
+`via <id> (expanded neighbor)`. Scores rank one query's results; they are
+not comparable across queries. Stemming groups word forms, not arbitrary
+synonyms or every derivative.
 
-```
-PRD-001  [active ]  score=8.42  Auth system (BM25 + semantic)
-RFC-002  [active ]  score=6.71  Token refresh flow      (graph-expanded from PRD-001)
-ADR-004  [active ]  score=5.30  JWT vs session cookies
-```
+`--json` returns `results` and `_next_action`. Smart hits contain `id`,
+`kind`, `status`, `title`, `score`, `keyword_score`, `semantic_score`, `r_eff`,
+`graph_centrality`, `expanded_from` (nullable), `mode: "smart"`, and
+`semantic_available`. Text `kw` is the maximum of BM25 and substring scores;
+JSON `keyword_score` is only the substring score.
 
-Columns: `ID`, `STATUS`, `SCORE`, `TITLE`, plus a `(graph-expanded)` marker
-when a hit came in as a 1-hop neighbor rather than a direct term match.
-Scores are not comparable across queries - they rank within one call only.
+### Mode-specific limits in 0.38.0
 
-Russian queries work the same - "авторизация" will match "авторизации",
-"авторизованный", etc., thanks to Snowball stemming.
+- Default smart mode applies the composite filters and `--limit`.
+  Evidence filters use cached `r_eff_score > 0` / `== 0`, not a fresh
+  scan of linked packs. `--since` is strictly after midnight UTC on the date.
+- `--keyword` uses substring matching and only the kind filter. It ignores
+  status/depth/evidence/date filtering and `--limit` (#544), although an
+  invalid `--since` date is still rejected before mode dispatch. Its JSON
+  hits have `id`, `kind`, `status`, `title`, and `mode: "keyword"`, not scores.
+- `--semantic` requires semantic-search support and embeddings. It retrieves
+  up to 50 vector candidates, applies kind, and returns at most 10. It also
+  ignores composite filters and `--limit`. JSON hits add `similarity`,
+  `distance`, and `mode: "semantic"`; the envelope adds `unindexed_artifacts`.
+  Artifacts without vectors cannot appear.
+- `--no-expand` disables both neighbor expansion and the centrality booster
+  in smart mode. Smart mode degrades to keyword/graph ranking when semantic
+  initialization or retrieval fails; first use may download the embedding model.
+
+Empty results succeed with `results: []`. Empty queries and malformed
+`--since` dates are errors. MCP search is a separate surface; do not assume
+its filters or score fields match these CLI mode contracts.
 
 ## How it fits
 

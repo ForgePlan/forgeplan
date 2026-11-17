@@ -25,7 +25,7 @@ forgeplan fpf section [OPTIONS] <ID>
 ## Arguments
 
 ```text
-  <ID>   Section ID (e.g. "B.3", "C.2.2")
+  <ID>  Section ID (e.g. "B.3", "C.2.2")
 ```
 
 ## Options
@@ -45,16 +45,16 @@ forgeplan fpf section B.3
 # Just the first 500 chars when you only need the gist
 forgeplan fpf section B.3 --summary
 
-# Explore/exploit reasoning
+# Canonical evolution loop (if this section is loaded)
 forgeplan fpf section B.4
 
-# ADI cycle
-forgeplan fpf section C.1
+# Canonical reasoning / ADI cycle in the published FPF corpus
+forgeplan fpf section B.5
 ```
 
 ## How it fits
 
-Sections are the atomic unit of the FPF KB. They're what `fpf search` ranks, what `fpf ingest` chunks, what `fpf check` cites when explaining why a rule matched, and what `forgeplan reason --fpf` pulls in as context.
+Sections are the unit ranked by `fpf search` and loaded from source Markdown by `fpf ingest`. Run ingestion first and copy an ID from `fpf list`; a missing ID fails with `FPF section '<id>' not found`. The full text is printed to stdout without a pager, followed by `Done.`. `--summary` prints the first 500 Unicode characters and a hint for the full read. Its remaining-count message uses byte length, so that number is not a reliable character count for non-ASCII text. Rule checking uses configuration/default rules, not these KB section bodies.
 
 A typical workflow:
 

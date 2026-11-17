@@ -1,18 +1,15 @@
 ---
 title: forgeplan calibrate
-description: "Suggest a depth level (Tactical/Standard/Deep/Critical) by reading the artifact body."
+description: "Suggest Tactical, Standard, or Deep depth from stored artifact content and outgoing relation count, without changing the artifact."
 ---
 
-`forgeplan calibrate` re-runs the depth heuristics on an existing artifact and suggests
-whether it should stay Tactical, be upgraded to Standard, or escalated to Deep/Critical.
-Where `forgeplan route` calibrates **before** you create the artifact, `calibrate` runs
-the same signals **after** the content is written - which usually produces a more
-accurate result because there is real content to read.
+`forgeplan calibrate` suggests a depth for an existing artifact from its stored
+body and outgoing relation count. Unlike `route`, it uses deterministic content
+heuristics, not a provider call. It reports advice; it does not change `depth`.
 
-Signals include FR count, presence of irreversibility keywords ("schema migration",
-"public API"), cross-module scope, and linked parents. If the suggested depth differs
-from the artifact's current `depth` field, that's a signal to either upgrade the depth
-or split the artifact.
+The released heuristic suggests Tactical, Standard, or Deep; it does not produce
+Critical. Its signals are checkbox count, security and breaking-change text,
+relation count, `parent_epic`, second-level heading count, and body line count.
 
 ## When to use
 
@@ -23,7 +20,7 @@ or split the artifact.
 
 ## When NOT to use
 
-- Tactical Notes - they don't carry a depth field, calibration is meaningless.
+- To prove a depth is correct: this is a heuristic, not a semantic or implementation audit.
 - On every artifact every day - this is a corrective tool, not a daily check.
 
 ## Usage
@@ -53,17 +50,15 @@ forgeplan calibrate [ID]
 forgeplan calibrate PRD-001
 ```
 
-Output:
+Illustrative excerpt for a Standard artifact containing a security section:
 
 ```text
-PRD-001 - Auth System
-  current depth:     Standard
-  suggested depth:   Deep
-  drivers:
-    + 9 FR (Deep threshold 8+)
-    + irreversibility: "schema migration", "public API"
-    + cross-module: auth, session, db
-  recommendation: upgrade to Deep, add Spec + ADR
+PRD-001 "Auth System"
+──────────────────────────────────────────────────
+  Current:   "standard"
+  Suggested: Deep ⬆ ESCALATION
+  Signals:
+    Deep → security_section (present)
 ```
 
 ### Scan every artifact
@@ -72,18 +67,22 @@ PRD-001 - Auth System
 forgeplan calibrate
 ```
 
-Lists only mismatches (artifacts where current ≠ suggested). Empty output = everything
-is correctly routed.
+Without an ID, prints only upward escalations plus a summary. When none are found,
+it prints `All artifacts are at appropriate depth levels.` This does not prove
+that every artifact is correctly routed or identify possible downgrades.
 
 ## Output interpretation
 
-| Signal            | Contributes to            |
-|-------------------|---------------------------|
-| FR count ≥ 8      | Deep                      |
-| irreversibility   | Deep or Critical          |
-| cross-team scope  | Critical                  |
-| 1 file, ≤1 day    | Tactical                  |
-| 1–3 days, 1 module| Standard                  |
+| Signal | Minimum suggested depth |
+|---|---|
+| 4–10 checkbox lines; more than 10 | Standard; Deep |
+| Security/compliance/authentication section or `security considerations` | Deep |
+| `breaking change`, `## migration`, or `backwards compatibility` | Deep |
+| 3–5 outgoing relations; more than 5 | Standard; Deep |
+| Non-empty `parent_epic` | Standard |
+| 5–8 `## ` headings; more than 8 | Standard; Deep |
+| 51–200 body lines; more than 200 | Standard; Deep |
+| No signal | Tactical |
 
 If the recommendation is higher than current: either upgrade the `depth` field and add
 the missing pipeline stages (Spec, ADR) or split the artifact into smaller ones.

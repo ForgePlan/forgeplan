@@ -1,6 +1,6 @@
 ---
 title: "Forgeplan: agent harness for AI coding agents (Rust + LanceDB)"
-description: "Forgeplan is a local-first Rust CLI + MCP server that constrains where an AI coding agent can write, what state it must read, what evidence it must produce, and what gates it must pass. Markdown source of truth, compile-enforced invariant, weakest-link trust scoring, hint protocol contract."
+description: "Forgeplan is a local-first Rust CLI + MCP server that constrains where an AI coding agent can write, what state it must read, what evidence it must produce, and what gates it must pass. Markdown is the source of truth, with a compile-enforced invariant, weakest-link trust scoring, and a hint protocol contract."
 slug: forgeplan-rust-lancedb
 lang: en
 publishedAt: 2026-05-03
@@ -12,9 +12,9 @@ translations:
   ru: forgeplan-rust-lancedb
 ---
 
-Forgeplan is a local-first Rust CLI + MCP server that I now describe as an **agent harness**: a structured environment that constrains where an AI coding agent can write, what state it has to read, what evidence it has to produce, and what gates it has to pass before declaring success. The "harness engineering" framing is from walkinglabs ([walkinglabs.github.io/learn-harness-engineering](https://walkinglabs.github.io/learn-harness-engineering/)) - twelve short lectures that legitimised vocabulary I'd been using badly for six months.
+Forgeplan is a local-first Rust CLI + MCP server that I now describe as an **agent harness**: a structured environment that constrains where an AI coding agent can write, what state it has to read, what evidence it has to produce, and what gates it has to pass before declaring success. I picked up the "harness engineering" framing from walkinglabs ([walkinglabs.github.io/learn-harness-engineering](https://walkinglabs.github.io/learn-harness-engineering/)). Its twelve short lectures gave me a clearer vocabulary for things I'd spent six months describing badly.
 
-What's specific to Forgeplan:
+What sets Forgeplan apart:
 
 - **Markdown is source of truth, LanceDB is a derived index** (ADR-003, compile-enforced after a 32-violation cleanup that ended with `pub(crate)` lockdown).
 - **Trust = weakest link.** `R_eff = min(evidence_scores)`, never the average. CL penalty (0.0/0.1/0.4/0.9) makes "I read it on a blog" structurally weaker than "we measured it ourselves." Activation gate blocks `forgeplan activate` if `R_eff = 0`.
@@ -23,6 +23,6 @@ What's specific to Forgeplan:
 
 Stack: Rust 3-crate workspace, LanceDB embedded, fastembed, rmcp. Single ~41 MB stripped binary. 1995 tests.
 
-What's missing: per-session runtime task trace (H1); a "Sprint Contract" artifact between Note and PRD (H2); WIP=1 hard limit on agent claims (H9). All on the public roadmap.
+What's missing: a per-session trace of runtime tasks (H1); a "Sprint Contract" artifact between Note and PRD (H2); and a hard WIP=1 limit on agent claims (H9). All are on the public roadmap.
 
 Repo: [github.com/ForgePlan/forgeplan](https://github.com/ForgePlan/forgeplan). Install: `brew install ForgePlan/tap/forgeplan`.

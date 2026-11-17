@@ -56,29 +56,24 @@ forgeplan progress PRD-001
 Machine-readable for a dashboard:
 
 ```bash
-forgeplan progress --json | jq '.[] | {id, percent}'
+forgeplan progress --json | jq '.progress[] | {id, percent}'
 ```
 
 ## Output interpretation
 
-Default table:
+The text view groups artifacts by kind, with 24-cell Unicode bars, completed/total,
+rounded integer percentage, and `WIP` or `DONE`. It also prints aggregate totals.
+An ID selects a focused view with the individual checkbox lines.
 
-```
-ID        KIND  PERCENT  BAR                  DONE / TOTAL
-PRD-001   prd     75%    [██████████████░░░░]   6 / 8
-PRD-046   prd     40%    [████████░░░░░░░░░░]   4 / 10
-RFC-004   rfc    100%    [██████████████████]   5 / 5
-```
+`--json` contains `progress` and `_next_action`; each entry has `id`, `title`,
+`kind`, `completed`, `total`, and `percent`. Both text and JSON omit artifacts
+with zero checkboxes; a focused JSON query for one returns `progress: []`.
 
-| Column     | Meaning                                              |
-|------------|------------------------------------------------------|
-| `PERCENT`  | `done / total` as integer percent                    |
-| `BAR`      | 18-char ASCII progress bar                           |
-| `DONE`     | Count of `- [x]` checkboxes                          |
-| `TOTAL`    | Count of `- [x]` + `- [ ]` checkboxes                |
-
-Artifacts with no checkboxes are omitted from the default view (there is
-nothing to track). `--json` includes them with `total: 0`.
+Recognized lines start with `- [ ] ` / `* [ ] ` or checked `x`/`X` equivalents
+after leading whitespace. The parser counts the stored body line-by-line,
+including checkbox-looking examples in code fences. It does not inspect code
+or verify completed implementation. A 100% result may suggest `activate`, but
+does not bypass activation guards.
 
 ## How it fits
 

@@ -120,14 +120,14 @@
   <p class="eyebrow">teaching-assets · index · v1</p>
   <h1>Интерактивные разборы методологии</h1>
   <p class="lead">
-    Восемь самодостаточных страниц, которые объясняют ForgePlan-методологию через аналогии,
-    визуализации и worked examples. Каждая открывается двойным кликом, читается одним человеком,
-    идёт по сценарию от концепции до cli-команды. Ниже - три способа найти нужный разбор:
-    через вопрос, через рекомендуемый порядок, или через тему.
+    Восемь самостоятельных страниц объясняют методологию ForgePlan через аналогии,
+    визуализации и разобранные примеры. Каждая открывается двойным кликом, рассчитана на самостоятельное чтение
+    и ведёт от концепции до CLI-команды. Нужный разбор можно найти тремя способами:
+    по вопросу, в рекомендуемом порядке чтения или по теме.
   </p>
 
   <div class="stats">
-    <span class="stat">пар <strong>10</strong> разборов</span>
+    <span class="stat"><strong>10</strong> разборов</span>
     <span class="stat">шесть <strong>теоретических</strong></span>
     <span class="stat">три <strong>интерактива</strong></span>
     <span class="stat">один <strong>landing</strong> (этот файл)</span>
@@ -163,8 +163,8 @@
   <!-- READING ORDER -->
   <h2>Рекомендуемый порядок чтения</h2>
   <p>
-    Каждый последующий разбор опирается на предыдущие. Можно скакать, но если читаете впервые -
-    сверху вниз даёт наименьшие пробелы.
+    Каждый следующий разбор опирается на предыдущие. Читать можно в любом порядке, но при первом знакомстве
+    лучше двигаться сверху вниз: так останется меньше пробелов.
   </p>
   <div class="order">
 
@@ -189,7 +189,7 @@
           <span class="oc-pill interactive">3D-чарт</span>
         </div>
         <div class="oc-title">Trust Calculus в 3D F/G/R</div>
-        <div class="oc-sub">3D-сцена с семью evidence на сценарии <code>/search</code> latency. Плоскость порога F+G+R=12, hover-карточки, выбор гипотезы по WLNK. Сцену можно крутить мышью - учебный артефакт для проектора.</div>
+        <div class="oc-sub">3D-сцена с семью evidence в сценарии задержки <code>/search</code>. Плоскость порога F+G+R=12, карточки при наведении, выбор гипотезы по WLNK. Сцену можно вращать мышью и показывать на проекторе.</div>
       </div>
       <span class="oc-arrow">→</span>
     </a>
@@ -202,7 +202,7 @@
           <span class="oc-pill theory">теория</span>
         </div>
         <div class="oc-title">BMAD · 13-step PRD · Adversarial Review</div>
-        <div class="oc-sub">Четыре фазы воронки (Brainstorming → Modeling → Architecting → Delivery), 13 секций PRD из которых 3 критичные (Non-Goals, Risks, Open Questions), и adversarial review чужими глазами как third quality gate.</div>
+        <div class="oc-sub">Четыре фазы воронки (Brainstorming → Modeling → Architecting → Delivery), 13 секций PRD, из которых 3 критичны (Non-Goals, Risks, Open Questions), и adversarial review: взгляд со стороны как третий quality gate.</div>
       </div>
       <span class="oc-arrow">→</span>
     </a>
@@ -228,7 +228,7 @@
           <span class="oc-pill tool">meta</span>
         </div>
         <div class="oc-title">Forgeplan как operational layer</div>
-        <div class="oc-sub">POS для методологий: CLI + MCP + .forgeplan/ забирают на себя FPF, BMAD, OpenSpec, QuintCode. 10 типов артефактов (6 в активном ходу) с DAG зависимостей. Четыре depth-уровня и три quality gates в одном <code>validate</code>.</div>
+        <div class="oc-sub">POS для методологий: CLI + MCP + .forgeplan/ берут на себя механическую работу с FPF, BMAD, OpenSpec, QuintCode. 10 типов артефактов (6 в активном ходу) с DAG зависимостей. Четыре уровня глубины и три quality gates в одном <code>validate</code>.</div>
       </div>
       <span class="oc-arrow">→</span>
     </a>
@@ -241,7 +241,7 @@
           <span class="oc-pill interactive">3D-граф</span>
         </div>
         <div class="oc-title">DAG Explorer · артефакты в 3D</div>
-        <div class="oc-sub">Plotly 3D scatter с узлами-артефактами и линиями-рёбрами. Knowledge Vault MVP как реальный пример: 22 артефакта, 30 связей, фильтры по типам. Покажет паттерны (здоровая цепочка / blindspot / orphan / разветвление) и трейсируемость одной картинкой.</div>
+        <div class="oc-sub">Точечный 3D-график Plotly с узлами-артефактами и линиями-рёбрами. Реальный пример Knowledge Vault MVP: 22 артефакта, 30 связей, фильтры по типам. На одной схеме видны паттерны (здоровая цепочка / blindspot / orphan / разветвление) и связи, по которым можно проследить происхождение артефактов.</div>
       </div>
       <span class="oc-arrow">→</span>
     </a>
@@ -254,7 +254,7 @@
           <span class="oc-pill interactive">калькулятор</span>
         </div>
         <div class="oc-title">Depth Calibrator · routing в реальном времени</div>
-        <div class="oc-sub">Три слайдера (complexity / blast radius / reversibility) + три хард-гейта (public API / security / cross-team) → реал-тайм depth tier + конвейер. Пресеты для типовых сценариев (cosmetic / team feature / public API / auth rewrite). Покрутите слайдеры - увидите, как двигается маркер и меняется список артефактов.</div>
+        <div class="oc-sub">Три ползунка (complexity / blast radius / reversibility) и три обязательных условия (public API / security / cross-team) определяют уровень глубины и конвейер в реальном времени. Готовые настройки для типовых сценариев (cosmetic / team feature / public API / auth rewrite). Двигайте ползунки: маркер и список артефактов меняются вслед за ними.</div>
       </div>
       <span class="oc-arrow">→</span>
     </a>
@@ -280,7 +280,7 @@
           <span class="oc-pill theory">теория</span>
         </div>
         <div class="oc-title">Hint Contract · 5 маркеров</div>
-        <div class="oc-sub">Как агент перестал галлюцинировать next steps. Пять маркеров (<code>Next:</code> / <code>Or:</code> / <code>Wait:</code> / <code>Done.</code> / <code>Fix:</code>) + пять правил контракта (Presence / Actionability / Determinism / Conditionality / Consistency). Reference card.</div>
+        <div class="oc-sub">Как агент перестал выдумывать следующие шаги. Пять маркеров (<code>Next:</code> / <code>Or:</code> / <code>Wait:</code> / <code>Done.</code> / <code>Fix:</code>) и пять правил контракта (Presence / Actionability / Determinism / Conditionality / Consistency). Карточка-памятка.</div>
       </div>
       <span class="oc-arrow">→</span>
     </a>
@@ -293,7 +293,7 @@
           <span class="oc-pill theory">теория</span>
         </div>
         <div class="oc-title">Multi-agent · dispatch · claim · release</div>
-        <div class="oc-sub">Координация 2-5 agent'ов в одном репо без конфликтов. Planner режет работу на конфликт-free buckets, worker берёт под себя с TTL, release возвращает в pool. WIP=1 hard limit. Adversarial review всегда в отдельном agent'е.</div>
+        <div class="oc-sub">Координация 2-5 агентов в одном репозитории без конфликтов. Planner делит работу на группы, которые не конфликтуют друг с другом; worker берёт один артефакт из своей группы с ограничением по времени (TTL), release освобождает этот артефакт. Жёсткий лимит WIP=1. Adversarial review всегда проводит отдельный агент.</div>
       </div>
       <span class="oc-arrow">→</span>
     </a>
@@ -338,7 +338,7 @@
 
     <div class="topic-card">
       <div class="tc-tag">если ищете про работу с AI-агентами</div>
-      <div class="tc-title">Как агент читает и взаимодействует</div>
+      <div class="tc-title">Как агент читает данные и работает с инструментом</div>
       <ul>
         <li><a href="agent-protocol-cycle.html">agent-protocol-cycle</a> · Hint Contract + 5 маркеров</li>
         <li><a href="multi-agent-cycle.html">multi-agent-cycle</a> · dispatch / claim / release</li>

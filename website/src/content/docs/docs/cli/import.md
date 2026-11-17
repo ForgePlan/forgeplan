@@ -1,22 +1,9 @@
 ---
 title: forgeplan import
-description: "Restore artifacts from a JSON export file - reinit recovery, backups, and workspace migration"
+description: "Read an export JSON bundle and restore markdown projections, index records, and typed relations into the current workspace. Existing artifact IDs are skipped by default, not treated as fatal conflicts."
 ---
 
-`forgeplan import` reads a JSON file produced by [`forgeplan export`](/docs/cli/export/) and loads every artifact, link, and evidence record back into the current workspace's LanceDB tables. It is the recovery half of the export/import backup pair and the only supported way to restore state after a destructive reinit.
-
-## When to use
-
-- Restoring a workspace after `rm -rf .forgeplan && forgeplan init -y` (you did export first, right?).
-- Moving a workspace between machines when git-tracked markdown alone is not enough (e.g. preserving full scoring history).
-- Rolling back a failed `forgeplan migrate` by reinitializing and importing the pre-migration backup.
-- Cloning a teammate's workspace state for debugging or reproducing a bug.
-
-## When NOT to use
-
-- To merge two live workspaces - `import` is a restore, not a merge. Conflicts require `--force` and can overwrite good data.
-- To rebuild the LanceDB index from markdown - that's [`forgeplan scan-import`](/docs/cli/scan-import/), which is safer because markdown is the source of truth (ADR-003).
-- To import data from another tool - Forgeplan's JSON schema is internal. Only files written by `forgeplan export` are supported.
+Read an `export` JSON bundle and restore markdown projections, index records, and typed relations into the current workspace. Existing artifact IDs are skipped by default, not treated as fatal conflicts.
 
 ## Usage
 
@@ -38,66 +25,34 @@ forgeplan import [OPTIONS] <PATH>
   -V, --version  Print version
 ```
 
+## Forgeplan 0.38.0
+
+Import is not one atomic transaction. Unknown kinds fall back to note; statuses outside draft/active/superseded/deprecated fall back to draft with a warning, including exported stale. Active stub content is downgraded to draft unless forced. Individual record failures or unapplied relations can remain in the summary without failing the entire command: inspect imported/skipped/failed and relation counts, then validate/health.
+
+## Overwrite policy and limits
+
+`--force` overwrites existing artifacts and can bypass the imported-active stub guard; review the bundle and keep a backup. Kind changes for an existing ID are refused. Input is limited to 100 MiB. Import writes markdown as well as LanceDB; do not run `scan-import` afterward as reconciliation.
+
 ## Examples
 
-### Example 1: Restore after reinit
-
 ```bash
-forgeplan export --output backup.json
-cp -r .forgeplan .forgeplan-backup-$(date +%Y%m%d)
-rm -rf .forgeplan
+# In a new destination directory:
 forgeplan init -y
-forgeplan import backup.json
-forgeplan health
-```
-
-The canonical disaster-recovery cycle. `import` rebuilds every artifact, link, and evidence record from the JSON backup.
-
-### Example 2: Force-overwrite on conflict
-
-```bash
-forgeplan import backup.json --force
-```
-
-Without `--force`, artifacts that already exist in the workspace cause the import to fail safely. Use `--force` only when you are sure the backup is the source of truth.
-
-### Example 3: Cross-machine workspace transfer
-
-```bash
-# on machine A
-forgeplan export --output workspace.json
-scp workspace.json machine-b:/tmp/
-
-# on machine B
-forgeplan init -y
-forgeplan import /tmp/workspace.json
+forgeplan import ../forgeplan-backup.json
 forgeplan list
+forgeplan health
+# Only when the bundle is the intended replacement:
+forgeplan import ../forgeplan-backup.json --force
 ```
 
-Useful when markdown alone is not enough (e.g. you want scoring history, decay state, or links that are only stored in LanceDB).
+## Recovery boundaries
 
-## How it fits the workflow
-
-`import` is a recovery / migration tool, not part of the daily Shape → Validate → Code → Evidence → Activate cycle. It pairs tightly with `export`:
-
-1. **Before any destructive operation**: `forgeplan export --output backup.json`
-2. **After reinit or migration rollback**: `forgeplan import backup.json`
-3. **Verify**: `forgeplan health` should show the same artifacts, links, and scores as before
-
-For routine index rebuilds (after `git clone`, for example), prefer [`forgeplan scan-import`](/docs/cli/scan-import/) - it reads markdown, which is the source of truth.
-
-## Safety notes
-
-- **Always `forgeplan health` after import.** Confirm artifact counts, link integrity, and R_eff scores match the pre-export state.
-- **`--force` is destructive.** It silently overwrites existing artifacts. If in doubt, import into a fresh `init -y` workspace instead.
-- **The JSON format is internal and versioned.** Importing a backup from a much older binary into a newer workspace may require an intermediate `forgeplan migrate` step.
-- **Never edit export JSON by hand.** It's not a config file; hand-editing will break checksums and relations.
-- **`import` touches LanceDB only.** It does not rewrite the markdown files under `.forgeplan/adrs/`, `prds/`, etc. If markdown and JSON disagree, run `scan-import` afterward to reconcile.
+Import restores content, supported metadata, tags, and relations, but does not replay the export’s `r_eff_score`, `created_at`, or `updated_at` fields. Recompute scores with `score --all` and inspect the result with `health`. It does not restore full scoring history, provider settings, secrets, caches, claims, or every local file. Preserve those separately. With intact workspace markdown use `reindex`; for foreign documents use `scan-import`.
 
 ## See also
 
 - [`forgeplan export`](/docs/cli/export/) - the other half of the backup pair
-- [`forgeplan init`](/docs/cli/init/) - the destructive step that usually precedes import
-- [`forgeplan scan-import`](/docs/cli/scan-import/) - rebuild from markdown (preferred for fresh clones)
+- [`forgeplan init`](/docs/cli/init/) - create the destination workspace
+- [`forgeplan reindex`](/docs/cli/reindex/) - rebuild from markdown (preferred for fresh clones)
 - [`forgeplan migrate`](/docs/cli/migrate/) - non-destructive alternative when only the schema has drifted
 - [`forgeplan health`](/docs/cli/health/) - post-import verification

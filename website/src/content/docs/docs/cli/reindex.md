@@ -3,10 +3,7 @@ title: forgeplan reindex
 description: "Rebuild LanceDB index from .md files (files-first sync, ADR-003)"
 ---
 
-Rebuild the LanceDB search and metadata index from the markdown files in
-`.forgeplan/`. This is a read-only operation against your markdown sources -
-the `.md` files are the source of truth (ADR-003), and `lance/` is a derived,
-gitignored cache that can always be recomputed.
+Synchronize the LanceDB index from artifact Markdown in `.forgeplan/` without writing those Markdown sources. This is the primary recovery command for a checkout with a missing index, not a promise to replay every piece of local workspace state.
 
 ## Usage
 
@@ -23,49 +20,34 @@ forgeplan reindex
 
 ## What it does
 
-1. Scans every artifact directory under `.forgeplan/` (adrs, rfcs, prds, epics,
-   specs, evidence, problems, solutions, notes, refresh).
-2. Parses YAML frontmatter + markdown body of each file.
-3. Rebuilds the LanceDB tables (`artifacts`, `links`, `tags`, `events`).
-4. Recomputes derived fields (R_eff scoring inputs, tag canonicalization).
-5. Leaves your markdown files untouched.
+1. Reads Markdown in artifact directories and initializes a missing index.
+2. Restores supported frontmatter fields and body for new records. For an existing ID, synchronizes the body only: manually changing status, title, or other metadata does not guarantee that the stored record changes.
+3. Adds missing frontmatter relations, but does not remove an existing edge merely because its link disappeared from the file. Use `unlink` for removal and the appropriate CLI command for metadata.
+4. Prunes records with no corresponding file or a corrupt kind, and relations with missing endpoints.
+5. Does not rescore R_eff or restore vectors, event history, or a full snapshot of every table. Run `score --all` and `embed` separately when needed.
 
 ## When to run
 
-- **After `git clone`** - `.forgeplan/lance/` is gitignored and doesn't exist
-  on a fresh checkout. Run `forgeplan init -y && forgeplan reindex` to
-  bootstrap the workspace.
-- **After manual markdown edits** - if you edited PRD/RFC files outside the
-  CLI (text editor, find-and-replace), `reindex` syncs the changes into
-  LanceDB so `search`, `list`, and `health` see them.
+- **After `git clone`** of an existing workspace: run `forgeplan reindex`; a separate init is not needed to create the missing index.
+- **After manual body edits**: reindex synchronizes changed bodies. Use the CLI for metadata and relation removals as explained above.
 - **After `git pull`** that brought in new artifacts from teammates - see also
   [`forgeplan git-sync`](/docs/cli/git-sync/) for the incremental variant.
-- **Recovery from corruption** - if `lance/` is damaged or LanceDB schema
-  migrated, a full reindex rebuilds from markdown truth.
-- **Schema migration** - new LanceDB columns in a Forgeplan upgrade require
-  reindex to populate them.
+- **Recovery or upgrade**: retain the Markdown sources and run reindex. A damaged database that cannot be opened can still make reindex fail; the command does not replace arbitrary corrupt state or replay history.
 
 ## Example
 
 ```bash
-# Fresh clone bootstrap
-git clone <repo> && cd myproject
-forgeplan init -y
+# In an existing checkout containing tracked .forgeplan Markdown:
 forgeplan reindex
-forgeplan list       # verify
-
-# After editing a PRD in your text editor
-vim .forgeplan/prds/prd-001-auth.md
+forgeplan list
+# After editing an actual artifact body in your editor:
 forgeplan reindex
 forgeplan search "auth"
 ```
 
 ## Safety
 
-`reindex` is **safe to run at any time**. It never writes to `.md` files, only
-to the `lance/` derived index. If you're unsure whether the index is
-in sync, just run it - the cost is a scan of your artifact tree (seconds for
-typical workspaces).
+`reindex` leaves Markdown untouched but mutates and prunes the index. Use a complete checkout and inspect the summary, warnings, per-file errors, and ID collisions; the command can report per-file errors without a failing process exit. Do not treat exit 0 alone as a clean reconstruction or delete the index as a routine prerequisite.
 
 ## v0.18.0 note (PROB-027)
 
@@ -113,14 +95,13 @@ Removal reasons reported in the output:
 
 - **`reindex`** - targeted rebuild of LanceDB from current markdown state.
   Use in normal day-to-day work.
-- **[`scan-import`](/docs/cli/scan-import/)** - lower-level scanner that can
-  also import legacy/foreign artifacts into a fresh workspace. Prefer
+- **[`scan-import`](/docs/cli/scan-import/)** - onboarding importer for external Markdown, not a refresh of existing artifact bodies. Prefer
   `reindex` unless you're doing a one-time import or migration.
 
 ## See also
 
 - [CLI overview](/docs/cli/)
-- [`forgeplan scan-import`](/docs/cli/scan-import/) - bulk import + rescan
+- [`forgeplan scan-import`](/docs/cli/scan-import/) - import external Markdown
 - [`forgeplan git-sync`](/docs/cli/git-sync/) - incremental sync after pull
 - [`forgeplan watch`](/docs/cli/watch/) - continuous auto-sync daemon
 - [`forgeplan health`](/docs/cli/health/) - verify index integrity

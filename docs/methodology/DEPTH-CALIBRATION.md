@@ -6,101 +6,85 @@ A guide for choosing the appropriate level of decision rigor. Based on Quint-cod
 
 ## Level Overview
 
-| Level | When | What to Create | Time | Characteristics |
-|-------|------|----------------|------|-----------------|
-| **Tactical** | Quick fix, 1 file, easy to revert, <2 weeks impact | Note or nothing | Minutes | Obvious solution, <=3 files, easy to undo |
-| **Standard** | Feature 1-3 days, multiple approaches, moderate impact | PRD (tactical) -> RFC | Hours | Multiple options, moderate impact, possibly multiple teams |
-| **Deep** | New module, 1-2 weeks, irreversible, security, cross-team | PRD -> Spec -> RFC -> ADR | Days | High stakes, long-term consequences, extensive evidence trail |
-| **Critical** | Subsystem, cross-team, strategic initiative | Epic -> PRD[] -> Spec[] -> RFC[] -> ADR[] | Weeks | Multiple PRDs, multiple teams, roadmap-level |
+In Forgeplan **0.38.0**, runtime `Mode` values are `note`, `tactical`, `standard`, `deep`. Input `critical` maps to `deep`: strategic work can warrant an Epic and a larger hierarchy, but core does not add a distinct Critical gate.
+
+| Level | Decision guidance | Core route pipeline |
+|-------|-------------------|---------------------|
+| **Note** | Capture a lightweight observation | None |
+| **Tactical** | Obvious, reversible, limited change | None; Note optional |
+| **Standard** | Multiple approaches, moderate impact | PRD → RFC |
+| **Deep** | High stakes, security, migration or long-lived consequences | PRD → SPEC → RFC → ADR |
+| **Critical** | Strategic, cross-team initiative | Alias of Deep; Epic hierarchy is methodology guidance |
+
+Duration alone does not determine depth. A short security change can require Deep treatment.
 
 ## Decision Tree
 
 ```
-Task received
-  |
-  v
-Trivial and obvious?
-  |-- Yes --> TACTICAL
-  |          Note (optional), proceed to implementation
-  |
-  v (No)
-Multiple approaches exist?
-  |-- Yes, but consequences are moderate --> STANDARD
-  |          PRD (tactical) -> RFC, document the choice
-  |
-  v (Consequences are serious)
-Irreversible or cross-team?
-  |-- Yes, but within a single domain --> DEEP
-  |          PRD -> Spec -> RFC -> ADR, full evidence trail
-  |
-  v (Strategic)
-Strategic initiative with multiple PRDs?
-  |-- Yes --> CRITICAL
-              Epic -> PRD[] -> Spec[] -> RFC[] -> ADR[]
-              Verification gates at every stage
+Obvious and reversible?                 → Tactical
+Multiple approaches, moderate impact?   → Standard
+Security / migration / broad impact?    → Deep
+Strategic initiative with many parts?   → Deep gates + Epic grouping as needed
 ```
+
+`forgeplan route "task"` proposes a depth and pipeline. `forgeplan calibrate` analyses existing artifact content and reports suggested escalation; it does not rewrite depth or create missing artifacts.
 
 ## Automatic Escalation Triggers
 
-Regardless of the initial assessment, the level escalates when the following factors are present:
+These are **calibrate suggestions**, not automatic mutations or guarantees that every risk is detected:
 
-| Trigger | Minimum Level |
-|---------|---------------|
-| Hard to revert (consequences >2 weeks) | Standard+ |
-| Affects multiple teams | Standard+ |
-| Problem is unclear, research needed | Standard+ |
-| Security or compliance requirements | Deep+ |
-| Affects a public API | Deep+ |
-| Impacts user data | Deep+ |
-| Roadmap-level decision | Critical |
+| Content signal | Suggested minimum |
+|----------------|-------------------|
+| More than 3 checkbox-like lines (`- [` or `* [`) | Standard |
+| More than 10 such lines | Deep |
+| Security/compliance/authentication heading, or “security considerations” | Deep |
+| “breaking change”, `## Migration`, or “backwards compatibility” | Deep |
+| More than 2 graph links / more than 5 | Standard / Deep |
+| Non-empty `parent_epic` | Standard |
+| More than 4 `## ` headings / more than 8 | Standard / Deep |
+| More than 50 body lines / more than 200 | Standard / Deep |
 
-Rule: **escalation is safe, de-escalation is risky.** When in doubt, choose the higher level.
+The suggestion is the maximum detected minimum; without signals it is Tactical. Review user-data, public-API, reversibility and cross-team risks yourself: those are decision criteria, not a promise that the calibrator understands them.
 
 ## Artifact Requirements by Level
 
 ### Tactical
 
-- **Artifacts**: Note (optional)
-- **Rationale**: Not required
-- **Evidence**: Not required
-- **valid_until**: Automatically 90 days
-- **Rollback plan**: Not required (easy to revert by definition)
-- **Review**: Not required
-
-> For a tactical PRD, use the Product Brief template (`templates/brief/_TEMPLATE.md`) — a lightweight version of the PRD with minimal required sections.
+- Core route has no artifact pipeline. If creating a PRD anyway, its base PRD MUST sections still apply.
+- The Product Brief (`templates/brief/_TEMPLATE.md`) is a lightweight authoring template, not a separate runtime kind or an exemption from PRD validation.
+- Evidence is not a prerequisite to making an artifact-free change. If activating a PRD/Epic/SPEC/RFC/ADR, the shared activation evidence gate still applies.
+- No automatic 90-day `valid_until` is set by `forgeplan new`; expiry must be supplied deliberately.
 
 ### Standard
 
-- **Artifacts**: PRD + RFC (required)
-- **Rationale**: Required — document why this option and not the others
-- **Evidence**: At least 1 evidence item (benchmark, PoC, documentation reference)
-- **valid_until**: Recommended (typically 3-6 months)
-- **Rollback plan**: Recommended
-- **Review**: Verification Gate (minimum 3 of 5 points)
+- Core route recommends PRD + RFC; it does not create or enforce the complete chain at each activation.
+- PRD adds target audience MUST; problem density (50 words) and no technology leakage in FR/NFR are SHOULD.
+- ADR invariants and rollback are SHOULD; RFC invariants/rollback are COULD.
+- Independent review, justified alternatives, measurable outcomes and appropriate evidence remain methodology work, not a “3 of 5” core acceptance rule.
 
 ### Deep
 
-- **Artifacts**: PRD + Spec + RFC + ADR (all required)
-- **Rationale**: Full, with alternatives considered (SolutionPortfolio)
-- **Evidence**: Full evidence trail (tests, benchmarks, PoC)
-- **valid_until**: Required (with TTL justification)
-- **Rollback plan**: Required, with specific steps
-- **Review**: Verification Gate (all 5 points) + Adversarial Review
+- Core route recommends PRD + SPEC + RFC + ADR.
+- PRD adds Timeline, Stakeholders, Acceptance Criteria, Risks and measurable Success Metrics MUST; problem density and no implementation leakage become MUST. Rollback and Dependencies are SHOULD.
+- RFC adds Risks MUST. ADR invariants and rollback become MUST.
+- SPEC accepts either structural contracts or behavioural requirements/scenarios at every depth. The scenario-driven marketplace workflow freezes the oracle before code; core does not require every SPEC to look like a PRD.
+- Full evidence, rollback planning and adversarial review are methodology expectations; core validation does not execute tests or certify the review.
 
 ### Critical
 
-- **Artifacts**: Epic + PRD[] + Spec[] + RFC[] + ADR[] (full hierarchy)
-- **Rationale**: Exhaustive, including strategic justification
-- **Evidence**: Multiple evidence packs, cross-validation
-- **valid_until**: Required for each artifact
-- **Rollback plan**: Required, phased rollback
-- **Review**: Verification Gate + multiple rounds of Adversarial Review + 13-Step Validation
+Use Deep runtime checks. Group strategic deliverables in an Epic where useful. Neither a separate Epic gate, a fixed number of evidence packs nor a 13-step review is added merely by passing `critical`.
+
+### Shared activation and validity boundaries
+
+For PRD/Epic/SPEC/RFC/ADR, normal activation checks MUST validation, a trimmed body of at least 100 bytes, evidence presence and detected stubs. It does not require a universal positive R_eff threshold or automatically run ADI/tests. Review SHOULD findings even when `validate --ci` exits successfully. `--force` bypasses methodology gates, not the lifecycle state machine.
+
+Set `valid_until` based on the claim's useful lifetime; the validator does not require it for every Deep/Critical artifact. A visible date in prose is not necessarily indexed validity metadata.
 
 ## Examples
 
 ### Example 1: Fixing a Typo in a Template — Tactical
 
-**Situation**: A typo was found in a section heading of `templates/prd/PRD_TEMPLATE.md`.
+**Situation**: A typo was found in a section heading of `templates/prd/_TEMPLATE.md`.
 
 **Why Tactical**: Obviously what to fix, 1 file, easy to revert, zero risk.
 
@@ -112,7 +96,7 @@ Rule: **escalation is safe, de-escalation is risky.** When in doubt, choose the 
 
 **Why Standard**: Multiple approaches exist (serde_json vs. tera templates, nesting format), feature takes 2-3 days, affects the `artifact/writer` module.
 
-**Action**: Create a PRD (tactical, 1 page) with format justification -> RFC describing the implementation.
+**Action**: Create a Standard PRD with measurable format requirements, then an RFC describing the implementation. Keep the product needs separate from storage/serialization choices.
 
 ### Example 3: Migrating from SQLite to LanceDB — Deep
 
@@ -132,6 +116,6 @@ Rule: **escalation is safe, de-escalation is risky.** When in doubt, choose the 
 
 ## Related Documents
 
-- [QUALITY-GATES.md](QUALITY-GATES.md) — which checks to apply at each level
+- [QUALITY-GATES.md](../operations/QUALITY-GATES.md) — which checks to apply at each level
 - [PRD-RFC-ADR-FLOW.md](PRD-RFC-ADR-FLOW.md) — decision tree: which document to create
 - [ARTIFACT-MODEL.md](ARTIFACT-MODEL.md) — artifact hierarchy and lifecycle

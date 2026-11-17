@@ -2,52 +2,43 @@
 
 # Хуки агентов — Автоматическая интеграция Forgeplan с AI-агентами
 
-Forgeplan может автоматически предоставлять контекст проекта AI-агентам через хуки.
-Это руководство описывает интеграцию с Claude Code, но те же принципы применимы к любому агентному фреймворку.
+Хуки принадлежат агентному окружению или плагину маркетплейса, а не протоколу MCP Forgeplan. Гайд описывает Forgeplan **0.38.0** и публичный снимок маркетплейса **1.187.1** (`fpl-skills` 1.75.1). Установка CLI или запуск `forgeplan serve` не устанавливает эти хуки.
 
 ## Хук SessionStart (Claude Code)
 
-Добавьте в `.claude/settings.json`:
+Для рекомендательной передачи контекста добавьте этот фрагмент к существующим настройкам `.claude/settings.json`:
 
 ```json
 {
   "hooks": {
-    "UserPromptSubmit": [
+    "SessionStart": [
       {
-        "matcher": "",
-        "command": "forgeplan health --compact --json 2>/dev/null || true"
+        "hooks": [
+          {
+            "type": "command",
+            "command": "forgeplan health --compact",
+            "timeout": 5
+          }
+        ]
       }
     ]
   }
 }
 ```
 
-Это запускает `forgeplan health` в начале каждого промпта, автоматически предоставляя агенту контекст проекта.
+Условия: `forgeplan` доступен в `PATH` хоста, workspace инициализирован, хук выполняется в его каталоге. `SessionStart` срабатывает при старте сеанса, `UserPromptSubmit` — при каждой отправке промпта. Это разные события.
+
+Это пользовательский пример, не установленный хук маркетплейса. Для необязательного контекста проект может осознанно добавить `|| true`, чтобы ошибка не мешала старту. Ошибка при этом скрывается: обязательные гейты так оформлять нельзя.
 
 ### Что видит агент
 
-`forgeplan health --compact --json` возвращает компактный JSON-пакет (< 500 токенов):
+`forgeplan health --compact` выводит краткий текст и `Next: ...` либо `Done.`. Для структурированных данных используйте `forgeplan health --json`. При сочетании `--compact --json` выбирается JSON, а не отдельная компактная схема с гарантированным бюджетом токенов.
 
-```json
-{
-  "total": 27,
-  "active": 11,
-  "draft": 16,
-  "blind_spots": 0,
-  "at_risk": 2,
-  "stale": 1,
-  "next_action": "Review EVID-003 — evidence expires in 3 days"
-}
-```
-
-Это сообщает агенту:
-- Сколько артефактов существует и их распределение по статусам
-- Есть ли слепые зоны (решения без доказательств)
-- Какое следующее действие наиболее срочное
+JSON-отчёт содержит массивы `blind_spots`, `orphans`, `at_risk`, счётчики вроде `stale_count`, `verdict` и `_next_action`. Это состояние workspace, не доказательство завершённой реализации или пройденных тестов.
 
 ## Хук PostToolUse
 
-Напоминает агенту фиксировать решения после значительных изменений файлов:
+Локальное напоминание может предложить зафиксировать решение, не создавая артефакт:
 
 ```json
 {
@@ -55,134 +46,88 @@ Forgeplan может автоматически предоставлять ко�
     "PostToolUse": [
       {
         "matcher": "Edit|Write",
-        "command": "echo '[Forgeplan] Consider: does this change represent a decision worth capturing? Use forgeplan capture if so.'"
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '[Forgeplan] Does this change need a decision record? Review before creating an artifact.'"
+          }
+        ]
       }
     ]
   }
 }
 ```
 
-Это намеренно легковесное решение — текстовое напоминание, а не автоматическое действие.
+`capture` использует настроенного LLM-провайдера и может создать артефакт. Не запускайте его автоматически после каждой правки и не считайте напоминание разрешением на запись.
 
 ## Хук Route-Before-Work
 
-Автоматическое определение глубины перед началом работы над задачей:
+Публичный `fpl-skills` регистрирует `hooks/scripts/prompt-router.sh` на `UserPromptSubmit`. Скрипт ищет ключевые слова и выводит необязательную рекомендацию. Он **не вызывает навыки**, MCP или LLM. Читает `CLAUDE_USER_PROMPT`; если хост не передал переменную, завершается без вывода.
 
-```json
-{
-  "hooks": {
-    "UserPromptSubmit": [
-      {
-        "matcher": "implement|build|create|add feature",
-        "command": "forgeplan route \"$PROMPT\" --json 2>/dev/null || true"
-      }
-    ]
-  }
-}
-```
-
-Агент получает рекомендации по маршрутизации:
-```json
-{
-  "depth": "Standard",
-  "pipeline": ["PRD", "RFC"],
-  "confidence": 85
-}
-```
+Для явной автономной маршрутизации используйте `forgeplan route "описание задачи" --level 0`. `--level 1` запрашивает классификацию LLM; без явного уровня реализация может попробовать настроенную LLM и перейти к ключевым словам при недоступности. Флага `--json` в CLI 0.38.0 нет. Matcher `UserPromptSubmit` не является переносимым regex-фильтром текста промпта; не рассчитывайте, что `$PROMPT` или matcher `implement|build` передаст описание задачи.
 
 ## MCP-сервер (рекомендуется)
 
-Для более глубокой интеграции запустите Forgeplan как MCP-сервер:
+Запускайте сервер из каталога нужного проекта:
 
 ```bash
 forgeplan serve
 ```
 
-Это предоставляет доступ к 26+ инструментам через MCP stdio transport, давая агенту полный CRUD-доступ к артефактам, валидации, оценке и поиску без необходимости CLI-хуков.
-
-### Конфигурация MCP для Claude Code
-
-Добавьте в `.claude/settings.json`:
+Forgeplan 0.38.0 предоставляет **73 инструмента** через stdio. MCP даёт структурированный доступ к поддерживаемым операциям, но не обеспечивает соблюдение всех правил проекта. Для Claude Code добавьте запись в проектный `.mcp.json` и разрешите сервер в окружении:
 
 ```json
 {
   "mcpServers": {
     "forgeplan": {
       "command": "forgeplan",
-      "args": ["serve"],
-      "cwd": "/path/to/your/project"
+      "args": ["serve"]
     }
   }
 }
 ```
 
+Каталог запуска сервера задаёт workspace по умолчанию. Инструменты с параметром `workspace` могут явно работать с другим worktree. Смена каталога shell исполнителя не перенаправляет сервер; не все инструменты поддерживают такой параметр.
+
 ## Хук безопасности (Forge Mode)
 
-Блокирует опасные команды даже в yolo/acceptEdits режиме:
+Публичные плагины регистрируют собственные скрипты:
 
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/forge-safety-hook.sh",
-            "timeout": 3
-          }
-        ]
-      }
-    ]
-  }
-}
-```
+| Плагин | Событие / matcher | Скрипт и действие |
+|---|---|---|
+| `fpl-skills` | `PreToolUse` / `Bash` | `hooks/scripts/safety-hook.sh`: проверяет отдельные шаблоны команд, при совпадении exit 2 |
+| `forgeplan-workflow` | `PreToolUse` / `Bash` | `hooks/scripts/forge-safety-hook.sh`: пропускает собственные проверки, если найден ожидаемый путь хука dev-toolkit |
+| `forgeplan-workflow` | `PreToolUse` / `Write` | `hooks/scripts/pre-code-check.sh`: кешируемое предупреждение об active PRD, всегда exit 0 |
 
-`forge-safety-hook.sh` проверяет чёрный список:
-- `git push --force` / `git push -f`
-- `git reset --hard`
-- `rm -rf /` / `rm -rf ~`
-- `cargo publish`
-- `DROP TABLE`
+Скрипты безопасности содержат проверки force-push, hard reset, forced clean, отдельных рекурсивных удалений и SQL `DROP` в контексте SQL-клиентов. **Они не проверяют `cargo publish` или все опасные команды.** Парсер читает верхнеуровневое `.command` из stdin; если хост передаёт только `.tool_input.command`, значение останется пустым и скрипт разрешит вызов. Отсутствие и `jq`, и `python3` блокирует вызов; пустая или нераспознанная команда в остальных случаях разрешается. Проверьте фактическую форму данных хоста, прежде чем полагаться на этот слой.
 
-При обнаружении — exit 2, команда блокируется. Агент получает сообщение: "BLOCKED by forge-safety-hook".
+Предупреждение перед кодом не проверяет покрытие файла решением и не требует активного PRD для начала разработки. Оно вызывает `forgeplan list --status active --type prd` и кеширует результат проверки на пять минут в общем для проектов `/tmp/.forgeplan-prd-cache`. Какое решение относится к записываемому файлу, скрипт не выясняет.
 
 ### Три зоны доверия (FPF B.3)
 
-| Зона | Управляется | Механизм |
-|------|-------------|----------|
-| **Green** (безопасно) | `settings.local.json` allow | Wildcard whitelist: `Bash(cargo:*)` |
-| **Yellow** (обратимо) | Claude Code acceptEdits | Файловые операции авто-разрешены |
-| **Red** (необратимо) | `forge-safety-hook.sh` | PreToolUse blacklist блокирует |
+Зоны разрешений полезны как **политика проекта**, но проверки строк в плагине не являются песочницей. Широкое разрешение `Bash(cargo:*)` включает запись и публикацию. Права хоста, выданные инструменты и одобрения пользователя остаются отдельными средствами контроля; `acceptEdits` не доказывает, что хук получил и распознал команду.
 
 ## Хук методологии (активация навыков)
 
-Напоминает о доступных методологических командах:
+Публичный `fpl-skills` также регистрирует:
 
-```json
-{
-  "hooks": {
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/skill-activation-hook.sh"
-          }
-        ]
-      }
-    ]
-  }
-}
-```
+- `SessionStart`: приветствие, подготовку отчёта, напоминание о пересмотре решений и insight watchdog. Подробности health в session-скрипте включаются через `FPL_SHOW_HEALTH=1`.
+- `PostToolUse` / `Write|Edit|MultiEdit`: `test-hint.sh`, рекомендательное напоминание о тестах по новым публичным объявлениям в `git diff HEAD`. Тесты он не запускает.
+- `PostToolUse` / `.*`: счётчик отчёта.
+- `UserPromptSubmit`: описанный выше маршрутизатор ключевых слов.
 
-Выводит: доступные навыки (/forge, /fpf-simple), правила методологии (Shape → Validate → Code → Evidence → Activate), напоминание о Rust-навыках.
+В манифестах этих двух плагинов нет регистрации `skill-activation-hook.sh` или автоматического гейта `pre-commit-fmt`. Локальные хуки репозитория и шаблоны — не то же самое, что публичная регистрация плагина. Другим агентным окружениям нужны свои адаптеры; копирование JSON событий Claude Code не устанавливает хуки в любом хосте.
 
 ## Лучшие практики
 
-1. **Начинайте с health** — хук SessionStart даёт агенту ситуационную осведомлённость
-2. **MCP > хуки** — MCP предоставляет структурированный доступ к инструментам; хуки — только текст
-3. **Хуки должны быть легковесными** — `2>/dev/null || true` предотвращает блокировку агента из-за сбоев хуков
-4. **Не злоупотребляйте автоматизацией** — хук PostToolUse должен предлагать, а не принуждать к созданию артефактов
-5. **Маршрутизация перед работой** — помогает агенту решить, нужно ли создавать артефакты или просто писать код
+1. Разделяйте напоминания и обязательные гейты; ошибки гейтов нельзя скрывать через `|| true`.
+2. Сверяйте установленный `hooks.json`, формат входа скрипта и события хоста вместе.
+3. Отделяйте генерацию от проверки: подсказка навыка, успешный вызов инструмента и счётчик отчёта не заменяют результаты тестов.
+4. Давайте параллельным исполнителям отдельные worktrees и точные списки файлов. Claims рекомендательные, не файловые блокировки; см. [совместную работу агентов](MULTI-AGENT.ru.md).
+5. Не смешивайте трекер задач с жизненным циклом артефактов. Ни эти хуки, ни Orchestra не активируют артефакт Forgeplan автоматически.
+
+## Источники релиза
+
+- [Вывод core health](https://github.com/ForgePlan/Forgeplan/blob/d56466b10ddf788c62a6e8acffd0e0f578d0c1d1/crates/forgeplan-cli/src/commands/health.rs#L113-L170).
+- [Публичные хуки fpl-skills](https://github.com/ForgePlan/marketplace/blob/b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7/plugins/fpl-skills/hooks/hooks.json), [вход safety](https://github.com/ForgePlan/marketplace/blob/b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7/plugins/fpl-skills/hooks/scripts/safety-hook.sh#L7-L55), [prompt router](https://github.com/ForgePlan/marketplace/blob/b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7/plugins/fpl-skills/hooks/scripts/prompt-router.sh#L1-L25).
+- [Публичные workflow hooks](https://github.com/ForgePlan/marketplace/blob/b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7/plugins/forgeplan-workflow/hooks/hooks.json), [предупреждение перед кодом](https://github.com/ForgePlan/marketplace/blob/b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7/plugins/forgeplan-workflow/hooks/scripts/pre-code-check.sh#L9-L38).

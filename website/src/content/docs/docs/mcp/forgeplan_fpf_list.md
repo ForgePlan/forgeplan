@@ -1,6 +1,6 @@
 ---
 title: forgeplan_fpf_list
-description: "List every FPF (First Principles Framework) knowledge-base section. Returns the full catalogue of 204 sections as a flat table of {id, title, summary} so the agent can pick what to fetch next via forgeplan_fpf_section."
+description: "List all available FPF (First Principles Framework) sections in the knowledge base."
 ---
 
 Returns the complete catalogue of FPF knowledge-base sections - the hierarchical taxonomy behind Forgeplan's reasoning engine. Each section is a small, self-contained piece of the First Principles Framework (ADI cycle, trust calculus, bounded contexts, explore/investigate/exploit, etc.). `forgeplan_fpf_list` is the agent's index: browse it, decide which sections look relevant, then pull full content via `forgeplan_fpf_section` or search contents via `forgeplan_fpf_search`.
@@ -12,42 +12,29 @@ Returns the complete catalogue of FPF knowledge-base sections - the hierarchical
 - First call of a session when the agent needs to remember what FPF topics exist at all.
 - Before `forgeplan_fpf_section` - confirm the exact ID of a section (e.g. `B.3` for Trust Calculus).
 - When the user asks "does FPF have anything to say about X?" and the agent wants to scan titles before committing to a vector search.
-- As a sanity check after `forgeplan fpf ingest` - the list should return ~204 sections on a fresh ingest.
+- After `forgeplan fpf ingest` - inspect the catalogue actually loaded in this workspace; its size depends on the ingested corpus.
 
 ## What you get back
 
-A flat array of sections, each with:
+`sections` is an array of objects with `section_id`, `title` and `line_count`. `total` is its length and `_next_action` points at a real section, or suggests CLI `forgeplan fpf ingest` when empty.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | `string` | Section ID, e.g. `A.1`, `B.3`, `C.2.2`. |
-| `title` | `string` | Human-readable title. |
-| `summary` | `string` | 1–2 sentence abstract of the section. |
-| `chapter` | `string` | Parent chapter (`A`, `B`, `C`, …). |
-
-The list is ordered by ID so related sections sit next to each other.
+This is not an array of `{id, summary, chapter}` objects, and the endpoint does not promise a fixed corpus size.
 
 ## Input parameters
 
-_No input parameters. Call this tool with an empty object `{}`._
+_No declared input fields. Call this tool with an empty object `{}`._
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
 
-```json
-{
-  "total": 204,
-  "sections": [
-    { "id": "A.1", "chapter": "A", "title": "Why First Principles",
-      "summary": "Motivation for the framework; contrast with heuristic reasoning." },
-    { "id": "B.3", "chapter": "B", "title": "Trust Calculus",
-      "summary": "How evidence decays, congruence levels, R_eff weakest-link rule." },
-    { "id": "C.2.2", "chapter": "C", "title": "Explore / Investigate / Exploit",
-      "summary": "Three action buckets keyed to R_eff thresholds." }
-  ]
-}
-```
+Use a returned `section_id` as the **input** `id` of `forgeplan_fpf_section`. `line_count` describes section size, not a confidence score. The catalogue does not include full bodies; read those on demand.
+
+Success is JSON in MCP text content. This parameterless tool reads the server's default workspace, not an explicit per-call worktree. A missing FPF table or list-query failure is logged and may yield `sections: []`, `total: 0` with ingest guidance; an empty response is not proof that ingestion never occurred. There is no promised sort order or nested hierarchy in the response, and no mutation is performed.
 
 ## Example invocation
+
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
 
 ```json
 {}

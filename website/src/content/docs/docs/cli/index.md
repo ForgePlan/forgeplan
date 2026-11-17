@@ -1,6 +1,6 @@
 ---
 title: CLI Reference
-description: "Complete reference for all 82 Forgeplan CLI commands."
+description: "Forgeplan 0.38.0: 82 top-level commands, 103 including subcommands."
 ---
 
 Forgeplan ships with **82 top-level commands** covering the full Shape→Validate→ADI→Code→Evidence→Activate lifecycle.
@@ -104,7 +104,7 @@ All commands are listed below grouped by purpose. Click any command for full usa
 |---|---|
 | [`forgeplan scan`](/docs/cli/scan/) | Scan codebase for source modules |
 | [`forgeplan scan-import`](/docs/cli/scan-import/) | Scan for existing docs and import as artifacts |
-| [`forgeplan reindex`](/docs/cli/reindex/) | Rebuild LanceDB index from .md files (files-first sync) |
+| [`forgeplan reindex`](/docs/cli/reindex/) | Synchronize Markdown into the index; existing records refresh bodies, not all metadata; no score/vector rebuild |
 | [`forgeplan embed`](/docs/cli/embed/) | Generate embeddings for all artifacts (semantic search) |
 | [`forgeplan watch`](/docs/cli/watch/) | Watch .forgeplan/ files and sync changes to LanceDB in real time |
 | [`forgeplan git-sync`](/docs/cli/git-sync/) | Sync artifact changes from git operations (pull/merge) into LanceDB |
@@ -145,12 +145,40 @@ All commands are listed below grouped by purpose. Click any command for full usa
 | [`forgeplan anomalies`](/docs/cli/anomalies/) | Issue #289 - detect pipeline anomalies (stuck drafts, orphan links, mis-typed based_on, etc.). Each entry carries severity + tier + suggested_resolution so orchestrators can dispatch fixes |
 | [`forgeplan phase`](/docs/cli/phase/) | Read advisory phase state for an artifact. Returns current_phase, workflow_type, timestamps, and the full append-only transition history from `.forgeplan/state/<id>.yaml`. If no state file exists yet (pre-PRD-056 artifact or phase tracking was disabled), returns `current_phase: unknown` -- never an error. Phase tracking is advisory and never blocks other tools |
 | [`forgeplan phase-advance`](/docs/cli/phase-advance/) | Manually advance (or set) the advisory phase marker for an artifact. Appends a transition to the history. Does NOT validate phase ordering -- advisory layer allows out-of-order jumps (e.g. direct `done` override). Full phase enforcement lands in a later PRD under EPIC-005. Use when auto-advancement missed a transition or when reclassifying workflow state |
-| [`forgeplan ci-assign-id`](/docs/cli/ci-assign-id/) | PROB-060 Phase 0b - atomic CI assigner of `assigned_number`. Walks `.forgeplan/**/*.md` in `--head`, finds candidates with `assigned_number: null`, computes `next = max(assigned_number)+1` per kind from `--base` git ref, rewrites frontmatter (no file rename - Phase 2.1). LanceDB-free per ADR-003. Wrapped in production by `.github/workflows/assign-id.yml` `concurrency: forgeplan-id-assign` |
+| [`forgeplan ci-assign-id`](/docs/cli/ci-assign-id/) | Assign working-tree numbers against --base, updating frontmatter and filenames; inspect collisions, without changing LanceDB |
 | [`forgeplan migrate-dry-run`](/docs/cli/migrate-dry-run/) | PROB-060 Phase 0b - EVID-C migration dry-run. Scans all artifacts in `.forgeplan/`, computes the slug each would receive under SPEC-005 rules, and detects per-kind collisions before Phase 4 migration. Read-only - never mutates `.md` files |
 | [`forgeplan migrate-secrets`](/docs/cli/migrate-secrets/) | PRD-077 FR-023 Part B - import known API-key env vars (GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY) from the process environment into `.forgeplan/secrets.env` so keys live project-local instead of in your shell rc. Default is dry-run; pass `--apply` to write |
-| [`forgeplan reconcile-ids`](/docs/cli/reconcile-ids/) | PROB-060 Phase 2.4 (W2.C) - manual cleanup tool for post-merge identity drift. Scans `.forgeplan/<kind>/*.md`, detects four drift categories (filename mismatch, missing `predicted_number`, body-links drift, duplicate `assigned_number`), and either reports (`--check-only`) or auto-fixes the safe categories. LanceDB is never touched; run `forgeplan scan-import` afterwards if the index needs to be rebuilt |
+| [`forgeplan reconcile-ids`](/docs/cli/reconcile-ids/) | PROB-060 Phase 2.4 (W2.C) - manual cleanup tool for post-merge identity drift. Scans `.forgeplan/<kind>/*.md`, detects four drift categories (filename mismatch, missing `predicted_number`, body-links drift, duplicate `assigned_number`), and either reports (`--check-only`) or auto-fixes the safe categories. LanceDB is never touched; run `forgeplan reindex` afterwards if the index needs to be rebuilt |
 | [`forgeplan mcp`](/docs/cli/mcp/) | MCP integration helpers (install config for AI agent clients) |
 | [`forgeplan playbook`](/docs/cli/playbook/) | Playbook runtime (PRD-065 / SPEC-003) - declarative YAML orchestration with delegations to external plugins |
 | [`forgeplan ingest`](/docs/cli/ingest/) | Ingest engine (PRD-066 / SPEC-004) - apply mapping YAML to plugin outputs, generate forge artifacts with file:line source refs |
 | [`forgeplan plugins`](/docs/cli/plugins/) | Plugin detection + recommendations (PRD-067) - list installed plugins, doctor health-check, info on specific plugin |
 
+
+## Forgeplan 0.38.0
+
+Published release: **0.38.0**, with **82 top-level commands and 103 including subcommands**. Usage, arguments, and options reproduce binary help verbatim. Curated explanations identify help/runtime discrepancies. Generating this reference is not behavioral verification.
+
+## Nested commands
+
+- [`forgeplan discover start`](/docs/cli/discover-start/)
+- [`forgeplan discover list`](/docs/cli/discover-list/)
+- [`forgeplan discover show`](/docs/cli/discover-show/)
+- [`forgeplan discover complete`](/docs/cli/discover-complete/)
+- [`forgeplan fpf dashboard`](/docs/cli/fpf-dashboard/)
+- [`forgeplan fpf ingest`](/docs/cli/fpf-ingest/)
+- [`forgeplan fpf search`](/docs/cli/fpf-search/)
+- [`forgeplan fpf section`](/docs/cli/fpf-section/)
+- [`forgeplan fpf list`](/docs/cli/fpf-list/)
+- [`forgeplan fpf status`](/docs/cli/fpf-status/)
+- [`forgeplan fpf rules`](/docs/cli/fpf-rules/)
+- [`forgeplan fpf check`](/docs/cli/fpf-check/)
+- [`forgeplan mcp serve`](/docs/cli/mcp-serve/)
+- [`forgeplan mcp install`](/docs/cli/mcp-install/)
+- [`forgeplan playbook list`](/docs/cli/playbook-list/)
+- [`forgeplan playbook show`](/docs/cli/playbook-show/)
+- [`forgeplan playbook validate`](/docs/cli/playbook-validate/)
+- [`forgeplan playbook run`](/docs/cli/playbook-run/)
+- [`forgeplan plugins list`](/docs/cli/plugins-list/)
+- [`forgeplan plugins doctor`](/docs/cli/plugins-doctor/)
+- [`forgeplan plugins info`](/docs/cli/plugins-info/)

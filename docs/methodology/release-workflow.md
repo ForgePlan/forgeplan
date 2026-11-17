@@ -9,6 +9,15 @@ forgetting and re-learning.
 > Audience: maintainers cutting a release. Not for one-off feature merges
 > — those use the simpler `feat/* → dev` PR flow described in `git/`.
 
+**Owner-consent checkpoint — before remote writes or a publishing playbook:**
+obtain explicit approval covering the named preparation/release branch
+pushes and PR creation, tag publication (and its cargo-dist release),
+and sync/backport branch pushes and PR creation. Pause if an intended
+effect is outside that approval. This applies to the appendix as well.
+Approve a release playbook's remote effects **before launching it**;
+`--yes` and `--allow-shell` acknowledge local execution, not publication
+authority. Merging remains subject to CI, review, and repository policy.
+
 ---
 
 ## 0. Pre-conditions
@@ -18,10 +27,12 @@ A release ships when **all** of the following are true on `dev`:
 - `cargo fmt -- --check` clean
 - `cargo check --workspace` 0 warnings
 - `cargo clippy --workspace --all-targets -- -D warnings` clean
-- `cargo test --workspace --features test-helpers` 0 failures (1977+ tests as of v0.29.0)
+- `cargo nextest run --workspace --all-targets` and `cargo test --workspace --doc` pass; the historical baseline was 1977+ tests at v0.29.0
 - Real E2E smoke on a fresh workspace covers the surfaces that changed
   in this minor (CLAUDE.md red line #5 — automated tests verify code
   correctness, not feature correctness)
+- CI checks and lints both default and `semantic-search` configurations;
+  its separate embedding oracle runs against cached model weights
 - `forgeplan health` reports 0 blind spots, 0 stale, no advisory phase
   mismatches
 - `./scripts/check-mcp-tool-count.sh` exits 0 — no drift between MCP tool
@@ -34,15 +45,20 @@ A release ships when **all** of the following are true on `dev`:
 Full CI gate reference (what each check does and how to fix failures):
 [`docs/operations/QUALITY-GATES.ru.md`](../operations/QUALITY-GATES.ru.md)
 
-**Canonical playbook (v0.28.0+)**: `marketplace/playbooks/release.yaml`
-кодифицирует pre-merge часть этого workflow как 12-step playbook
-(preflight cargo gates → dependabot triage → CHANGELOG check → branch +
-version bump → release PR creation → release-summary Note). На текущей
-схеме SPEC-003 1.2 нет template engine, поэтому maintainer вручную
-правит `vX.Y.Z` placeholder в step args перед `playbook run release --yes`
-(tracked как PROB-050 A-1). Запуск playbook'а автоматизирует pipeline
-ниже до шага 9; шаги 10+ (post-merge tag + sync PR) остаются
-ручными.
+**Repository playbook:** `marketplace/playbooks/release.yaml` is a local
+12-step runbook, not a one-button release service or a bundled public
+marketplace skill. Inspect it with `forgeplan playbook show release`.
+Replace both `vX.Y.Z` and `X.Y.Z` placeholders before running. Its command
+steps require `forgeplan playbook run release --yes --allow-shell`
+(or trusted workspace `playbook.allow_shell` configuration).
+
+Do not treat a successful run as verification of all conditions above.
+The YAML lists Dependabot alerts but does not enforce their classification;
+plain `health` is informational; its CHANGELOG search can match bullets
+in later sections. Review the four path-dependency versions after
+`cargo set-version` and check the lockfile. The playbook does not generate
+release notes, wait for PR review, tag the release, or create/merge the
+post-release sync PR. Those remain maintainer responsibilities below.
 
 If any of these fails, fix on `dev` (PR through `feat/*`) before
 opening the release branch.
@@ -78,6 +94,12 @@ Open a PR `chore/changelog-vX.Y.Z` from `dev` (or stack on whatever
 last feature merged). The entry follows the loose Keep-a-Changelog
 format already in `CHANGELOG.md`:
 
+Start with `forgeplan release-notes --since v<PREV> --output markdown`.
+This drafts notes from committed artifacts in eight directories and
+includes `active` artifacts or those with `r_eff_score > 0`; `--draft`
+disables that filter. Review code/security changes that the artifact
+selection may omit. See the [canonical release protocol](../operations/RELEASE-PROTOCOL.md).
+
 ```markdown
 ## [X.Y.Z] — YYYY-MM-DD — <one-line theme>
 
@@ -104,9 +126,11 @@ be able to jump from CHANGELOG to the PRD/RFC/ADR without searching.
 
 ## 3. Version bump on `dev`
 
-Bump `version = "X.Y.Z"` in the workspace `Cargo.toml`. Run
-`cargo update --workspace` so `Cargo.lock` reflects the new version
-across all crates. Commit:
+Update `[workspace.package].version` in the root `Cargo.toml` **and**
+the four path-dependency version references: two in
+`crates/forgeplan-cli/Cargo.toml`, and `forgeplan-core` in both dependency
+sections of `crates/forgeplan-mcp/Cargo.toml`. Run `cargo check --workspace`
+to refresh `Cargo.lock`, then inspect exact version equality. Commit:
 
 ```
 chore(release): bump workspace version to X.Y.Z
@@ -121,7 +145,7 @@ make sure both land before opening the release branch).
 ## 4. Release branch + PR to main
 
 ```bash
-git checkout dev && git pull
+git checkout dev && git pull --ff-only
 git checkout -b release/vX.Y.Z
 git push -u origin release/vX.Y.Z
 gh pr create --base main --head release/vX.Y.Z --title "release: vX.Y.Z" --body "$(cat <<'EOF'
@@ -160,11 +184,16 @@ release branch — never rebase a release branch.
 
 ## 5. Tag on main + cargo-dist + brew
 
-After the release PR merges:
+After the release PR merges with explicit user approval, fetch the exact
+`main` tip and inspect its applicable checks before creating a tag:
 
 ```bash
-git checkout main && git pull
-git tag -a vX.Y.Z -m "Release vX.Y.Z"
+git fetch origin
+git checkout main && git pull --ff-only
+MERGE_SHA=$(git rev-parse HEAD)
+gh run list --branch main --commit "$MERGE_SHA"
+# Continue only after the applicable checks for this SHA passed.
+git tag -a vX.Y.Z "$MERGE_SHA" -m "Release vX.Y.Z"
 git push origin vX.Y.Z
 ```
 
@@ -173,9 +202,9 @@ configured by `cargo-dist`) which:
 
 - Builds binaries for 5 platforms (aarch64/x86_64 × {apple-darwin,
   unknown-linux-gnu} + x86_64-pc-windows-msvc)
-- Creates a GitHub release with all 28 artifacts (5 binaries × 2 archive
-  formats × {sig, sha256}, plus tarball + checksums manifest)
-- Updates the Homebrew formula in the `forgeplan-tap` repo
+- Creates a GitHub release with the archives, installers, and checksums
+  described by that run's dist manifest; do not assume a fixed asset count
+- Updates the Homebrew formula in `ForgePlan/homebrew-tap`
 
 **Verify within 30 minutes**:
 
@@ -185,9 +214,11 @@ brew update && brew info forgeplan
 forgeplan --version  # should match X.Y.Z after `brew upgrade forgeplan`
 ```
 
-If cargo-dist fails, the most common cause is a flaky linker job on the
-windows-msvc target — re-run via `gh run rerun <run-id> --failed`
-before debugging.
+If cargo-dist fails, inspect the failing job's logs before choosing a
+remedy. Re-run with `gh run rerun <run-id> --failed` only when the logs
+support a transient failure; a linker or feature-composition error needs
+a real fix. Verify the downloaded binary as described in
+[Release Protocol, step 9](../operations/RELEASE-PROTOCOL.md#9-tag-after-merge-let-cargo-dist-publish).
 
 ---
 
@@ -200,9 +231,9 @@ attempt then fights merge conflicts on `Cargo.toml`, and any feature
 PR to `dev` opened in the gap shows phantom commits.
 
 ```bash
-git checkout main && git pull
+git fetch origin
+git checkout main && git pull --ff-only
 git checkout -b chore/sync-main-to-dev-after-vX.Y.Z
-git merge --no-edit origin/dev || true   # fast-forward when possible; resolve if needed
 git push -u origin chore/sync-main-to-dev-after-vX.Y.Z
 gh pr create --base dev --head chore/sync-main-to-dev-after-vX.Y.Z \
   --title "chore: sync main to dev after vX.Y.Z" \
@@ -211,8 +242,9 @@ gh pr create --base dev --head chore/sync-main-to-dev-after-vX.Y.Z \
 
 PR #223 (sync after v0.27.0) is the canonical example to copy.
 
-Merge with **merge commit** (same reasoning as the release PR — preserve
-attribution).
+Merge with **merge commit** after CI and the required approvals, following
+repository policy. Mandatory sync is not an exception to owner consent
+for push/PR creation or to review and merge requirements.
 
 ---
 
@@ -234,23 +266,19 @@ After everything above:
 
 For an urgent fix that can't wait for the next minor:
 
-1. Branch from `main` (NOT dev): `git checkout main && git pull && git checkout -b fix/<short-name>`
-2. Apply minimal fix + test
-3. PR to `main` directly (skip `dev` for urgency); label `hotfix`
-4. After merge: bump patch version on `main` → tag → release as
-   sections 5–6 above
-5. **Backport to dev**: open a `chore/backport-vX.Y.Z+1-to-dev` PR
-   from main. Either cherry-pick the fix commit or merge the entire
-   release/vX.Y.Z+1 ref into dev. Without this, dev silently regresses.
+1. Branch from `main` (not `dev`): `git checkout main && git pull --ff-only && git checkout -b fix/<short-name>`
+2. Apply the minimal fix and tests; update the patch version in all five manifest locations and prepare the CHANGELOG on this branch
+3. Open a PR to `main` directly (skip `dev` for urgency), label it `hotfix`, wait for checks and explicit user review approval
+4. After merge, tag the verified `main` SHA and publish as in section 5; do not make a separate direct version-bump commit on `main`
+5. Open the mandatory main → dev sync PR as in section 6. If the fix needs adaptation, use a separate reviewed backport branch rather than pushing into `dev` or reusing a merged branch.
 
 ---
 
 ## Anti-patterns we have committed (don't repeat)
 
-- **Force-pushing release/* branches** — rewrites the merge commit hash
-  GitHub Actions tagged. Result: cargo-dist runs against a SHA that
-  doesn't exist in the published tag. Recover by re-tagging from the
-  actual merge SHA.
+- **Force-pushing release/* branches** — rewrites the branch history used
+  during review. Keep published tags immutable; if a shipped release needs
+  correction, prepare a new patch release from a reviewed commit.
 - **Squashing release/* PRs** — collapses N feature merges into a single
   commit with the release subject; `git bisect` between releases stops
   working.
@@ -272,21 +300,25 @@ cargo fmt -- --check && cargo clippy --workspace --all-targets -- -D warnings &&
 forgeplan health
 gh api repos/ForgePlan/Forgeplan/dependabot/alerts --jq '.[] | select(.state=="open")'
 
-# Version bump + CHANGELOG
-$EDITOR Cargo.toml CHANGELOG.md
-cargo update --workspace
-git add Cargo.toml Cargo.lock CHANGELOG.md
+# Version bump + CHANGELOG (reviewed PR to dev, never a direct dev commit)
+git checkout dev && git pull --ff-only
+git checkout -b chore/changelog-vX.Y.Z
+$EDITOR Cargo.toml crates/forgeplan-cli/Cargo.toml crates/forgeplan-mcp/Cargo.toml CHANGELOG.md
+cargo check --workspace
+git add Cargo.toml Cargo.lock crates/forgeplan-cli/Cargo.toml crates/forgeplan-mcp/Cargo.toml CHANGELOG.md
 git commit -m "chore(release): bump workspace version to X.Y.Z"
-git push
+git push -u origin chore/changelog-vX.Y.Z
+gh pr create --base dev --head chore/changelog-vX.Y.Z --title "chore(release): prepare vX.Y.Z"
+# Wait for checks, review, and merge of the preparation PR.
 
 # Release PR
-git checkout -b release/vX.Y.Z dev
+git checkout dev && git pull --ff-only
+git checkout -b release/vX.Y.Z
 git push -u origin release/vX.Y.Z
 gh pr create --base main --head release/vX.Y.Z --title "release: vX.Y.Z" --body "..."
 
-# After release PR merges
-git checkout main && git pull
-git tag -a vX.Y.Z -m "Release vX.Y.Z" && git push origin vX.Y.Z
+# After the release PR merges: follow section 5's exact-SHA check and tag gate.
+git checkout main && git pull --ff-only
 
 # Post-release sync (mandatory)
 git checkout -b chore/sync-main-to-dev-after-vX.Y.Z main

@@ -1,25 +1,9 @@
 ---
 title: forgeplan get
-description: "Read full artifact content by ID - AI-friendly markdown fetch"
+description: "Read an artifact by slug or display ID. Text output presents metadata, body, and links; it is not a byte-for-byte dump of the original markdown file. JSON provides the stored fields for scripts."
 ---
 
-Read the full markdown content of an artifact by ID. This is how AI agents
-and humans pull a single decision document into context. The command reads
-from the LanceDB-projected view, which stays in sync with the source markdown
-in `.forgeplan/`.
-
-## When to use
-
-- An AI agent needs full context of a PRD / RFC / ADR before coding
-- You want to review a specific decision in the terminal without opening the file
-- You want JSON output for piping into other Forgeplan tools
-
-## Not to use when
-
-- You want a list of candidates → use [`forgeplan list`](/docs/cli/list/)
-- You do not know the exact ID → use [`forgeplan search`](/docs/cli/search/)
-- You want linked artifacts too → use [`forgeplan graph`](/docs/cli/graph/) or
-  [`forgeplan tree`](/docs/cli/tree/)
+Read an artifact by slug or display ID. Text output presents metadata, body, and links; it is not a byte-for-byte dump of the original markdown file. JSON provides the stored fields for scripts.
 
 ## Usage
 
@@ -43,54 +27,18 @@ forgeplan get [OPTIONS] <ID>
 
 ## Examples
 
-Read a PRD in full - the standard AI-agent fetch:
-
 ```bash
 forgeplan get PRD-001
-```
-
-Read an RFC and pipe through a pager:
-
-```bash
 forgeplan get RFC-002 | less
+# Structured evidence fields are in the body, not a frontmatter object:
+forgeplan get EVID-012 --json | jq -r '.body'
 ```
 
-JSON output - body plus all frontmatter, ready for `jq`:
+## JSON contract
 
-```bash
-forgeplan get EVID-012 --json | jq '.frontmatter.verdict, .frontmatter.congruence_level'
-```
+Top-level keys include `id`, `slug`, `kind`, `status`, `title`, `depth`, `author`, `parent_epic`, `valid_until`, `r_eff`, `created_at`, `updated_at`, `body`, `links`, and `_next_action`. There is no nested `frontmatter` object. Use `list` or `search` to discover an ID, then `get` to inspect it. The corresponding MCP tool is `forgeplan_get`.
 
-## Output interpretation
-
-Default output is the raw markdown file: YAML frontmatter fenced by `---`,
-followed by the body sections (Problem, Goals, FR, etc.). This is the same
-text a human would see opening the file in an editor.
-
-With `--json`, the envelope is:
-
-```json
-{
-  "id": "PRD-001",
-  "kind": "prd",
-  "status": "active",
-  "frontmatter": { "title": "...", "tags": [...], "created": "...", ... },
-  "body": "## Problem\n..."
-}
-```
-
-If the ID does not exist, the command exits with status 1 and prints
-`Error: artifact not found: <ID>`.
-
-## How it fits
-
-`get` is the "detail view" to `list`'s "index view":
-
-```
-list (find it) → get (read it) → validate / reason / link / score (act on it)
-```
-
-For AI agents using MCP, `get` maps 1:1 to the `read_artifact` tool.
+`links.outbound` is an array of `{target, relation}` objects; `links.inbound` contains `{source, relation}`. Both arrays are present even when empty. Nullable metadata remains `null`; `slug` comes from stored body frontmatter. Requires an initialized workspace and valid configuration. A missing ID exits through the ordinary CLI error path with a `Fix: forgeplan list` hint; `--json` does not turn that failure into the successful artifact schema.
 
 ## See also
 

@@ -7,7 +7,20 @@ Health-check across the full plugin registry: separates ok / outdated / missing 
 
 **Category**: Other
 
-The triage tool for a broken environment. Where [`forgeplan_plugins_list`](/docs/mcp/forgeplan_plugins_list/) answers "what is here", this tool answers "what is wrong, and what do I paste to fix it". Every entry in the extended registry is classified into exactly one of three buckets, and every non-`ok` entry contributes a runnable install command to `install_hints`.
+Where [`forgeplan_plugins_list`](/docs/mcp/forgeplan_plugins_list/) inventories entries, this tool groups them by compatibility. Every registry entry goes into exactly one bucket; every non-`ok` entry contributes the registry's install-command string to `install_hints`.
+
+These are registry/disk classifications, not running agents or verified host
+capabilities. The compiled catalogue is not the live public marketplace.
+Only install a missing entry when your intended workflow needs it, and check its
+current public distribution instructions before using a registry hint.
+
+## Example invocation
+
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
+
+```json
+{}
+```
 
 ## What it does
 
@@ -29,13 +42,15 @@ The triage tool for a broken environment. Where [`forgeplan_plugins_list`](/docs
 
 ## Input parameters
 
-| Name | Type | Required | Description |
-|---|---|---|---|
-| (none) | - | - | The tool takes no parameters. It is read-only, idempotent, non-destructive, and closed-world. |
+_No declared input fields. Call this tool with an empty object `{}`._
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::forgeplan_plugins_doctor` (signature `Parameters(_p): Parameters<EmptyParams>`)_
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
+
+Success is JSON in MCP text content. There is no `workspace` input or trace;
+the scan uses process-relative roots and `$HOME`. Missing roots or unreadable
+manifests do not themselves become tool errors.
 
 | Field | Type | Description |
 |---|---|---|
@@ -66,7 +81,7 @@ Triage a fresh machine - one entry is healthy, eleven are absent:
 {}
 ```
 
-Response (captured live, with the `missing` array trimmed to three entries):
+Historical 0.37.0 response capture, with the `missing` array trimmed to three entries. Registry hints below are captured output, not a current public marketplace installation guide:
 
 ```json
 {
@@ -116,7 +131,7 @@ Response (captured live, with the `missing` array trimmed to three entries):
 }
 ```
 
-`detected_version` is read from the installed manifest during the scan, so it reflects the plugin on disk rather than the binary serving the request - which is why it is shown as a placeholder here. The built-in `forgeplan` entry resolves to `(built-in)` with the requirement `*`.
+For external entries, `detected_version` comes from manifest metadata. The built-in `forgeplan` record instead uses the binary's compiled package version and path `(built-in)`, with requirement `*`. In doctor rows, an absent version is `null` because the handler builds these rows explicitly; this differs from the omitted `installed.detected_version` in list/info.
 
 The same check from the terminal, which renders the buckets as a one-line summary plus one line per problem:
 
@@ -136,9 +151,9 @@ Fix: /plugin install agents-sparc@ForgePlan-marketplace
 
 ## Notes
 
-- **Offline and deterministic.** Detection is a filesystem scan against a static registry. No network call, no package manager, no LLM.
+- **Offline scan, not fixed ordering.** No network call, package manager or LLM is used; filesystem state and unordered registry iteration affect the result.
 - **An unparseable version is treated as ok.** Compatibility is checked with the registry's version requirement; when either side of that comparison cannot be parsed as semver the entry lands in `ok` rather than `outdated`. An entry whose manifest publishes no version at all is `outdated`, not `ok`.
-- **`install_hints` is the actionable part.** It is a flat list, deduplicated only by accident of the registry - filter it yourself before showing a user eleven lines that are really four distinct commands.
+- **Hints are not deduplicated.** Multiple registry entries can share one pack/install command. Deduplicate before presenting installation choices; their count is not a count of distinct packages.
 - **Bucket and hint order is not stable.** The registry is iterated as an unordered map, so `missing`, `outdated`, and `install_hints` come back in a different order on successive calls - and `_next_action` names whichever hint happened to land first. Sort by `name` before rendering, and never treat `install_hints[0]` as a fixed answer.
 - **A `missing` entry is not an error.** The registry is a catalogue of what ForgePlan *can* use; most workspaces legitimately have a subset installed. Only treat a missing plugin as a problem when a playbook or workflow you intend to run requires it.
 - Install commands carry an explicit `@marketplace` suffix where applicable. The suffix is required - without it the install is ambiguous when two marketplaces publish a plugin with the same name.

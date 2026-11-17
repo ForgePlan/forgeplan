@@ -1,14 +1,9 @@
 ---
 title: forgeplan_claim
-description: "Claim an artifact for exclusive work - TTL-based advisory lock for multi-agent dispatch."
+description: "Claim an artifact for exclusive work. Writes .forgeplan/claims/<id>.yaml with the caller's agent identity, timestamp, and TTL. Fails if a live claim by a different agent exists - same-agent calls renew the TTL. Advisory: other tools do not block on claims, but orchestrators should use `forgeplan_claims --active` to avoid double-assigning work."
 ---
 
-Writes `.forgeplan/claims/<id>.yaml` declaring that a specific agent is working on the
-artifact. Holds the workspace lock for the duration of the write so two sub-agents cannot
-race the same claim. Fails with a clear error when a different agent already holds a live
-claim; same-agent calls renew the TTL (idempotent for the holder). Advisory by design -
-no other tool blocks on claims, but orchestrators should consult
-[`forgeplan_claims`](/docs/mcp/forgeplan_claims/) before dispatching parallel work.
+Writes `.forgeplan/claims/<id>.yaml` to record an agent's intent to work on an artifact. A workspace write lock serializes claim/release calls, but the persisted claim is advisory: it does not lock source files or block other tools. A live claim held by a different agent is refused. Calling again as the same agent rewrites the timestamps, TTL and note; this is renewal, not a no-write idempotent operation. Consult [`forgeplan_claims`](/docs/mcp/forgeplan_claims/) before dispatching work.
 
 **Category**: Multi-agent
 
@@ -21,49 +16,42 @@ no other tool blocks on claims, but orchestrators should consult
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
+| `agent` | `string \| null` | no | Agent identity ("name/version" or free-form). Optional - defaults to the MCP caller's clientInfo when omitted. Providing this explicitly lets an orchestrator claim on behalf of a sub-agent. |
 | `id` | `string` | yes | Artifact ID to claim (e.g. `PRD-057`). Normalized to uppercase on disk. |
-| `agent` | `string` | no | Agent identity (`"name/version"` or free-form). Defaults to the MCP caller's `clientInfo` when omitted. |
-| `ttl_minutes` | `number` | no (default 30, max 1440) | TTL in minutes. Hard cap is 24 h to prevent zombie claims. |
-| `note` | `string` | no | Free-form note surfaced by `forgeplan_claims`. |
+| `note` | `string \| null` | no | Optional free-form note surfaced by `forgeplan_claims --active`. |
+| `ttl_minutes` | `integer \| null` | no | Time-to-live in minutes. Default 30, max 1440 (24h), min 1. `format`: `uint32`. `minimum`: `0`. |
+| `workspace` | `string \| null` | no | Optional explicit workspace directory for this call. When set, the MCP server resolves the `.forgeplan/` projection from this path instead of the server's startup CWD. Use this when the calling agent is running in a git worktree separate from the MCP server's launch directory. PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
 
-_Schema source: `crates/forgeplan-mcp/src/types.rs::ClaimParams`_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
 
-```json
-{
-  "id": "PRD-057",
-  "agent_id": "worker-1",
-  "claimed_at": "2026-04-26T10:00:00Z",
-  "expires_at": "2026-04-26T10:30:00Z",
-  "note": "implementing FR-003",
-  "_next_action": "Claimed `PRD-057` for `worker-1`. Release with `forgeplan_release PRD-057` ..."
-}
-```
+The payload contains `id` (uppercased), `agent_id`, `claimed_at`, `expires_at`, an optional `note`, and `_next_action`. `note` is omitted when absent. This handler does not add workspace trace fields.
 
-On collision the response is an error with `_next_action` advising "either work on a
-different artifact, wait for TTL expiry, or ask the orchestrator to force-release".
+A collision is an MCP error result with text identifying the current holder and expiry, plus an advisory hint to select other work. It is not a structured `ok: false` object, and it does not authorize forcing another agent's claim away.
+
+## Guards and side effects
+
+- Only `id` is schema-required. The handler uses a non-blank explicit `agent` first, then the MCP `clientInfo` identity. Without either it refuses; do not make the optional JSON field universally required in clients.
+- TTL defaults to **30 minutes**; values below 1 or above 1440 are refused. The schema's unsigned-integer minimum of 0 is not the runtime lower bound.
+- IDs must be non-empty ASCII ID tokens starting with a letter; stored claim filenames and IDs are uppercased. Agent identity is trimmed, bounded to 64 bytes, and rejects control/spoofing characters. Holder identity comparisons are exact.
+- An expired claim can be overwritten. Same-holder renewal replaces the note too, so omitting it does not preserve the old note.
+- The claim store does not verify that the artifact exists in LanceDB. A successful claim proves only that the coordination file was written, not artifact existence, authorization or completed work.
 
 ## Example invocation
 
-Worker claiming with default TTL:
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
 
 ```json
-{ "id": "PRD-057", "note": "implementing FR-003" }
-```
-
-Orchestrator claiming on a worker's behalf:
-
-```json
-{ "id": "RFC-012", "agent": "worker-2", "ttl_minutes": 60 }
-```
-
-Renewing an existing claim (same agent, any TTL):
-
-```json
-{ "id": "PRD-057", "ttl_minutes": 30 }
+{
+  "id": "RFC-001",
+  "agent": "worker-1",
+  "ttl_minutes": 30
+}
 ```
 
 ## Typical sequence

@@ -3,9 +3,9 @@ title: forgeplan fpf
 description: "База знаний First Principles Framework - приём, поиск и применение правил FPF к артефактам"
 ---
 
-`forgeplan fpf` собирает подкоманды для **Базы знаний First Principles Framework (FPF)** - корпуса рассуждений из 204 разделов, который обеспечивает цикл ADI Forgeplan, Trust Calculus и механизм правил explore/investigate/exploit.
+`forgeplan fpf` объединяет поиск по базе знаний **First Principles Framework (FPF)** и проверку правил для артефактов. Корпус загружается из отдельно установленных файлов разделов; его размер зависит от источника, а не задан в бинарнике.
 
-FPF задаёт теоретическую базу для `forgeplan reason`, оценки R_eff и проверок целостности методологии. Подкоманды `fpf` позволяют загружать спецификацию, выполнять семантический поиск по ней, проверять активные правила и проверять, как эти правила применяются к конкретным артефактам.
+База знаний добавляет необязательный контекст в `forgeplan reason --fpf`. Механизм правил и расчёт R_eff работают с данными артефактов и конфигурацией: загруженный корпус и LLM им не нужны.
 
 ## Когда использовать
 
@@ -19,7 +19,7 @@ FPF задаёт теоретическую базу для `forgeplan reason`, 
 
 - Для общих операций CRUD с артефактами - используйте `forgeplan new`, `validate`, `review`, `activate` вместо этого.
 - Для общего состояния проекта - используйте `forgeplan health`, а не `fpf dashboard` (эти две команды дополняют друг друга, а не взаимозаменяемы).
-- Для запусков рассуждений ADI - используйте `forgeplan reason --fpf`, который внутренне обращается к базе знаний; прямой `fpf search` предназначен для людей, просматривающих необработанный контент.
+- Для рассуждений ADI используйте `forgeplan reason <ID> --fpf`. Ему нужен настроенный LLM; самому `fpf search` он не требуется.
 
 ## Использование
 
@@ -30,40 +30,40 @@ forgeplan fpf <COMMAND>
 ## Опции
 
 ```text
-  -h, --help     Вывести справку
-  -V, --version  Вывести версию
+  -h, --help     Print help
+  -V, --version  Print version
 ```
 
 ## Подкоманды
 
 ```text
-  dashboard  Показать панель FPF - ограниченные контексты, оценки качества, действия explore-exploit
-  ingest     Принять спецификацию FPF в базу знаний
-  search     Поиск по базе знаний FPF
-  section    Показать конкретный раздел FPF
-  list       Перечислить все разделы FPF
-  status     Показать статус базы знаний FPF - источник, количество принятых, просроченность
-  rules      Перечислить активные правила FPF, сгруппированные по действиям (EXPLORE/INVESTIGATE/EXPLOIT)
-  check      Проверить, какие правила FPF соответствуют данному артефакту
-  help       Вывести это сообщение или справку по указанным подкомандам
+  dashboard  Show FPF dashboard — bounded contexts, quality scores, explore-exploit actions
+  ingest     Ingest FPF spec into knowledge base
+  search     Search FPF knowledge base
+  section    Show a specific FPF section
+  list       List all FPF sections
+  status     Show FPF knowledge base status — source, ingested count, staleness
+  rules      List active FPF rules grouped by action (EXPLORE/INVESTIGATE/EXPLOIT)
+  check      Check which FPF rules match a given artifact
+  help       Print this message or the help of the given subcommand(s)
 ```
 
 ## Примеры
 
 ```bash
-# Однократная настройка после forgeplan init
+# One-time setup after forgeplan init
 forgeplan fpf ingest
 
-# Исследование базы знаний
+# Explore the KB
 forgeplan fpf status
 forgeplan fpf list
 forgeplan fpf section B.3
 
-# Получение контекста из первых принципов для ваших рассуждений
+# Pull first-principles context into your reasoning
 forgeplan fpf search "trust calculus"
 forgeplan fpf search "bounded context"
 
-# Применение правил FPF к проекту и конкретным артефактам
+# Apply FPF rules to the project and specific artifacts
 forgeplan fpf dashboard
 forgeplan fpf rules
 forgeplan fpf check PRD-019
@@ -77,21 +77,21 @@ FPF находится на **уровне рассуждений** конвей
 Shape → Validate → ADI (FPF KB) → Code → Evidence → Activate
 ```
 
-- **PRD-041** встраивает правила FPF в этапы роутинга/валидации.
-- **PRD-042** добавляет векторный поиск BGE-M3 по 204 разделам (тот же конвейер, что и поиск артефактов - BM25 + семантическая фузия).
-- **PRD-043** обеспечивает целостность методологии: артефакт, нарушающий правила ограниченного контекста или Trust Calculus, помечается перед активацией.
+- **Поиск знаний:** обычный `fpf search` использует взвешенное сопоставление подстрок в заголовках и телах разделов. `--semantic` выбирает поиск по косинусной близости векторов BGE-M3, а не слияние BM25 с векторами.
+- **Правила артефактов:** `fpf rules` показывает правила конфигурации или стандартные правила. `fpf check` выводит совпадения и первое из них по возрастанию priority. Предложенное действие — рекомендация, а не доказательство готовности к активации.
+- **Методология:** схема выше — рекомендуемый процесс, а не последовательность, которую автоматически выполняет `fpf`. Инструкции агенту и методологическая политика не равны реализованным ограничениям CLI.
 
-База знаний хранится в LanceDB по пути `.forgeplan/lance/` (производная, игнорируется Git). Исходные разделы находятся в репозитории Forgeplan и встраиваются при приёме.
+База знаний — таблица `fpf_spec` в `.forgeplan/lance/` (производная, игнорируется Git). `fpf ingest` загружает внешние файлы разделов и заменяет содержимое таблицы, а не импортирует артефакты проекта. `rules`, `check` и `dashboard` работают без загрузки корпуса.
 
 ## См. также
 
-- [`forgeplan fpf dashboard`](/docs/cli/fpf-dashboard/) - ограниченные контексты + обзор explore/exploit
-- [`forgeplan fpf ingest`](/docs/cli/fpf-ingest/) - однократная загрузка базы знаний
-- [`forgeplan fpf search`](/docs/cli/fpf-search/) - семантический поиск по разделам FPF
-- [`forgeplan fpf section`](/docs/cli/fpf-section/) - чтение конкретного раздела
-- [`forgeplan fpf list`](/docs/cli/fpf-list/) - все разделы
-- [`forgeplan fpf status`](/docs/cli/fpf-status/) - состояние базы знаний и просроченность
-- [`forgeplan fpf rules`](/docs/cli/fpf-rules/) - активные правила по действиям
-- [`forgeplan fpf check`](/docs/cli/fpf-check/) - правила, соответствующие артефакту
-- [`forgeplan reason`](/docs/cli/reason/) - цикл ADI, управляемый FPF
-- [Руководство по методологии](/docs/methodology/overview/) - где FPF вписывается в полный рабочий процесс
+- [`forgeplan fpf dashboard`](/ru/docs/cli/fpf-dashboard/) - ограниченные контексты + обзор explore/exploit
+- [`forgeplan fpf ingest`](/ru/docs/cli/fpf-ingest/) - однократная загрузка базы знаний
+- [`forgeplan fpf search`](/ru/docs/cli/fpf-search/) - семантический поиск по разделам FPF
+- [`forgeplan fpf section`](/ru/docs/cli/fpf-section/) - чтение конкретного раздела
+- [`forgeplan fpf list`](/ru/docs/cli/fpf-list/) - все разделы
+- [`forgeplan fpf status`](/ru/docs/cli/fpf-status/) - состояние базы знаний и просроченность
+- [`forgeplan fpf rules`](/ru/docs/cli/fpf-rules/) - активные правила по действиям
+- [`forgeplan fpf check`](/ru/docs/cli/fpf-check/) - правила, соответствующие артефакту
+- [`forgeplan reason`](/ru/docs/cli/reason/) - цикл ADI, управляемый FPF
+- [Руководство по методологии](/ru/docs/methodology/overview/) - где FPF вписывается в полный рабочий процесс

@@ -3,7 +3,13 @@ title: forgeplan reason
 description: "Analyze an artifact using the FPF ADI reasoning cycle (Abduction→Deduction→Induction)"
 ---
 
-`forgeplan reason` runs a structured AI-driven analysis over an existing artifact using the FPF **ADI cycle**: **Abduction** (generate 3+ hypotheses) → **Deduction** (predict consequences of each) → **Induction** (check predictions against existing evidence). It's the gate between "PRD looks reasonable" and "I actually know which approach to take" - forcing the agent to enumerate alternatives instead of anchoring on the first plausible answer. For Deep and Critical depth it is **mandatory**: no code until `reason` has produced at least three competing hypotheses and a justified winner.
+`forgeplan reason` asks the configured LLM to analyze an existing artifact through the FPF **ADI cycle**: **Abduction** (propose alternatives) → **Deduction** (evaluate consequences) → **Induction** (recommend an approach). The default prompt asks for at least three distinct hypotheses and justified confidence. Deep/Critical methodology calls for this review before coding, but the CLI does not enforce a hypothesis count, validate the artifact first, or block subsequent commands. A generated recommendation is not empirical verification.
+
+## Forgeplan 0.38.0
+
+Configure `llm` in `.forgeplan/config.yaml`. HTTP providers read the key from `llm.api_key_env`. Local profiles `claude-code`, `codex-cli`, `devin-cli`, `gemini-cli`, and `cursor-agent` reuse an existing stock CLI login without an API key in Forgeplan. They are explicit opt-ins for personal local development, not production/shared/CI use. Each call consumes the corresponding vendor plan and is subject to its terms. LLM analysis does not replace measurements or code verification. The CLI prints progress even with `--json`; `--save` adds save messages. Do not treat all stdout as one clean JSON document.
+
+Ollama is the keyless local-HTTP exception; embedding-model weights are not required for ADI itself or its keyword KB lookup. Provider/model selection comes from `llm` configuration and supported environment overrides, not a `reason --model` flag.
 
 ## When to use
 
@@ -26,17 +32,27 @@ forgeplan reason [OPTIONS] <ID>
 ## Arguments
 
 ```text
-  <ID>  Artifact ID to analyze (PRD, RFC, ADR, Epic, Problem, ...)
+  <ID>
+          Artifact ID to analyze
 ```
 
 ## Options
 
 ```text
-      --json     Output structured JSON instead of markdown
-      --save     Save ADI analysis as a Note artifact linked to the source
-      --fpf      Inject relevant FPF patterns into the ADI prompt
-  -h, --help     Print help
-  -V, --version  Print version
+      --json
+          Output structured JSON instead of markdown
+
+      --save
+          Save ADI analysis as a Note artifact linked to the source
+
+      --fpf
+          Inject relevant FPF patterns into the ADI prompt
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
 ```
 
 ## Examples
@@ -47,9 +63,7 @@ forgeplan reason [OPTIONS] <ID>
 forgeplan reason PRD-001
 ```
 
-Reads `PRD-001`, pulls its Problem/Goals/Related sections, and asks the LLM to
-generate 3+ hypotheses for how to meet the goals. For each hypothesis it lists
-predicted consequences and which existing evidence supports or weakens it.
+Reads the complete stored body and adds metadata, outgoing relation IDs/types/titles, a detected bounded context when available, and an architecture hint. It asks the LLM for alternatives and consequences; it does not fetch every linked artifact's full body or execute evidence tests. The architecture hint comes from `.forgeplan/prompts/architecture.md` relative to the current directory, otherwise a Forgeplan-specific default; supply your project's real architecture to avoid misleading context.
 
 ### Example 2: ADI with FPF knowledge base context
 
@@ -57,10 +71,7 @@ predicted consequences and which existing evidence supports or weakens it.
 forgeplan reason PRD-001 --fpf
 ```
 
-`--fpf` injects relevant sections from the FPF knowledge base (B.3 Trust
-Calculus, B.5 Reasoning loops) into the prompt. Use this when the decision
-involves trust boundaries, reversibility, or reasoning quality - the LLM will
-score hypotheses against FPF invariants instead of just engineering intuition.
+`--fpf` searches significant words from the artifact title, selects up to three unique KB sections, and injects up to 300 characters from each. It does not guarantee particular sections such as B.3 or B.5, use semantic search, or verify compliance with FPF invariants. If the KB is empty or lookup fails, reasoning continues without that context.
 
 ### Example 3: persist the analysis as a Note
 
@@ -68,9 +79,7 @@ score hypotheses against FPF invariants instead of just engineering intuition.
 forgeplan reason PRD-001 --save
 ```
 
-Creates a `note-*` artifact containing the full ADI output and links it to the
-source PRD (`informs` relation). Useful when you want the reasoning to survive
-past the current terminal session and show up in `forgeplan graph`.
+Creates a Tactical draft Note and links Note → source with `informs`. For structured responses, the Note stores an `AdiRecord` JSON representation plus a readable summary; raw-markdown fallback stores the raw analysis. Without `--save`, no Note or link is created. Neither mode activates the source or turns the analysis into an EvidencePack.
 
 ### Example 4: Machine-readable output for agents
 
@@ -78,29 +87,24 @@ past the current terminal session and show up in `forgeplan graph`.
 forgeplan reason PRD-001 --json
 ```
 
-Emits structured JSON with `hypotheses[]`, each containing `summary`,
-`confidence`, `supporting_evidence[]`, `weakening_evidence[]`, and `verdict`.
-Consumed by MCP clients and audit scripts.
+JSON has `artifact_id`, `artifact_kind`, `depth`, `r_eff_score`, `_next_action`, and either `adi_output` (structured result) or `adi_analysis` (raw-markdown fallback).
 
 ## Output interpretation
 
-A typical markdown run prints three sections:
+Without `--json`, the CLI prints the model response as received: it may be JSON or Markdown. The structured `adi_output` contract contains:
 
-- **Abduction** - 3+ hypotheses, each with a one-line claim and a confidence
-  score (0-100%). If all three converge on the same approach, you can proceed
-  with high trust. If they diverge, treat this as a signal to discuss with a
-  human before coding.
-- **Deduction** - predicted consequences per hypothesis (performance, rollback
-  cost, blast radius, user impact).
-- **Induction** - verdict per hypothesis: `supported`, `weakened`, or
-  `insufficient evidence`. The final recommendation lists the winning
-  hypothesis and the evidence gaps that should become follow-up EvidencePacks.
+- `hypotheses`: objects with `id`, `description`, `assumptions`, and string `confidence`.
+- `deductions`: objects with `hypothesis_id`, `consequence`, `risks`, and string `feasibility`.
+- `evidence_needed`: objects with `for_hypothesis`, `test`, and string `effort`.
+- String `recommendation` and `confidence`.
+
+Confidence is free text such as “High — justification”, not a validated percentage. There is no per-hypothesis `supported`/`weakened` verdict field in this DTO. Parsing supplies defaults for absent fields; a parsed result can still have zero hypotheses. If parsing fails, `--json` returns `adi_analysis` instead of `adi_output`.
 
 Red flags:
 
-- All hypotheses have confidence < 50% - the PRD is underspecified, go back to Shape
-- The winner is `insufficient evidence` - create targeted evidence before implementing
-- Only one hypothesis was generated - LLM anchoring, re-run with `--fpf` or a different model
+- Alternatives are missing or merely restate the same approach - revise the artifact, prompt, or provider/model; repeated output is not independent evidence.
+- The recommendation depends on unverified assumptions - collect the targeted evidence before implementation.
+- Confidence has no supporting reason - assess the justification, not an arbitrary percentage threshold.
 
 ## How it fits the workflow
 

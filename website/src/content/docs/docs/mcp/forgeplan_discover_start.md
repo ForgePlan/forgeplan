@@ -1,9 +1,9 @@
 ---
 title: forgeplan_discover_start
-description: "Start a brownfield discovery session. Returns a structured protocol (7 phases: detect/structure/code/git/tests/docs/synthesize) that the AI agent follows to map an existing codebase."
+description: "Start a brownfield discovery session. Returns a structured protocol (7 phases: detect/structure/code/git/tests/docs/synthesize) that the AI agent follows to map an existing codebase. ForgePlan provides the protocol; the agent parses code and reports findings via forgeplan_discover_finding."
 ---
 
-Starts a new **brownfield discovery session** - a structured protocol the agent follows when it's dropped into an existing codebase with no prior ForgePlan artifacts. Instead of the agent inventing its own exploration order, ForgePlan returns the seven-phase protocol (detect / structure / code / git / tests / docs / synthesize) with explicit source-tier priorities, and the agent then walks through it, calling `forgeplan_discover_finding` for each observation. On `forgeplan_discover_complete`, the collected findings are synthesised into proposed PROBs / PRDs / RFCs (printed, not auto-created).
+Starts a **brownfield discovery session** for an existing codebase. Forgeplan returns the seven-phase protocol (`detect`, `structure`, `code`, `git`, `tests`, `docs`, `synthesize`); the agent performs the investigation and reports findings. `forgeplan_discover_complete` later marks the session completed and returns counts. It does not synthesize proposals or run health on the agent's behalf in 0.38.0.
 
 **Category**: Brownfield Discovery
 
@@ -18,50 +18,49 @@ The discover protocol is intentionally **agent-driven**: ForgePlan never reads s
 
 ## Source tier priority
 
-The protocol enforces a strict priority order so findings are grounded in authoritative evidence, not documentation drift:
+The shipped discovery protocol uses **three**, not four, source tiers:
 
-| Tier | Source | Why |
-|------|--------|-----|
-| **1** | Source code (`src/`, `lib/`, `app/`) | Ground truth - the code is what actually runs. |
-| **2** | Git history (`git log`, commits, tags, release notes) | Intent over time - reveals decisions, reverts, and trajectory. |
-| **3** | Tests (`tests/`, `spec/`) | Behavioural contracts - pins intended semantics. |
-| **4** | Docs (`README`, `docs/`, wikis) | Last because they are frequently stale vs. code. |
+| Tier | Sources |
+|---|---|
+| **1** | Source code, git history and package manifests. |
+| **2** | Tests, JSDoc comments and CI configuration. |
+| **3** | `docs/`, README files and wikis. |
 
-Findings from a higher tier override findings from a lower tier when they conflict.
+The protocol instructs the agent to inspect stronger sources first. It does not itself resolve contradictions. `forgeplan_discover_finding` rejects tier values outside 1-3, and tier-3 findings receive the `source=legacy-doc` tag.
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
-| `project_name` | `string` | yes | Human-readable name for the discovery session (e.g. `"legacy-billing-service"`). Used as the session identifier prefix and in the final summary. |
+| `project_name` | `string` | yes | Project name for the discovery session |
+| `workspace` | `string \| null` | no | Optional explicit workspace directory for this call. When set, the MCP server resolves the `.forgeplan/` projection from this path instead of the server's startup CWD. Use this when the calling agent is running in a git worktree separate from the MCP server's launch directory. PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. Schema default: `null`. |
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::DiscoverStartParams`_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
 
-A session handle plus the full protocol payload:
+The response contains `session_id` (for example `disc-20261023-120000`), `project_name`, `session_status`, `current_phase`, `protocol` and `_next_action`. `protocol` contains `version`, the ordered `phases` array (each with `phase`, `order`, `name`, `instructions`) and `source_tier_rules` (`t1`, `t2`, `t3`).
 
-```json
-{
-  "session_id": "discover-legacy-billing-service-2026-04-11T10:15:00Z",
-  "project_name": "legacy-billing-service",
-  "phases": [
-    { "name": "detect",     "goal": "Detect tech stack, build system, languages", "tier_order": [1, 4] },
-    { "name": "structure",  "goal": "Map top-level modules and boundaries",        "tier_order": [1] },
-    { "name": "code",       "goal": "Read entry points and critical modules",      "tier_order": [1, 3] },
-    { "name": "git",        "goal": "Scan commit history for decisions / reverts", "tier_order": [2] },
-    { "name": "tests",      "goal": "Identify behavioural contracts and gaps",     "tier_order": [3, 1] },
-    { "name": "docs",       "goal": "Reconcile docs vs. code (flag drift)",        "tier_order": [4, 1] },
-    { "name": "synthesize", "goal": "Propose PROBs / PRDs / RFCs from findings",   "tier_order": [] }
-  ],
-  "instructions": "For each phase, walk files in the listed tier order, then call forgeplan_discover_finding for each observation. Close with forgeplan_discover_complete."
-}
-```
+`status` is still emitted as a deprecated alias for the session status, with `_field_warnings`. It is not an artifact lifecycle status. Store the returned session handle rather than constructing one from the project name.
+
+The initial `session_status` is `started` and `current_phase` is `detect`.
+The session is saved as `.forgeplan/discovery/<session_id>.json`; no finding
+artifact is created by this call. The protocol is instructions for the caller,
+not a source-code scanner or an automatically enforced phase progression.
+Success is JSON inside MCP text content; this handler does not attach workspace
+trace fields. Workspace write-resolution can fail at JSON-RPC level; a session-save
+failure is a tool error with plain text, not a protocol result.
 
 ## Example invocation
 
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
+
 ```json
-{ "project_name": "legacy-billing-service" }
+{
+  "project_name": "billing-service"
+}
 ```
 
 ## Typical sequence
@@ -72,11 +71,11 @@ forgeplan_discover_start
 forgeplan_discover_finding (tier=1, phase=detect,    …)
 forgeplan_discover_finding (tier=1, phase=structure, …)
 forgeplan_discover_finding (tier=1, phase=code,      …)
-forgeplan_discover_finding (tier=2, phase=git,       …)
-forgeplan_discover_finding (tier=3, phase=tests,     …)
-forgeplan_discover_finding (tier=4, phase=docs,      …)
+forgeplan_discover_finding (tier=1, phase=git,       …)
+forgeplan_discover_finding (tier=2, phase=tests,     …)
+forgeplan_discover_finding (tier=3, phase=docs,      …)
 forgeplan_discover_complete (session_id)
-    ↓ prints proposed PROBs / PRDs / RFCs
+    ↓ returns counts and IDs of created draft artifacts; caller reviews them
 ```
 
 The agent is expected to iterate per phase - it can emit many findings per phase before advancing.
@@ -89,5 +88,5 @@ The agent is expected to iterate per phase - it can emit many findings per phase
 
 - [MCP overview](/docs/mcp/)
 - [`forgeplan_discover_finding`](/docs/mcp/forgeplan_discover_finding/) - append a single observation
-- [`forgeplan_discover_complete`](/docs/mcp/forgeplan_discover_complete/) - finalise + synthesise artifacts
+- [`forgeplan_discover_complete`](/docs/mcp/forgeplan_discover_complete/) - finish the session and inspect its summary
 - [`forgeplan_health`](/docs/mcp/forgeplan_health/) - post-discovery project state

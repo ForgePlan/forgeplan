@@ -1,24 +1,9 @@
 ---
 title: forgeplan discover
-description: "Brownfield discovery engine - start a protocol-driven session that turns an existing codebase into Forgeplan artifacts"
+description: "Manage a protocol-driven brownfield discovery session. start creates a session and prints instructions; a human or agent must actually read the code, Git history, tests, and documentation and report findings. The CLI does not autonomously inspect or implement the project."
 ---
 
-`forgeplan discover` is the parent command for Forgeplan's **brownfield discovery engine** (PRD-035, NOTE-041, PROB-022). It orchestrates protocol-driven sessions where an AI agent reads an existing codebase, git history, tests, and docs - in that priority order - and reports findings back through MCP. At the end, Forgeplan proposes concrete artifacts (Problems, PRDs, ADRs, Notes) to create so the project can start benefiting from the methodology without hand-authoring a backlog.
-
-In short: discover takes a project that was built before Forgeplan and produces a first draft of artifacts for it.
-
-## When to use
-
-- **Onboarding Forgeplan into an existing repo** - run `discover start` as one of the first steps after `forgeplan init -y`.
-- **After a long uninstrumented sprint** - catch up on undocumented decisions before they drift out of memory.
-- **When joining a new team's project** - let the agent build a structured map of what exists, then use it to plan.
-- **Before an audit or refactor** - seed artifacts so the refactor has a baseline to supersede.
-
-## When NOT to use
-
-- For ongoing, greenfield work - prefer `forgeplan route` + `forgeplan new` directly.
-- For a single task - discover sessions produce broad surveys, not task-level plans.
-- Without an AI agent that can follow the MCP protocol - `discover start` prints instructions, but somebody has to execute them.
+Manage a protocol-driven brownfield discovery session. `start` creates a session and prints instructions; a human or agent must actually read the code, Git history, tests, and documentation and report findings. The CLI does not autonomously inspect or implement the project.
 
 ## Usage
 
@@ -36,54 +21,39 @@ forgeplan discover <COMMAND>
 ## Subcommands
 
 ```text
-  start     Start a new discovery session - prints protocol for AI agent
+  start     Start a new discovery session — prints protocol for AI agent
   list      List all discovery sessions in the workspace
   show      Show status of a discovery session
   complete  Mark a discovery session as completed
   help      Print this message or the help of the given subcommand(s)
 ```
 
-## Examples
+## Session workflow
+
+`start NAME` starts a session; `list` lists saved sessions; `show SESSION_ID` displays findings; `complete SESSION_ID` records completion. The parent requires a subcommand. MCP additionally exposes `forgeplan_discover_finding` to report findings; no matching CLI finding command exists.
+
+## Example
 
 ```bash
-# Typical brownfield onboarding flow
 forgeplan init -y
-forgeplan discover start
-# → agent reads code/git/tests/docs, appends findings via MCP
-forgeplan discover show <session-id>
-forgeplan discover complete <session-id>
-# → Forgeplan proposes PROBs / PRDs / Notes to create
+forgeplan discover start "Legacy API"
+# Follow the printed protocol and report findings through MCP.
 forgeplan discover list
+# Replace SESSION_ID with the actual identifier:
+forgeplan discover show SESSION_ID
+forgeplan discover complete SESSION_ID
+forgeplan health
 ```
 
-## The protocol in one paragraph
+## Protocol and hand-off
 
-`discover start` creates a session row and prints a **protocol** for the agent to follow. The agent walks tiered sources - **code > git history > tests > docs** - and for each significant finding calls the `discover_finding` MCP tool (MCP-only; there's no CLI equivalent, to keep the loop agent-driven). `discover show` displays accumulated findings; `discover complete` finalizes the session and emits recommendations for `forgeplan new` commands.
-
-## Tiered source priority (important)
-
-Code is the **ground truth**; everything else can lie. The protocol enforces this order:
-
-1. **Code** - actual behavior, current invariants.
-2. **Git history** - who changed what, when, and why (commit messages, PR refs).
-3. **Tests** - declared behavior and edge cases the team cared about.
-4. **Docs** - aspirational or stale; use only to cross-check 1-3, never as primary.
-
-Findings from lower-priority tiers that contradict higher tiers are flagged as **drift**, often becoming a Problem card in the recommendations.
-
-## How it fits
-
-Discover closes the gap identified in PROB-022 (brownfield onboarding gap). It plugs into:
-
-- **`forgeplan new`** - the recommendations at `discover complete` map 1:1 to artifact creation calls.
-- **`forgeplan health`** - post-discover health should show fewer orphans and blind spots.
-- **`forgeplan fpf check`** - once artifacts exist, FPF rules can evaluate them.
+The printed protocol has seven phases: detect, structure, code, git, tests, docs, synthesize. Source tiers distinguish authoritative, extracted, and supplementary material. Review contradictions against actual behavior rather than treating old docs as truth. CLI completion only saves status and prints totals; it does not run health or generate artifact proposals. Review findings and explicitly create chosen Problems, PRDs, ADRs, or Notes with `new`.
 
 ## See also
 
 - [`forgeplan discover start`](/docs/cli/discover-start/) - start a session + print protocol
 - [`forgeplan discover list`](/docs/cli/discover-list/) - all sessions in the workspace
 - [`forgeplan discover show`](/docs/cli/discover-show/) - inspect a session's findings
-- [`forgeplan discover complete`](/docs/cli/discover-complete/) - finalize + emit recommendations
+- [`forgeplan discover complete`](/docs/cli/discover-complete/) - save completion and print totals
 - [Methodology guide](/docs/methodology/overview/)
 - [`forgeplan health`](/docs/cli/health/) - before/after comparison

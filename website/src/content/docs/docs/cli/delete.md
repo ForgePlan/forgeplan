@@ -1,17 +1,9 @@
 ---
 title: forgeplan delete
-description: "Permanently delete an artifact"
+description: "Remove an artifact and its incident relations from the live workspace. In 0.38.0 deletion is soft: a receipt and saved projection in .forgeplan/trash/ support recovery within the retention window (30 days by default)."
 ---
 
-Permanently remove an artifact from the workspace. This deletes the markdown
-file on disk and cascades through the LanceDB index, dropping every relation
-where the artifact appears as source or target.
-
-**Deletion is destructive and not reversible.** Unless you are cleaning up a
-true mistake (e.g. a test artifact, a typo'd ID, a duplicate), you almost
-certainly want [`forgeplan deprecate`](/docs/cli/deprecate/) or
-[`forgeplan supersede`](/docs/cli/supersede/) instead - both preserve decision
-history, which is the whole point of the methodology.
+Remove an artifact and its incident relations from the live workspace. In 0.38.0 deletion is soft: a receipt and saved projection in `.forgeplan/trash/` support recovery within the retention window (30 days by default).
 
 ## Usage
 
@@ -33,74 +25,29 @@ forgeplan delete [OPTIONS] <ID>
   -V, --version  Print version
 ```
 
-## What it does
+## Confirmation and changes
 
-1. Confirms the deletion interactively (skip with `--yes`).
-2. Removes the markdown file from `.forgeplan/<kind>s/<id>.md`.
-3. Deletes the artifact row from the LanceDB `artifacts` table.
-4. Cascade-deletes every relation in the `links` table where the artifact is
-   source or target.
-5. Leaves other artifacts intact - but they may now reference a deleted ID.
+CLI deletion is non-interactive: without `--yes` it refuses and prints a confirmation hint; it does not ask a question. With `--yes`, it captures a recovery receipt, removes the live artifact and incident relations, and moves the projection to trash. Incoming dependents are warned about, not protected from an explicitly confirmed deletion. The captured help’s “Skip confirmation” does not mean that an interactive prompt exists.
 
 ## Examples
 
-Delete a stray Note after interactive confirmation:
-
 ```bash
-forgeplan delete NOTE-042
+# Inspect the artifact and its links before confirming deletion:
+forgeplan get NOTE-043
+forgeplan delete NOTE-043 --yes
+# Recover while its receipt remains available:
+forgeplan restore NOTE-043
+# Alternatively, undo the latest supported destructive operation:
+# forgeplan undo-last
 ```
 
-Scripted delete (no prompt):
+## Preserve decision history
 
-```bash
-forgeplan delete NOTE-042 --yes
-```
+Use `supersede` for replacement and `deprecate` for a decision no longer relevant. Both preserve discoverable history without relying on trash. Delete mistaken or duplicate stubs, not the explanation of why an active decision was abandoned.
 
-## Safety: when NOT to delete
+## Recovery and backup
 
-Do **not** `delete` an active artifact as a way to "cancel" it. The methodology
-treats abandoned decisions as first-class history - they remain discoverable and
-explain why the project went a different way.
-
-| Situation                                       | Do this instead                                                  |
-|-------------------------------------------------|------------------------------------------------------------------|
-| Decision was superseded by a newer one          | [`forgeplan supersede <old> --by <new>`](/docs/cli/supersede/)   |
-| Decision is no longer relevant                  | [`forgeplan deprecate <id> --reason "..."`](/docs/cli/deprecate/)|
-| Artifact is an orphan with no content yet       | Delete is fine                                                   |
-| You created a typo'd ID (`PRD-0001` instead of `PRD-1`) | Delete is fine                                           |
-| Experimental Note that was never linked         | Delete is fine                                                   |
-
-Rule of thumb: if anything links **to** the artifact, deprecate. If it's a
-dead-end stub with no history, delete.
-
-## Before you delete - back up
-
-Cascade deletion of relations cannot be undone without a git restore or an
-earlier export. Before bulk-deleting, run:
-
-```bash
-forgeplan export --output backup-$(date +%Y%m%d).json
-```
-
-And for peace of mind:
-
-```bash
-cp -r .forgeplan .forgeplan-backup-$(date +%Y%m%d)
-```
-
-You can then `forgeplan import backup.json` to restore if you regret the
-operation. See the [AGENT-ENFORCEMENT](/docs/guides/claude-code-setup/)
-guide for why `rm -rf .forgeplan` is a banned shortcut.
-
-## Notes
-
-- `delete` does **not** check whether other artifacts reference the target. It
-  is the caller's responsibility to ensure no active decision depends on it.
-- Deleted artifacts disappear from `forgeplan health`, `forgeplan list`, and
-  search results immediately.
-- If you deleted by mistake and have not committed yet, `git checkout
-  .forgeplan/<kind>s/<id>.md` followed by `forgeplan scan-import` will restore
-  the file and re-index it.
+`restore` refuses a conflicting live ID and restores relations only where endpoints still exist. Recovery requires an unconsumed retained receipt and is not a backup policy. Export before bulk deletion and keep necessary filesystem backups. Returning markdown from Git and running `reindex` does not recreate relations missing from that markdown.
 
 ## See also
 

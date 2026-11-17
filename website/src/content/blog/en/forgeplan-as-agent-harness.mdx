@@ -1,6 +1,6 @@
 ---
 title: "ForgePlan: an agent harness disguised as a decision framework"
-description: "Six months of building a decision framework - then realising I'd built an agent harness. How ForgePlan maps to the five harness subsystems, the PROB-034 bug that taught me a harness must catch itself lying, and three honest gaps still on the roadmap."
+description: "Six months of building a decision framework - then realising I'd built an agent harness. How ForgePlan maps to the five harness subsystems, the PROB-034 bug that taught me a harness must catch itself lying, and three gaps still on the roadmap."
 slug: forgeplan-as-agent-harness
 lang: en
 publishedAt: 2026-04-28
@@ -22,7 +22,7 @@ A week later I found a small site called walkinglabs that gave the thing I had b
 
 > "If it's not the model weights, it's the harness." (walkinglabs, *Lecture 02*)
 
-This is the honest report. What ForgePlan looks like through that lens, what it actually does, what it doesn't yet do, and one bug story that taught me why a harness has to be able to catch itself lying.
+Looking at ForgePlan as a harness helps explain what it does, where it still falls short, and why one bug taught me that a harness must catch itself lying.
 
 ### What is harness engineering
 
@@ -37,7 +37,7 @@ State (PROGRESS.md / git)      ──┤
                        Checks (test/lint/build) ← Env (deps/services)
 ```
 
-OpenAI's 2025 piece on *Harness engineering: leveraging Codex in an agent-first world* and Anthropic's 2026 writing on long-running agents both circle the same idea: the model is a fixed asset, and the variance in your output is dominated by the harness around it. *Lecture 02* puts the corollary bluntly: **"of the five subsystems, feedback usually has the lowest input and highest return."** Most teams ship vague tools and call it a day. The high-leverage move is rebuilding the feedback loop.
+OpenAI's 2025 piece on *Harness engineering: leveraging Codex in an agent-first world* and Anthropic's 2026 writing on long-running agents both address the same idea: the model is a fixed asset, and the variance in your output is dominated by the harness around it. *Lecture 02* puts the corollary bluntly: **"of the five subsystems, feedback usually has the lowest input and highest return."** Most teams ship vague tools and call it a day. Rebuilding the feedback loop gives them more leverage.
 
 ForgePlan, it turned out, was an attempt to rebuild that feedback loop in a way that survives between sessions and across multiple agents working in parallel. I just hadn't been calling it that.
 
@@ -53,7 +53,7 @@ This is the map I wish I'd had on day one.
 | **Checks** | `forgeplan validate` + `forgeplan score` (R_eff weakest-link) + `tests/adr_003_invariant.rs` regression guard | Activation without evidence; decisions claiming to be supported when they aren't |
 | **Env** | LanceDB index derived from markdown + BGE-M3 1024d embeddings, fully local | Hidden remote dependencies; non-reproducible search results |
 
-Three of these deserve the closeup.
+Three of these need a closer look.
 
 **State as a continuity artifact.** walkinglabs *Lecture 05* has the line I quote most often: **"Treat the agent as a brilliant engineer with amnesia."** Every session starts from zero context. ForgePlan answers that with three layers - auto-loaded `MEMORY.md`, the per-project Hindsight memory bank, and the `.forgeplan/` markdown corpus that *is* the repo's system of record. A fresh agent reads `forgeplan health` and the structured artifacts and reconstructs the project state without me writing a hand-off note. *Lecture 03* says it more directly: **"Information that's not in the repo doesn't exist for the agent."** ForgePlan's whole storage architecture (ADR-003) is built around making that statement true by construction: markdown is authoritative, LanceDB is a derived index, and a single `forgeplan scan-import` rebuilds the index from the source files.
 
@@ -75,15 +75,15 @@ Out of paranoia I cloned the same workspace into a fresh directory and ran the s
 
 Same workspace. Same files. Different number.
 
-Twelve hours of A/B reverse-engineering later: HTML comments inside the EvidencePack template (`<!-- TODO: fill verdict -->`) were being parsed as actual structured-fields data. The parser didn't care that the lines were HTML-commented; it just regexed for `verdict:` and got back garbage that happened to validate. Some workspace clones had the template comments stripped (template version A). Some didn't (template version B). The trust-calculus tool was lying about its own honesty score, and the lie was conditional on which template version had touched the file last.
+After twelve hours of A/B reverse-engineering, I found the cause: HTML comments inside the EvidencePack template (`<!-- TODO: fill verdict -->`) were being parsed as actual structured-fields data. The parser didn't care that the lines were HTML-commented; it just regexed for `verdict:` and got back garbage that happened to validate. Some workspace clones had the template comments stripped (template version A). Some didn't (template version B). The trust-calculus tool was lying about its own reliability score, and the lie depended on which template version had touched the file last.
 
 Hotfix v0.17.2. The fix wasn't subtle - the parser now refuses any EvidencePack missing `verdict:`, `congruence_level:`, and `evidence_type:` as concrete (non-commented) lines, and it emits a CL0 penalty (raw 0.9) when the fields are present but malformed.
 
-The lesson is not "we found a bug." The lesson is the one walkinglabs makes the spine of their *Lecture 09* argument: **a harness has to be able to catch itself cheating, or it has no business grading anyone else.** That's why there's a `tests/adr_003_invariant.rs` regression guard now, why the `pub(crate)` lockdown lands at compile time so the methodology layer cannot bypass its own scoring, and why the post-merge sync-PR is a red line and not a guideline. The day the harness can't audit itself, you've shipped a calibration tool that calibrates on vibes.
+The bug taught me why walkinglabs builds its *Lecture 09* argument around this requirement: **a harness has to be able to catch itself cheating, or it has no business grading anyone else.** That's why there's a `tests/adr_003_invariant.rs` regression guard now, why the `pub(crate)` lockdown lands at compile time so the methodology layer cannot bypass its own scoring, and why the post-merge sync-PR is a red line and not a guideline. Without self-auditing, the harness becomes a calibration tool that calibrates on vibes.
 
 ### What ForgePlan harness *doesn't* do yet
 
-walkinglabs is honest about which subsystems most teams under-invest in, and so will I be about where ForgePlan is short. Three real gaps, ranked by how much they bother me when I'm running multiple agents.
+Walkinglabs describes which subsystems most teams under-invest in. ForgePlan has its own gaps. These three bother me most when I'm running multiple agents, in this order.
 
 **H1 - Per-session task trace.** ForgePlan has process observability: `forgeplan graph`, `forgeplan blindspots`, `forgeplan blocked`. It does not have runtime observability. There is no OpenTelemetry-style trace of "this agent, in this session, ran these tools, made these decisions, tripped this gate." If a multi-agent run produces a weird outcome, I'm reconstructing it from git history and Hindsight memory, not from a structured trace. This is on the roadmap.
 
@@ -91,11 +91,11 @@ walkinglabs is honest about which subsystems most teams under-invest in, and so 
 
 **H9 - WIP=1 hard limit.** *Lecture 07*: **"Don't bite off more than you can chew' applies particularly well to AI agents."** ForgePlan's `forgeplan claim/release` is a soft lock with a TTL. Two agents can claim two different artifacts; nothing prevents one agent from claiming three artifacts at once. A hard limit (one in-flight claim per agent) would be a one-line policy change but the dispatch logic would need to learn about agent identity in addition to artifact identity. Backlogged, because the dispatch layer would need to track which agent holds which claim.
 
-I'm calling these out in public because *Lecture 12* has a separate principle that's relevant: **"'we'll clean it up later' equals 'never.'"** Honest gap lists in build-in-public posts are how I keep myself from quietly dropping items off the roadmap.
+I keep these gaps public because *Lecture 12* has a relevant principle: **"'we'll clean it up later' equals 'never.'"** Listing them in build-in-public posts keeps me from quietly dropping items off the roadmap.
 
 ### Closing
 
-If "harness engineering" is a new term to you, walkinglabs's twelve lectures are the cheapest hour of reading you'll do this quarter: [walkinglabs.github.io/learn-harness-engineering](https://walkinglabs.github.io/learn-harness-engineering/). They legitimised a vocabulary I'd been using badly for half a year.
+If "harness engineering" is a new term to you, walkinglabs's twelve lectures are worth an hour of your reading time: [walkinglabs.github.io/learn-harness-engineering](https://walkinglabs.github.io/learn-harness-engineering/). They helped me use a vocabulary I'd been getting wrong for half a year.
 
 If you want to try ForgePlan: `brew install ForgePlan/tap/forgeplan` or `cargo install forgeplan-cli`. The repo is at [github.com/ForgePlan/forgeplan](https://github.com/ForgePlan/forgeplan). Current state: v0.30.0, 343 artifacts in the live workspace, 1995 tests, 76 CLI commands, 73 MCP tools, single ~41 MB stripped binary, BGE-M3 semantic search runs entirely local. There's a marketplace at [github.com/ForgePlan/marketplace](https://github.com/ForgePlan/marketplace) with 12 plugins, 60+ agents, 16 skills.
 

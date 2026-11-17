@@ -1,9 +1,9 @@
 ---
 title: forgeplan_route
-description: "Suggest depth level (Tactical/Standard/Deep/Critical) and artifact pipeline for a task description. Uses LLM classification (Level 1) when API key is configured, falls back to rule-based keywords (Level 0)."
+description: "Recommend a task depth and artifact pipeline using a configured LLM provider or keyword fallback. Keyless providers are supported; Critical is not a separate core pipeline."
 ---
 
-Classifies an incoming task description into a depth level and recommends an artifact pipeline. This is the **first** MCP call in every non-trivial workflow - it tells the agent whether to just code (Tactical), create a PRD → RFC (Standard), the full PRD → Spec → RFC → ADR chain (Deep), or escalate to an Epic with cross-team review (Critical). Getting routing right saves hours of overthinking OR underthinking.
+Classifies a task description and recommends a depth and artifact pipeline. Call it before creating artifacts when the appropriate workflow is unclear. This is advice: the handler does not create artifacts, change session phase or apply its suggested depth to later calls.
 
 **Category**: Reasoning & AI
 
@@ -15,47 +15,51 @@ Classifies an incoming task description into a depth level and recommends an art
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
-| `description` | `string` | yes | Task description in natural language. |
+| `description` | `string` | yes | Task description in natural language |
+| `workspace` | `string \| null` | no | Optional explicit workspace directory for this call. When set, the MCP server resolves the `.forgeplan/` projection from this path instead of the server's startup CWD. Use this when the calling agent is running in a git worktree separate from the MCP server's launch directory. PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. Schema default: `null`. |
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::RouteParams`_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
 
-A recommendation with depth, pipeline (list of artifact kinds in order), confidence (0-1), rationale, and alternatives the agent can offer if the user disagrees. Level 1 (LLM) returns richer rationale; Level 0 (keyword fallback) returns a terser shape but is still actionable.
+Both classification levels use the same JSON shape in MCP text content: `depth`, `pipeline`, `triggers` (trigger IDs), `confidence`, `level`, `explanation`, `display`, `_alternatives`, and `_next_action`. Each alternative has `depth`, `pipeline`, and `reasoning`; there are no `rationale`, `alternatives`, or `when` fields.
 
-Example response shape:
+The handler attempts Level 1 when the resolved workspace has LLM configuration (with environment overrides), optionally supplying FPF context. Missing workspace/configuration or an unavailable/unparseable LLM result falls back to Level 0 keyword rules. Explicit local CLI providers do not require an HTTP API key. Very short input also uses Level 0. The returned `level` identifies the path; routing does not run full ADI reasoning automatically.
+
+The released core maps `Tactical` to no artifacts, `Standard` to PRD → RFC and `Deep` to PRD → Spec → RFC → ADR. It has no separate Critical pipeline despite the tool description's four-tier wording.
+
+Illustrative response excerpt for a parseable Level 1 Standard classification (alternatives, display and guidance omitted):
 
 ```json
 {
   "depth": "Standard",
   "pipeline": ["prd", "rfc"],
-  "confidence": 0.85,
-  "rationale": "Multi-file feature touching auth flow; reversible within a sprint.",
-  "alternatives": [
-    { "depth": "Deep", "pipeline": ["prd", "spec", "rfc", "adr"], "when": "if crypto primitives change" }
-  ]
+  "triggers": [],
+  "confidence": 0.9,
+  "level": 1,
+  "explanation": "A feature with several implementation choices."
 }
 ```
 
+Level 1 confidence is fixed at `0.9` by the routing implementation, not a measured probability that the LLM recommendation is correct.
+
 ## Example invocation
 
-```json
-{ "description": "add rate limiting to API" }
-```
-
-With typical agent context:
-
-> User asks for a feature. Agent routes first so the rest of the flow aligns with the correct depth.
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
 
 ```json
-{ "description": "rewrite the LanceDB storage layer to use SQLite" }
+{
+  "description": "Add rate limiting to the API"
+}
 ```
 
 ## Typical sequence
 
-`forgeplan_route` → (if Tactical) jump straight to code → (if Standard+) `forgeplan_search` (dup check) → `forgeplan_new` → `forgeplan_update` → `forgeplan_validate` → `forgeplan_reason`. Routing is cheap; call it whenever the task feels ambiguous.
+Suggested workflow: route → review the recommendation → search for duplicates → create artifacts as needed → populate and validate them → reason when required by team policy. Review the actual `pipeline`; routing does not execute it. Level 1 may call an external provider and is not necessarily cheap.
 
 ## CLI equivalent
 

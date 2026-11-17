@@ -68,16 +68,16 @@ Use `forgeplan stale` to find expired artifacts, then deprecate the ones that sh
 
 ## How it fits the workflow
 
-Deprecation is a clean, terminal ending: the artifact leaves the active set and stops influencing `forgeplan health`. It is the right tool when a decision's relevance has genuinely ended and no successor exists. Because the state is terminal, the reason you pass becomes the permanent explanation - write it for a reader six months from now, not for yourself today.
+Deprecation leaves the body and relations readable and appends a dated `## Deprecation` section with your reason. The CLI also logs the status change, reports incoming dependents, and refreshes affected evidence-dependent scores. Terminal artifacts can still appear in historical or integrity reports; deprecation does not erase their influence everywhere. CLI 0.38.0 does not create an undo receipt for this command, so do not rely on `undo-last` to reverse a CLI deprecation.
 
 ## Common errors
 
 | Error | Cause | Fix |
 |---|---|---|
-| `--reason is required` | Flag omitted | Pass `--reason "..."` with a human-readable explanation |
-| `Cannot deprecate from draft` | Artifact was never activated | Delete or rewrite the draft instead |
-| `Already in terminal state` | Already `deprecated` or `superseded` | Terminal states are final - nothing to do |
-| `Blind spots increased after deprecation` | Active artifacts depended on this one | Update or supersede dependents before deprecating |
+| Missing required `--reason` | Argument parsing fails | Supply an explanation |
+| `Invalid transition: draft → deprecated` | Artifact was never activated | Rewrite the draft, or explicitly delete it if no longer needed |
+| `Invalid transition: … → deprecated` | State is already terminal or otherwise unsupported | Inspect the artifact; do not assume a second deprecation succeeds |
+| `Dependents affected:` | Incoming relations exist; this is a warning, not a refusal | Review each reported dependent |
 
 ## See also
 

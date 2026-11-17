@@ -1,27 +1,9 @@
 ---
 title: forgeplan scan
-description: "Scan the codebase for source modules - the first step of the coverage/drift pipeline."
+description: "Scan source modules and print their paths, file counts, and line counts. This is a read-only report; it does not write a persistent .forgeplan/modules.json inventory."
 ---
 
-`forgeplan scan` walks the project tree and builds an inventory of source modules.
-It respects `.gitignore`, groups files by crate / package / directory, and writes
-the resulting list into the workspace so that `coverage` and `drift` can cross-reference
-it against `Affected Files` sections in artifacts.
-
-Think of scan as the "read your own repo" step. It doesn't touch artifacts directly -
-it just makes the module graph queryable by the other quality commands.
-
-## When to use
-
-- First time running coverage/drift in a workspace - scan must precede them.
-- After a big refactor that adds/removes modules - rescan to refresh the inventory.
-- In CI: rescan before any coverage check so stale module lists don't cause false positives.
-- Before onboarding a teammate - rescan so `coverage` shows the real picture.
-
-## When NOT to use
-
-- Just to read files - use your shell. Scan is workspace-aware, not a generic file lister.
-- If coverage/drift already ran and your code hasn't changed - scan is idempotent but wasteful.
+Scan source modules and print their paths, file counts, and line counts. This is a read-only report; it does not write a persistent `.forgeplan/modules.json` inventory.
 
 ## Usage
 
@@ -39,64 +21,25 @@ forgeplan scan [OPTIONS]
 
 ## Examples
 
-### Scan the current project
-
 ```bash
 forgeplan scan
+forgeplan scan --path crates
+forgeplan coverage
+forgeplan drift
 ```
 
-Output:
+## Path restrictions
 
-```text
-Scanning /Users/me/forgeplan...
-  crates/forgeplan-core      14 modules
-  crates/forgeplan-cli        8 modules
-  crates/forgeplan-mcp        5 modules
-  website/src                12 modules
+`--path` must resolve inside the current project root. A sibling path such as `../other-project` is rejected; change to that project explicitly if you intend to scan it. Paths must exist and be accessible.
 
-39 modules indexed in .forgeplan/modules.json
-```
+## Relationship to coverage
 
-### Scan a sibling repo
-
-```bash
-forgeplan scan --path ../other-project
-```
-
-Useful when managing multiple projects from one `.forgeplan/` workspace (advanced).
-
-### Full coverage pipeline
-
-```bash
-forgeplan scan && forgeplan coverage && forgeplan drift
-```
-
-The canonical codebase-reconciliation sequence: refresh modules, compute coverage,
-check drift. Run it monthly or after major refactors.
-
-## Output interpretation
-
-| Line          | Meaning                                                    |
-|---------------|------------------------------------------------------------|
-| per-crate row | how many source modules were found in each top-level dir  |
-| total         | modules indexed - this becomes the denominator for coverage|
-
-The scan is language-agnostic but tuned for Rust/TypeScript/Python layouts. Empty
-directories and test-only modules are excluded by default.
-
-## How it fits the workflow
-
-```
-scan → coverage (modules ↔ artifacts) → drift (artifacts ↔ git history) → remediate
-```
-
-Scan is step 0 of the quality reconciliation loop. Without it, `coverage` and `drift`
-have no module graph to work against.
+`coverage` scans modules itself, so running `scan` first is optional, not a prerequisite. Use it to inspect discovery results after a refactor, then relate real affected paths to decisions. `scan-import` is a different operation that imports external documents.
 
 ## See also
 
 - [`forgeplan coverage`](/docs/cli/coverage/) - per-module decision coverage
 - [`forgeplan drift`](/docs/cli/drift/) - decisions whose code moved away
-- [`forgeplan scan-import`](/docs/cli/scan-import/) - rebuild LanceDB index from markdown
+- [`forgeplan reindex`](/docs/cli/reindex/) - scan workspace projections for new records, body sync, missing links, and orphan cleanup; not a complete metadata/removed-link refresh for existing rows
 - [`forgeplan health`](/docs/cli/health/) - aggregates coverage into the dashboard
 - [CLI overview](/docs/cli/)

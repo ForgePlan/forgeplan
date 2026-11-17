@@ -4,9 +4,7 @@ description: "Выводит список артефактов с фильтра
 ---
 
 Выводит список артефактов в текущем рабочем пространстве, опционально отфильтрованных по типу, статусу,
-тегу или дате создания. Это основная команда инвентаризации - используйте её, чтобы
-ответить на вопрос "что у нас есть в этом проекте?" перед планированием, роутингом или
-поиском.
+или тегу. Это основная команда инвентаризации: она отвечает на вопрос «что есть в проекте?» перед планированием, роутингом или поиском. Для фильтра по дате `search --since` в 0.38.0 нужен семантический режим: CLI-поиск по словам пока игнорирует `--since`, `--status` и `--limit` (#544).
 
 ## Когда использовать
 
@@ -17,10 +15,10 @@ description: "Выводит список артефактов с фильтра
 
 ## Когда не использовать
 
-- Вам нужно полное содержимое → используйте [`forgeplan get`](/docs/cli/get/)
-- Вам нужно нечёткое/семантическое сопоставление → используйте [`forgeplan search`](/docs/cli/search/)
-- Вам нужна иерархия (Epic → PRD → RFC) → используйте [`forgeplan tree`](/docs/cli/tree/)
-- Вам нужен порядок зависимостей → используйте [`forgeplan order`](/docs/cli/order/)
+- Вам нужно полное содержимое → используйте [`forgeplan get`](/ru/docs/cli/get/)
+- Вам нужно нечёткое/семантическое сопоставление → используйте [`forgeplan search`](/ru/docs/cli/search/)
+- Вам нужна иерархия (Epic → PRD → RFC) → используйте [`forgeplan tree`](/ru/docs/cli/tree/)
+- Вам нужен порядок зависимостей → используйте [`forgeplan order`](/ru/docs/cli/order/)
 
 ## Использование
 
@@ -31,12 +29,12 @@ forgeplan list [OPTIONS]
 ## Опции
 
 ```text
-  -t, --type <TYPE>      Фильтровать по типу (prd, epic, spec, rfc, adr, etc.)
-  -s, --status <STATUS>  Фильтровать по статусу (draft, active, etc.)
-      --tag <TAG>        Фильтровать по тегу. Поддерживает "ключ=значение" или просто "ключ" (соответствует любому значению). Примеры: --tag source=code, --tag legacy
-      --json             Выводить в формате JSON для машинной обработки
-  -h, --help             Вывести справку
-  -V, --version          Вывести версию
+  -t, --type <TYPE>      Filter by kind (prd, epic, spec, rfc, adr, etc.)
+  -s, --status <STATUS>  Filter by status (draft, active, etc.)
+      --tag <TAG>        Filter by tag. Supports "key=value" or bare "key" (matches any value). Examples: --tag source=code, --tag legacy
+      --json             Output as JSON for machine consumption
+  -h, --help             Print help
+  -V, --version          Print version
 ```
 
 ## Примеры
@@ -70,26 +68,24 @@ forgeplan list --tag security --json | jq '.[] | .id'
 | `STATUS` | Жизненный цикл: draft / active / superseded / deprecated / stale |
 | `TITLE`  | Человекочитаемое название из frontmatter                     |
 
-Строки отсортированы по `created` в порядке убывания (сначала самые новые). С опцией `--json` каждая
-запись включает полный frontmatter, а также `score` и `R_eff`, если они доступны -
-полезно для передачи в `jq` для дашбордов.
+JSON — массив записей с полями `id`, `kind`, `status`, `title`. Для содержимого и метаданных используйте `get --json`.
 
 ## Как это работает
 
 `list` открывает цикл исследования только для чтения:
 
 ```
-list → get → tree → graph   (понять, что существует и как это связано)
+list → get → tree → graph   (understand what exists and how it links)
 ```
 
 Для планирования используйте в связке с `order` и `blocked`, чтобы увидеть состояние зависимостей. Для
-сортировки качества используйте в паре с [`blindspots`](/docs/cli/blindspots/), чтобы найти
+сортировки качества используйте в паре с [`blindspots`](/ru/docs/cli/blindspots/), чтобы найти
 артефакты без доказательств.
 
 ## Смотрите также
 
-- [`forgeplan get`](/docs/cli/get/) - прочитать полный markdown одного артефакта
-- [`forgeplan tree`](/docs/cli/tree/) - иерархический вид
-- [`forgeplan search`](/docs/cli/search/) - умный поиск по ключевым словам + семантический поиск
-- [`forgeplan health`](/docs/cli/health/) - дашборд на уровне проекта
-- [Руководство по методологии](/docs/methodology/overview/)
+- [`forgeplan get`](/ru/docs/cli/get/) - прочитать полный markdown одного артефакта
+- [`forgeplan tree`](/ru/docs/cli/tree/) - иерархический вид
+- [`forgeplan search`](/ru/docs/cli/search/) - умный поиск по ключевым словам + семантический поиск
+- [`forgeplan health`](/ru/docs/cli/health/) - дашборд на уровне проекта
+- [Руководство по методологии](/ru/docs/methodology/overview/)

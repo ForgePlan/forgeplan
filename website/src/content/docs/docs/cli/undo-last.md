@@ -3,24 +3,30 @@ title: forgeplan undo-last
 description: "Reverse the most recent destructive operation (delete, supersede, or deprecate) - the undo button for AI agents. Never guesses; errors with guidance when no receipt is found."
 ---
 
-`forgeplan undo-last` reverses the most recent destructive operation - `delete`, `supersede`, or `deprecate` - without needing to know the artifact ID. Think of it as the "undo" button after an agent (or you) did something wrong: the artifact comes back, its links are restored where the targets still exist, and its status is flipped back from `superseded` / `deprecated`.
+`forgeplan undo-last` restores the newest non-consumed destructive-operation
+receipt within the requested time window, regardless of artifact ID.
+It can replay delete, supersede, and deprecate receipts, but it does not
+infer operations from the change log or Git history.
 
-How it works: every destructive operation writes a small record (a "receipt") to `.forgeplan/trash/`. `undo-last` finds the newest receipt that has not already been used, replays it in reverse, and marks it consumed so a second call moves to the next-most-recent operation. If no receipt matches your time window, the command errors with guidance - it never guesses.
+Receipt coverage matters: CLI 0.38.0 `delete` captures a receipt, whereas CLI
+`supersede` and `deprecate` do not. Their MCP handlers capture receipts.
+Thus “undo last” means the last **available receipt**, not necessarily the
+last destructive action you performed. Inspect the relevant action and
+artifact before running it; the command has no preview or confirmation prompt.
 
 This is the CLI version of [`forgeplan_undo_last`](/docs/mcp/forgeplan_undo_last/) on the MCP side.
 
 ## When to use
 
-- Right after a `forgeplan delete` / `supersede` / `deprecate` you regret - undo, then redo correctly.
-- The user says "undo that" without specifying the artifact ID - `undo-last` figures it out from the log.
-- Reversing an LLM hallucination that triggered a destructive action.
-- After spotting an unexpected destructive call in [`forgeplan activity-stats`](/docs/cli/activity-stats/) - run `undo-last` to reverse it.
+- After a mistaken receipt-backed delete, or a receipt-backed MCP supersede/deprecate.
+- After identifying the intended operation from its artifact and receipt context.
+- In a recovery script that checks the returned artifact ID and warnings.
 
 ## When NOT to use
 
 - You know the exact artifact ID to restore - [`forgeplan restore <ID>`](/docs/cli/restore/) is more precise (no chance of reversing the wrong operation).
-- More than 30 days have passed - receipts are deleted after 30 days and cannot be replayed. Reconstruct from `git log` instead.
-- The mistake was a typo or wrong title (not a destructive operation) - edit the file directly, then run `forgeplan scan-import`.
+- Outside the maximum 720-hour selection window, or after the receipt/body was purged — use version-control recovery. The default receipt retention is 30 days, with opportunistic purge rather than a guaranteed timed deletion.
+- The mistake was a typo or wrong title (not a destructive operation) - edit the file directly, then run `forgeplan reindex`.
 
 ## Usage
 
@@ -45,7 +51,7 @@ forgeplan undo-last [OPTIONS]
 forgeplan undo-last
 ```
 
-Reverses the most recent destructive operation from the last 24 hours. Each call consumes one receipt - so calling it three times in a row undoes the last three operations in reverse order (newest first).
+Selects the newest available non-consumed receipt within 24 hours. A successful restore marks it consumed; repeated calls move to older receipts. A failed restore may leave earlier mutations applied and the receipt unconsumed — inspect state before retrying.
 
 ### Example 2: Wider search after a pause
 
@@ -63,9 +69,23 @@ forgeplan undo-last --json | jq '.restored, .op_reversed'
 
 Returns JSON, then extracts the restored artifact ID and the type of operation that was reversed. Useful when `undo-last` is part of a recovery script that needs to log what it actually did.
 
+Success JSON contains `ok: true`, `restored` (ID), `op_reversed`,
+`receipt_id`, `relations_restored` (count), `relations_skipped` (IDs),
+`projection_restored` (boolean), `warnings`, and `_next_action`.
+This CLI does not emit `restored_status`. No candidate exits `1` with
+`ok: false`, `error`, and `_next_action`; other restore failures can use stderr.
+The supplied unsigned hour count is clamped to 1–720.
+
+For delete, the row is recreated and a trashed projection is moved back when
+available; an existing row with the same ID is refused. For supersede/deprecate
+receipts, an existing same-kind row has its status/title reset, and supersede's
+replacement edge is removed. This does not rewind every subsequent body edit
+or regenerate its projection. Missing relation endpoints are skipped and
+reported, not invented. Inspect warnings and both file/store state after recovery.
+
 ## How it fits the workflow
 
-Use after a destructive operation goes wrong (`delete`, `supersede`, or `deprecate`). Run `undo-last` to reverse the most recent one; repeat the call to undo earlier ones in order. Once you know the specific ID, switch to [`forgeplan restore <ID>`](/docs/cli/restore/) - it targets a single artifact instead of walking the stack newest-first.
+Use this only when the newest available receipt is the operation you intend to reverse. Once the ID is known, [`forgeplan restore <ID>`](/docs/cli/restore/) selects recovery for that artifact instead of walking workspace receipts newest-first.
 
 ## See also
 

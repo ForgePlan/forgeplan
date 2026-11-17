@@ -12,10 +12,14 @@ It is the discovery half of the plugin family: [`forgeplan plugins doctor`](/doc
 turns the same scan into a pass/fail verdict, and [`forgeplan plugins info`](/docs/cli/plugins-info/)
 explains a single registry entry whether or not it is installed.
 
+## Forgeplan 0.38.0
+
+The detection registry compiled into CLI 0.38.0 has 12 entries and is not the public marketplace catalog. Public catalog 1.187.1 at b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7 has 23 plugins. Output below containing 0.37.0 is retained as previously captured examples, not a current installation inventory. The bundled hint `forgeplan skill install brownfield-docs-pack` is not a working CLI 0.38.0 command: no skill install command exists. Other install strings are static recommendations, not proof that a pack exists in the public catalog; consult that catalog and the selected plugin’s instructions.
+
 ## What it does
 
 1. **Loads the registry** - the compiled-in list of plugins Forgeplan knows how
-   to detect. In 0.37.0 it holds 12 entries, including the built-in `forgeplan`
+   to detect. In 0.38.0 it holds 12 entries, including the built-in `forgeplan`
    capability itself.
 2. **Builds candidate paths** for each entry: every search root of the entry's
    source, joined with every path the entry expects.
@@ -52,9 +56,7 @@ install visible when you run `list` from the project root. Running the same
 command from elsewhere can therefore report a different set - no workspace is
 required for any of it.
 
-No registry entry in 0.37.0 uses the `cursor` or `manual` source; the labels
-exist for entries shipped by later releases and for project-local registry
-overrides.
+The bundled registry does not use `cursor` or `manual`. These enum variants are supported by the data model; this CLI does not load project-local registry overrides. Detection probes candidate paths directly and does not recursively discover marketplace/version directories in caches.
 
 ## Usage
 
@@ -140,10 +142,7 @@ forgeplan plugins list
 Next: forgeplan plugins doctor
 ```
 
-Two details worth reading off this table: sub-agent entries such as `c4-context`
-resolve to their nested path inside the parent pack, and a name longer than 28
-characters is truncated with an ellipsis (`agent-orchestration-context…`). The
-full name is in the `--json` output.
+Sub-agent entries such as `c4-context` can resolve to nested paths explicitly named by a registry entry. The table truncates names to 28 characters using three dots (`...`); JSON carries the full name. The historical sample above is illustrative, not a live compatibility inventory.
 
 ### Example 4: machine-readable
 
@@ -177,6 +176,8 @@ Each `installed` entry carries the detection result (`detected_path`,
 is how many entries the binary knows about - the denominator that makes the
 doctor's missing count meaningful.
 
+`detected_version` is omitted when no version can be read (not emitted as `null`). JSON `info.source` uses kebab-case (`claude-plugin`, `agent-skills`, `cursor`, `forgeplan`, `manual`), unlike the lowercased Debug labels in the text table.
+
 ## Exit codes
 
 `list` exits 0 whether or not anything was detected; it is an inventory, not a
@@ -196,7 +197,7 @@ gate. The non-zero exit code for an incomplete setup lives in
   `plugin.json`, and no `SKILL.md` frontmatter is listed without a version, and
   [`forgeplan plugins doctor`](/docs/cli/plugins-doctor/) counts it as OK
   rather than outdated.
-- `-V` reports the subcommand-scoped version, `forgeplan-plugins-list 0.37.0`.
+- `-V` reports the subcommand-scoped version of the running binary; the historical `forgeplan-plugins-list 0.37.0` example is not the published 0.38.0 version.
 
 ## See also
 

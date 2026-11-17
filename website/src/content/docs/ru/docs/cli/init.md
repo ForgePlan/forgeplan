@@ -1,20 +1,9 @@
 ---
 title: forgeplan init
-description: "Создаёт новое рабочее пространство .forgeplan/ - таблицы LanceDB, конфигурацию и подкаталоги"
+description: "forgeplan init создаёт .forgeplan/, каталоги артефактов, индекс LanceDB и конфигурацию по умолчанию. Для запуска без вопросов передайте -y. Если в клонированном репозитории уже есть markdown артефактов, восстановите локальный индекс через forgeplan reindex."
 ---
 
-`forgeplan init` инициализирует новое рабочее пространство Forgeplan в текущем каталоге. Она создаёт папку `.forgeplan/` со всеми подкаталогами для артефактов (adrs, prds, rfcs, epics, specs, evidence, problems, solutions, notes, refresh, memory), инициализирует индекс LanceDB и записывает `config.yaml` по умолчанию. После этого вы можете начать создавать артефакты с помощью `forgeplan new`.
-
-## Когда использовать
-
-- Первичная инициализация Forgeplan в совершенно новом проекте.
-- Свежее клонирование существующего репозитория Forgeplan - markdown отслеживается, но `.forgeplan/lance/` игнорируется Git, поэтому индекс должен быть перестроен локально.
-- Восстановление после катастрофического повреждения рабочего пространства или потери каталога `.forgeplan/lance/` (в сочетании со свежей резервной копией экспорта).
-
-## Когда НЕ использовать
-
-- `.forgeplan/` уже существует и находится в рабочем состоянии - используйте [`forgeplan migrate`](/docs/cli/migrate/) для обновления схемы вместо повторной инициализации.
-- Перестройка только индекса LanceDB из неповреждённого markdown - используйте [`forgeplan scan-import`](/docs/cli/scan-import/) (деструктивная повторная инициализация не требуется).
+`forgeplan init` создаёт `.forgeplan/`, каталоги артефактов, индекс LanceDB и конфигурацию по умолчанию. Для запуска без вопросов передайте `-y`. Если в клонированном репозитории уже есть markdown артефактов, восстановите локальный индекс через `forgeplan reindex`.
 
 ## Использование
 
@@ -25,71 +14,58 @@ forgeplan init [OPTIONS]
 ## Опции
 
 ```text
-      --force    Принудительная повторная инициализация, даже если .forgeplan/ существует
-  -y, --yes      Неинтерактивный режим (пропускает запросы, использует значения по умолчанию)
-      --scan     Сканировать существующие документы и импортировать их
-  -h, --help     Вывести справку
-  -V, --version  Вывести версию
+      --force
+          Reinitialize config + indices in an existing .forgeplan/. PROB-068: --force is now strictly additive — it never overwrites existing artifact .md bodies. Only `config.yaml` is rewritten and missing directories / the LanceDB index are recreated. An auto-backup is taken unless `--no-backup` is also passed
+
+  -y, --yes
+          Non-interactive mode (skip prompts, use defaults)
+
+      --scan
+          Scan for existing documents and import them
+
+      --no-backup
+          Skip the safety auto-backup that `--force` would otherwise create (`.forgeplan-backup-<timestamp>/`). PROB-068: backups are on by default to protect against the historical data loss vector; opt out only when you've already exported
+
+      --with-model
+          Download the embedding model without asking.
+          
+          Interactive runs are asked (default no); `--yes` never downloads, so agents and CI cannot pull ~2.1 GB by accident. Use this when a scripted install genuinely wants semantic search ready up front.
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
 ```
+
+## Когда использовать
+
+Создайте новое пространство командой `forgeplan init -y`. Добавьте `--scan` для обнаружения и импорта документов вне пространства. `scan-import` импортирует ещё не проиндексированные внешние документы, а не обновляет существующие артефакты.
+
+## Существующие пространства и копии
+
+`--force` обновляет конфигурацию и индексы, создаёт отсутствующие каталоги и сохраняет содержимое артефактов. Он не очищает `.forgeplan/`. Для существующего пространства по умолчанию создаётся копия; `--no-backup` явно отключает её. Перед заменой конфигурации сохраните её отдельно. Для обновления схемы используйте `migrate`, для восстановления индекса — `reindex`.
 
 ## Примеры
 
-### Пример 1: Первичная настройка (AI агент)
-
 ```bash
 forgeplan init -y
-```
-
-Создаёт `.forgeplan/` со значениями по умолчанию и без интерактивных запросов. AI агенты всегда должны использовать `-y` - в противном случае интерактивный мастер заблокирует их.
-
-### Пример 2: Свежее клонирование репозитория Forgeplan
-
-```bash
-git clone <repo> && cd <repo>
-forgeplan init -y
-forgeplan scan-import
+# In an existing Forgeplan checkout:
+forgeplan reindex
 forgeplan list
-```
-
-Markdown в `.forgeplan/{adrs,prds,...}` отслеживается, но `lance/`, `.fastembed_cache/` и `config.yaml` игнорируются Git. `init -y` воссоздаёт пустую оболочку, затем `scan-import` перестраивает индекс LanceDB из отслеживаемого markdown.
-
-### Пример 3: Внедрение в существующий проект (Brownfield onboarding)
-
-```bash
+# Import documents when onboarding a new project:
 forgeplan init -y --scan
 ```
 
-Сканирует стандартные каталоги документов (`docs/`, `rfcs/` и т. д.) и импортирует любой markdown, который выглядит как артефакт, классифицируя его по типу.
+## Модель и безопасность
 
-### Пример 4: Повторная инициализация после резервного копирования
-
-```bash
-forgeplan export --output backup.json
-cp -r .forgeplan .forgeplan-backup-$(date +%Y%m%d)
-rm -rf .forgeplan
-forgeplan init -y --force
-forgeplan import backup.json
-```
-
-Единственный безопасный путь повторной инициализации - экспорт + копирование файловой системы + повторная инициализация + импорт.
-
-## Как это вписывается в рабочий процесс
-
-Эта команда входит в [полный жизненный цикл артефакта](/docs/guides/first-artifact/) - см. руководство для сквозного потока. `init` - это нулевой шаг; следующая команда почти всегда `forgeplan health` или `forgeplan scan-import`.
-
-## Примечания по безопасности
-
-- **AI агенты всегда должны передавать `-y`.** Интерактивный мастер зависнет на стандартном вводе и будет выглядеть как застрявший процесс.
-- **Никогда не используйте `rm -rf .forgeplan` без предварительного экспорта.** См. [`forgeplan export`](/docs/cli/export/) - это единственный путь резервного копирования, который сохраняет ссылки, доказательства и состояние оценки.
-- **`config.yaml` игнорируется Git.** Если вы выполните повторную инициализацию, вы потеряете настройки провайдера LLM. Сделайте резервную копию отдельно: `cp .forgeplan/config.yaml ~/fp-config-backup.yaml`.
-- **Markdown сохраняется при повторной инициализации только в том случае, если вы сначала скопируете его.** `--force` очищает папку. Всегда используйте `cp -r .forgeplan .forgeplan-backup-$(date +%Y%m%d)` в качестве дополнительной меры безопасности.
-- **Различия в схеме между версиями** (например, v0.17 → v0.18 добавлены столбцы) - по возможности предпочитайте [`forgeplan migrate`](/docs/cli/migrate/) повторной инициализации.
+Интерактивный мастер предлагает загрузить BGE-M3; по умолчанию ответ отрицательный. `init -y` не загружает модель без явного `--with-model`. Модель занимает около 2.1 GB и хранится в общем кеше машины; её можно подготовить через `setup`. Экспорт содержит артефакты и связи, но не всё пространство и не конфигурацию. Для локальных данных нужна файловая копия. Не удаляйте `.forgeplan/` ради восстановления индекса.
 
 ## См. также
 
-- [`forgeplan export`](/docs/cli/export/) - обязательное резервное копирование перед любой деструктивной операцией
-- [`forgeplan import`](/docs/cli/import/) - восстановление артефактов после повторной инициализации
-- [`forgeplan scan-import`](/docs/cli/scan-import/) - перестройка LanceDB из отслеживаемого markdown
-- [`forgeplan migrate`](/docs/cli/migrate/) - недеструктивные обновления схемы
-- [`forgeplan health`](/docs/cli/health/) - проверка начала сессии
-- [Конфигурация](/docs/getting-started/configuration/) - настройка провайдера LLM
+- [`forgeplan export`](/ru/docs/cli/export/) - обязательное резервное копирование перед любой деструктивной операцией
+- [`forgeplan import`](/ru/docs/cli/import/) - восстановление артефактов после повторной инициализации
+- [`forgeplan reindex`](/ru/docs/cli/reindex/) - перестройка LanceDB из отслеживаемого markdown
+- [`forgeplan migrate`](/ru/docs/cli/migrate/) - недеструктивные обновления схемы
+- [`forgeplan health`](/ru/docs/cli/health/) - проверка начала сессии
+- [Конфигурация](/ru/docs/getting-started/configuration/) - настройка провайдера LLM

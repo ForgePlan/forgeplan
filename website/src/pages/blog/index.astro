@@ -19,14 +19,14 @@ const NOW = Date.now();
 const FOURTEEN_DAYS = 14 * 24 * 60 * 60 * 1000;
 const isNew = (d: Date) => NOW - d.valueOf() < FOURTEEN_DAYS;
 ---
-<Landing title="Blog — Forgeplan" description="Long-form essays on engineering decisions — how to structure them, score evidence, and stop forgetting why they were made." slug="blog">
+<Landing title="Blog — Forgeplan" description="Essays on engineering decisions: how to document them, assess evidence, and remember why a team chose one option over another." slug="blog">
   <Header />
   <article class="blog-index">
     <div class="blog-index-layout">
       <main id="main-content" class="blog-index-main">
         <p class="blog-index-eyebrow">BLOG</p>
         <h1 class="blog-index-heading">Writing</h1>
-        <p class="blog-index-subtitle">Long-form essays on engineering decisions — how teams structure them, score evidence, and stop forgetting why they were made.</p>
+        <p class="blog-index-subtitle">Essays on engineering decisions: how teams document them, assess evidence, and remember why they chose one option over another.</p>
 
         {topics.length > 1 && <TopicFilter topics={topics} lang="en" />}
 

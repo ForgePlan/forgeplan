@@ -1,13 +1,9 @@
 ---
 title: forgeplan_release
-description: "Release an active claim - drop the lock so other sub-agents can pick up the artifact."
+description: "Release an active claim. Refuses if the claim is held by a different agent (use `force: true` to override - the orchestrator's escape hatch for a crashed sub-agent). Missing claim is a no-op (idempotent)."
 ---
 
-Removes the claim file at `.forgeplan/claims/<id>.yaml`. By default the call refuses
-when a different agent holds the claim - pass `force: true` (the orchestrator's escape
-hatch) to override after a sub-agent crash. Missing claim is a no-op (idempotent).
-Holds the workspace lock for the duration of the write so concurrent claim/release
-calls cannot interleave.
+Removes `.forgeplan/claims/<id>.yaml`, not an artifact, source-file lock or Forgeplan process. By default a **live** claim held by another agent is refused; an expired claim can be removed. `force: true` is an explicit orchestrator override for a confirmed abandoned claim, not an automatic recovery step. A missing claim is a no-op only after identity/ID validation. The workspace lock serializes concurrent claim/release calls.
 
 **Category**: Multi-agent
 
@@ -20,53 +16,39 @@ calls cannot interleave.
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
-| `id` | `string` | yes | Artifact ID whose claim to release. |
-| `agent` | `string` | no | Agent identity (must match the holder unless `force: true`). Defaults to the MCP caller's `clientInfo`. |
-| `force` | `bool` | no (default `false`) | Force-release regardless of holder - orchestrator override for crashed sub-agents. |
+| `agent` | `string \| null` | no | Required unless `force=true`. |
+| `force` | `boolean` | no | Force-release regardless of holder (orchestrator escape hatch). Schema default: `false`. |
+| `id` | `string` | yes | - |
+| `workspace` | `string \| null` | no | Optional explicit workspace directory for this call. When set, the MCP server resolves the `.forgeplan/` projection from this path instead of the server's startup CWD. Use this when the calling agent is running in a git worktree separate from the MCP server's launch directory. PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
 
-_Schema source: `crates/forgeplan-mcp/src/types.rs::ReleaseParams`_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
 
-```json
-{
-  "id": "PRD-057",
-  "released": true,
-  "force": false,
-  "_next_action": "Released claim on `PRD-057`."
-}
-```
+The success payload contains `id`, `released: true`, `force`, `resolved_workspace`, `resolved_via` and `_next_action`. `released: true` also covers a missing claim; it does not prove that a file existed.
 
-Failure when not the holder and not forcing:
+Another live holder produces MCP error text such as `claim held by worker-2, not you`, with an advisory hint. There is no `ok: false` / `error` JSON object.
 
-```json
-{
-  "ok": false,
-  "error": "claim held by worker-2, not you",
-  "_next_action": "Use `force: true` (orchestrator override) if the holder has crashed."
-}
-```
+## Guards and side effects
+
+- `force` defaults to `false`. A non-blank explicit `agent` takes precedence over the MCP handshake identity; with neither identity the non-forced path fails even if the claim does not exist.
+- A forced call may omit `agent` and use no handshake identity. This removes the coordination file regardless of holder; the tool has no interactive confirmation, so obtain authorization before overriding.
+- Non-forced identity validation and ID-token validation still apply. The agent string is trimmed; a live holder must match exactly. Expiry removes the holder restriction, not the need for a valid caller identity.
+- This only releases an advisory claim. It does not stop a running worker, undo its edits or certify that the artifact's work is finished.
 
 ## Example invocation
 
-Worker releasing after work:
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
 
 ```json
-{ "id": "PRD-057" }
-```
-
-Orchestrator reaping a crashed sub-agent:
-
-```json
-{ "id": "RFC-012", "force": true }
-```
-
-Explicit identity for shell-driven orchestrators:
-
-```json
-{ "id": "SPEC-018", "agent": "worker-2" }
+{
+  "id": "RFC-001",
+  "agent": "worker-1"
+}
 ```
 
 ## Typical sequence

@@ -1,11 +1,11 @@
 ---
 title: forgeplan migrate-dry-run
-description: "PROB-060 Phase 0b - EVID-C migration dry-run. Scans all artifacts in `.forgeplan/`, computes the slug each would receive under SPEC-005 rules, and detects per-kind collisions before Phase 4 migration. Read-only - never mutates `.md` files."
+description: "Report candidate slug collisions directly from selected workspace artifact directories without reading LanceDB. The scan leaves projections unchanged; --output writes a caller-selected JSON report."
 ---
 
-`migrate-dry-run` is the pre-flight check for the PROB-060 slug migration. It walks the per-kind artifact directories under `.forgeplan/`, computes the canonical slug every artifact would receive under SPEC-005 rules, and groups the ones that would collide. The single question it answers, before anything is touched, is whether the workspace is safe to migrate.
+`migrate-dry-run` is the collision-reporting pre-flight check for the PROB-060 slug migration. It walks per-kind artifact directories under `.forgeplan/`, computes candidate SPEC-005 slugs, and groups collisions. It does not establish that the entire workspace is safe to migrate: review `scan_errors` as well as collisions.
 
-The command is read-only by contract. It never rewrites a `.md` file and it never reads `.forgeplan/lance/**` - collision detection works directly off the markdown source of truth (ADR-003), so the derived index cannot disagree with the answer.
+The scan reads Markdown directly and does not use `.forgeplan/lance/**`, so its collision report is independent of the derived index. It does not rewrite artifact projections as part of scanning. The optional `--output` flag does write and overwrite the chosen report path; keep that path outside projections and other files you need to preserve.
 
 ## When to use
 
@@ -48,7 +48,7 @@ forgeplan migrate-dry-run [OPTIONS]
           Include `suggested_resolution` per collision in the JSON output. Without this flag the run defaults to fail-and-list (exit 1)
 
       --output <OUTPUT>
-          Also write the JSON report to this path (the same JSON as `--json`). Optional - caller chooses where to persist evidence
+          Also write the JSON report to this path (the same JSON as `--json`). Optional — caller chooses where to persist evidence
 
       --json
           Emit JSON to stdout. Default is a human-readable summary table
@@ -64,16 +64,18 @@ forgeplan migrate-dry-run [OPTIONS]
 
 - Default: human-readable summary table. Lists every scanned kind with its artifact count, every scan error (zero if all files parsed), and every collision with its members.
 - `--json`: prints the same data as a structured CD-3 JSON document on stdout. Schema version is `1`. Kinds with zero artifacts are omitted. Scan errors use workspace-relative paths.
-- `--output <PATH>`: writes the JSON report to the given path as well. The stdout stream and the file are identical; use it to persist evidence for a CI job.
+- `--output <PATH>`: writes the JSON report to a caller-selected path, creating parent directories if necessary. With `--json`, stdout contains the same JSON data; the “Wrote JSON report” message goes to stderr. Without `--json`, stdout remains the human summary.
 - `--auto-suffix`: only meaningful with `--json` (or `--output`). Adds a `suggested_resolution` array on each collision, holding one object per member with `path` and either `new_slug` or `validation_error`.
 
 ## Exit codes
 
-- `0` - no collisions. Greenlight Phase 4.
+- `0` - no collisions detected, even if `scan_errors` is nonempty. Do not use the exit code alone as migration approval.
 - `1` - collisions found. The JSON `summary.exit_code` mirrors this.
-- `2` - scan error: `--workspace` points at a missing path or a directory that contains no `.forgeplan/`.
+- `2` - workspace resolution or top-level discovery failure, such as a missing `.forgeplan/`. These are plain stderr errors, not a structured JSON error response.
 
 ## Examples
+
+All output values below are illustrative fixtures, not results from an executed verification.
 
 ### Example 1: Greenlight with one PRD
 
@@ -96,11 +98,11 @@ Scan errors: 0
 No collisions detected. Greenlight Phase 4.
 ```
 
-Exit code `0`. Safe to proceed to the migration step.
+Exit code `0` with no collisions or scan errors in this illustration. Review the actual report and migration prerequisites before proceeding.
 
 ### Example 2: Collision when two PRDs share a title
 
-Two PRDs created with `forgeplan new prd "Payments API"` (one with `--allow-duplicate` to bypass the interactive dedup prompt) collide on the canonical slug.
+Two PRD files with title `"Payments API"` and different assigned numbers collide on the candidate slug, even though their filenames differ. This example assumes those files already exist; the dry-run does not create them.
 
 ```bash
 forgeplan migrate-dry-run
@@ -174,7 +176,7 @@ forgeplan migrate-dry-run --json
 }
 ```
 
-The exit code matches `summary.exit_code`, so a CI gate can read the JSON and assert `summary.total_collisions == 0` without parsing prose.
+The exit code matches `summary.exit_code`. A CI gate should require both `summary.total_collisions == 0` and `scan_errors` to be empty; parse/slug errors alone do not make this command exit nonzero.
 
 ### Example 4: Auto-suffix resolution proposal
 
@@ -209,20 +211,31 @@ Use `--output` to drop the same JSON into a file alongside the stdout stream, so
 forgeplan migrate-dry-run --json --output .forgeplan-ci-report.json
 ```
 
-```
+Illustrative stdout for an empty workspace:
+
+```json
 {
-  "kinds": { ... },
+  "schema_version": 1,
+  "scanned_at": "2026-10-23T12:00:00Z",
+  "workspace": "/private/tmp/acme-api/.forgeplan",
+  "total_artifacts": 0,
+  "kinds": {},
   "scan_errors": [],
-  ...
+  "summary": {
+    "total_collisions": 0,
+    "kinds_with_collisions": [],
+    "exit_code": 0
+  }
 }
-Wrote JSON report to .forgeplan-ci-report.json
 ```
 
-The exit code still reflects collisions, not the file write. The file is overwritten on every run.
+Stderr separately prints `Wrote JSON report to .forgeplan-ci-report.json`.
+
+The returned summary's exit code reflects collisions, not per-file scan errors. A report write failure is an ordinary command error. An existing output file is overwritten.
 
 ### Example 6: Bad workspace path
 
-A missing path or a directory without `.forgeplan/` exits with code `2` and a structured error.
+A missing path or a directory without `.forgeplan/` exits with code `2` and a plain stderr error (also with `--json`).
 
 ```bash
 forgeplan migrate-dry-run --workspace /tmp/empty
@@ -236,25 +249,25 @@ Exit code `2`. Fix the path or run `forgeplan init` to create the workspace.
 
 ## Notes
 
-- Read-only by contract. Running `forgeplan migrate-dry-run` twice in a row produces byte-identical artifact files; verified by hashing every `.md` under `.forgeplan/` before and after a run.
+- The scan does not write artifact files or read LanceDB. `--output` does write the chosen report path, so choose a path outside artifact projections. This page's review did not execute the command or compare file hashes.
 - The collision key is `kind` plus the computed slug, not the filename. Two files with different filenames but identical kind + title still collide.
 - Memory artifacts are excluded by design (they are not part of lifecycle or scoring, so they do not participate in slug migration).
 - Per-file parse failures land in `scan_errors` and never abort the scan. The rest of the workspace is still reported.
-- Records whose title cannot produce a valid slug (e.g. titles with characters outside the slug alphabet) are dropped from collision detection here and surface later in Phase 4 instead.
-- `scan_errors[*].path` is workspace-relative in JSON output; paths outside the workspace fall back to the basename so no host filesystem layout leaks into the report.
+- A title that cannot produce a valid slug is excluded from collision grouping and recorded in `scan_errors` by this command; do not wait for migration to discover it.
+- `scan_errors[*].path` is workspace-relative in JSON, with a basename fallback outside the workspace. The `reason` string can still contain an absolute path, as can workspace and collision-member fields; inspect reports before publishing them.
 - Determinism: collisions sort by kind then slug; members within a collision sort lexicographically by path. Two identical runs produce identical JSON modulo `scanned_at`.
 
 ## Related commands
 
-- [`forgeplan migrate`](/docs/cli/migrate/) - the actual schema migration this command gates. Run after a greenlight here.
+- [`forgeplan migrate`](/docs/cli/migrate/) - schema migration command; a dry-run collision report is not proof that a specific migration is applicable or that all schema prerequisites passed.
 - [`forgeplan reconcile-ids`](/docs/cli/reconcile-ids/) - re-numbers artifacts to close ID gaps; a different, more invasive rewriter.
-- [`forgeplan reindex`](/docs/cli/reindex/) - rebuilds the derived search index after any rewrite.
+- [`forgeplan reindex`](/docs/cli/reindex/) - scan projections after a rewrite: import new rows, sync existing bodies, add missing links, and clean up orphans. It is not a complete metadata or removed-link refresh for existing records.
 - [`forgeplan health`](/docs/cli/health/) - session-start dashboard that surfaces stale and at-risk artifacts.
 
 ## See also
 
 - [CLI overview](/docs/cli/)
-- [`forgeplan migrate`](/docs/cli/migrate/) - the migration this command gates
+- [`forgeplan migrate`](/docs/cli/migrate/) - schema migration reference
 - [`forgeplan reconcile-ids`](/docs/cli/reconcile-ids/) - re-numbering companion
 - [`forgeplan health`](/docs/cli/health/) - session-start health check
 - [Methodology guide](/docs/methodology/overview/)

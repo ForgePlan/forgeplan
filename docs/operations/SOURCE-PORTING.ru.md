@@ -46,7 +46,7 @@ FPF — рамку рассуждения (ADI cycle). git-adr — CLI ergonomic
 
 - **quint-code SQLite storage** — заменён на LanceDB (vectors + tables в одном)
 - **BMAD workflow engine** — упрощён до validation rules в нашем validator
-- **OpenSpec change-spec generator** — идея взята, реализация deferred (delta-specs — будущая работа)
+- **OpenSpec change-spec generator** — не портирован как пользовательский генератор. В core уже есть parser delta-spec (`crates/forgeplan-core/src/artifact/delta.rs`) для ADDED/MODIFIED/REMOVED; это не отдельная команда CLI/MCP и не полный workflow OpenSpec.
 - **adr-tools bash** — только inspiration, не прямой порт
 
 ---

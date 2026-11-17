@@ -1,6 +1,6 @@
 ---
 title: forgeplan_generate
-description: "Generate a full artifact body from a natural-language description using the configured LLM provider."
+description: "Generate an artifact using AI from a natural language description. Requires an LLM provider in .forgeplan/config.yaml. Supports OpenAI-compatible HTTP providers, Claude, Gemini, Ollama, and explicit subscription-authenticated local CLI providers."
 ---
 
 Creates a new artifact **with a fully-authored body** from a natural-language description. Unlike `forgeplan_new` (which produces an empty template stub), `generate` uses the configured LLM (OpenAI / Claude / Gemini / Ollama / any OpenAI-compatible endpoint) to draft all required sections in one call. The agent still needs to run `forgeplan_validate` afterwards because the LLM may miss MUST rules.
@@ -15,47 +15,49 @@ Creates a new artifact **with a fully-authored body** from a natural-language de
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
-| `kind` | `string` | yes | Artifact kind: `prd`, `epic`, `spec`, `rfc`, `adr`, `problem`, `solution`, `evidence`. |
-| `description` | `string` | yes | Natural language description of what to generate. |
+| `description` | `string` | yes | Natural language description of what to generate |
+| `kind` | `string` | yes | Artifact kind to generate via LLM Enum: `"prd"`, `"epic"`, `"spec"`, `"rfc"`, `"adr"`, `"problem"`, `"solution"`, `"evidence"`, `"note"`, `"refresh"`. |
+| `workspace` | `string \| null` | no | Optional explicit workspace directory for this call. When set, the MCP server resolves the `.forgeplan/` projection from this path instead of the server's startup CWD. Use this when the calling agent is running in a git worktree separate from the MCP server's launch directory. PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. Schema default: `null`. |
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::GenerateParams`_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
 
-The new artifact ID plus the generated body. Unlike `forgeplan_new`, the agent can usually go straight to `forgeplan_validate` without an intermediate `forgeplan_update` - the body is already populated.
+Success is JSON in MCP text content with `id`, `kind`, `title`, `filepath`, `provider`, `model`, `resolved_workspace`, `resolved_via`, and `_next_action`. It does **not** include the generated `body`, `status`, `path`, token counts, or a nested `llm` object. Read the saved body with `forgeplan_get` before validation.
 
-Example response shape:
+Illustrative payload excerpt (trace and guidance omitted):
 
 ```json
 {
   "id": "PRD-043",
   "kind": "prd",
-  "status": "draft",
-  "path": ".forgeplan/prds/prd-043-oauth2-login.md",
-  "body": "# PRD-043: OAuth2 login flow\n\n## Problem\n...",
-  "llm": { "provider": "gemini", "model": "gemini-3-flash-preview", "tokens": 1847 }
+  "title": "OAuth2 login flow",
+  "filepath": "/workspace/.forgeplan/prds/prd-043-oauth2-login-flow.md",
+  "provider": "ollama",
+  "model": "configured-model"
 }
 ```
 
+The artifact is persisted as `draft` at `standard` depth. Its title is the first description line, truncated to 80 characters; the handler writes the Markdown projection before syncing the store. LLM configuration uses environment overrides and may select an explicitly configured local CLI provider. Provider failures return an MCP `isError` response with text and configuration/login guidance; generation has no template-only success fallback.
+
 ## Example invocation
 
-```json
-{ "kind": "prd", "description": "OAuth2 login flow" }
-```
-
-With typical agent context:
-
-> User pastes a one-paragraph feature description. Agent generates a full PRD draft instead of a blank stub.
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
 
 ```json
-{ "kind": "prd", "description": "Add OAuth2 login with Google and GitHub, support PKCE, 15m token TTL." }
+{
+  "kind": "prd",
+  "description": "OAuth2 login flow"
+}
 ```
 
 ## Typical sequence
 
-`forgeplan_route` (confirm depth) → `forgeplan_search` (dup check) → `forgeplan_generate` → `forgeplan_validate` → (fix any gaps via `forgeplan_update`) → `forgeplan_reason` (for Standard+) → `forgeplan_activate`.
+Suggested workflow: route → search for duplicates → generate → read with `forgeplan_get` → validate → fix gaps → reason if the team's process requires it → review and activate. Generation does not automatically perform those later steps.
 
 ## CLI equivalent
 

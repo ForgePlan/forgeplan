@@ -2,6 +2,12 @@
 
 Подробный справочник по git-процессам Forgeplan. CLAUDE.md содержит только краткую выжимку.
 
+Это процесс разработки самого репозитория, не гарантия поведения установленного
+CLI. Пользовательские команды ниже сверены с релизом **0.38.0**; `Cargo.toml`
+этой рабочей ветки пока содержит **0.37.0**. Точные шаги выпуска — в
+[RELEASE-PROTOCOL.ru.md](RELEASE-PROTOCOL.ru.md). Имена `v0.8.0`, `v0.9.0`
+в схемах — примеры, не указание последнего релиза.
+
 ## Оглавление
 - [Формат коммита](#формат-коммита)
 - [Branching strategy](#branching-strategy)
@@ -99,14 +105,14 @@ git checkout -b feat/my-feature
 
 # 3. Работа + коммиты (с Refs в body)
 
-# 4. Push
+# 4. Push — только после явного разрешения пользователя
 git push origin feat/my-feature
 
 # 5. PR (после Code→Audit→Fix→Test→Fmt→Lint→Verify)
 gh pr create --base dev
 
-# 6. Merge — merge commit, НЕ squash!
-#    (squash теряет поздние коммиты)
+# 6. Merge по политике репозитория; после merge не дописывать старую ветку
+#    Сохраняйте историю integration/release; новую работу ведите в новой ветке
 
 # 7. Sync обратно
 git checkout dev && git pull
@@ -118,31 +124,34 @@ git checkout dev && git pull
 
 ## Lifecycle релиза
 
+Перед выпуском выполните полный [release protocol](RELEASE-PROTOCOL.ru.md),
+включая триаж зависимостей, проверку артефактов/evidence, выпускные проверки
+и согласование push/PR. Схема веток:
+
 ```bash
 # 1. Свежий dev
-git checkout dev && git pull
+git checkout dev && git pull --ff-only
 
-# 2. Release branch
-git checkout -b release/v0.x.0
+# 2. Release branch; далее version bump и проверки по release protocol
+git checkout -b release/vX.Y.Z
 
-# 3. Финальные тесты + фиксы на release branch
-cargo test
-# ... фиксы если нужны ...
-
-# 4. PR в main
+# 3. После разрешённого push — PR в main, review и merge
 gh pr create --base main
-# merge commit (сохраняет историю RC)
 
-# 5. Sync main
-git checkout main && git pull
+# 4. Обновить main, затем создать и опубликовать тег с разрешения пользователя
+git checkout main && git pull --ff-only
+git tag -a vX.Y.Z -m "Release vX.Y.Z: описание"
+git push origin vX.Y.Z
 
-# 6. Tag
-git tag -a v0.x.0 -m "Release v0.x.0: описание"
-git push origin v0.x.0
-
-# 7. Sync dev from main (возвращаем tag в dev)
-git checkout dev && git merge main && git push origin dev
+# 5. Обязательная синхронизация main → dev ЧЕРЕЗ PR, не прямым push в dev
+git checkout -b chore/sync-main-to-dev-after-vX.Y.Z
+# После разрешения на push:
+git push -u origin chore/sync-main-to-dev-after-vX.Y.Z
+gh pr create --base dev --title "chore: sync main into dev after vX.Y.Z"
 ```
+
+PR синхронизации нужно довести до merge. Прямой `git push origin dev`
+обходит установленный процесс и блокируется защитой ветки.
 
 ---
 
@@ -155,12 +164,12 @@ Code → Audit → Fix → Test → Fmt → Lint → Verify → PR
 ```
 
 1. **Code** — реализация фичи/фикса на feature branch
-2. **Audit** — минимум 2 агента (code review + test coverage), `/audit` со skills
+2. **Audit** — независимые code review и проверка полноты тестов; `/audit` из публичного `fpl-skills` 1.75.1 требует минимум 4 специализированных ревьюера. Сам CLI не запускает этот skill
 3. **Fix** — исправить все HIGH/CRITICAL findings из аудита
 4. **Test** — `cargo test` все pass (кроме known preexisting failures)
-5. **Fmt** — `cargo fmt` → `cargo fmt -- --check` = 0 diffs. Hook `pre-commit-fmt.sh` блокирует
-6. **Lint** — `cargo check` = 0 warnings, 0 errors. Pre-commit hook блокирует если не компилируется
-7. **Verify** — ручная проверка каждого фикса/фичи (не поверхностно)
+5. **Fmt** — `cargo fmt` → `cargo fmt -- --check` = 0 diffs
+6. **Lint** — проверки `cargo check`/`clippy` по [CI quality gates](QUALITY-GATES.ru.md)
+7. **Verify** — unit tests и реальный E2E каждой затронутой поверхности; наличие хуков зависит от конфигурации, не заменяет эти шаги
 8. **PR** — только после шагов 1-7
 
 **Не создавать PR сразу после кода.** PR = "я проверил, протестировал, отаудитировал, отформатировал, всё работает".
@@ -171,8 +180,8 @@ Code → Audit → Fix → Test → Fmt → Lint → Verify → PR
 
 ### Перед PR
 
-- Проверить `TODO.md` — все P0 checkboxes должны быть `[x]`. Hook `pr-todo-check.sh` блокирует PR с незакрытыми P0
-- Убедиться что все коммиты pushed: `git log origin/dev..HEAD`
+- Проверить `TODO.md` — все P0 закрыты либо явно объяснены по правилам проекта; не предполагать, что локальный хук установлен
+- Убедиться, что push разрешён и все коммиты отправлены: `git log origin/dev..HEAD`
 
 ### Содержимое PR
 
@@ -204,15 +213,17 @@ git checkout dev && git pull     # сразу sync
 
 ### Процесс
 
-1. `dev` → `release/v0.x.0` (RC branch)
-2. Тесты + финальные фиксы на release branch
-3. PR в main → merge commit
-4. `git tag -a v0.x.0 -m "Release v0.x.0: описание"` на main
-5. `git push origin v0.x.0`
-6. Sync: `git checkout dev && git merge main && git push origin dev`
+1. `dev` → `release/vX.Y.Z` (RC branch).
+2. Триаж Dependabot, выпускные проверки, артефакты/evidence и version bump по [release protocol](RELEASE-PROTOCOL.ru.md).
+3. Разрешённый push, PR в main, review и merge с сохранением истории RC.
+4. `git tag -a vX.Y.Z -m "Release vX.Y.Z: описание"` на main.
+5. `git push origin vX.Y.Z` только после разрешения.
+6. Обязательный sync-PR из `chore/sync-main-to-dev-after-vX.Y.Z` в `dev`.
 
-**Release notes**: автогенерация из conventional commits (`gh release create`).
-**Binary**: `cargo build --release`.
+**Release notes**: подготовить через `forgeplan release-notes --since v<PREV_TAG> --output markdown` и отредактировать по фактическому релизу.
+**Binary**: обычный `cargo build --release` не включает `semantic-search`.
+Опубликованные бинарные сборки 0.38.0 включают эту feature через cargo-dist;
+для локальной сборки с поиском явно добавьте `--features semantic-search`.
 
 ---
 
@@ -234,32 +245,45 @@ git worktree remove ../forgeplan-fix
 
 ## Запрещённые действия
 
-Эти команды блокируются hook'ом `.claude/hooks/forge-safety-hook.sh` даже в yolo mode:
+Опасные операции запрещены политикой проекта. Дополнительный safety-hook
+из `forgeplan-workflow` действует только если плагин установлен и хост
+исполняет его hooks; установка CLI сама не создаёт такую защиту:
 
 - `git push --force` / `git push -f`
 - `git reset --hard`
 - `git clean -fd`
 - `rm -rf /` / `rm -rf ~`
-- `cargo publish` (explicit manual action)
+- `cargo publish` без отдельного разрешённого ручного выпуска
 - `DROP TABLE`
 
-### Перед любым reinit workspace
+### Восстановление индекса и повторная инициализация
+
+Сначала выберите операцию по задаче:
+
+- **После clone/merge не видны отслеживаемые артефакты** —
+  `forgeplan reindex` пересобирает LanceDB из markdown.
+- **Синхронизировать delta после git merge/pull** — `forgeplan git-sync`;
+  после checkout можно явно передать `--since <previous-ref>`.
+  `forgeplan setup` ставит соответствующие git-хуки, если не указан
+  `--skip-hooks`. Эмбеддинги обновляются отдельно через `forgeplan embed`.
+- **Найти внешние документы для импорта** — `scan-import`, не средство
+  синхронизации существующих артефактов.
+- **Пересоздать конфигурацию/недостающие каталоги и индексы** —
+  `forgeplan init --force -y`. В 0.38.0 эта операция не перезаписывает
+  существующие тела `.md`, но переписывает `config.yaml` и по умолчанию
+  создаёт backup. Поэтому не используйте её вместо `reindex`.
+
+Перед намеренной переинициализацией сохраните экспорт и копию:
 
 ```bash
-# 1. Export (сохраняет артефакты)
 forgeplan export --output backup.json
-
-# 2. Backup copy
 cp -r .forgeplan .forgeplan-backup-$(date +%Y%m%d)
-
-# 3. Только теперь можно reinit
-rm -rf .forgeplan && forgeplan init -y
-
-# 4. Restore
-forgeplan import backup.json
+forgeplan init --force -y
 ```
 
-**Никогда `rm -rf .forgeplan` без export + backup** — потеря всех артефактов, evidence, links.
+Не удаляйте `.forgeplan/` для починки производного индекса.
+`--no-backup` отключает штатную защитную копию; не используйте его
+как обычный способ восстановления.
 
 ---
 

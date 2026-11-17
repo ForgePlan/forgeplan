@@ -7,13 +7,21 @@ Auto-generate Keep-a-Changelog-shaped release notes from artifacts that changed 
 
 **Category**: Other
 
-The changelog writes itself from the artifact graph: the tool diffs two git refs to find which artifacts were touched, loads each one back out of the store, drops the ones that carry no signal, and returns the survivors bucketed into Keep-a-Changelog sections. The agent's job is then only to paste the entries under `[Unreleased]` in `CHANGELOG.md`.
+The tool selects touched artifact files from git history, then loads their **current store records** and groups them into Keep-a-Changelog sections. It does not reconstruct artifact content at `until`, verify that work shipped, or write `CHANGELOG.md`. Review the resulting titles and evidence before using the entries in a release.
+
+## Example invocation
+
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
+
+```json
+{}
+```
 
 ## What it does
 
 1. **Resolves the range.** `since` is validated and used as given; without it the tool takes the nearest reachable tag (`git describe --tags --abbrev=0`) and falls back to `HEAD~50` when the repo has no tags at all. `until` defaults to `HEAD`.
-2. **Walks the history.** `git log --name-only` runs over the allow-listed kind directories only: `prds`, `problems`, `evidence`, `rfcs`, `adrs`, `specs`, `epics`, `solutions`. Notes, Memory and Refresh live in directories the changelog deliberately ignores.
-3. **Loads each touched artifact** from the store by canonical id. An artifact that was renamed or deleted since the commit is silently dropped rather than reported as an error.
+2. **Walks added/modified files.** `git log --name-only --diff-filter=AM` covers only `prds`, `problems`, `evidence`, `rfcs`, `adrs`, `specs`, `epics`, `solutions`. Other kind directories are not scanned, and deleted/rename-only entries are not selected by that filter.
+3. **Resolves touched filenames** as canonical IDs or pre-merge slugs and loads the current record. Unresolved or no-longer-present records are skipped. A current renamed record is included if its old candidate still resolves.
 4. **Applies the quality gate** (see below) and classifies what survives.
 5. **Formats the payload** as a structured object with one key per section, plus `since`, `until`, `draft` and `total`.
 
@@ -23,10 +31,10 @@ Git discovery is worktree-aware: if `.git/` is not next to `.forgeplan/`, the to
 
 | Artifact | Section | Notes |
 |---|---|---|
-| `prd` | `added` | a shipped feature |
-| `problem` | `fixed` | a closed bug |
-| `evidence` linked to a `security` tag | `security` | the evidence itself, or any neighbour carrying the `security` tag |
-| `evidence` with no security link | `internal` | kept out of the user-facing sections but still visible in draft mode |
+| `prd` | `added` | kind classification, not proof of shipment |
+| `problem` | `fixed` | kind classification, not a closed-bug check |
+| `evidence` linked to a `security` tag | `security` | the evidence itself or any one-hop neighbour carries the tag, case-insensitively |
+| `evidence` without a security tag/link | `internal` | included in either mode if it passes the applicable quality gate |
 | `rfc`, `adr`, `spec`, `epic`, `solution` | `changed` | architectural and umbrella changes |
 | `note`, `memory`, `refresh` | dropped | never emitted, regardless of ref range |
 
@@ -34,22 +42,24 @@ Git discovery is worktree-aware: if `.git/` is not next to `.forgeplan/`, the to
 
 ## Quality gate
 
-An artifact has **signal** when its status is `active` or its R_eff score is above zero. Without `draft: true`, everything without signal is dropped, which is what keeps half-finished drafts out of a changelog. Passing `draft: true` waives the gate entirely and lets you see unevidenced work in flight.
+An artifact has **signal** when its stored status is `active` **or** its stored `r_eff_score` is above zero. This is not a new recursive score or validation run. A positive-score draft can be included; `active` alone also suffices. `draft: true` waives this gate entirely, but does not include excluded kinds, untracked/uncommitted changes or files outside the git range.
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
-| `since` | `string` | no (default: nearest reachable git tag, else `HEAD~50`) | Git ref to start from, for example `v0.30.0`. Validated before it reaches git. |
-| `until` | `string` | no (default: `HEAD`) | Git ref to end at. Validated the same way. |
-| `draft` | `boolean` | no (default: `false`) | Disable the quality gate: include artifacts without evidence and drafts with R_eff of zero. |
-| `workspace` | `string` | no | Explicit workspace directory. When set, the server resolves `.forgeplan/` from this path instead of its startup CWD. PRD-078 / ADR-015. |
+| `draft` | `boolean` | no | Disable the quality gate (include active artifacts without evidence). Default: false. Schema default: `false`. |
+| `since` | `string \| null` | no | Git ref to start from (e.g. `v0.30.0`). Default: latest tag. |
+| `until` | `string \| null` | no | Git ref to end at. Default: HEAD. |
+| `workspace` | `string \| null` | no | Optional explicit workspace directory for this call. When set, the MCP server resolves the `.forgeplan/` projection from this path instead of the server's startup CWD. Use this when the calling agent is running in a git worktree separate from the MCP server's launch directory. PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
 
-_Schema source: `crates/forgeplan-mcp/src/types.rs::ReleaseNotesParams`_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
 
-Both refs are checked before they are handed to `git`: an empty string, a leading `-`, a `..` range, a leading non-alphanumeric or any character outside `A-Za-z0-9 _ / . -` is refused. That is deliberately stricter than git's own ref rules, because a ref that starts with a dash would otherwise be parsed as a git CLI option.
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
+
+Success is JSON in MCP text content. Values below are illustrative.
 
 ```json
 {
@@ -76,14 +86,19 @@ Both refs are checked before they are handed to `git`: an empty string, a leadin
 Every section key is always present, empty or not, so a consumer never has to guess whether a section is missing or empty. Within an entry:
 
 - `id`, `title`, `kind` come straight from the artifact record.
-- `commit` is the short (7-character) SHA of the first commit in the range that touched the file. It is omitted when no commit could be resolved.
-- `evid` is the id of a linked EvidencePack, and is only attached to non-evidence artifacts. Evidence entries never carry it.
+- `commit` is a 7-character prefix of the lexicographically smallest touching SHA collected for that filename. The handler does **not** choose the chronologically first or latest commit. It is omitted if no SHA was resolved.
+- `evid` is the first incoming relation source whose ID has an `EVID-` prefix, regardless of relation type. It is omitted for evidence artifacts and when none is found; it is not proof that the referenced pack is valid or current.
 
 When the gate filters everything, the payload is still valid and the hint tells you so:
 
 ```json
 {
   "_next_action": "No artifacts changed between v0.1.0 and HEAD. Widen range or pass draft=true.",
+  "added": [],
+  "fixed": [],
+  "security": [],
+  "changed": [],
+  "internal": [],
   "total": 0,
   "since": "v0.1.0",
   "until": "HEAD",
@@ -114,13 +129,13 @@ Everything merged since the last tag, letting the tool pick the tag:
 ## Notes
 
 - The tool is read-only: it runs `git log`, reads the artifact store, and writes nothing. It does not update `CHANGELOG.md` for you.
-- A bad ref surfaces as a tool error rather than an empty result. A leading-dash ref is refused by the validator, and a ref that does not exist in the repo comes back from git itself:
+- Invalid refs surface as plain-text tool errors (`isError: true`), not empty results. A leading-dash ref is refused by validation; nonexistent refs fail in git. Illustrative failure:
 
 ```text
 release-notes failed: git log failed: fatal: bad revision 'v9.9.9..HEAD'
 ```
 
-- There is no workspace trace in the response: this is a read path, so unlike the mutating tools it does not report `resolved_via` / `resolved_workspace`.
+- This handler emits no `resolved_via` / `resolved_workspace` trace. Workspace-resolution failures are tool errors. This is this handler's contract, not a rule that every read tool omits traces.
 
 ## CLI equivalent
 

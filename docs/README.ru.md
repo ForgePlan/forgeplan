@@ -4,6 +4,14 @@
 
 Производственная документация проекта Forgeplan.
 
+Пользовательские команды соответствуют опубликованному **Forgeplan 0.38.0**
+(82 команды CLI верхнего уровня, 103 с подкомандами; 73 инструмента MCP).
+В `Cargo.toml` этой ветки пока **0.37.0**. Публичный каталог marketplace
+**1.187.1** содержит **23 плагина**; skills и оркестраторы не входят в CLI.
+См. [установку](https://forgeplan.dev/ru/docs/getting-started/installation/),
+[CLI](https://forgeplan.dev/ru/docs/cli/) и
+[MCP](https://forgeplan.dev/ru/docs/mcp/).
+
 > **Локальные заметки** (исследования, планирование, сессии, исходные материалы) находятся в `.local/` (gitignored) — не являются частью этого дерева.
 
 ## Структура
@@ -11,10 +19,13 @@
 ```
 docs/
 ├── README.md          ← этот файл — навигационный указатель
-├── agents/            ← контракты, которые агент читает перед работой (трекер, доски)
-├── methodology/       ← как работает методология Forgeplan (для людей)
-├── operations/        ← хуки агентов, enforcement, защита репозитория (devops)
-└── schemas/           ← формальные схемы артефактов (контракты для валидатора)
+├── ROADMAP.md         ← анализ пробелов и приоритеты
+├── agents/            ← проектные контракты, которые агент читает перед работой
+├── methodology/       ← методология и рабочие процессы
+├── operations/        ← настройка, хуки, релизы и защита репозитория
+├── schemas/           ← схемы артефактов
+├── brownfield-extraction-package/ ← проект извлечения знаний и примеры
+└── vnext/             ← предлагаемая архитектура, не возможности релиза
 ```
 
 **Артефакты** (PRD, RFC, ADR, Epic, Spec, Evidence, Problem, Note) хранятся в рабочем пространстве Forgeplan в `.forgeplan/` — см. раздел [Артефакты](#артефакты) ниже.
@@ -25,16 +36,16 @@ docs/
 
 | Документ | Назначение |
 |---|---|
-| [FORGEPLAN-GUIDE.md](methodology/FORGEPLAN-GUIDE.md) | **Начните здесь** — полный гайд: методология + CLI + evidence + lifecycle |
-| [HOW-TO-USE.md](methodology/HOW-TO-USE.md) | 10 правил методологии с практическими примерами |
-| [ARTIFACT-MODEL.md](methodology/ARTIFACT-MODEL.md) | Иерархия артефактов: Epic → PRD → Spec → RFC → ADR + lifecycle |
-| [PRD-RFC-ADR-FLOW.md](methodology/PRD-RFC-ADR-FLOW.md) | Дерево решений: какой тип артефакта создать |
-| [DEPTH-CALIBRATION.md](methodology/DEPTH-CALIBRATION.md) | Tactical → Standard → Deep → Critical с авто-эскалацией |
-| [QUALITY-GATES.md](methodology/QUALITY-GATES.md) | Verification Gate + Adversarial Review + R_eff scoring |
-| [UNIFIED-WORKFLOW.md](methodology/UNIFIED-WORKFLOW.md) | Интеграция Forgeplan × Orchestra × Hindsight |
-| [USAGE-BY-ROLE.md](methodology/USAGE-BY-ROLE.md) | Как использовать Forgeplan в зависимости от роли |
-| [METHODOLOGY-COURSE.md](methodology/METHODOLOGY-COURSE.md) | Полный курс обучения (формат курса) |
-| [GLOSSARY.md](methodology/GLOSSARY.md) | 31 термин + справочная таблица lifecycle |
+| [FORGEPLAN-GUIDE.ru.md](methodology/FORGEPLAN-GUIDE.ru.md) | **Начните здесь** — полный гайд: методология + CLI + evidence + lifecycle |
+| [HOW-TO-USE.ru.md](methodology/HOW-TO-USE.ru.md) | 10 правил методологии с практическими примерами |
+| [ARTIFACT-MODEL.ru.md](methodology/ARTIFACT-MODEL.ru.md) | Иерархия артефактов: Epic → PRD → Spec → RFC → ADR + lifecycle |
+| [PRD-RFC-ADR-FLOW.ru.md](methodology/PRD-RFC-ADR-FLOW.ru.md) | Дерево решений: какой тип артефакта создать |
+| [DEPTH-CALIBRATION.ru.md](methodology/DEPTH-CALIBRATION.ru.md) | Tactical → Standard → Deep → Critical с авто-эскалацией |
+| [QUALITY-GATES.ru.md](methodology/QUALITY-GATES.ru.md) | Verification Gate + Adversarial Review + R_eff scoring |
+| [UNIFIED-WORKFLOW.ru.md](methodology/UNIFIED-WORKFLOW.ru.md) | Интеграция Forgeplan × Orchestra × Hindsight |
+| [USAGE-BY-ROLE.ru.md](methodology/USAGE-BY-ROLE.ru.md) | Как использовать Forgeplan в зависимости от роли |
+| [METHODOLOGY-COURSE.ru.md](methodology/METHODOLOGY-COURSE.ru.md) | Полный курс обучения |
+| [GLOSSARY.ru.md](methodology/GLOSSARY.ru.md) | Термины, границы хранилищ и lifecycle опубликованного релиза |
 | [LESSONS.ru.md](methodology/LESSONS.ru.md) | Lessons learned — dependent sprint verification, audit incidents, улучшения процесса |
 | [agent-protocol.md](methodology/agent-protocol.md) | **Hint contract (PRD-071)** — 5 маркеров (Next/Or/Wait/Done/Fix), good/bad примеры, agent reading protocol |
 | [release-workflow.md](methodology/release-workflow.md) | End-to-end рецепт релиза — dependabot triage gate, version bump, стратегия release/* PR, post-release sync (CLAUDE.md red lines #9 + #10), hotfix flow, антипаттерны |
@@ -45,10 +56,11 @@ docs/
 
 | Документ | Назначение |
 |---|---|
-| [AGENT-ENFORCEMENT.md](operations/AGENT-ENFORCEMENT.md) | Правила и ограничения для AI-агентов, работающих в проекте |
-| [AGENT-HOOKS.md](operations/AGENT-HOOKS.md) | Хуки PreToolUse / PostToolUse (безопасность, форматирование, тесты) |
-| [MULTI-AGENT.md](operations/MULTI-AGENT.md) | **v0.24.0+ multi-agent dispatch** — MCP-инструменты `forgeplan_dispatch/claim/release/claims`, file-overlap detection, skill routing |
-| [REPO-PROTECTION-GUIDE.md](operations/REPO-PROTECTION-GUIDE.md) | Защита веток, правила PR, предотвращение деструктивных действий |
+| [AGENT-ENFORCEMENT.ru.md](operations/AGENT-ENFORCEMENT.ru.md) | Правила и ограничения для AI-агентов, работающих в проекте |
+| [AGENT-HOOKS.ru.md](operations/AGENT-HOOKS.ru.md) | Хуки PreToolUse / PostToolUse (безопасность, форматирование, тесты) |
+| [LLM-PROVIDERS.md](operations/LLM-PROVIDERS.md) | Настройка HTTP/local LLM и аутентификации; адаптеры подписочных CLI включаются явно для личной разработки, не shared/production/CI |
+| [MULTI-AGENT.ru.md](operations/MULTI-AGENT.ru.md) | **v0.24.0+ multi-agent dispatch** — MCP-инструменты `forgeplan_dispatch/claim/release/claims`, поиск пересечений файлов, маршрутизация skills |
+| [REPO-PROTECTION-GUIDE.ru.md](operations/REPO-PROTECTION-GUIDE.ru.md) | Защита веток, правила PR, предотвращение деструктивных действий |
 | [GIT-WORKFLOW.ru.md](operations/GIT-WORKFLOW.ru.md) | Полные Git-правила — lifecycle веток, PR pipeline, процесс релиза, worktrees |
 | [RELEASE-PROTOCOL.ru.md](operations/RELEASE-PROTOCOL.ru.md) ([en](operations/RELEASE-PROTOCOL.md)) | **Канонический процесс релиза** — 10 шагов любого среза `release/vX.Y.Z`, pre-conditions и обязательный post-merge sync-PR (RED LINE #9) |
 | `dependabot-triage-YYYY-MM-DD.md` | Триаж алертов зависимостей на релиз (RED LINE #10) — каждый открытый алерт помечен addressed / scheduled / accepted-with-justification. По файлу на релизное окно |
@@ -67,13 +79,13 @@ docs/
 
 ## Схемы
 
-Формальные спецификации, которые применяет валидатор.
+Формальные требования к структуре артефактов. Какие правила реально применяются, определяет валидатор опубликованного релиза.
 
 | Документ | Назначение |
 |---|---|
-| [PRD-SCHEMA.md](schemas/PRD-SCHEMA.md) | PRD: обязательные секции, калибровка глубины, правила валидации |
-| [EPIC-SCHEMA.md](schemas/EPIC-SCHEMA.md) | Epic: агрегированный прогресс, правила дочерних элементов |
-| [SPEC-SCHEMA.md](schemas/SPEC-SCHEMA.md) | Spec: API-контракты, модели данных, версионирование |
+| [PRD-SCHEMA.ru.md](schemas/PRD-SCHEMA.ru.md) | PRD: обязательные секции, калибровка глубины, правила валидации |
+| [EPIC-SCHEMA.ru.md](schemas/EPIC-SCHEMA.ru.md) | Epic: агрегированный прогресс, правила дочерних элементов |
+| [SPEC-SCHEMA.ru.md](schemas/SPEC-SCHEMA.ru.md) | Spec: API-контракты, модели данных, версионирование |
 
 ## Артефакты
 
@@ -82,7 +94,7 @@ docs/
 **Модель хранения (согласно [ADR-003](../.forgeplan/adrs/ADR-003-markdown-files-as-source-of-truth-lancedb-as-index-layer.md)):**
 - **Markdown-файлы** в `.forgeplan/{adrs,rfcs,prds,epics,specs,evidence,problems,solutions,notes,refresh,memory}/` = **источник истины** (отслеживаются git)
 - **LanceDB** в `.forgeplan/lance/` = производный индексный слой (git-ignored, восстанавливаемый)
-- **Конфигурация** `.forgeplan/config.yaml` = локальные LLM-ключи (git-ignored)
+- **Конфигурация** `.forgeplan/config.yaml` = настройки провайдера и workspace; значения ключей храните в переменных окружения или git-ignored `.forgeplan/secrets.env`, а не в отслеживаемой конфигурации
 
 **Директории:**
 
@@ -95,12 +107,12 @@ docs/
 | [`.forgeplan/specs/`](../.forgeplan/specs/) | Формальные спецификации (API-контракты, модели данных) |
 | [`.forgeplan/evidence/`](../.forgeplan/evidence/) | EvidencePack — тесты, бенчмарки, измерения |
 | [`.forgeplan/problems/`](../.forgeplan/problems/) | ProblemCard — формулировка проблем с индикаторами anti-Goodhart |
-| [`.forgeplan/solutions/`](../.forgeplan/solutions/) | SolutionPortfolio — 2-3+ варианта с оценкой по слабейшему звену |
-| [`.forgeplan/notes/`](../.forgeplan/notes/) | Микро-решения (автоматически истекают через 90 дней) |
-| [`.forgeplan/refresh/`](../.forgeplan/refresh/) | RefreshReport — переоценка устаревших артефактов |
-| [`.forgeplan/memory/`](../.forgeplan/memory/) | Память решений |
+| `.forgeplan/solutions/` | SolutionPortfolio — варианты с оценкой по слабейшему звену; каталог создаётся по необходимости |
+| [`.forgeplan/notes/`](../.forgeplan/notes/) | Микрорешения; автоматическое истечение через 90 дней не гарантируется |
+| `.forgeplan/refresh/` | RefreshReport — переоценка устаревших артефактов; каталог создаётся по необходимости |
+| [`.forgeplan/memory/`](../.forgeplan/memory/) | Простые артефакты `remember`/`recall`, не память Hindsight |
 
-**Управление артефактами:** всегда используйте CLI `forgeplan` — не редактируйте YAML frontmatter вручную.
+**Управление артефактами:** тело, метаданные и lifecycle меняются через CLI или MCP. Не редактируйте проекции напрямую. Подготовленное тело передавайте через `forgeplan update ID --body @file.md`; для lifecycle используйте отдельные команды, не `update --status active|superseded|deprecated`.
 
 ```bash
 forgeplan new prd "Title"        # создать новый артефакт
@@ -115,22 +127,26 @@ forgeplan reindex                # пересобрать LanceDB-индекс �
 
 ```bash
 git clone <repo> && cd forgeplan
-forgeplan init -y                # создаёт .forgeplan/lance/ локально (пустую)
-forgeplan reindex                # синхронизирует отслеживаемые markdown в LanceDB
+forgeplan reindex                # пересобрать локальную LanceDB из отслеживаемого markdown
 forgeplan list                   # проверка — должны отображаться все артефакты
 ```
+
+`reindex` не равен `scan-import`: второй ищет и импортирует документы, а не
+исправляет индекс существующих проекций. `forgeplan setup` устанавливает
+опциональные git-хуки синхронизации после merge/checkout;
+`forgeplan embed` отдельно обновляет семантические векторы.
 
 ## См. также
 
 - [`CLAUDE.md`](../CLAUDE.md) — инструкции проекта для Claude Code
 - [`AGENTS.md`](../AGENTS.md) — стандартные инструкции для других AI-агентов (Aider, Cursor и др.)
-- [`README.md`](../README.md) — README проекта для людей
+- [`README.ru.md`](../README.ru.md) — README проекта для людей
 - [`templates/`](../templates/) — markdown-шаблоны для каждого типа артефакта
 - `.local/` (gitignored) — локальные исследования, планирование, сессии, исходные материалы
 
 ## Соглашения
 
-- **Все пути в документах указаны относительно корня репозитория.**
-- **Файлы артефактов в `.forgeplan/` управляются CLI `forgeplan`** — ручное редактирование работает, но может вызвать рассинхронизацию с индексом LanceDB до запуска `reindex`.
-- **Документация методологии здесь является авторитетной** — если руководство и схема расходятся, приоритет у схемы.
-- **Активированные артефакты неизменяемы** — замена через `forgeplan supersede`, историю не переписывать.
+- **Пути в примерах команд даны относительно корня репозитория, если не указано иное.** Markdown-ссылки считаются от документа.
+- **Проекции артефактов управляются через CLI/MCP.** `reindex` — восстановление при рассинхронизации, не обычный способ редактирования.
+- **Методологические требования и runtime-гейты различаются.** Схемы задают контракт документа, справочник опубликованного CLI/MCP — поведение команд.
+- **Сохраняйте принятые решения.** Используйте `forgeplan supersede ID --by NEW-ID` или `forgeplan deprecate ID --reason "..."`, не переписывайте историю.

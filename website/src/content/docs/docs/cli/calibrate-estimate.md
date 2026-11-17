@@ -3,26 +3,18 @@ title: forgeplan calibrate-estimate
 description: "Compare estimated vs actual hours and measure estimation drift after a sprint."
 ---
 
-`forgeplan calibrate-estimate` closes the loop on `forgeplan estimate`. You pass the
-actual hours you spent on an artifact, and it reports how far the estimate was off -
-per grade, per FR, and overall. Over time this feeds back into your `grade_profile`
-config so estimates get sharper.
-
-Without calibration, estimates drift silently: you think you're "senior on backend" but
-consistently overshoot 50%. This command surfaces that gap so you can adjust the
-multiplier based on evidence, not on intuition.
+`forgeplan calibrate-estimate` reruns the estimate pipeline for an existing artifact and compares one estimate with positive, finite actual hours. It prints the estimate, confidence, actual hours, ratio (`actual / estimated`), accuracy, and a recommendation. It does not save a calibration dataset or update configuration.
 
 ## When to use
 
-- End of sprint: run on every PRD/RFC you closed to build a calibration dataset.
-- After a surprise (big over/under-run) - immediate feedback while context is fresh.
-- Quarterly review - aggregate `--json` output to tune `estimate.grade_profile` in config.
-- Benchmarking a new grade profile - compare actual vs different grade assumptions.
+- After finishing a PRD/RFC, compare actual hours with its current estimate.
+- After a large overrun or underrun, inspect the ratio while context is fresh.
+- Save output yourself if you want to aggregate comparisons or tune `estimate.grade_profile`.
 
 ## When NOT to use
 
-- Mid-sprint on an unfinished artifact - actuals must be final.
-- On artifacts without FR/Phase items - the original estimate was a guess, not a model.
+- Actual hours are incomplete; any comparison is provisional.
+- The artifact has no extractable FR/Phase items; the command rejects it.
 
 ## Usage
 
@@ -53,30 +45,15 @@ forgeplan calibrate-estimate [OPTIONS] --actual-hours <ACTUAL_HOURS> <ID>
 forgeplan calibrate-estimate PRD-001 --actual-hours 18
 ```
 
-Output:
+The output includes `Estimated: …h (confidence …%)`, `Actual: …h`, `Ratio: …x (actual / estimated)`, and `Accuracy: …%`. Values depend on the artifact and estimate configuration.
 
-```text
-PRD-001 - Auth System
-  estimated (senior):    13.5h
-  actual:                18.0h
-  drift:                 +33.3%  (over)
-  verdict:               estimate undershot - adjust senior backend multiplier +15%
-```
-
-### Compare against a different grade
+### Compare against a grade
 
 ```bash
-forgeplan calibrate-estimate PRD-001 --actual-hours 18 --grade middle
+forgeplan calibrate-estimate PRD-001 --actual-hours 18 --grade senior
 ```
 
-Output:
-
-```text
-estimated (middle):   22.0h
-actual:               18.0h
-drift:                -18.2%  (under)
-verdict:              you performed between middle and senior on this one
-```
+Without `--grade`, the comparison uses `total_score`, not the senior-hours total. The implementation matches a case-insensitive substring of a grade's debug name; an unmatched value silently falls back to `total_score`. Use a full grade name such as `senior` or `middle` to avoid that fallback.
 
 ### Aggregate across the sprint
 
@@ -91,16 +68,9 @@ multipliers for `.forgeplan/config.yaml`.
 
 ## Output interpretation
 
-| Drift range     | Interpretation                                |
-|-----------------|-----------------------------------------------|
-| within ±15%     | estimate is accurate - no tuning needed       |
-| +15% … +40%     | under-estimated - increase grade multiplier   |
-| > +40%          | depth was wrong, not estimate - escalate      |
-| -15% … -40%     | over-estimated - decrease multiplier          |
-| < -40%          | scope was cut or estimate inflated            |
+The ratio is actual hours divided by estimated hours. Accuracy is `100 × min(ratio, 1 / ratio)`.
 
-Track drift per domain (backend, frontend, devops, ai_ml). A single PRD is noise;
-ten PRDs is signal.
+Recommendations use these branches, in order: ratio `> 1.5` suggests a buffer; `> 1.1` reports slight optimism; `< 0.5` reports very conservative estimates; `< 0.7` reports faster completion; otherwise it reports good calibration. These are CLI messages, not automatic changes to depth or grade multipliers. Compare several completed artifacts before changing your configuration.
 
 ## How it fits the workflow
 

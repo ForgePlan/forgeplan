@@ -1,16 +1,11 @@
 ---
 title: forgeplan_interview_packet_ingest
-description: "experimental: ingest a completed interview transcript and propose HYP / UC / INV artifacts. STUB - the full implementation ships with the `forgeplan-brownfield-pack` plugin (marketplace issue #79). Stub returns a `not_implemented` envelope so agents can detect the gap and surface the install hint."
+description: "Experimental core 0.38 stub: checks relative-path syntax and returns not_implemented without reading a transcript."
 ---
 
-**This tool is an experimental stub.** It is registered on the MCP surface, it validates its input,
-and then it stops: the real implementation ships with the
-[`forgeplan-brownfield-pack`](/docs/marketplace/forgeplan-brownfield-pack/) plugin (marketplace
-issue #79). The plugin owns the read of the transcript; the stub's only real work is rejecting a
-transcript path that would escape the workspace.
+**Forgeplan 0.38.0 returns `not_implemented` after workspace and path validation.** Installing [`forgeplan-brownfield-pack`](/docs/marketplace/forgeplan-brownfield-pack/) does not enable this handler: no plugin is loaded and no transcript is read. The runtime install hint describes an intended workflow, not an implemented dispatch path.
 
-This is the second half of the interview workflow - [`forgeplan_interview_packet_draft`](/docs/mcp/forgeplan_interview_packet_draft/)
-produces the questions, this tool is meant to consume the answers.
+This is the advertised ingest half of the interview API. The companion [`forgeplan_interview_packet_draft`](/docs/mcp/forgeplan_interview_packet_draft/) is also a stub and does not produce questions.
 
 **Category**: Other
 
@@ -20,8 +15,9 @@ produces the questions, this tool is meant to consume the answers.
 2. Acquires the workspace lock.
 3. If `transcript_path` was supplied, pre-validates it: the path must be workspace-relative and must
    contain no `..` segments, no null bytes, and no Windows drive prefix. A violating path is
-   rejected as an MCP error before anything else happens.
-4. Returns the stub envelope with a `_next_action` hint:
+   rejected as a plain-text tool error (`isError: true`) with an `_next_action:` line,
+   after workspace resolution and locking.
+4. Returns this fixed JSON in MCP text content as a successful result, not a tool error:
 
 ```json
 {
@@ -34,25 +30,28 @@ produces the questions, this tool is meant to consume the answers.
 
 No file is opened, and no artifact is proposed.
 
-## What it will do
+The path need not exist: this is lexical validation only. Workspace resolution can
+fail at JSON-RPC level; lock failures are tool errors. No `resolved_via` or
+`resolved_workspace` fields are added to this endpoint's result.
 
-The plugin parses a completed interview transcript into proposed `HYP` (hypotheses), `UC` (use
-cases) and `INV` (invariants) artifacts. The stub only screens the path; the plugin does the read
-and the extraction, which is why the path comes in as a workspace-relative string rather than as
-content.
+## Separate marketplace workflow
+
+The published `interview-packager` skill describes how an agent can process answered packets and update hypotheses. Run that workflow separately. The core MCP endpoint does not invoke it, propose artifacts, or write interview results into the graph.
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
-| `transcript_path` | `string` | no | Path to the completed interview transcript, relative to the workspace root (e.g. `interviews/2026-05-20.md`). Pre-validated by the stub for escape attempts. When omitted, the stub still returns its envelope. |
-| `workspace` | `string` | no | Explicit workspace directory for this call, so an agent in a git worktree can target its own `.forgeplan/` instead of the server's launch directory. Absolute or tilde-expanded path. |
+| `transcript_path` | `string \| null` | no | Filesystem path (relative to the workspace root) of the completed interview transcript. Audit-r4 SEC-L1: stub pre-validates that the path is workspace-relative and contains no `..` segments before handing off to the marketplace plugin. The plugin owns the read. Schema default: `null`. |
+| `workspace` | `string \| null` | no | Optional explicit workspace directory for this call. When set, the MCP server resolves the `.forgeplan/` projection from this path instead of the server's startup CWD. Use this when the calling agent is running in a git worktree separate from the MCP server's launch directory. PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. Schema default: `null`. |
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::InterviewPacketIngestParams`_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Path validation
 
-Four shapes are rejected outright, each as an MCP error with a fix hint:
+Parent-directory segments, absolute paths, null bytes and Windows drive prefixes are rejected with a fix hint:
 
 | Input | Result |
 |---|---|
@@ -60,28 +59,23 @@ Four shapes are rejected outright, each as an MCP error with a fix hint:
 | `/etc/passwd` | `` transcript_path `/etc/passwd` is not workspace-relative `` |
 | `C:\interviews\a.md` | `` transcript_path `C:interviewsa.md` is not workspace-relative `` |
 
-The Windows drive check exists because such a path is not absolute on POSIX, so an
-`is_absolute`-only guard would let it through. Null bytes are rejected for the same reason: most
-filesystems refuse them even though the path type tolerates them. This is defence in depth - the
-plugin owns the actual read, and it would refuse these paths too.
+The Windows drive check exists because such a path is not absolute on POSIX, so an `is_absolute`-only guard would let it through. Null bytes are rejected too. These checks screen the argument; they are not a filesystem read or a handoff to a plugin in 0.38.0.
 
 ## Example invocation
 
-A path the stub accepts (and then hands back as `not_implemented`):
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
 
 ```json
-{ "transcript_path": "interviews/2026-05-20.md" }
+{
+  "transcript_path": "interviews/billing.md"
+}
 ```
-
-What the plugin will eventually produce, per its `interview-packager` skill, is a set of proposed
-artifacts to review rather than artifacts written silently into the graph.
 
 ## Notes
 
 - **The path echo is sanitised.** Error text pipes the offending path through the same sanitiser the
   promotion hints use, so control characters and escape sequences are stripped from what you see.
-- **Make the call idempotent.** Nothing is written, so retrying costs nothing; the schema marks the
-  tool idempotent for that reason.
+- **Repeated calls do not ingest anything.** The idempotent annotation does not promise that resolution or locking cannot fail.
 - **Unlike the draft stub, this one does not echo the resolved workspace.** The trace is computed and
   discarded, so if you need proof of routing, pin `workspace` explicitly and read it back from the
   other tool.
@@ -99,4 +93,4 @@ artifacts to review rather than artifacts written silently into the graph.
 - [`forgeplan_interview_packet_draft`](/docs/mcp/forgeplan_interview_packet_draft/) - the draft half of this workflow, also a stub
 - [`forgeplan_hypothesis_promote`](/docs/mcp/forgeplan_hypothesis_promote/) - act on what an interview concludes
 - [`forgeplan_discover_start`](/docs/mcp/forgeplan_discover_start/) - the brownfield discovery protocol that works today
-- [`forgeplan-brownfield-pack`](/docs/marketplace/forgeplan-brownfield-pack/) - the plugin that will implement this tool
+- [`forgeplan-brownfield-pack`](/docs/marketplace/forgeplan-brownfield-pack/) - separate interview workflow skills

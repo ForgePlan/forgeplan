@@ -251,16 +251,26 @@ things, two different audiences.
 - `npm run build` runs a `prebuild` step: `scripts/copy-changelog.mjs` copies
   the root `CHANGELOG.md` into `src/content/docs/docs/changelog.md`. Edit the
   root file, not the copy.
-- `scripts/generate-cli-docs.mjs` writes `docs/cli/*.md` from
-  `forgeplan help <cmd>` against a real binary (`--binary <path>`).
-- `scripts/generate-mcp-docs.mjs` writes `docs/mcp/*.md` by parsing
-  `#[tool(...)]` attributes in `crates/forgeplan-mcp/src/server.rs`.
+- `scripts/generate-cli-docs.mjs` refreshes captured help blocks in `docs/cli/*.md`
+  against a real binary (`--binary <path>`). Markdown owns curated descriptions,
+  examples and runtime cautions. Optional `--sync-ru` refreshes technical blocks
+  in existing RU pages only; it does not translate or rewrite their prose.
+- `scripts/generate-mcp-docs.mjs` writes `docs/mcp/*.md` from a real, versioned
+  MCP `tools/list` capture (`--schema-file <path>`), not Rust function wrappers.
+  Input must contain `source.version` and a nonempty `tools` array with
+  `inputSchema`. Generate against the same released binary as the CLI reference.
 - `scripts/generate-marketplace-docs.mjs` writes `docs/marketplace/*.md` from
   the **separate marketplace repo** — `<MARKETPLACE_DIR>/.claude-plugin/
-  marketplace.json` plus per-plugin files. `MARKETPLACE_DIR` defaults to a local
-  absolute path, so set it explicitly or the run aborts on a clean machine.
-- All three emit **EN only**. RU comes from `scripts/translate-batch.mjs` /
+  marketplace.json` plus per-plugin files. `MARKETPLACE_DIR` is required;
+  use an explicitly pinned public source, never an unrelated dirty local draft.
+- All three emit **EN by default**; CLI `--sync-ru` is technical-block-only.
+  Synchronize and review RU prose in the same change.
+  Optional translation scripts are `scripts/translate-batch.mjs` /
   `translate-page.mjs` (Gemini, term glossary `src/i18n/glossary-ru.yaml`).
+- CLI and MCP generators preserve curated prose outside technical sections.
+  Fix generated help/parameter/invocation blocks in the generator, then regenerate;
+  edit authored workflow examples, usage and limitations in Markdown and review
+  them against the implementation.
 - Health checks: `check-dead-links.mjs` (needs a built `dist/`),
   `check-translation-drift.mjs` (stale RU), `check-content-completeness.mjs`.
 - Only `copy-changelog` is wired into npm scripts (as `prebuild`). The rest are

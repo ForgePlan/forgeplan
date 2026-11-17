@@ -1,32 +1,9 @@
 ---
 title: forgeplan score
-description: "Compute R_eff - the weakest-link evidence trust score for a decision."
+description: "Compute recursive effective reliability, R_eff, using the weakest-link minimum, never an average. Draft evidence participates; terminal evidence (superseded, deprecated) is excluded. A decision with no eligible evidence has self-score 0. A leaf EvidencePack is a separate case: it can score from its own structured fields without invented child evidence."
 ---
 
-`forgeplan score` computes the **R_eff** (effective reliability) of a decision artifact
-based on the **non-terminal** EvidencePacks linked to it. Packs that were displaced
-(`superseded`/`deprecated`) stay listed with an "excluded from min" mark but no longer
-feed the score. R_eff follows the weakest-link rule from
-Quint-code: `R_eff = min(evidence_scores)` - **never an average**. One weak piece of
-evidence sinks the whole decision, which is the whole point: a PRD backed by one strong
-benchmark and one refuted test is still a risky PRD.
-
-Each evidence contribution is shaped by its `congruence_level` (CL0..CL3), `verdict`
-(supports / weakens / refuses), and `valid_until` (decay applies when expired). Without
-any linked evidence, R_eff = 0.0 and `forgeplan health` will flag the artifact as a
-blind spot.
-
-## When to use
-
-- Right after linking a new EvidencePack (`forgeplan link EVID-012 PRD-001 --relation informs`).
-- Before `forgeplan activate` - if R_eff is still 0, you are activating a promise without proof.
-- In bulk with `--all` after a sprint to refresh cached R_eff on every active decision.
-- As a debugging tool: if health flags a blind spot, `score --json` shows which evidence is dragging the min down.
-
-## When NOT to use
-
-- On Notes, Problems, or Epics - they are not decisions and carry no R_eff.
-- Before you have any evidence - the answer will always be 0.0.
+Compute recursive effective reliability, R_eff, using the weakest-link minimum, never an average. Draft evidence participates; terminal evidence (`superseded`, `deprecated`) is excluded. A decision with no eligible evidence has self-score 0. A leaf EvidencePack is a separate case: it can score from its own structured fields without invented child evidence.
 
 ## Usage
 
@@ -49,122 +26,47 @@ forgeplan score [OPTIONS] [ID]
   -V, --version  Print version
 ```
 
-## Examples
+## Structured evidence fields
 
-### Score a single PRD
+Declare `verdict` (`supports`, `weakens`, or `refutes`), `congruence_level` (0–3), and `evidence_type` (`measurement`, `test`, `benchmark`, or `audit`) under Structured Fields. A recognized verdict and either explicit CL or recognized source_tier are needed to declare support. Missing or unrecognized declarations fail closed through CL0 rather than silently earning full trust. If CL and source tier disagree, the lower CL wins.
+
+## Recursive contribution rules
+
+For fresh evidence, contribution is `max(0, verdict_score - CL_penalty - type_penalty)`. Verdict scores: supports = 1.0, weakens = 0.5, refutes = 0.0. CL penalties: CL3 = 0, CL2 = 0.1, CL1 = 0.4, CL0 = 0.9. Type penalties: test/measurement = 0, benchmark = 0.1, audit = 0.2. Expired evidence contributes exactly 0.1 instead. The decision self-score is the minimum over eligible linked evidence. For example, fresh supports/CL3/benchmark evidence contributes 0.9, not 1.0.
+
+## Dependencies and leaf evidence
+
+The recursive walk follows outgoing `based_on`, `refines`, `informs`, and legacy `depends_on` edges; `depends_on` is not an accepted new relation name for `link`. Dependency scores lose 0.1 for `based_on`/`informs`, and 0 for `refines`/legacy `depends_on`, floored at 0. Final R_eff is the minimum of self-score and participating dependency scores. Dependencies in draft/deprecated/superseded state, or of kind note/memory, are skipped. A leaf EvidencePack with no linked child evidence and no terminal-child exclusions returns its own field-based contribution; all-terminal children do not qualify for this exception. Evidence outgoing `informs`/`based_on` edges to supported decisions do not feed those decisions’ trust back into the evidence. Inspect `factors` and `weakest_link` for the actual walk.
+
+## Examples
 
 ```bash
 forgeplan score PRD-001
-```
-
-Typical output:
-
-```text
-PRD-001 - Auth System
-  Evidence contributions:
-    EVID-012  supports  CL3  valid  → 1.00
-    EVID-015  supports  CL2  valid  → 0.90
-    EVID-018  weakens   CL1  valid  → 0.40
-  R_eff = 0.40   (weakest link: EVID-018)
-  DerivedStatus: COMPARED
-```
-
-The weakest link (EVID-018) is pulling R_eff down. Either strengthen that evidence,
-refute it, or replace it. Replacement means linking the new pack and running
-`forgeplan supersede EVID-018 --by <NEW-EVID>`: the displaced pack leaves the min
-and the score recovers on the spot.
-
-### Refresh every active decision at once
-
-```bash
 forgeplan score --all
+forgeplan score PRD-001 --json | jq '.r_eff, .weakest_link, .evidence'
 ```
 
-Used at sprint end to update cached R_eff across the workspace. `forgeplan health` reads
-these cached values.
+## Refresh and replacement
 
-### JSON for pipelines
+The command updates cached R_eff. After linking new evidence or displacing a pack, recompute the score. A still-current refuting pack is not a problem to hide: investigate it, and supersede it only when a genuine replacement displaces its claim. `--all` refreshes active decision artifacts, including Epics.
 
-```bash
-forgeplan score PRD-001 --json | jq '.r_eff, .weakest_link'
-```
+## Raw breakdown, JSON, and confidence interval
 
-## Output interpretation
+Top-level `r_eff` is the recursive result. The compatibility `evidence[].score` and `r_eff_ci.point` use the flat raw formula without evidence-type or dependency penalties; do not expect them to equal the recursive score, especially for leaf evidence. The interval is heuristic, not a statistical guarantee. It uses eligible evidence count and expired-item count: base uncertainty `0.30 / sqrt(n)`, plus 0.10 per stale item capped at 0.30; total uncertainty is capped at 0.50 and bounds at [0, 1]. Fewer than three items are labelled insufficient evidence. Single-artifact JSON has `id`, `title`, `r_eff`, `r_eff_ci`, `weakest_link`, `factors`, `evidence`, `fgr`, and `_next_action`. `--all --json` instead returns `results` and `errors`.
 
-| R_eff range | DerivedStatus  | What it means                               |
-|-------------|----------------|---------------------------------------------|
-| 0.00        | UNDERFRAMED    | No evidence linked - blind spot             |
-| 0.01–0.39   | FRAMED         | Weak evidence or refuting signals dominate  |
-| 0.40–0.69   | EXPLORING      | Some support, some doubt                    |
-| 0.70–0.89   | COMPARED       | Strong support, at least one caveat         |
-| 0.90–1.00   | DECIDED/APPLIED| High-trust, ready to build on               |
+## Historical output format
 
-**Congruence Level (CL) penalties:** CL3=0.0, CL2=0.1, CL1=0.4, CL0=0.9. Evidence from
-the wrong context (CL0) is treated as almost-missing. Expired `valid_until` caps the
-contribution at 0.1.
-
-## R_eff confidence intervals (v0.17+, PRD-040)
-
-As of v0.17.0 (PRD-040, Scoring Intelligence) `forgeplan score` reports a
-**confidence interval** alongside the point estimate. The interval widens when
-evidence is sparse, stale, or concentrated on a single EvidencePack, and
-narrows as more independent evidence is linked.
-
-Old format (v0.16 and earlier):
+For comparison, the documentation’s pre-v0.17 example showed only the point estimate; it is historical, not current terminal output:
 
 ```text
 PRD-001 - Auth System
   R_eff = 0.80
 ```
 
-New format (v0.17+):
-
-```text
-PRD-001 - Auth System
-  R_eff = 0.80 [0.65 - 0.92]
-```
-
-The bracketed range is a lower / upper bound. Read it as: "point estimate 0.80,
-but with the evidence we currently have, the true reliability could plausibly
-be anywhere from 0.65 to 0.92." Use the interval, not the point, when
-deciding whether a decision is safe to ship.
-
-### Why it matters
-
-A point R_eff of 0.80 looks the same whether it is backed by **one** benchmark
-at CL3 or **five** benchmarks at CL3. But one-piece evidence is brittle - if
-that single EvidencePack turns out to be wrong, your R_eff collapses. The
-confidence interval exposes that brittleness:
-
-| Situation                            | R_eff    | Interval              |
-|--------------------------------------|----------|-----------------------|
-| 1 supports / CL3 evidence            | 0.80     | `[0.40 - 0.92]` wide  |
-| 5 supports / CL3, 1 weakens / CL2    | 0.80     | `[0.72 - 0.88]` narrow|
-| 1 supports / CL3 with valid_until expiring | 0.80 | `[0.30 - 0.90]` wide (decay) |
-
-A wide interval means "R_eff looks fine but you are one surprise away from
-falling off a cliff - add more evidence." A narrow interval means
-"R_eff is stable, multiple independent proofs agree."
-
-The interval is computed as a heuristic over evidence count, CL distribution,
-verdict mix, and `valid_until` proximity - it is not a formal statistical
-confidence interval, and you should not treat it as one.
-
-## How it fits the workflow
-
-```
-code → new evidence → link → score → review → activate
-                              ↑
-                              └── R_eff must be > 0 to pass review gate
-```
-
-`score` is cheap, call it often. The cached `R_eff` feeds `forgeplan health`,
-`forgeplan decay`, and the project dashboard.
-
 ## See also
 
 - [`forgeplan fgr`](/docs/cli/fgr/) - orthogonal F-G-R quality axis
-- [`forgeplan decay`](/docs/cli/decay/) - preview R_eff impact when evidence expires
+- [`forgeplan decay`](/docs/cli/decay/) - report current R_eff impact from expired evidence
 - [`forgeplan review`](/docs/cli/review/) - checks R_eff > 0 as part of the gate
 - [Evidence methodology](/docs/methodology/evidence/) - CL, verdict, decay explained
 - [CLI overview](/docs/cli/)

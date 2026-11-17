@@ -14,20 +14,21 @@
 
 ## Обязательные секции
 
-| # | Секция | Обязательно? | Валидация |
-|---|--------|-------------|-----------|
-| 1 | **Meta Header** | ✅ MUST | Status, Owner, Created, Target (quarter) |
-| 2 | **Vision** | ✅ MUST | 1 предложение — что хотим достичь |
-| 3 | **Outcomes** | ✅ MUST | ≥ 2 measurable outcomes |
-| 4 | **Children Table** | ✅ MUST | PRD/RFC/ADR list with status |
-| 5 | **Phases** | ✅ MUST | ≥ 1 фаза с артефактами |
-| 6 | **Progress** | ✅ MUST | Aggregated progress bars |
-| 7 | **Dependency Graph** | SHOULD | Mermaid diagram |
-| 8 | **Risks** | SHOULD | ≥ 1 risk |
+Forgeplan **0.38.0** проверяет следующее на любой глубине. Общие MUST-проверки метаданных требуют непустые `id` и `status` во frontmatter; владелец, даты и целевой квартал — рекомендации шаблона.
+
+| Секция | MUST runtime: допустимые заголовки |
+|--------|-----------------------------------|
+| Vision | `Vision`, `Goals`, `Executive Summary` |
+| Outcomes | `Outcomes`, `Success Criteria`, `Goals` |
+| Children | `Children`, `Artifacts`, `PRDs`, `Components` |
+| Phases | `Phases`, `Phase`, `Implementation Phases`, `Timeline` |
+| Progress | `Progress`, `Status` |
+
+Сопоставление идёт без учёта регистра по префиксу на любом уровне заголовка. Это проверки наличия: они не считают измеримые результаты, не проверяют принадлежность детей, не требуют пункта фазы и не пересчитывают полосы прогресса. Граф зависимостей и риски полезны по шаблону, но отдельных Epic SHOULD-правил для них нет. Общие проверки плейсхолдеров, заготовок и расхождения тела со связями сохраняются.
 
 ## Aggregated Progress
 
-Epic progress = сумма progress из children (PRD, RFC):
+Шаблон показывает вручную поддерживаемую сумму чекбоксов дочерних артефактов. `forgeplan progress EPIC-003` читает чекбоксы в теле Epic, а не рекурсивно суммирует прогресс дочерних PRD/RFC. Таблица Children в тексте также не задаёт `parent_epic` и не создаёт рёбра графа.
 
 ```
 PRD-001  ████████████████████████  8/8   (100%) DONE
@@ -40,10 +41,11 @@ TOTAL                              15/26 (57.7%)
 ## Status Lifecycle
 
 ```
-Draft → Active → Done → Archived
-          ↓
-      Cancelled (with reason)
+draft → active → superseded | deprecated | stale
+stale → active (renew) | deprecated
 ```
+
+`Done`, `Archived` и `Cancelled` могут обозначать этапы проекта в тексте, но не входят в общий жизненный цикл артефакта. Используйте команды жизненного цикла, не обходите их через `update --status`.
 
 ## Numbering
 
@@ -51,4 +53,4 @@ Draft → Active → Done → Archived
 |--------|---------|
 | ID | `EPIC-NNN` |
 | File | `EPIC-{NNN}-{kebab-case}.md` |
-| Path | `docs/epics/EPIC-003-auth-system.md` |
+| Path | `.forgeplan/epics/EPIC-003-auth-system.md` |

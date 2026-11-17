@@ -1,6 +1,6 @@
 ---
-title: "POS terminal for methodologies - what Forgeplan is and why hold four ways of working in one plane"
-description: "A waiter doesn't keep the price list, dish ingredients, taxes, and loyalty points in their head. They press buttons on a terminal, and the terminal remembers everything. Forgeplan is a POS terminal for methodologies: four ways of working in one plane, so you pick the content and the mechanics stay out of the way."
+title: "POS terminal for methodologies: what Forgeplan is and why combine four ways of working"
+description: "A waiter doesn't keep the price list, dish ingredients, taxes, and loyalty points in their head. They press buttons on a terminal, and the terminal remembers everything. Forgeplan does the same for methodologies: it combines four ways of working, so you choose the content and leave the mechanics to the tool."
 slug: forgeplan-pos-terminal
 lang: en
 publishedAt: 2026-05-23
@@ -19,17 +19,17 @@ translations:
 
 When a waiter takes an order, they don't hold the price list, the dish ingredients, the VAT rate, discount cards, and loyalty points in their head. They press buttons on a POS terminal, and the terminal remembers everything.
 
-The waiter's job is to choose a dish, clarify the customer's preferences, carry over the drink. The terminal's job is to format it correctly, calculate the total, apply the right discount, send the order to the kitchen, print the receipt. These two roles are separated - and that's exactly why a restaurant scales: a new waiter is trained in an hour, because they don't need to memorize the price list.
+The waiter's job is to choose a dish, clarify the customer's preferences, and bring over the drink. The terminal formats the order, calculates the total, applies the right discount, sends the order to the kitchen, and prints the receipt. Separating these roles lets a restaurant scale: a new waiter can be trained in an hour because they don't need to memorize the price list.
 
 In software development we traditionally require engineers to hold the price list, the dishes, and the tax rate in their heads simultaneously. What format does a PRD use? How many sections? Where does the decision record go? How do you link it to tests? When do you reassess an architectural choice? Every team reinvents its own set of habits, and every new developer spends their first weeks "learning our decision culture."
 
-I want to break down what a "POS terminal for development methodologies" looks like - and why its role isn't "yet another methodology on top," but rather a tool that holds already-existing methods in one plane and takes the mechanical work off the human.
+A "POS terminal for development methodologies" brings existing methods into one workflow and takes the mechanical work off the human. It doesn't add "yet another methodology on top."
 
 ## What Forgeplan takes off your plate
 
-In previous posts in this series I walked through several ways of working: BMAD for designing features through four phases; OpenSpec for disciplined specification work through the delta format and dependency graph; the ADI principle for generating three versions before committing; the R_eff formula for rating the reliability of decisions through the weakest evidence link.
+The methods covered in this series do different jobs: BMAD designs features through four phases; OpenSpec structures specification work through the delta format and dependency graph; the ADI principle generates three versions before committing; the R_eff formula rates decision reliability through the weakest evidence link.
 
-Each of these methods was developed independently, with its own authors and communities. But in real work they complement each other: BMAD designs the feature, ADI picks one of three architectural options, OpenSpec fixes the contract between components, R_eff rates the reliability of the whole package.
+Each of these methods was developed independently, with its own authors and communities. In practice they complement each other: BMAD designs the feature, ADI picks one of three architectural options, OpenSpec defines the contract between components, and R_eff rates the reliability of the whole package.
 
 Forgeplan is a tool that assembles these four approaches into a single workflow. Concretely:
 
@@ -42,7 +42,7 @@ These formats weren't invented from scratch - they come from public sources: BMA
 
 ## What stays with the human
 
-A POS terminal doesn't choose for the waiter what to prepare - it only formats the choice. Forgeplan doesn't write the content of decisions for the team - it only provides the right format for recording them.
+A POS terminal records the waiter's choice rather than choosing what to prepare. Forgeplan provides the format for recording decisions; the team writes their content.
 
 What stays with the human:
 
@@ -51,7 +51,7 @@ What stays with the human:
 - **Understanding the team.** Who can work with which technology. Where you're strong, where you're weak.
 - **The final call.** Among the three versions the AI generated and the five the tech lead proposed - which one is right for this specific context.
 
-That's not a little. That's the entire substantive part of the work. Forgeplan simply removes the mechanical part - it doesn't let you skip sections, doesn't let you forget a reopen condition, doesn't let you activate a decision without evidence.
+That leaves the entire substantive part of the work with the human. Forgeplan handles the mechanics: it doesn't let you skip sections, forget a reopen condition, or activate a decision without evidence.
 
 ## Ten record types, six in active use
 
@@ -73,11 +73,11 @@ The four situational types:
 - **Note** - a micro-decision that auto-expires after 90 days.
 - **Refresh** - a re-evaluation of a stale decision.
 
-Each record is a markdown file in the `.forgeplan/` directory. Links between them are fixed in frontmatter: `parent: PRD-018`, `informs: ADR-001`, `supersedes: ADR-005`. The files live in the code repository - same branches, same review flow, same commit messages.
+Each record is a markdown file in the `.forgeplan/` directory. Links between them are recorded in frontmatter: `parent: PRD-018`, `informs: ADR-001`, `supersedes: ADR-005`. The files live in the code repository, with the same branches, review flow, and commit messages.
 
 ## Routing: which set of records do you need?
 
-One of the most frequent questions in teams: "Do we need a PRD here?" That's a question teams love to spend hours debating. The Forgeplan command `forgeplan route "your task"` answers in half a second.
+Teams can spend hours debating a frequent question: "Do we need a PRD here?" The command `forgeplan route "your task"` answers in half a second.
 
 The routing logic is based on four depth levels:
 
@@ -86,7 +86,7 @@ The routing logic is based on four depth levels:
 - **Deep**: an irreversible task taking 1-2 weeks with an architectural decision. PRD + Spec + RFC + ADR. ADI (three-version analysis) - required.
 - **Critical**: a cross-team task, a strategy. Epic + multiple PRDs + multiple Specs + multiple RFCs + multiple ADRs. ADI + review.
 
-The `forgeplan route` command didn't "find the ultimate truth" - it spared the team from an argument that doesn't move work forward. If the developer and manager disagree with the recommendation - they argue for five minutes and decide for themselves. But in 80% of cases the recommendation is accepted, and the team saves an hour of debating "do we need a PRD here."
+The `forgeplan route` command doesn't "find the ultimate truth"; it gives the team a starting recommendation and spares it an unproductive argument. If the developer and manager disagree with it, they discuss it for five minutes and decide for themselves. In 80% of cases they accept the recommendation and save an hour of debating "do we need a PRD here."
 
 ## Checks before approval
 
@@ -96,7 +96,7 @@ Inside `forgeplan validate`, three independent checks happen:
 - **Spec consistency** (source: OpenSpec). Are all references between specs valid? Do delta changes carry a reason? Is there no drift between specs and implementation?
 - **Sufficient alternatives** (source: ADI/FPF principle). Does the ADR include at least three options considered? Is each rejected option accompanied by a concrete reason?
 
-Not "bureaucracy" - specific errors with guidance on what to fix and where. "PRD-018: the 'Success Metrics' section contains the phrase 'improve user experience' without a numeric threshold." "ADR-005: only two options considered, minimum is three." "Spec-012: the reference to Spec-008 points to an outdated version."
+Instead of adding "bureaucracy," the checks report specific errors and explain what to fix and where. "PRD-018: the 'Success Metrics' section contains the phrase 'improve user experience' without a numeric threshold." "ADR-005: only two options considered, minimum is three." "Spec-012: the reference to Spec-008 points to an outdated version."
 
 Teams that work with checklists for code builds - linters, formatters - quickly understand the analogy. `forgeplan validate` is a linter for decisions.
 
@@ -104,7 +104,7 @@ Teams that work with checklists for code builds - linters, formatters - quickly 
 
 After `forgeplan activate`, the file becomes immutable. Changes are only possible by creating a new file that explicitly replaces the old one - via the `forgeplan supersede` command.
 
-This gives you an honest history of decisions: you can see what was decided then, what was decided later, and in what order. Not "a file overwritten without a trace," but a timeline. Two years from now you can open ADR-005, see "superseded by ADR-019 in April 2027 for reason X," and go to ADR-019 for the current version. ADR-005 is open for reading, but marked as historical.
+This preserves the history of decisions: what was decided then, what was decided later, and in what order. You get a timeline instead of "a file overwritten without a trace." Two years from now you can open ADR-005, see "superseded by ADR-019 in April 2027 for reason X," and go to ADR-019 for the current version. ADR-005 remains readable but is marked as historical.
 
 Without this mechanism, teams lose historical context. Someone overwrites the old ADR with a new one, and a year later it's impossible to answer "why did we first pick JWT and then switch to sessions." The file shows only the final state. With the supersede mechanism - both ADRs are accessible, the reasons for transitions are visible, and any decision can be traced through time.
 
@@ -136,9 +136,9 @@ Six months later, a reopen condition fires: traffic grew tenfold and the p95 fir
 
 ## What to read next
 
-This is the seventh post in the series. The previous six are behind us - each one broke down one aspect of working with decisions. Forgeplan is the tool that assembles them into a single workflow.
+This seventh post brings together the aspects of decision-making covered in the previous six. Forgeplan combines them into one workflow.
 
-In the next post (the series capstone) I'll walk through the full cycle on one real task: from a line in chat to a decision record with a reopen condition. Seven steps on one feature - how all the methods from the series fit together.
+The series ends with a real task traced from a line in chat to a decision record with a reopen condition: seven steps on one feature, using all the methods covered here.
 
 If you want to try Forgeplan now - it's open source on GitHub. It's a command-line tool as a single binary, installed via `cargo install forgeplan` or downloaded as a prebuilt release. Local, no cloud, no subscription. The `.forgeplan/` directory lives in your repository, sync is through git. The full set of interactive walkthroughs for all ten record types is at [/guides](/guides).
 

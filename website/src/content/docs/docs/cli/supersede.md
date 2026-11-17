@@ -1,24 +1,9 @@
 ---
 title: forgeplan supersede
-description: "Replace an active artifact with a newer one - terminal transition that preserves lineage via a --by link."
+description: "Retire an active artifact in favor of a replacement while preserving history. The old artifact becomes superseded. Runtime writes an old-ID → replacement-ID relation named supersedes, not superseded_by."
 ---
 
-`forgeplan supersede` retires an active artifact and records that a specific replacement takes over its responsibility. The old artifact transitions to `superseded` - a terminal state it can never leave - and a typed link is written from the old ID to the new one. This is the canonical way to evolve decisions in Forgeplan: the history is preserved, back-references keep working, and anyone reading the old artifact is immediately pointed at the current answer.
-
-## When to use
-
-- You rewrote an ADR with a new decision and the newer version is already active (`ADR-005` replaces `ADR-003`).
-- A v2 RFC subsumes a v1 RFC: same problem, better architecture, the old plan no longer applies.
-- A PRD was split into two more focused PRDs, and one of them carries the continuation of the original scope.
-- A Spec was refactored and the old contract is no longer valid but must stay readable for history.
-- An **EvidencePack** was invalidated by later re-verification (for example, an old `refutes` pack after the defect was fixed): link the new pack, then supersede the old one. The displaced pack leaves the parent artifact's R_eff min and the cached score is refreshed immediately.
-
-## When NOT to use
-
-- The old artifact simply became obsolete with no direct replacement - use [`forgeplan deprecate`](/docs/cli/deprecate/) with a reason instead.
-- You want to re-explore the problem and draft a successor from scratch - use [`forgeplan reopen`](/docs/cli/reopen/), which creates a new draft automatically.
-- The replacement artifact does not exist yet. Create and activate it first, then supersede.
-- The old artifact is still in `draft`. Drafts don't need superseding - just delete or rewrite them.
+Retire an active artifact in favor of a replacement while preserving history. The old artifact becomes superseded. Runtime writes an old-ID → replacement-ID relation named `supersedes`, not `superseded_by`.
 
 ## Usage
 
@@ -42,50 +27,26 @@ forgeplan supersede --by <BY> <ID>
 
 ## Examples
 
-### Example 1: replace ADR-003 with ADR-005
-
 ```bash
+# Recommended: review and activate the successor first.
 forgeplan activate ADR-005
 forgeplan supersede ADR-003 --by ADR-005
+forgeplan get ADR-003
 ```
 
-Activate the successor first so the replacement link points at a live decision, then supersede the original.
+## Gates and warnings
 
-### Example 2: Roll an RFC from v1 to v2
+The source must be active and the replacement must exist. A draft replacement produces a warning, not a refusal; a superseded or deprecated replacement is refused. Prefer an activated successor so readers do not inherit an unreviewed decision. Missing replacements are rejected even though the CLI wrapper can resolve forward-reference syntax.
 
-```bash
-forgeplan supersede RFC-002 --by RFC-014
-```
+## Evidence and recovery
 
-`RFC-002` enters `superseded` (terminal). Anyone who follows a stale link to `RFC-002` sees the `--by` pointer to `RFC-014`.
-
-### Example 3: Verify the lineage
-
-```bash
-forgeplan supersede PRD-007 --by PRD-021
-forgeplan get PRD-007
-```
-
-After superseding, inspect the relationship graph to confirm the `superseded_by` edge was written.
-
-## How it fits the workflow
-
-Supersede is the clean exit of the `Shape → Validate → Code → Evidence → Activate` cycle for a decision that must be replaced rather than retired. It is always paired with the activation of the successor: the new artifact goes through the full cycle, becomes `active`, and only then do you run `supersede` on the predecessor. Because the state is terminal, make sure the replacement is really the answer - if you are still exploring, use `reopen`.
-
-## Common errors
-
-| Error | Cause | Fix |
-|---|---|---|
-| `--by artifact not found` | Replacement ID doesn't exist | Create and activate the successor first |
-| `--by artifact is in draft` | Successor not activated yet | Run `forgeplan activate <new-id>` before superseding |
-| `Cannot supersede from draft` | Original is still in draft | Drafts don't need superseding - edit or delete |
-| `Already in terminal state` | Artifact is already superseded or deprecated | Terminal states are final - nothing to do |
+Superseded evidence is excluded from the current weakest-link population, and affected dependents are rescored. Keep the displaced pack for historical inspection. Superseded is terminal for ordinary lifecycle transitions. The 0.38.0 CLI supersede path does not create a recovery receipt: do not promise that `restore` or `undo-last` can reverse this invocation. Those commands require an existing matching receipt; undo-last could instead undo an unrelated operation. Without a replacement, use `deprecate`; for re-evaluation with a new draft use `reopen`.
 
 ## See also
 
 - [`forgeplan deprecate`](/docs/cli/deprecate/) - retire without a replacement
 - [`forgeplan reopen`](/docs/cli/reopen/) - deprecate and start a new draft for re-evaluation
 - [`forgeplan activate`](/docs/cli/activate/) - activate the successor before superseding
-- [`forgeplan get`](/docs/cli/get/) - inspect the `superseded_by` relationship
+- [`forgeplan get`](/docs/cli/get/) - inspect the `supersedes` relationship
 - [Lifecycle v2 guide](/docs/guides/lifecycle-v2/)
 - [Methodology: Artifact Lifecycle](/docs/methodology/lifecycle/)

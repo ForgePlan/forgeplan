@@ -25,20 +25,22 @@ Rules that decide the first two buckets:
 
 Rules that decide the last two:
 
-- A glossary term is compared as a case-insensitive substring against the concatenated bodies of every `UC-` and `INV-`. A term whose `## Canonical Term` section is empty counts as an orphan - the operator never wrote it, so no consumer could ever cite it.
+- A glossary term is compared as an ASCII-case-insensitive substring against the concatenated bodies of every `UC-` and `INV-`. Cyrillic case is not folded. An empty `## Canonical Term` section counts as an orphan.
 - Hypothesis references are counted from the `## Evidence For` section only: distinct `EVID-` tokens (all-`X` placeholders skipped) plus `path:line` tokens where the path contains a slash and the line is all digits. The count is over the non-canonical form too, which is why a hypothesis may reach 2 without holding two evidence packs.
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
-| `workspace` | `string` | no | Resolve the workspace from this directory instead of the MCP server's startup CWD. Absolute or tilde-expanded. Useful when the agent runs in a git worktree separate from the server. |
+| `workspace` | `string \| null` | no | Optional explicit workspace directory for this call. When set, the MCP server resolves the `.forgeplan/` projection from this path instead of the server's startup CWD. Use this when the calling agent is running in a git worktree separate from the MCP server's launch directory. PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. Schema default: `null`. |
 
-_Schema source: `crates/forgeplan-mcp/src/server.rs::OrphansParams` (the shared DTOs live in `crates/forgeplan-mcp/src/types.rs`)_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
 
-The report is four arrays plus the protocol hint. There is deliberately no `total` field - the hint sums the buckets:
+Success is JSON in MCP `content[0].text`: four arrays plus `_next_action`. There is no `total` field; the hint sums the buckets. Illustrative values:
 
 ```json
 {
@@ -58,16 +60,10 @@ Field notes:
 
 ## Example invocation
 
-Whole workspace:
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
 
 ```json
 {}
-```
-
-Against a worktree:
-
-```json
-{ "workspace": "~/work/forgeplan-feature-branch" }
 ```
 
 ## What v1 does not check
@@ -82,7 +78,7 @@ Be precise about the heuristic before you close a gap by editing text:
 ## When an agent calls this
 
 - **Right after a discovery ingest** - the fastest way to see which discovered claims are still unsupported.
-- **Before claiming business coverage is done** - an empty report is the precondition for a defensible `extract_score` in [`forgeplan_coverage_business`](/docs/mcp/forgeplan_coverage_business/).
+- **Before claiming business coverage is done** — use this report alongside [`forgeplan_coverage_business`](/docs/mcp/forgeplan_coverage_business/). Empty orphan buckets are not a prerequisite enforced by the score, and a high score does not imply empty buckets.
 - **After adding scenarios** - re-run to watch buckets drain instead of assuming the new links landed.
 - **During a `/forge-cleanup` sweep** - the four buckets map onto four different fixes: link a scenario, reference a term, triangulate a hypothesis, or deprecate the artifact.
 
@@ -90,21 +86,21 @@ Be precise about the heuristic before you close a gap by editing text:
 
 1. `forgeplan_orphans` - read all four buckets.
 2. Triage: for each orphan, decide whether the artifact is under-supported (fix it) or obsolete (deprecate it).
-3. Fix by linking, not by editing bodies: add a `SCEN-` and link it, reference the term in a `UC-`/`INV-` body, or attach a second evidence pack to the hypothesis.
-4. Re-run until the buckets are empty.
-5. `forgeplan_coverage_business` - the same gaps are now visible as a single score.
+3. Add and link a scenario for UC/INV coverage; edit UC/INV bodies to use a glossary term; add distinct references to the hypothesis's `## Evidence For`. Merely linking another EvidencePack does not change the textual reference count.
+4. Re-run and inspect remaining buckets. The report does not filter terminal statuses, so deprecating an artifact alone need not remove it.
+5. Read `forgeplan_coverage_business` as a complementary measure: it scores artifact counts, use-case scenario coverage, and hypothesis states. Glossary usage, invariant-to-scenario links, and textual triangulation references are not independently scored, so fixing those orphan findings can leave `extract_score` unchanged.
 
 ## Safety notes
 
 - Read-only: the report builder is a pure function over the record snapshot and the relation list; nothing is written.
 - No LLM call and no network access.
 - Deterministic: the same workspace yields the same four arrays in the same order.
-- A missing relation list or an unparseable body degrades to "no evidence found" rather than an error, so an empty bucket is not proof of correctness - spot-check the artifacts behind a suspiciously clean report.
+- Workspace, lock, record-read, or relation-read failures return plain-text MCP tool errors (`isError: true`). Empty/missing sections can still produce heuristic gaps; an empty report is not proof of semantic correctness.
 - There is no CLI equivalent - this is an MCP-only surface. The same four buckets reach the terminal through [`forgeplan anomalies`](/docs/cli/anomalies/) as `uncovered_use_case`, `unverified_invariant`, `orphan_glossary_term` and `untriangulated_hypothesis`.
 
 ## See also
 
-- [`forgeplan_coverage_business`](/docs/mcp/forgeplan_coverage_business/) - turns the same gaps into an `extract_score`.
+- [`forgeplan_coverage_business`](/docs/mcp/forgeplan_coverage_business/) — complementary extraction score, not a rollup of these four buckets.
 - [`forgeplan_anomalies`](/docs/mcp/forgeplan_anomalies/) - the four buckets as actionable anomalies with resolution tiers.
 - [`forgeplan_contradictions`](/docs/mcp/forgeplan_contradictions/) - the other brownfield inspector from the same phase.
 - [`forgeplan_discover_start`](/docs/mcp/forgeplan_discover_start/) - where the brownfield artifacts these buckets describe come from.

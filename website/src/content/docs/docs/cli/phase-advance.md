@@ -1,11 +1,17 @@
 ---
 title: forgeplan phase-advance
-description: "Manually advance (or set) the advisory phase marker for an artifact and record an immutable transition entry. Out-of-order jumps allowed."
+description: "Explicitly set an artifact's advisory phase marker and record a transition in bounded history. Forward jumps and regressions are allowed."
 ---
 
-`forgeplan phase-advance` moves an artifact to the next methodology phase (Shape, Validate, Adi, Code, Test, Audit, Evidence, Done) and records the transition in `.forgeplan/state/<id>.yaml` with a timestamp and optional reason. The history is append-only - once written, it cannot be edited or deleted, only appended to.
+`forgeplan phase-advance` explicitly sets an existing artifact's advisory
+phase marker and records a transition in `.forgeplan/state/<id>.yaml`.
+Forward jumps and regressions are allowed; it does not change lifecycle status.
+Repeatedly setting the current phase is a no-op, so a new reason is not recorded.
 
-This is the **advisory** layer: it does not check whether the jump makes sense (you can go straight from Shape to Done if you want), so out-of-order moves are allowed by design - useful for trivial fixes or backfilling old artifacts. Strict ordering enforcement is planned for a later PRD under EPIC-005.
+History is not an immutable permanent ledger: the state file is rewritten
+atomically and capped at 1024 entries, keeping the initial entry and newest
+transitions. CLI reasons over 4096 bytes are rejected; stored reasons are
+truncated to 512 bytes at a UTF-8 boundary. Keep long-lived audit evidence elsewhere.
 
 Mirrors [`forgeplan_phase_advance`](/docs/mcp/forgeplan_phase_advance/) on the MCP side.
 
@@ -19,7 +25,7 @@ Mirrors [`forgeplan_phase_advance`](/docs/mcp/forgeplan_phase_advance/) on the M
 ## When NOT to use
 
 - As a structural gate (something that blocks other commands) - phase-advance only writes the marker. For real gating, use [`forgeplan validate`](/docs/cli/validate/).
-- To rename a phase or rewrite the history - entries are immutable. Add a new entry with a corrective `--reason` instead.
+- To rewrite history through this command — add a corrective transition instead; the local YAML is not tamper-proof storage.
 - Without a `--reason` when the jump is not obvious - six months from now during an audit, you will not remember why.
 
 ## Usage
@@ -52,7 +58,7 @@ forgeplan phase-advance [OPTIONS] --to <TO> <ID>
 forgeplan phase-advance PRD-057 --to test --reason "FR tests green"
 ```
 
-Records the transition with a short justification. The reason is preserved forever - future audits can replay exactly why the artifact moved.
+Records a transition and short reason when the phase actually changes. This records the caller's assertion that tests passed; it does not execute or check tests.
 
 ### Example 2: Skip ahead for a trivial fix
 
@@ -71,6 +77,13 @@ forgeplan phase-advance PRD-001 --to code --reason "backfilled from git history"
 ```
 
 Walks an artifact created before phase tracking existed through the phases so it appears correctly in current reports. Reason on the final transition explains where the data came from.
+
+`--json` contains `artifact_id`, `current_phase`, `workflow_type`,
+`advanced_at`, `history_entries`, `reason`, `suggested_next`, and
+`_next_action`. `reason` echoes the supplied argument, not necessarily the
+truncated stored value. At `done`, both next-step fields are null.
+An unknown artifact fails instead of creating a new artifact. Corrupt state
+can be quarantined and reinitialized; do not assume an uninterrupted history.
 
 ## How it fits the workflow
 

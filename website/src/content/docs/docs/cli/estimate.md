@@ -3,19 +3,17 @@ title: forgeplan estimate
 description: "Calibrated effort estimate from FR/Phase items with grade profiles and AI multipliers."
 ---
 
-`forgeplan estimate` turns an artifact's Functional Requirements and Implementation
-Phases into an effort number. It reads the complexity of each item (Fibonacci
-1/2/3/5/8/13) and multiplies by the grade profile from your config - junior, middle,
-senior, principal, or AI - per domain (backend/frontend/devops/ai_ml). Review overhead
-and a safety margin are added on top, so the output is a realistic planning number, not
-a best-case.
+`forgeplan estimate` extracts FR and Phase work items and estimates all five
+grades. Fibonacci complexity 1/2/3/5/8/13 maps to base Senior hours
+3/5/8/13/21/34, then configured multipliers apply. This is a rule-based planning
+model, not a measured delivery forecast.
 
 ## When to use
 
 - Sprint planning: estimate every candidate PRD/RFC to fit capacity (≈40–50% of nominal).
 - Capacity check before committing to an epic - is this 2 weeks or 2 months?
 - Delegating to a teammate - `--grade middle` to see what the task looks like for them.
-- Agent planning - `--grade ai` to get the AI-assisted fast path (×0.03–0.4 multiplier).
+- Agent planning - `--grade ai` highlights the AI column; task-type multipliers and human review overhead determine its hours.
 
 ## When NOT to use
 
@@ -54,18 +52,14 @@ forgeplan estimate [OPTIONS] <ID>
 forgeplan estimate PRD-001 --my-grade
 ```
 
-Output:
+The text renderer shows a multi-grade table (`ID`, `Description`, `Cmpl`, `Jun`,
+`Mid`, `Senior`, `PS`, `AI`), totals, eight-hour-day equivalents, confidence,
+and hints. `--grade` / `--my-grade` select the grade named in the heading;
+they do not remove other grade columns or change the JSON totals.
 
-```text
-PRD-001 - Auth System
-  FR-001  login flow          complexity=5  senior  → 6h
-  FR-002  session refresh     complexity=3  senior  → 3h
-  FR-003  logout              complexity=2  senior  → 1h
-  Subtotal:    10h
-  Review:      +20%   → 2h
-  Safety:      +15%   → 1.5h
-  Total: 13.5h senior  (≈ 2 days)
-```
+Illustrative calculation: a complexity-3 pure-coding item has 8 base Senior
+hours. With defaults, Senior is 8h, Middle 12h, and AI
+`8 × 0.10 × 1.30 = 1.04h`.
 
 ### Compare human vs AI-assisted path
 
@@ -74,8 +68,9 @@ forgeplan estimate PRD-001 --grade senior
 forgeplan estimate PRD-001 --grade ai
 ```
 
-The AI line uses ×0.03–0.4 multipliers depending on item type; use both numbers to
-decide when to drive yourself vs delegate to an agent.
+AI uses task multipliers of 0.10 / 0.25 / 0.30 / 0.50 / 1.00 for pure coding,
+coding+infrastructure, design+coding, pure infrastructure, and coordination.
+Default review overhead is 30%, applied only to AI hours. These values are configurable.
 
 ### Manual complexity override
 
@@ -91,18 +86,27 @@ Use when heuristics misjudge complexity (e.g., an "easy" FR hides a migration).
 forgeplan estimate PRD-001 --llm-score
 ```
 
-Asks the configured LLM to score complexity per FR. Slower, but catches semantic
-nuance the rule engine misses.
+Requires configured LLM settings. If scoring fails, the scorer falls back to
+rules; manual `--complexity` overrides are applied last. The command does not
+save generated scores back into the artifact.
 
 ## Output interpretation
 
-| Line         | What it shows                                                      |
-|--------------|--------------------------------------------------------------------|
-| per-FR row   | complexity (Fibonacci) × grade-multiplier = item hours             |
-| Subtotal     | sum of item hours                                                  |
-| Review       | +20% overhead for review cycles (adversarial, audit)               |
-| Safety       | +15% buffer for surprise                                           |
-| Total        | realistic sprint-planning number                                   |
+| Value | Meaning |
+|---|---|
+| Item hours | Base-hour lookup × human grade multiplier, or AI task multiplier × `(1 + review_overhead)` |
+| Totals | Sum of item hours for every grade |
+| Score | Fibonacci value × base Senior hours, summed across items |
+| Confidence | Structural signal score with reasons, not a probability of delivery |
+| Safety margin | Config defaults to 0.50 but the released calculator does not apply it |
+
+`--json` returns `result`, `_next_action`, and outer workflow `hints`.
+`result` contains `artifact_id`, `artifact_title`, `items`, `totals`,
+`total_score`, `confidence`, `confidence_reasons`, and optional estimation
+`hints`. Each item has `id`, `description`, `complexity` (enum string, e.g.
+`"Medium"`, not `3`), `task_type` (e.g. `"pure_coding"`), `hours` keyed by
+`junior`/`middle`/`senior`/`principal`/`ai`, and `score`. No estimable items
+is a successful empty result, not an error.
 
 Red flag: totals over 40h - consider splitting the PRD or escalating depth.
 

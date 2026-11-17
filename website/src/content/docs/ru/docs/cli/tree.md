@@ -3,7 +3,7 @@ title: forgeplan tree
 description: "Показать иерархию артефактов в виде ASCII-дерева - представление декомпозиции"
 ---
 
-Отображает иерархию артефактов в виде ASCII-дерева. Используйте это, чтобы понять, как декомпозируется работа: Epic → PRD → RFC → ADR, а также прикреплённые Spec, Evidence и Note. Связи родитель/потомок определяются по полю `parent` во frontmatter и типизированным связям [`forgeplan link`](/docs/cli/link/).
+Отображает иерархию артефактов в виде дерева: Epic → PRD → RFC → ADR, а также прикреплённые Spec, Evidence и Note. Первая подходящая типизированная связь выбирает родителя (источник — потомок, цель — родитель); `parent_epic` используется, если связь ещё не задала родителя.
 
 ## Когда использовать
 
@@ -14,9 +14,9 @@ description: "Показать иерархию артефактов в виде
 
 ## Когда не использовать
 
-- Вам нужны перекрёстные связи (а не только родитель/потомок) → используйте [`forgeplan graph`](/docs/cli/graph/)
-- Вам нужен порядок выполнения → используйте [`forgeplan order`](/docs/cli/order/)
-- Вам нужен плоский список → используйте [`forgeplan list`](/docs/cli/list/)
+- Вам нужны перекрёстные связи (а не только родитель/потомок) → используйте [`forgeplan graph`](/ru/docs/cli/graph/)
+- Вам нужен порядок выполнения → используйте [`forgeplan order`](/ru/docs/cli/order/)
+- Вам нужен плоский список → используйте [`forgeplan list`](/ru/docs/cli/list/)
 
 ## Использование
 
@@ -27,16 +27,16 @@ forgeplan tree [OPTIONS] [ID]
 ## Аргументы
 
 ```text
-  [ID]  ID корневого артефакта (если пропущено, показывает все корни)
+  [ID]  Root artifact ID (shows all roots if omitted)
 ```
 
 ## Опции
 
 ```text
-      --depth <DEPTH>  Максимальная глубина (по умолчанию: без ограничений) [default: 99]
-      --json           Вывод в формате JSON
-  -h, --help           Вывести справку
-  -V, --version        Вывести версию
+      --depth <DEPTH>  Maximum depth (default: unlimited) [default: 99]
+      --json           Output as JSON
+  -h, --help           Print help
+  -V, --version        Print version
 ```
 
 ## Примеры
@@ -61,19 +61,33 @@ forgeplan tree EPIC-003 --depth 1
 
 ## Интерпретация вывода
 
-Дерево использует стандартные символы для рисования рамок. Типичный фрагмент:
+В текстовом выводе слева от дерева находятся столбцы `PROGRESS`, `R_EFF`, `STATUS`, `KIND`, затем `<ID> "<title>"`. Полоса показывает сохранённый R_eff, а не выполнение флажков задач. Для Evidence, Note и Refresh вместо полосы оценки выводятся точки.
 
-```
-EPIC-003 [active]  Search, Discovery, Intelligence
-├── PRD-039 [active]  BM25 production search
-│   ├── RFC-004 [active]  Layered search architecture
-│   │   └── ADR-007 [active]  Choose bm25 crate v2.3.2
-│   └── EVID-018 [active]  Benchmark results
-└── PRD-040 [active]  Scoring intelligence
-    └── RFC-005 [draft]   Graph expansion
+Иллюстративный JSON для явно выбранного корня (значения вымышлены, команда не запускалась):
+
+```json
+{
+  "id": "EPIC-003",
+  "title": "Search, Discovery, Intelligence",
+  "kind": "epic",
+  "status": "active",
+  "r_eff": 0.5,
+  "children": [
+    {
+      "id": "PRD-039",
+      "title": "BM25 production search",
+      "kind": "prd",
+      "status": "draft",
+      "r_eff": 0.0,
+      "children": []
+    }
+  ]
+}
 ```
 
-Каждый узел показывает: `<ID> [<status>] <title>`. Дочерние элементы имеют отступ под своим родителем. Дочерний элемент, связанный с несколькими родителями, появляется под каждым из них - это ожидаемо и выявляет общие зависимости.
+`--json` без ID возвращает массив корневых узлов, с ID — один узел. Подсказка идёт в stderr. На предельной глубине `children` пуст. Глубина по умолчанию — 99, а не буквально неограниченная. JSON выводит `kind` из префикса ID, текст — из сохранённого типа.
+
+Подходящие типы связей: `based_on`, `refines`, `informs`, `belongs_to`, `child_of`. Потомок размещается только под первым встретившимся родителем, а не под всеми связанными родителями; все рёбра смотрите через `graph`. Циклы могут скрывать компонент из леса корней, поэтому `tree` не проверяет циклы. Текстовый режим отклоняет неизвестный ID; JSON вместо этого строит узел с пустым заголовком и `status: "unknown"`.
 
 Сироты (артефакты без родителя) появляются на верхнем уровне - если вы видите `PRD-007`, плавающий рядом с `EPIC-003`, его стоит привязать к существующему Epic или новому.
 
@@ -86,7 +100,7 @@ EPIC-003 [active]  Search, Discovery, Intelligence
 
 ## См. также
 
-- [`forgeplan graph`](/docs/cli/graph/) - полная диаграмма Mermaid
-- [`forgeplan order`](/docs/cli/order/) - топологический порядок выполнения
-- [`forgeplan blocked`](/docs/cli/blocked/) - что ещё не может начаться
-- [Модель артефактов](/docs/methodology/overview/)
+- [`forgeplan graph`](/ru/docs/cli/graph/) - полная диаграмма Mermaid
+- [`forgeplan order`](/ru/docs/cli/order/) - топологический порядок выполнения
+- [`forgeplan blocked`](/ru/docs/cli/blocked/) - что ещё не может начаться
+- [Модель артефактов](/ru/docs/methodology/overview/)

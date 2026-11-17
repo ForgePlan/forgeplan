@@ -1,12 +1,9 @@
 ---
 title: forgeplan serve
-description: "Start the Forgeplan MCP server (stdio transport) for AI agent integration"
+description: "Start the Forgeplan Model Context Protocol (MCP) server over stdio. The client owns the subprocess and exchanges JSON-RPC over stdin/stdout. The 0.38.0 server exposes 73 tools, not a one-to-one copy of all CLI commands."
 ---
 
-Start the Forgeplan MCP (Model Context Protocol) server on stdio. This is
-the primary integration point for AI agents - Claude Code, Cursor, Windsurf,
-and other MCP clients launch `forgeplan serve` as a subprocess and talk to it
-over JSON-RPC on stdin/stdout.
+Start the Forgeplan Model Context Protocol (MCP) server over stdio. The client owns the subprocess and exchanges JSON-RPC over stdin/stdout. The 0.38.0 server exposes 73 tools, not a one-to-one copy of all CLI commands.
 
 ## Usage
 
@@ -21,92 +18,33 @@ forgeplan serve
   -V, --version  Print version
 ```
 
-## What it exposes
+## Available operations
 
-73 MCP tools mapped onto the core Forgeplan operations:
+Examples include `forgeplan_new`, `forgeplan_get`, `forgeplan_validate`, `forgeplan_score`, `forgeplan_reason`, `forgeplan_claim`, and `forgeplan_discover_finding`. There are no MCP tools named `forgeplan_context`, `forgeplan_tree`, `forgeplan_fgr`, `forgeplan_tag`, `forgeplan_remember`, or `forgeplan_new_evidence`. Create evidence with `forgeplan_new` and its kind parameter. See the MCP reference for all 73 schemas.
 
-- **Artifact lifecycle** - `new`, `validate`, `review`, `activate`,
-  `supersede`, `deprecate`, `stale`, `renew`, `reopen`
-- **Query + discovery** - `list`, `get`, `search`, `blocked`, `order`,
-  `tree`, `discover`, `blindspots`, `gaps`
-- **Scoring + reasoning** - `score`, `fgr`, `reason`, `route`, `estimate`
-- **Evidence + links** - `link`, `unlink`, `new_evidence`
-- **Tags** - `tag`, `untag`
-- **Health + observability** - `health`, `status`, `coverage`, `drift`
-- **FPF knowledge base** - `fpf_search`, `fpf_section`, `fpf_check`
-- **Memory** - `remember`, `recall`, `promote`
+## Client setup
 
-Forgeplan is **MCP-first**: the CLI is a convenience wrapper, and the full
-power of the tool is designed to be driven by AI agents through this server.
-
-## Transport
-
-- **stdio only** - no HTTP, no sockets, no network exposure. The MCP client
-  owns the process and communicates over pipes.
-- **One workspace per server** - the server runs in the current working
-  directory and operates on `./.forgeplan/`. Launch it from the project root.
-- **Stateless** - no long-lived state between requests beyond what's in
-  LanceDB and markdown.
-
-## Examples
-
-### Example 1: Claude Code client config
-See "Typical usage" below.
-
-### Example 2: Manual smoke test
-See "Manual usage (debugging)" below.
-
-## Typical usage (automatic)
-
-You usually don't run `serve` manually. MCP clients launch it as a child
-process via their config file. For Claude Code, add to `~/.claude/mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "forgeplan": {
-      "command": "forgeplan",
-      "args": ["serve"],
-      "cwd": "/path/to/your/project"
-    }
-  }
-}
-```
-
-Cursor (`~/.cursor/mcp.json`) and Windsurf use the same schema. Restart the
-client; Forgeplan tools (`mcp__forgeplan__*`) become available to the agent.
-
-## Manual usage (debugging)
-
-Run `serve` directly only when you need to:
-
-- **Debug a new MCP tool** - wire it up by hand, pipe JSON-RPC requests in,
-  inspect the response.
-- **Validate protocol compliance** - run against `mcp-inspector` or similar.
-- **Smoke-test after a release** - make sure the binary starts and lists its
-  tool schema.
+Prefer the client-aware installer rather than copying one configuration schema across clients:
 
 ```bash
-# Manual smoke test
-cd /path/to/project
-forgeplan serve
-# (server waits on stdin for JSON-RPC messages)
-# Ctrl-C to exit
+forgeplan mcp install --client claude --scope user --dry-run
+forgeplan mcp install --client claude --scope user
 ```
 
-For interactive exploration the `mcp-inspector` tool is much more productive
-than hand-writing JSON-RPC.
+Claude user configuration is `~/.claude.json`; project scope uses `.mcp.json`. Cursor and Windsurf have their own locations and conventions. Start the server with the project as working directory; do not assume every client supports a `cwd` entry. Restart or reconnect the client after configuration changes.
+
+## Manual use
+
+```bash
+# Run from the intended project root:
+forgeplan serve
+```
+
+The server waits for protocol messages, not interactive commands. Keep stdout available for protocol traffic. Persistent workspace files and methodology session state survive individual requests; this is not a claim of a stateless API.
 
 ## Troubleshooting
 
-- **"No workspace found"** - the server was launched in a directory without
-  `.forgeplan/`. Set `cwd` in your MCP client config to the project root.
-- **Tools missing in client** - restart the MCP client after editing its
-  config; most clients only read `mcp.json` at startup.
-- **LLM features fail** - LLM-backed tools (`reason`, `route`) need a
-  provider configured in `.forgeplan/config.yaml`. See the LLM guide.
-- **Semantic tools no-op** - `embed` feature flag must be compiled in for
-  semantic search; otherwise those tools fall back to keyword search.
+If no workspace is found, check the launch directory. If tools are missing, reconnect the client and inspect tools/list. LLM operations need the configured provider. Distinguish the CLI's compiled semantic-search capability from the MCP handler: in 0.38.0, MCP smart/semantic requests use the non-vector smart-search path because semantic scores are not wired into that handler. Downloading BGE-M3 weights does not fix this MCP limitation. Keyword search remains available.
 
 ## See also
 

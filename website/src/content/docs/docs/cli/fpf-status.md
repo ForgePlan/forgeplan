@@ -3,9 +3,7 @@ title: forgeplan fpf status
 description: "Show FPF knowledge base status - source, ingested section count, staleness"
 ---
 
-`forgeplan fpf status` reports the health of the local **First Principles Framework** knowledge base: where it was loaded from, how many sections are in LanceDB, when it was last ingested, and whether it's stale relative to the shipped spec.
-
-Think of it as `forgeplan health` for the FPF KB specifically.
+`forgeplan fpf status` reports the discovered local FPF source directory, its Markdown file count, and ingested section and line counts. It does not record a last-ingest timestamp or compare spec versions or modification times.
 
 ## When to use
 
@@ -48,17 +46,16 @@ forgeplan fpf status       # → ingested, N sections
 
 ## What you see
 
-Typical fields reported:
+- **Source** — currently discovered default source path, or instructions for supplying `fpf ingest --path <dir>`. This is not a stored record of the path used for the last ingest.
+- **Files** — `.md` entries directly inside the source directory's immediate child directories, excluding `_index.md`, when the count is nonzero. Root-level Markdown and deeper nested entries are not counted; this is not a recursive scan.
+- **Ingested** — not initialized, empty, or section count plus total line count.
+- **Status** — `STALE` when a nonzero source-file count differs from ingested section count, otherwise `UP TO DATE` when the source count is nonzero. This count heuristic cannot detect changed content with an unchanged count; source layouts outside the one-directory-level scan can also make it misleading.
 
-- **Source** - path / version of the FPF spec that was ingested.
-- **Ingested sections** - number of rows in the `fpf_kb` LanceDB table.
-- **Last ingest** - timestamp (or "never").
-- **Staleness** - whether the shipped spec is newer than the ingested data.
-- **Semantic search** - whether the `semantic-search` feature is enabled and embeddings are present.
+There is no semantic-search readiness or embedding-completeness field. Missing source or an empty KB is reported as text and does not itself cause a failing exit status.
 
 ## How it fits
 
-`fpf status` is a **gate command**: it answers the yes/no question "is my FPF KB usable right now?" before you run `fpf search`, `fpf check`, or `forgeplan reason --fpf`.
+Use this inspection before `fpf search` or reasoning that needs KB excerpts. It is not a CI gate by exit code. `fpf check` uses configured or built-in rules independently of KB ingest.
 
 ```
 fpf ingest  →  fpf status (verify)  →  fpf search / reason --fpf

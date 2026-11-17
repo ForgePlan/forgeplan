@@ -1,21 +1,9 @@
 ---
 title: forgeplan recall
-description: "Поиск и фильтрация сохранённых воспоминаний (не артефактов)"
+description: "Ищет локальные записи памяти ядра Forgeplan, сохранённые через remember. Это не recall Hindsight и не поиск в удалённом банке. В пространстве записи имеют тип memory."
 ---
 
-Ищите в **хранилище воспоминаний** - специальных наблюдениях, уроках и фрагментах контекста, сохранённых с помощью `forgeplan remember`. Это легковесный инструмент Forgeplan для личных заметок, отдельный от артефактов. Используйте `recall`, когда вы помните, что «мы что-то узнали о X», но нет официального PRD или Note.
-
-## Когда использовать
-
-- «Мы договорились не использовать крейт X - почему?»
-- Восстановить контекст в начале сессии («recall 'sprint 13'»)
-- Извлечь предыдущие уроки перед ретроспективой или анализом после инцидента
-- Подпитать ИИ-агента ситуативной памятью
-
-## Когда не использовать
-
-- Вам нужны артефакты (PRD, RFC, ADR) → используйте [`forgeplan search`](/docs/cli/search/)
-- Вам нужны решения → используйте [`forgeplan journal`](/docs/cli/journal/)
+Ищет локальные записи памяти ядра Forgeplan, сохранённые через `remember`. Это не recall Hindsight и не поиск в удалённом банке. В пространстве записи имеют тип `memory`.
 
 ## Использование
 
@@ -26,66 +14,37 @@ forgeplan recall [OPTIONS] [QUERY]
 ## Аргументы
 
 ```text
-  [QUERY]  Поисковый запрос (совпадение подстроки в заголовке/теле)
+  [QUERY]  Search query (substring match in title/body)
 ```
 
 ## Опции
 
 ```text
-  -c, --category <CATEGORY>  Фильтр по категории
-  -n, --limit <LIMIT>        Максимальное количество результатов (по умолчанию: 10) [по умолчанию: 10]
-      --json                 Вывод в формате JSON для машинной обработки
-  -h, --help                 Вывести справку
-  -V, --version              Вывести версию
+  -c, --category <CATEGORY>  Filter by category
+  -n, --limit <LIMIT>        Max results (default: 10) [default: 10]
+      --json                 Output as JSON for machine consumption
+  -h, --help                 Print help
+  -V, --version              Print version
 ```
+
+## Поиск и вывод
+
+Запрос сопоставляется с подстрокой заголовка или содержимого без учёта регистра; BM25 и семантического ранжирования нет. Категория тоже сравнивается без учёта регистра. Сначала новые записи, максимум `--limit` (по умолчанию 10). JSON содержит `memories` и `_next_action`; поля записи — `id`, `category`, `author`, `created_at`, `text`, без tags или источника auto-retain.
 
 ## Примеры
 
-Извлечь всё, что соответствует фразе:
-
 ```bash
 forgeplan recall "branch workflow"
-```
-
-Все воспоминания в категории:
-
-```bash
-forgeplan recall --category build
-```
-
-Вывести всё в формате JSON:
-
-```bash
+forgeplan recall --category procedure
 forgeplan recall --json --limit 1000 > memories.json
 ```
 
-## Интерпретация вывода
+## Дальнейшие действия
 
-Каждый результат отображается в виде короткой карточки:
-
-```
-[2026-04-05]  build    Do not delete feature branches after merge
-   PRs to dev are merge-commit, squash loses late commits. Keep the
-   branch until the PR is closed for at least a week.
-```
-
-Столбцы: дата, категория, заголовок, затем отрывок из тела. `--json` возвращает полную запись, включая любые теги и источник (вручную или автоматически сохранённый).
-
-В отличие от [`search`](/docs/cli/search/), `recall` выполняет чистое совпадение подстроки с фильтрацией по категориям - быстро и предсказуемо, без BM25 или семантического ранжирования.
-
-## Как это вписывается
-
-Forgeplan разделяет **артефакты** (решения с жизненным циклом) и **воспоминания** (специальные заметки без жизненного цикла):
-
-```
-artifacts   →  list, get, search, graph
-memories    →  remember, recall
-```
-
-Если воспоминание упоминается несколько раз, повысьте его до артефакта `Note` и свяжите его - именно тогда оно получает жизненный цикл и доказательство.
+Обычные артефакты ищите через `search`, решения — через `journal`. `promote MEMORY_ID --kind note` превращает выбранную запись в черновик артефакта. Копируйте реальный ID результата. Продвижение удаляет исходную запись, а не меняет её статус на месте.
 
 ## См. также
 
-- [`forgeplan search`](/docs/cli/search/) - поиск артефактов
-- [`forgeplan journal`](/docs/cli/journal/) - хронология решений
-- [`forgeplan new note`](/docs/cli/new/) - повысить воспоминание до Note
+- [`forgeplan search`](/ru/docs/cli/search/) - поиск артефактов
+- [`forgeplan journal`](/ru/docs/cli/journal/) - хронология решений
+- [`forgeplan promote`](/ru/docs/cli/promote/) - преобразовать память в черновик артефакта

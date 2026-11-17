@@ -1,13 +1,25 @@
 ---
 title: forgeplan_ingest
-description: "Plan an ingest run (mapping YAML × source file). Wave 3: dry-run-only - returns drafts without writing artifacts. Set `dry_run: false` to indicate intent to write, but the MCP surface still defers actual writes to the `forgeplan ingest` CLI (Wave 4 will wire artifact::Store). PRD-066 AC-1."
+description: "Check ingest paths and sizes and prepare a CLI command. Core 0.38 does not generate draft previews or apply ingestion, even with dry_run false."
 ---
 
-Plan an ingest run (mapping YAML × source file). Wave 3: dry-run-only - returns drafts without writing artifacts. Set `dry_run: false` to indicate intent to write, but the MCP surface still defers actual writes to the `forgeplan ingest` CLI (Wave 4 will wire artifact::Store). PRD-066 AC-1.
+Checks paths and file sizes for a proposed ingest run and returns a CLI command hint. In 0.38.0 this MCP endpoint does not parse the mapping or source, run the ingest engine, produce draft previews or apply changes, even with `dry_run: false`.
 
 **Category**: Other
 
-This tool is a **planner, not an executor**. It validates that the two paths exist, that they sit inside the workspace, and that they are within the size budget the server is willing to touch. It then hands the agent the exact `forgeplan ingest` command line that would perform the run. Nothing is written to `.forgeplan/`, not even with `dry_run: false`.
+This tool is a **planner, not an executor**. It requires existing regular files under an allowed root: the project containing `.forgeplan/` found from the server process CWD, or `~/.claude/plugins/`. It has no `workspace` input. Nothing is written to the artifact store; the caller must separately decide whether to execute the hinted CLI command.
+
+## Example invocation
+
+Arguments for this tool (not a JSON-RPC envelope). Replace illustrative IDs, session handles and paths with values from your workspace. Schema validity does not bypass workspace, lifecycle or consent checks.
+
+```json
+{
+  "mapping": "map.yaml",
+  "source": "docs/components.md",
+  "dry_run": true
+}
+```
 
 ## What it does
 
@@ -17,38 +29,34 @@ This tool is a **planner, not an executor**. It validates that the two paths exi
 4. **Echo the plan.** The response repeats both paths (redacted to workspace-relative where possible), both flags, and `wave3_status: "planned"` with `drafts`, `skipped` and `errors` as empty lists.
 5. **Hint the real command.** `_next_action` carries a ready-to-paste `forgeplan ingest --mapping ... --source ...` line, with `--dry-run` and/or `--update` appended to match the flags you passed.
 
-Because step 3 is the only thing that touches the files, a mapping that violates the SPEC-004 schema **passes** MCP validation and is rejected only by the CLI:
-
-```text
-# MCP: accepts it and returns a plan
-{ "wave3_status": "planned", "mapping": "bad.yaml", ... }
-
-# CLI: refuses to run it
-Error: invalid mapping YAML: source_kind: unknown variant `markdown`, expected one of
-`c4-documentation`, `autoresearch`, `git-log`, `ddd-model`, `sparc-spec` at line 2 column 14
-Fix: edit bad.yaml to match SPEC-004 schema
-```
+Steps 1–3 inspect paths and metadata, not file contents. Even an invalid mapping
+can therefore receive a plan. For example, a mapping with an unsupported
+`source_kind` may pass this preflight but fail when the CLI parses it. A plan is
+not schema validation, a preview of matching rules, or evidence that ingestion will succeed.
 
 ## When an agent calls this
 
 - **Pre-flight a mapping** before spending a CLI run on it: catch a bad path or an oversize source early.
-- **Dry-run a planned ingest** and show the user which rule would fire, without touching the artifact store.
-- **Ask "what would this command be?"** - the hinted command line is the answer, and it is safe to hand to a human.
+- **Prepare the CLI invocation** without touching the artifact store. To preview actual rules and drafts, run the CLI with `--dry-run` separately.
+- **Ask "what would this command be?"** — inspect the hint and confirm its paths before execution.
 - **Check workspace confinement** - a refusal is the signal that the path the agent was given lives outside the project.
 
 ## Input parameters
 
-| Name | Type | Required | Description |
+| Name | JSON type | Required | Description / constraints |
 |---|---|---|---|
-| `mapping` | `string` (path) | yes | Path to the mapping YAML describing the transform (SPEC-004 schema). Must be an existing regular file inside an allowed root. By convention these live under `.forgeplan/mappings/`. |
-| `source` | `string` (path) | yes | Path to the file the mapping consumes. Must be an existing regular file - a **directory is refused**, even though the CLI accepts one. |
-| `dry_run` | `boolean` | no (default: `true`) | Plan-only. Echoed back in the response and appended to the hinted command. The MCP surface never writes either way. |
-| `update` | `boolean` | no (default: `false`) | Allow updating existing artifacts on an idempotent re-ingest. Echoed back and appended to the hinted command. |
-| `workspace` | `string` | no | Explicit workspace directory. When set, the server resolves `.forgeplan/` from this path instead of its startup CWD. PRD-078 / ADR-015. |
+| `dry_run` | `boolean` | no | Plan-only - engine runs but no artifacts written. Wave 3 default. Schema default: `true`. |
+| `mapping` | `string` | yes | Path to mapping YAML file (SPEC-004 schema). |
+| `source` | `string` | yes | Path to the source file (or directory) the mapping consumes. |
+| `update` | `boolean` | no | Allow updating existing artifacts (idempotent re-ingest). Schema default: `false`. |
 
-_Schema source: `crates/forgeplan-mcp/src/types.rs::IngestParams`_
+Required means the key must be present. `null` is a permitted value only when listed in the JSON type. Schema defaults are not necessarily the handler defaults described in the text.
+
+_Schema source: MCP `tools/list`, Forgeplan 0.38.0, `inputSchema`._
 
 ## Returns
+
+Success is JSON in MCP text content. Values and paths below are illustrative.
 
 ```json
 {
@@ -65,7 +73,7 @@ _Schema source: `crates/forgeplan-mcp/src/types.rs::IngestParams`_
 }
 ```
 
-`drafts`, `skipped` and `errors` are always empty on this surface - they are the fields the Wave 4 executor will fill. Treat a non-empty `_next_action` as the deliverable of the call.
+`drafts`, `skipped` and `errors` are always empty on this endpoint. They do not report parsed drafts, successful skips or the absence of mapping errors. `wave3_note` describes planned future wiring, not functionality present in 0.38.0.
 
 ## Refusals
 
@@ -78,7 +86,7 @@ Every refusal is a tool error whose text carries the reason plus a `_next_action
 | Mapping above 1 MiB | `mapping exceeds 1048576-byte size limit` | Trim the mapping or split into multiple SPEC-004 files. |
 | Source above 10 MiB | `source exceeds 10485760-byte size limit` | Split the source file before ingestion. |
 
-Path refusals are deliberately generic: the server never echoes the absolute path back to the client, so a probe cannot be used to map the host filesystem.
+Path refusals are deliberately generic and do not echo absolute host paths. They cover both workspace and plugin-root checks, despite the shorter wording in the message.
 
 ## Examples
 
@@ -93,6 +101,8 @@ Indicate intent to write and allow updates - the hint gains `--update` and drops
 ```json
 { "mapping": "map.yaml", "source": "docs/comp.md", "dry_run": false, "update": true }
 ```
+
+Illustrative response excerpt (the full response still contains the other fields above):
 
 ```json
 {
@@ -117,18 +127,18 @@ _next_action: Verify the source path exists under the workspace.
 
 ## Notes
 
-- The tool is annotated read-only, non-destructive and idempotent. Calling it repeatedly has no effect on the workspace.
-- Both paths are redacted to workspace-relative form when they sit under the server's CWD, and shell-quoted in the hint so a path containing a space still pastes cleanly.
-- The size limits exist to keep a hostile mapping or source from exhausting the server: they are checked before any read, so an oversize file is refused rather than truncated.
+- The tool is annotated read-only, non-destructive and idempotent; it does not apply ingest changes.
+- Paths under process CWD or its detected workspace root are made relative; other accepted paths become a bare filename. The command hint shell-quotes them, but a plugin-root filename may no longer resolve from your shell CWD. Substitute the real allowed path before executing it.
+- Oversized files are refused from metadata, not truncated. No content validation or YAML nesting check runs in this handler.
 
 ## CLI equivalent
 
-- [`forgeplan ingest`](/docs/cli/ingest/) - the real executor. Same `--mapping` / `--source` flags plus `--dry-run`, `--update` and `--json`, and it is the only path that parses the mapping and writes artifacts.
+- [`forgeplan ingest`](/docs/cli/ingest/) — executes the pipeline using `--mapping` / `--source`, with `--dry-run`, `--update` and `--json`. Its dry run is the way to inspect actual drafts. A playbook's `forgeplan_core:ingest` delegate is another execution path; it is not this plan-only MCP endpoint.
 
 ## See also
 
 - [MCP overview](/docs/mcp/)
-- [`forgeplan_playbook_run`](/docs/mcp/forgeplan_playbook_run/) - the other Phase 5 surface that plans work it will not silently write
+- [`forgeplan_playbook_run`](/docs/mcp/forgeplan_playbook_run/) — executes delegates with consent; unlike this endpoint, its core ingest delegate can write artifacts
 - [`forgeplan_new`](/docs/mcp/forgeplan_new/) - create a single artifact when a mapping would be overkill
 - [`forgeplan_link`](/docs/mcp/forgeplan_link/) - wire the artifacts a CLI ingest produced
 - [`forgeplan ingest`](/docs/cli/ingest/) - run the plan for real

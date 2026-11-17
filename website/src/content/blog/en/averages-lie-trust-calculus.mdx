@@ -1,5 +1,5 @@
 ---
-title: "Averages lie: why the trust in a decision is capped by its weakest piece of evidence, not the average of all pieces"
+title: "Averages lie: why trust in a decision is capped by its weakest piece of evidence, not the average of all pieces"
 description: "A vendor whitepaper and a Slack screenshot from a trusted colleague can score the same 'average quality' - but betting a decision on one vs the other is a different risk entirely. I break down R_eff: three axes of evidence, the weakest-link rule, context matching - and why one benchmark you ran yourself beats ten blog posts from strangers."
 slug: averages-lie-trust-calculus
 lang: en
@@ -19,13 +19,13 @@ translations:
 
 Monday morning. The product manager calls a meeting: we're choosing a bank integration provider. Two candidates are on the table. Each comes with two sets of materials.
 
-The first - an official whitepaper. A forty-page PDF, charts, customer case studies, throughput figures, a promise of "99.99% average uptime over the past year." Perfectly formatted. Organized into five sections with subheadings.
+The first is an official whitepaper: a forty-page PDF with charts, customer case studies, throughput figures, and a promise of "99.99% average uptime over the past year." It's neatly formatted into five sections with subheadings.
 
-The second - a screenshot from a chat with a tech director you know, who worked with this provider for six months. Three paragraphs: "holds fine on our load, p95 latency 180ms, last time it went down was second week of January, took seven hours to fix." No charts. No colored callout boxes.
+The second is a screenshot from a chat with a tech director you know, who worked with this provider for six months. Three paragraphs: "holds fine on our load, p95 latency 180ms, last time it went down was second week of January, took seven hours to fix." It has no charts or colored callout boxes.
 
 The team starts discussing, and someone says: "The whitepaper looks stronger. Let's go with that."
 
-I want to break down why this reflex is the most common mistake in vendor selection, and what simple logic stops it. No new tools, no "data culture" transformation. One way to assess trust in a source that you can try on your next decision.
+Favoring the whitepaper is the most common mistake in vendor selection. A simple way to assess trust in a source can stop that reflex on your next decision, without new tools or a "data culture" transformation.
 
 ## Three axes that are actually not one
 
@@ -39,11 +39,11 @@ The third is **reliability relative to your context**. The whitepaper is produce
 
 You can think of these three axes as coordinates in three-dimensional space. The whitepaper: F=8, G=7, R=2 (seller's motivation). The Slack message: F=4, G=7, R=8 (no motivation to exaggerate).
 
-If you average them, both sources score around 5.5 - nearly identical. But if you apply a different evaluation logic, the picture reverses.
+Averaging gives both sources around 5.5, nearly identical. Evaluate them differently, though, and the picture reverses.
 
 ## Why the axes are independent
 
-The most important thing to understand: these three axes aren't gradations of one quality. They describe **different classes of failure**, and a strength on one axis does not compensate for a weakness on another.
+These three axes aren't gradations of one quality. They describe **different classes of failure**, and strength on one axis does not compensate for weakness on another.
 
 A source can be extremely precise in its specification but rely on outdated data - and then the precision doesn't save you. A source can be detailed down to decimal points, but come from a vendor with motivation to flatter - and then the detail works against you (you'll believe the specifics without asking where they came from). A source can come from a completely trustworthy colleague, but be phrased so vaguely that you draw the wrong conclusion from it.
 
@@ -60,7 +60,7 @@ Slack message: F=4, G=7, R=8. Trust = 4 out of 9.
 
 By this logic the Slack message is twice as trustworthy, even though its average is lower.
 
-The car inspection analogy helps make this stick. At a vehicle inspection station, they check brakes, steering, lights, tires. If any single item fails - the car doesn't get road clearance, **no matter how good everything else is**. Nobody computes "average car quality" - because failure in one critical subsystem kills the whole trip.
+At a vehicle inspection station, they check brakes, steering, lights, and tires. If any single item fails, the car doesn't get road clearance, **no matter how good everything else is**. Nobody computes "average car quality", because failure in one critical subsystem kills the whole trip.
 
 Evidence for a decision works the same way. If even one of the three axes is a failure, trust in that source is low - regardless of how strong the others are. This is counterintuitive for teams used to averaging, but it's exactly this logic that protects against the typical mistake of "leaning on well-formatted but one-sided material."
 
@@ -68,21 +68,21 @@ Evidence for a decision works the same way. If even one of the three axes is a f
 
 Beyond the three axes there's a fourth dimension: how applicable the source is to your specific situation.
 
-Your own measurement on your own project, with your own load, in your own environment - highest level. No assumptions about transferability needed. I'll call this CL3 (context level 3).
+Your own measurement on your own project, with your own load and environment, has the highest level. It needs no assumptions about transferability. I'll call this CL3 (context level 3).
 
-A measurement from a similar project in similar conditions - nearly the highest. One assumption: your project is close enough in character. CL2.
+A measurement from a similar project in similar conditions is close: CL2. It assumes your project is similar enough in character.
 
-Vendor documentation describing a "typical scenario" - lower. Assumption: your scenario matches what they mean by "typical." CL1.
+Vendor documentation describing a "typical scenario" gets CL1. You have to assume your scenario matches what the vendor means by "typical."
 
-A Stack Overflow answer about a different language that looks vaguely like your case - almost worthless. Too many assumptions. CL0.
+A Stack Overflow answer about a different language that looks vaguely like your case is almost worthless: CL0. Applying it takes too many assumptions.
 
 Each step down is a penalty on the final score. A source can be strong on F/G/R, but if its context match is low, the resulting trust drops proportionally. This is the second defense against "saw a beautiful benchmark, hoped it would apply to us."
 
 ## The formula in one line
 
-Let's put it all together. Trust in a decision is the minimum across all pieces of evidence, adjusted for context-matching penalty.
+Trust in a decision is the minimum across all pieces of evidence, adjusted for context-matching penalty.
 
-Don't be intimidated - the math fits in one line: **R_eff = min(evidence scores) × (1 − CL penalty)**.
+The math fits in one line: **R_eff = min(evidence scores) × (1 − CL penalty)**.
 
 Penalties by level: CL3 = 0 (no penalty), CL2 = 0.1 (minus 10%), CL1 = 0.4 (minus 40%), CL0 = 0.9 (minus 90% - effectively zeroes it out).
 
@@ -100,7 +100,7 @@ The team sees this and understands: they need one more strong source - for examp
 
 ## Concrete example: specialized store vs. universal database
 
-Let me tell one case, details changed.
+Here's a case with the details changed.
 
 A team building a local note-taking app is choosing a vector store for semantic search. Two candidates: a specialized columnar store for vectors, and a general-purpose database with one of its available vector extensions.
 
@@ -116,7 +116,7 @@ The team sees that trust is being held down by the weakest piece - the unexplain
 
 New R_eff = min(5.4, 1.8) = 1.8 - still weak. The team adds their own benchmark on the full 50,000 notes. Gets p95 75ms - also within requirements. CL3, F=7, G=9, R=8 - no penalty, score 7. New R_eff = min(5.4, 1.8, 7) = 1.8.
 
-And here the team notices something important: the second source (the marketing blog) is still pulling the score down. The decision can be made, but with an explicit note: "we're relying on our own benchmark; the vendor's marketing material is not counted as evidence." That note goes into the decision record (a format I'll cover in the next post) so a year from now nobody thinks the decision was made because of the vendor's pretty charts.
+The second source (the marketing blog) is still pulling the score down. The decision can be made, but with an explicit note: "we're relying on our own benchmark; the vendor's marketing material is not counted as evidence." That note goes into the decision record so a year from now nobody thinks the decision was made because of the vendor's pretty charts.
 
 This is an example of how one simple logic shift - minimum instead of average - changes the quality of the discussion. Instead of "everything looks OK, let's go" - "the weak link is here, let's shore it up or explicitly acknowledge it."
 
@@ -124,20 +124,20 @@ This is an example of how one simple logic shift - minimum instead of average - 
 
 An AI agent (Claude Code, Cursor, any coding assistant) handles the first step well: gather sources on a topic, list them in a table with scores on all three axes, and suggest a context level for each. In five minutes it gives you a draft that a human would spend an hour on.
 
-The final step - assigning the R score (reliability relative to your context) - is worth keeping for yourself. The agent doesn't know that the company who wrote the whitepaper recently tried to sell you a subscription and got turned down. Doesn't know that the tech director from the Slack message last year recommended a library that broke for you six months later. These details are internal team context that will never appear in public sources. Only a human can cross-reference them.
+Keep the final step, assigning the R score (reliability relative to your context), for yourself. The agent doesn't know that the company who wrote the whitepaper recently tried to sell you a subscription and got turned down. Nor does it know that the tech director from the Slack message last year recommended a library that broke for you six months later. These details are internal team context that will never appear in public sources. Only a human can cross-reference them.
 
-Basic rule: the agent gathers and scores on F/G, the human adds R and CL. If the agent assigns all four axes on its own - you don't have a reliability assessment, you have a polished appearance of one.
+The agent gathers sources and scores them on F/G; the human adds R and CL. If the agent assigns all four axes on its own, the polished result only looks like a reliability assessment.
 
 ## What to read next
 
-This is the third post in a series of eight on the discipline of making architectural decisions. Previous posts:
+Post three in a series of eight on the discipline of making architectural decisions. Previous posts:
 
 - [The decision graveyard](/blog/decision-graveyard) - why six months later nobody remembers the rationale
 - [Before you fix it, write three versions of the cause](/blog/before-fixing-write-three-versions) - the detective's diagnostic technique
 
-Next I'll cover:
+Coming next in the series:
 
 - What a decision record format looks like so it reopens itself a year later without the team having to remember anything.
-- How a single chat message turns into a product document with 13 sections without scope-creep monstering.
+- How a single chat message turns into a product document with 13 sections without scope creep.
 
 This post is paired with an interactive walkthrough: a 3D scene in F/G/R space where you can rotate seven pieces of evidence and see how the minimum across axes differs from the average. It lives at [/guides](/guides) - spin it with your mouse, nothing to install.
