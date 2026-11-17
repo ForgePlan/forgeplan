@@ -320,10 +320,27 @@ use windows::root_is_own;
 /// `volume` is part of the identity rather than decoration: file ids are unique
 /// only within one volume, and an index root is reachable through mount points
 /// and substituted directories.
+///
+/// `birth` is the object's creation timestamp — `stx_btime`/`st_birthtimespec`
+/// on Unix, `ftCreationTime` on Windows. It exists because `st_ino` is *not* a
+/// generation token: ext4/overlayfs hand a just-freed inode to the next create
+/// in the same directory, so `rm -rf` + recreate of a Lance table directory can
+/// produce a `(dev, ino)` pair identical to the removed one (observed on Linux
+/// CI, `stale_handle_refuses_after_external_reindex_until_explicit_reopen`).
+/// A reused inode keeps the same `(dev, ino)` but always has a different birth
+/// time, so `birth` is the discriminator between "same object" and "same inode
+/// number, different object". It is `None` where the filesystem does not
+/// report a creation time (some tmpfs/FUSE mounts); identity there degrades to
+/// `(volume, id)` alone — no worse than before, and still exact where it
+/// matters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct PhysicalIdentity {
     pub(crate) volume: u64,
     pub(crate) id: [u8; 16],
+    /// Creation time of the physical object; `None` when the filesystem does
+    /// not report one. Compared as part of the identity so a recycled inode
+    /// cannot impersonate the removed object.
+    pub(crate) birth: Option<std::time::SystemTime>,
 }
 
 impl std::fmt::Display for PhysicalIdentity {
@@ -332,15 +349,20 @@ impl std::fmt::Display for PhysicalIdentity {
         for byte in &self.id {
             write!(f, "{byte:02x}")?;
         }
+        if let Some(birth) = self.birth {
+            write!(f, " birth={birth:?}")?;
+        }
         Ok(())
     }
 }
 
 /// Is the file `locked` holds open still the file `name` resolves to?
 ///
-/// Unix compares `(device, inode)`; Windows compares NTFS `FILE_ID_INFO`
-/// (volume serial + 128-bit file id). Both are the kernel's own statement of
-/// which object a name and a descriptor refer to.
+/// Unix compares `(device, inode, birth time)`; Windows compares NTFS
+/// `FILE_ID_INFO` (volume serial + 128-bit file id + creation time). Both are
+/// the kernel's own statement of which object a name and a descriptor refer
+/// to — and on ext4 the birth time is what stops a recycled inode from
+/// passing as the object it replaced.
 ///
 /// # Why size + mtime is not an answer
 ///
@@ -387,15 +409,24 @@ pub(crate) fn physical_identity_of(file: &std::fs::File) -> Result<PhysicalIdent
 pub(crate) fn physical_identity_of(file: &std::fs::File) -> Result<PhysicalIdentity, String> {
     use std::os::unix::fs::MetadataExt;
     let meta = file.metadata().map_err(|e| e.to_string())?;
-    Ok(unix_identity(meta.dev(), meta.ino()))
+    Ok(unix_identity(meta.dev(), meta.ino(), meta.created().ok()))
 }
 
-/// `(device, inode)` rendered into the shared identity shape.
+/// `(device, inode)` plus inode birth time rendered into the shared identity
+/// shape. `created()` is `Err` on filesystems without a creation timestamp —
+/// the `.ok()` degrades that case to inode-only identity rather than refusing.
+/// On Linux both call sites (`File::metadata` = `file_attr`, `fs::metadata`)
+/// resolve birth time through the same `statx` path, so descriptor-based and
+/// path-based identities compare equal for the same object.
 #[cfg(unix)]
-fn unix_identity(dev: u64, ino: u64) -> PhysicalIdentity {
+fn unix_identity(dev: u64, ino: u64, birth: Option<std::time::SystemTime>) -> PhysicalIdentity {
     let mut id = [0u8; 16];
     id[..8].copy_from_slice(&ino.to_be_bytes());
-    PhysicalIdentity { volume: dev, id }
+    PhysicalIdentity {
+        volume: dev,
+        id,
+        birth,
+    }
 }
 
 /// The physical identity of whatever `path` currently names.
@@ -411,7 +442,7 @@ pub(crate) fn physical_identity_of_path(path: &Path) -> Result<PhysicalIdentity,
 pub(crate) fn physical_identity_of_path(path: &Path) -> Result<PhysicalIdentity, String> {
     use std::os::unix::fs::MetadataExt;
     let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
-    Ok(unix_identity(meta.dev(), meta.ino()))
+    Ok(unix_identity(meta.dev(), meta.ino(), meta.created().ok()))
 }
 
 /// Open an immutable generation manifest for a pinned read.
@@ -1515,5 +1546,65 @@ mod tests {
     #[test]
     fn adapter_names_distinguish_the_barriers() {
         assert_ne!(PosixDurability.adapter_name(), "windows-ntfs-write-through");
+    }
+
+    /// Descriptor-based and path-based identities must agree on one object —
+    /// including `birth`. This is what makes `same_physical_file` sound: if
+    /// one path reported a creation time and the other did not, every re-check
+    /// would compare `Some` against `None` and call the same file a stranger.
+    ///
+    /// `birth` mirrors `Metadata::created()` exactly: present iff the
+    /// filesystem reports a creation time (APFS/ext4 do, plain tmpfs does
+    /// not). The assertion is written against `created().ok()` rather than a
+    /// hard `is_some()` so the test is honest on filesystems that cannot
+    /// answer — and it still pins the wiring end to end.
+    #[cfg(unix)]
+    #[test]
+    fn descriptor_and_path_identities_agree_including_birth() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("gen-1.json");
+        std::fs::write(&file, b"{}").unwrap();
+
+        let opened = std::fs::File::open(&file).unwrap();
+        let by_handle = physical_identity_of(&opened).unwrap();
+        let by_name = physical_identity_of_path(&file).unwrap();
+        assert_eq!(
+            by_handle, by_name,
+            "the descriptor and the name must identify the same physical file"
+        );
+        assert_eq!(
+            by_name.birth.is_some(),
+            std::fs::metadata(&file).unwrap().created().is_ok(),
+            "birth must mirror Metadata::created() — present iff the fs reports it"
+        );
+    }
+
+    /// A recreated directory at the same path must not keep the removed
+    /// object's identity. Inode reuse makes `(dev, ino)` alone unreliable for
+    /// this; `birth` is the discriminating field on filesystems that report
+    /// creation time, and the equality of the two identities on filesystems
+    /// that do not is the documented degradation — never a refusal.
+    #[cfg(unix)]
+    #[test]
+    fn a_recreated_directory_does_not_inherit_the_old_identity() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("artifacts.lance");
+        std::fs::create_dir(&dir).unwrap();
+        let first = physical_identity_of_path(&dir).unwrap();
+
+        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::create_dir(&dir).unwrap();
+        let second = physical_identity_of_path(&dir).unwrap();
+
+        if first.birth.is_some() && second.birth.is_some() {
+            assert_ne!(
+                first, second,
+                "a recreated directory must not share the removed identity \
+                 on a filesystem that reports birth time"
+            );
+        }
+        // On filesystems without btime the pair may legitimately compare
+        // equal — that is the documented inode-only degradation, asserted
+        // implicitly by not asserting inequality.
     }
 }

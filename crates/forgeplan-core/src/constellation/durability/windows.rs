@@ -57,7 +57,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
+    CloseHandle, FILETIME, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateDirectoryW, CreateFileW,
@@ -661,7 +661,34 @@ pub(crate) fn identity_from_handle(
     Ok(super::PhysicalIdentity {
         volume: info.VolumeSerialNumber,
         id: info.FileId.Identifier,
+        // NTFS file ids are recycled after deletion just like Unix inodes;
+        // `ftCreationTime` is the discriminator between "same file" and
+        // "same file id, different file". A zero FILETIME stays `None` —
+        // pre-1601 files don't exist, so zero means "not reported".
+        birth: filetime_to_system_time(&attributes.ftCreationTime),
     })
+}
+
+/// Convert a Win32 `FILETIME` (100-ns ticks since 1601-01-01) to `SystemTime`.
+/// `None` for a zero timestamp — NTFS uses it as "not recorded", and a zero
+/// FILETIME is 1601, which no real ForgePlan object can predate.
+fn filetime_to_system_time(ft: &FILETIME) -> Option<std::time::SystemTime> {
+    let ticks = ((ft.dwHighDateTime as u64) << 32) | ft.dwLowDateTime as u64;
+    if ticks == 0 {
+        return None;
+    }
+    // FILETIME epoch is 1601-01-01 UTC; UNIX_EPOCH is 1970-01-01 UTC.
+    // The gap is 116_444_736_000_000_000 ticks. Ticks are 100-ns units, so
+    // seconds = ticks / 10_000_000 — never multiply the raw tick count by
+    // 100 (any post-1970 FILETIME overflows u64 on that path).
+    const FILETIME_EPOCH_TO_UNIX_EPOCH_TICKS: u64 = 116_444_736_000_000_000;
+    let to_duration =
+        |t: u64| std::time::Duration::new(t / 10_000_000, ((t % 10_000_000) * 100) as u32);
+    if ticks >= FILETIME_EPOCH_TO_UNIX_EPOCH_TICKS {
+        Some(std::time::UNIX_EPOCH + to_duration(ticks - FILETIME_EPOCH_TO_UNIX_EPOCH_TICKS))
+    } else {
+        Some(std::time::UNIX_EPOCH - to_duration(FILETIME_EPOCH_TO_UNIX_EPOCH_TICKS - ticks))
+    }
 }
 
 /// The identity of whatever `path` currently names.
