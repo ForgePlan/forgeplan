@@ -1,7 +1,7 @@
 ---
 author: null
 depth: tactical
-id: NOTE-056
+id: NOTE-059
 kind: note
 links:
 - target: SPEC-009
@@ -13,7 +13,7 @@ title: ADI analysis of SPEC-009
 valid_until: null
 ---
 
-# ADI Record: NOTE-056
+# ADI Record: NOTE-059
 
 **Artifact**: SPEC-009 (spec)
 **Model**: openai/MiniMax-M3.1-Flash-Preview
