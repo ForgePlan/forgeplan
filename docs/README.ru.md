@@ -20,6 +20,7 @@ Constellation описан для scoped-сборки `0.39.0+constellation.s1.1
 docs/
 ├── README.md          ← этот файл — навигационный указатель
 ├── ROADMAP.md         ← пробелы и приоритеты развития
+├── agents/            ← контракты, которые агент читает перед работой (трекер, доски)
 ├── methodology/       ← как работает методология Forgeplan (для людей)
 ├── architecture/      ← архитектура системы (C4, Constellation)
 ├── operations/        ← хуки агентов, enforcement, защита репозитория (devops)
@@ -76,6 +77,14 @@ docs/
 | [constellation.md](architecture/constellation.md) | Constellation: поколения, pinned reads, реестр федерации, семантический индекс секций, MCP read-профиль и границы |
 | [c4-context.md](architecture/c4-context.md) | Контекст системы в модели C4 |
 
+
+## Агенты
+
+Контракты, которые агент читает до начала работы, чтобы не прощупывать и не гадать.
+
+| Документ | Назначение |
+|---|---|
+| [issue-tracker.md](agents/issue-tracker.md) | В какую доску пишет этот репозиторий — id воркспейса и проекта Orchestra, две MCP-роли (админ против работы с задачами), роли полей → поля этой доски, таблица «операция → вызов» |
 
 ## Схемы
 

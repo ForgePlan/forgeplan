@@ -544,7 +544,7 @@ Hook: `.claude/hooks/forge-safety-hook.sh`. Whitelist: `settings.local.json`.
    - `cargo check` — 0 warnings
    - `cargo test` — все PASS
    - `cargo clippy --workspace --all-targets -- -D warnings` — 0 warnings (строже с Rust 1.95)
-4. **After significant changes** — `/audit` с 2+ агентами (адверсариально: reviewer ДОЛЖЕН найти issues; 0 findings → re-review)
+4. **After significant changes** — `/audit` с 2+ агентами по [`docs/methodology/QUALITY-GATES.md` §2 — Adversarial Review Protocol](docs/methodology/QUALITY-GATES.md#2-adversarial-review-protocol) (активный поиск контрпримеров, обязательные раунды, HIGH/Critical unresolved → BLOCKER; ноль findings не повод для re-spawn)
 5. **Tools**: `/fpf` для архитектурных решений; `/forge` для structured workflow; `/forge-cycle` для полного FPF-aligned цикла
 
 ---
@@ -595,6 +595,16 @@ CI также содержит **drift detector** (`scripts/check-mcp-tool-count
 - **Forgeplan** = WHAT to do and WHY (artifacts, quality, evidence)
 - **Orchestra** = WHO does it and WHEN (tasks, deadlines, assignments)
 - **Hindsight** = MEMORY (context between sessions)
+
+**Board (who + when lives here):**
+- Workspace: `ForgePlan` — `kgYnhWodYw7kNbJMAK5q`
+- Project: **Development** — `ZB8WYUpwNskvAZdRK8Jh`
+- Two MCP roles: `orch` (`http://localhost:28173/mcp`) is the **global user-MCP** — admin
+  (fields, spaces, workspaces), writes as `Eli Rum`. **Task work** (projects/tasks/checklists)
+  goes through the workspace's **agent** MCP: `orchestra-beta-forge-agent`
+  (`http://127.0.0.1:28174/mcp`, bot `Forge Agent`, `ForgePlan` only). Verify with
+  `get_current_context` + `list_workspaces`.
+- Tracker contract + field roles: `docs/agents/issue-tracker.md`.
 
 **Synchronization:**
 1. New artifact → task in Orchestra (if available)
@@ -705,7 +715,7 @@ Cleanup после merge: `git worktree remove ../forgeplan-w1 && git branch -D 
 - `agents-pro:security-expert` — CWE coverage, injection vectors
 - `code-documentation:code-reviewer` или `agents-core:reviewer` — code quality
 
-Each MUST find ≥3 issues. Zero findings → re-spawn (suspect superficial review).
+Apply the core protocol in [`docs/methodology/QUALITY-GATES.md` §2 — Adversarial Review Protocol](docs/methodology/QUALITY-GATES.md#2-adversarial-review-protocol): active counterexample search, mandatory rounds, structured severity/state reporting, no manufactured non-zero count, HIGH / Critical unresolved → BLOCKER.
 
 ---
 

@@ -272,9 +272,14 @@ Then  [результат]
 <!-- [ ] Risks — минимум 1 риск с mitigation                      -->
 <!-- [ ] Related Artifacts — ссылки на SPEC/RFC/ADR если есть     -->
 <!--                                                              -->
-<!-- ADVERSARIAL REVIEW (BMAD):                                   -->
-<!-- Ревьюер ОБЯЗАН найти минимум 1 проблему.                     -->
-<!-- 0 найденных проблем = недостаточно тщательный review.        -->
+<!-- ADVERSARIAL REVIEW:                                          -->
+<!-- Следуй core-протоколу в                                     -->
+<!-- ../../docs/methodology/QUALITY-GATES.md#2-adversarial-review-protocol -->
+<!-- (см. также EN: QUALITY-GATES.md §2; короткое определение —   -->
+<!-- в ../../docs/methodology/GLOSSARY.md). Zero real defects     -->
+<!-- допустим только когда D1.1-D1.7, обязательные раунды и      -->
+<!-- сохранённые gates выполнены; reviewer не выдумывает findings -->
+<!-- ради ненулевого счётчика. -->
 <!-- ============================================================ -->
 
 > **Next step**: После approve → создать SPEC (контракты) и/или RFC (архитектура).
