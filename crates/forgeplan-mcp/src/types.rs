@@ -289,14 +289,24 @@ pub struct EvidenceDto {
     pub id: String,
     pub verdict: String,
     pub congruence_level: u8,
+    /// The EFFECTIVE score the weakest-link min consumes (evidence-type
+    /// modifier applied). Reconstruct the arithmetic with `score_raw` and
+    /// `type_modifier`.
     pub score: f64,
+    /// The pack's own-merit score before the evidence-type modifier.
+    #[serde(default)]
+    pub score_raw: f64,
+    /// The deduction applied by the evidence-type modifier
+    /// (`benchmark` −0.1, `audit` −0.2, else 0).
+    #[serde(default)]
+    pub type_modifier: f64,
     pub expired: bool,
     /// Lifecycle status of the evidence artifact (ADR-020).
     #[serde(default)]
     pub status: String,
     /// ADR-020: true when the pack's terminal status (superseded/deprecated)
-    /// excludes it from the weakest-link min. `score` is then the pack's raw
-    /// own-merit score, shown for transparency — it does NOT feed R_eff.
+    /// excludes it from the weakest-link min. `score` is then the pack's
+    /// effective score, shown for transparency — it does NOT feed R_eff.
     #[serde(default)]
     pub excluded: bool,
 }

@@ -365,21 +365,33 @@ fn render_score(view: ScoreView, json: bool) -> anyhow::Result<()> {
         fgr_score,
     } = view;
     // --- R_eff Confidence Interval (PRD-040 FR-002) ---
-    let ci = reff::r_eff_with_ci(&evidence_items);
+    // Centre the band on the score this command actually reports (the recursive
+    // walk), not on the flat self-score. `r_eff_with_ci` derives its own point
+    // from `r_eff()`, which ignores dependencies and the evidence-type
+    // modifier — using it here printed a band that did not contain the R_eff
+    // shown two lines below it.
+    let ci = reff::r_eff_ci_around(report.r_eff, &evidence_items);
 
     // --- JSON output ---
     if json {
         let evidence_json: Vec<_> = evidence_items
             .iter()
             .map(|item| {
-                // ADR-020: show the pack's own raw score plus its exclusion
-                // flag — terminal-status packs stay visible but marked.
-                let item_score = reff::raw_evidence_score(item);
+                // ADR-020: terminal-status packs stay visible but marked.
+                // `score` is the EFFECTIVE value the weakest-link min consumes;
+                // `score_raw` and `type_modifier` expose the own-merit value and
+                // the evidence-type deduction, so the R_eff arithmetic is
+                // reconstructible from this payload alone.
+                let item_score = reff::full_evidence_score(item);
+                let item_score_raw = reff::raw_evidence_score(item);
+                let type_modifier = reff::evidence_type_to_cl_modifier(&item.evidence_type);
                 serde_json::json!({
                     "id": item.id,
                     "verdict": format!("{:?}", item.verdict),
                     "congruence_level": item.congruence_level,
                     "score": item_score,
+                    "score_raw": item_score_raw,
+                    "type_modifier": type_modifier,
                     "expired": item.valid_until.map(|dt| Utc::now().naive_utc() > dt).unwrap_or(false),
                     "status": item.status,
                     "excluded": !item.is_scoring_eligible(),
@@ -482,10 +494,28 @@ fn render_score(view: ScoreView, json: bool) -> anyhow::Result<()> {
                 .valid_until
                 .map(|dt| Utc::now().naive_utc() > dt)
                 .unwrap_or(false);
-            let item_score = reff::raw_evidence_score(item);
+            // Show the EFFECTIVE score — the number that actually reaches the
+            // min. When the evidence-type modifier moved it, name the deduction
+            // inline, so the gap between this line and the R_eff printed below
+            // is explainable without reading the source.
+            let item_score = reff::full_evidence_score(item);
+            // Annotate the deduction that was ACTUALLY applied, not the nominal
+            // one. The score is clamped at 0 and an expired pack decays to 0.1
+            // before type is consulted, so the nominal modifier can be larger
+            // than the distance between the two numbers — printing it there
+            // would recreate, in the explanation, the very mismatch this line
+            // exists to explain.
+            let applied_deduction = (reff::raw_evidence_score(item) - item_score).max(0.0);
             // ADR-020: terminal packs stay listed, marked as excluded —
             // the history is visible, it just no longer speaks for NOW.
             let mut marks = String::new();
+            if applied_deduction > 0.0 {
+                marks.push_str(&format!(
+                    " ({} −{:.1})",
+                    format!("{:?}", item.evidence_type).to_lowercase(),
+                    applied_deduction
+                ));
+            }
             if expired {
                 marks.push_str(" (EXPIRED)");
             }

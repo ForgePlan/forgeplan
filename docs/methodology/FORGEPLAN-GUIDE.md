@@ -23,7 +23,7 @@ Forgeplan forces you to **think before coding**. Instead of "open IDE -> write c
 
 ```bash
 # Install /forge skill for Claude Code, Cursor, Codex, Gemini, and 40+ agents
-npx skills add ForgePlan/forgeplan --skill forge
+forgeplan setup-skill
 ```
 
 The skill will be installed into selected agents. After that, in your AI chat:
@@ -551,7 +551,7 @@ This does not block activation but signals an immature dependency.
 
 ```bash
 # Install skill for all supported agents
-npx skills add ForgePlan/forgeplan --skill forge
+forgeplan setup-skill
 ```
 
 Supports 40+ agents: Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot, Cline, Continue, Windsurf, and more.

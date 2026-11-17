@@ -1950,7 +1950,9 @@ fn evidence_dto(item: &EvidenceItem) -> EvidenceDto {
         id: item.id.clone(),
         verdict: format!("{:?}", item.verdict),
         congruence_level: item.congruence_level,
-        score: reff::raw_evidence_score(item),
+        score: reff::full_evidence_score(item),
+        score_raw: reff::raw_evidence_score(item),
+        type_modifier: reff::evidence_type_to_cl_modifier(&item.evidence_type),
         expired: item
             .valid_until
             .map(|dt| Utc::now().naive_utc() > dt)

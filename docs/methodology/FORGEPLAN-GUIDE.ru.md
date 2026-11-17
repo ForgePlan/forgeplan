@@ -552,7 +552,7 @@ forgeplan activate PRD-001
 
 ```bash
 # Установить skill для всех поддерживаемых агентов
-npx skills add ForgePlan/forgeplan --skill forge
+forgeplan setup-skill
 ```
 
 Поддерживается 40+ агентов: Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot, Cline, Continue, Windsurf, и другие.
