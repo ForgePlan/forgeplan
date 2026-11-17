@@ -550,9 +550,7 @@ pub fn first_index_epoch() -> Result<u64, ConstellationError> {
 
 /// Build the first generation manifest from a complete capture.
 ///
-/// # Errors
-///
-/// [`ConstellationError::SourceBusy`] when the capture is incomplete. A
+/// [`ConstellationError::SourceUnavailable`] when the capture is incomplete. A
 /// partial scan must never publish a generation — not complete, and not empty.
 /// Publishing an empty first generation would look identical, to every
 /// reader, to "this workspace has no artifacts".
@@ -562,9 +560,11 @@ pub fn first_generation(
     table_versions: TableVersions,
 ) -> Result<GenerationManifest, ConstellationError> {
     if !captured.is_complete() {
-        return Err(ConstellationError::SourceBusy {
-            attempts: super::capture::DEFAULT_CAPTURE_ATTEMPTS,
-            elapsed_ms: 0,
+        return Err(ConstellationError::SourceUnavailable {
+            detail: format!(
+                "canonical source capture is incomplete: {:?}",
+                captured.diagnostics
+            ),
         });
     }
     let manifest = GenerationManifest::from_capture(captured, generation_id, table_versions);
@@ -703,8 +703,8 @@ pub enum BootstrapProgress {
 /// # Errors
 ///
 /// [`ConstellationError::IndexGenerationUnavailable`] when a pointer exists
-/// but does not resolve. [`ConstellationError::SourceBusy`] when the capture
-/// is incomplete, so a first generation is never published complete *or*
+/// but does not resolve. [`ConstellationError::SourceUnavailable`] when the
+/// capture is incomplete, so a first generation is never published complete *or*
 /// empty — an empty first generation is indistinguishable, to every reader,
 /// from a workspace with no artifacts.
 pub async fn bootstrap_or_recover(
@@ -4096,7 +4096,7 @@ mod tests {
         let err = first_generation(&captured, "gen-1", TableVersions::new(1, 1, 1)).unwrap_err();
         assert_eq!(
             err.code(),
-            DiagnosticCode::SourceBusy,
+            DiagnosticCode::SourceUnavailable,
             "an empty first generation is indistinguishable from an empty workspace"
         );
     }
