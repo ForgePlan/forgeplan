@@ -3,22 +3,24 @@ title: forgeplan fpf ingest
 description: "Ingest the FPF spec into the local knowledge base (one-time setup)"
 ---
 
-`forgeplan fpf ingest` loads the **First Principles Framework** specification into the workspace knowledge base. It parses the 204-section corpus (A/B/C parts), chunks it, generates embeddings via the same BGE-M3 pipeline used by artifact search, and writes the result into a LanceDB table under `.forgeplan/lance/`.
-
-Run it **once per workspace**, typically right after `forgeplan init -y`. After ingest, `fpf search`, `fpf section`, `fpf list`, `fpf rules`, and `fpf check` all become available.
+`forgeplan fpf ingest` parses externally installed **First Principles Framework**
+sections and replaces the auxiliary `fpf_spec` table. The count depends on the
+installed revision; there is no fixed 204-section corpus bundled in the binary.
+With `semantic-search`, ingestion also encodes sections with BGE-M3.
+Rules and checks use configuration/default rules separately from this corpus.
 
 ## When to use
 
 - **Right after `forgeplan init -y`** - seed the KB before doing any reasoning work.
-- **After wiping `.forgeplan/lance/`** - because lance is gitignored, fresh clones need re-ingest.
-- **After a Forgeplan upgrade** that ships new FPF sections - re-ingest to refresh the corpus.
+- **On a fresh clone** - ingest the missing auxiliary KB; preserve existing state for diagnosis.
+- **After updating the installed FPF corpus** - re-ingest the chosen revision deliberately.
 - **When `fpf status` reports the KB as stale or empty.**
 
 ## When NOT to use
 
 - You don't need to run it before every reasoning session; the KB persists across invocations.
 - Don't run it in parallel with `forgeplan reason --fpf` - let ingest finish first.
-- Not a replacement for `forgeplan scan-import` - that rebuilds the **artifact** index, not the FPF KB.
+- Not a replacement for artifact indexing: use `index`/`reindex` to rebuild the index from canonical Markdown. `scan-import` imports external Markdown, including through the migrated file-first path; it is not a canonical index rebuild.
 
 ## Usage
 
@@ -69,11 +71,13 @@ forgeplan fpf ingest --path ./fpf-sections/
 
 1. Forgeplan locates the FPF sections — the installed skill, or whatever `--path` points at.
 2. Sections are parsed into structured chunks (ID, title, part, body).
-3. Embeddings are generated via BGE-M3 (feature-gated - falls back gracefully if `semantic-search` is disabled).
-4. LanceDB writes one row per section into the `fpf_kb` table.
-5. A status record is stamped with ingest timestamp and section count.
+3. Existing FPF rows are cleared. With `semantic-search`, BGE-M3 encodes the sections;
+   model-load and encoding errors propagate. Builds without that feature write keyword-only rows.
+4. The auxiliary `fpf_spec` table stores records and optional embeddings.
+5. Each record gets a creation timestamp; `fpf status` does not display ingest time.
 
-On a warm fastembed cache the whole operation takes a few seconds; cold runs pay the model download cost once.
+No duration is guaranteed. Clearing old rows precedes encoding, so an ingestion
+failure can leave the KB empty. Preserve the external source corpus.
 
 ## How it fits
 
@@ -84,12 +88,12 @@ forgeplan fpf ingest      ← one-time
   ├── fpf search          ← works after ingest
   ├── fpf section B.3
   ├── fpf list
-  ├── fpf rules
-  ├── fpf check PRD-XXX
-  └── fpf dashboard
+  └── fpf status          ← count-based inspection
 ```
 
-It's also a prerequisite for `forgeplan reason --fpf`, which pulls first-principles context into the ADI prompt.
+`reason --fpf` requests FPF context, but the selected CLI does not reopen retired
+legacy KB tables on migrated workspaces. Ingestion does not establish that every
+FPF command is supported there.
 
 ## See also
 
@@ -97,3 +101,20 @@ It's also a prerequisite for `forgeplan reason --fpf`, which pulls first-princip
 - [`forgeplan fpf status`](/docs/cli/fpf-status/) - verify ingest succeeded
 - [`forgeplan fpf search`](/docs/cli/fpf-search/) - query the ingested KB
 - [`forgeplan init`](/docs/cli/init/) - workspace bootstrap that precedes ingest
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan fpf ingest --help`.
+
+```text
+Ingest FPF spec into knowledge base
+
+Usage: forgeplan fpf ingest [OPTIONS]
+
+Options:
+      --path <PATH>  Path to FPF sections directory
+  -h, --help         Print help
+  -V, --version      Print version
+```
+<!-- forgeplan-runtime:end -->

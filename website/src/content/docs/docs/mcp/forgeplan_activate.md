@@ -1,9 +1,9 @@
 ---
 title: forgeplan_activate
-description: "Activate an artifact (draft → active). Requires all MUST validation rules to pass."
+description: "Activate draft → active, subject to lifecycle checks and the explicit force override."
 ---
 
-Promotes an artifact from `draft` to `active`. This is the lifecycle gate that enforces quality: if `forgeplan_validate` would report any MUST failure, activation is rejected with the list of blockers. Once active, the artifact counts in `forgeplan_health`, appears in `forgeplan_list --status active`, and becomes a citable decision. For Notes and Problems there is no validation gate - they activate immediately.
+Promotes an artifact from `draft` to `active`. Without `force`, MUST validation failures block activation; `force: true` bypasses validation and the configured evidence-provenance gate, so it is not proof of quality. Successful activation updates canonical status and may advance the advisory phase to `done`. List active artifacts with `forgeplan_list {"status":"active"}`. Workflow requirements for implementation and evidence remain separate from the tool's checks.
 
 **Category**: Lifecycle
 
@@ -19,36 +19,22 @@ Promotes an artifact from `draft` to `active`. This is the lifecycle gate that e
 |---|---|---|---|
 | `id` | `string` | yes | Artifact ID to activate. |
 | `force` | `bool` | no (default: `false`) | Force activation even if validation has MUST errors. |
+| `workspace` | `string \| null` | no | Explicit absolute or tilde-expanded workspace path; otherwise use the server's workspace resolution chain. |
 
 _Schema source: `crates/forgeplan-mcp/src/server.rs::ActivateParams`_
 
 ## Returns
 
-The new status plus the transition timestamp. On failure, returns the validator report so the agent can remediate without a second `forgeplan_validate` call.
+The JSON text in MCP `content[]` contains `artifact_id`, `forced`,
+`must_errors`, `message`, and `_next_action`, plus workspace-resolution and
+index-publication fields. There is no `activated_at`, `from`, or `to` field.
+On a migrated workspace, inspect `index_pending`: a canonical status write
+can succeed before derived index publication is acknowledged.
 
-Example response shape:
-
-```json
-{
-  "ok": true,
-  "id": "PRD-042",
-  "from": "draft",
-  "to": "active",
-  "activated_at": "2026-04-11T10:19:00Z"
-}
-```
-
-Failure shape:
-
-```json
-{
-  "ok": false,
-  "error": "validation_failed",
-  "must_findings": [
-    { "rule": "prd.has_problem", "message": "Missing ## Problem section" }
-  ]
-}
-```
+Failures are MCP tool errors containing explanatory text, not the old
+`{"ok":false,"error":"validation_failed"}` envelope. Read the error before
+deciding whether validation, lifecycle state, provenance, or workspace
+resolution needs correction.
 
 ## Example invocation
 
@@ -56,7 +42,7 @@ Failure shape:
 { "id": "PRD-001" }
 ```
 
-With typical agent context:
+Illustrative agent context (not a recorded test or score):
 
 > All FRs implemented, tests green, evidence linked, R_eff = 0.87. Agent activates.
 
@@ -78,3 +64,54 @@ Full cycle: `forgeplan_new` → `forgeplan_update` → `forgeplan_validate` PASS
 - [`forgeplan_validate`](/docs/mcp/forgeplan_validate/) - pre-flight check
 - [`forgeplan_supersede`](/docs/mcp/forgeplan_supersede/) - next lifecycle stage
 - [`forgeplan_deprecate`](/docs/mcp/forgeplan_deprecate/) - terminal retirement
+
+<!-- forgeplan-runtime:start -->
+## Captured tools/list
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, profile `full`.
+
+Activate an artifact (draft → active). Requires all MUST validation rules to pass.
+
+### Input parameters
+
+| Name | Required | Type | Description |
+|---|---|---|---|
+| `force` | no | boolean | Force activation even if validation has MUST errors |
+| `id` | yes | string | Artifact ID to activate |
+| `workspace` | no | string \| null | Optional explicit workspace directory for this call. When set, the MCP<br>server resolves the `.forgeplan/` projection from this path instead of<br>the server's startup CWD. Use this when the calling agent is running<br>in a git worktree separate from the MCP server's launch directory.<br>PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "force": {
+      "default": false,
+      "description": "Force activation even if validation has MUST errors",
+      "type": "boolean"
+    },
+    "id": {
+      "description": "Artifact ID to activate",
+      "type": "string"
+    },
+    "workspace": {
+      "default": null,
+      "description": "Optional explicit workspace directory for this call. When set, the MCP\nserver resolves the `.forgeplan/` projection from this path instead of\nthe server's startup CWD. Use this when the calling agent is running\nin a git worktree separate from the MCP server's launch directory.\nPRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "title": "ActivateParams",
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

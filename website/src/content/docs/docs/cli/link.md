@@ -53,7 +53,7 @@ The canonical evidence flow - link a fresh EvidencePack to the PRD it supports:
 forgeplan new evidence "Benchmark: BM25 vs TF-IDF on Russian corpus"
 # ... fill in verdict, congruence_level, evidence_type ...
 forgeplan link EVID-001 PRD-039 --relation informs
-forgeplan score PRD-039   # R_eff should now be > 0
+forgeplan score PRD-039   # inspect the actual contribution; a link alone proves no positive score
 ```
 
 Derive an RFC from a PRD:
@@ -93,9 +93,7 @@ that one" link.
 
 ## Direction matters
 
-Relations are directed. `forgeplan link PRD-001 EVID-001 --relation informs`
-says *PRD-001 informs EVID-001*, which is almost never what you want. The
-standard pattern is always **evidence → decision**:
+Relations are directed: `forgeplan link PRD-001 EVID-001 --relation informs` says *PRD-001 informs EVID-001*. The canonical supporting-evidence pattern is **evidence → decision**. The scorer can discover evidence in either direction, but that does not make the relationship meanings interchangeable.
 
 ```bash
 forgeplan link EVID-001 PRD-001 --relation informs   # correct
@@ -112,12 +110,10 @@ and confuse topological sort.
 
 ## What happens after linking
 
-- The link is persisted to the LanceDB `links` table.
-- [`forgeplan score`](/docs/cli/score/) recomputes R_eff for the target -
-  `informs` links from `verdict: supports` evidence raise the score.
-- [`forgeplan graph`](/docs/cli/graph/) includes the edge in the Mermaid output.
-- [`forgeplan blocked`](/docs/cli/blocked/) and [`forgeplan order`](/docs/cli/order/)
-  re-run topological sort across `based_on` / `refines` edges.
+- Canonical Markdown stores the relation; the legacy `relations` table is derived. Migrated workspaces write file-first and reconcile Constellation without recreating retired tables.
+- Run [`forgeplan score`](/docs/cli/score/) for the decision to inspect the result. Adding a supports pack does not necessarily raise a weakest-link minimum; a weaker eligible pack can lower it.
+- [`forgeplan graph`](/docs/cli/graph/) can include the edge.
+- [`forgeplan blocked`](/docs/cli/blocked/) and [`forgeplan order`](/docs/cli/order/) use structural `based_on` / `refines` / `supersedes` dependencies, not a blocking `informs` relation.
 
 ## See also
 
@@ -127,3 +123,26 @@ and confuse topological sort.
 - [`forgeplan graph`](/docs/cli/graph/) - visualize the relation graph
 - [`forgeplan health`](/docs/cli/health/) - find orphans and missing evidence
 - [Methodology guide](/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan link --help`.
+
+```text
+Link two artifacts with a typed relationship
+
+Usage: forgeplan link [OPTIONS] <SOURCE> <TARGET>
+
+Arguments:
+  <SOURCE>  Source artifact ID
+  <TARGET>  Target artifact ID
+
+Options:
+      --relation <RELATION>     Relationship type: informs, based_on, supersedes, contradicts, refines [default: informs]
+      --replace                 Issue #286: if an edge already exists between source and target with a DIFFERENT relation, replace it (idempotent upsert). Without this flag, an existing edge with a different relation surfaces as an error and the call fails — matching the pre-issue-#286 behaviour. Used to fix mis-typed `based_on` / `informs` choices without destroying the artifact via `forgeplan delete`
+      --auto-activate-complete  Issue #288 Part A: when the link source is a complete evidence artifact (kind=evidence + status=draft + body has verdict + congruence_level), silently activate it draft → active in the same call. Mirrors `auto_activate_source_if_complete` on the MCP `forgeplan_link` tool. No-op when the source doesn't meet the criteria
+  -h, --help                    Print help
+  -V, --version                 Print version
+```
+<!-- forgeplan-runtime:end -->

@@ -23,11 +23,13 @@ Returns an error with guidance when no matching receipt exists - never guesses.
 
 | Name | Type | Required | Description |
 |---|---|---|---|
-| `within_hours` | `number` | no (default 24, max 720) | Time window to search for the last destructive op. Expand to 720 (30 days) when in doubt. |
+| `within_hours` | `integer` or `null` | no (default 24) | Omission/null uses 24 hours. The handler clamps provided integers to 1–720; the emitted schema exposes minimum 0 but not that clamp or upper bound. |
 
 _Schema source: `crates/forgeplan-mcp/src/server.rs::UndoLastParams`_
 
 ## Returns
+
+Illustrative response excerpts, not a record of a recovery performed here. Success can also include workspace-trace and index-reconciliation fields.
 
 ```json
 {
@@ -44,12 +46,12 @@ _Schema source: `crates/forgeplan-mcp/src/server.rs::UndoLastParams`_
 
 When nothing to undo in the window:
 
-```json
-{
-  "ok": false,
-  "error": "No non-consumed destructive op in the last 24 hour(s).",
-  "_next_action": "Expand the window: `forgeplan_undo_last within_hours=720`. Or inspect the log: `forgeplan_activity --tool forgeplan_delete,forgeplan_supersede,forgeplan_deprecate --since 720h`."
-}
+The handler returns an error MCP `CallToolResult` containing text, not a JSON `ok: false` object. Example text prefix:
+
+```text
+No non-consumed destructive op in the last 24 hour(s).
+
+_next_action: Expand the window: `forgeplan_undo_last within_hours=720`.
 ```
 
 ## Example invocation
@@ -75,7 +77,7 @@ Wider search after an idle period:
 
 ## CLI equivalent
 
-[`forgeplan undo`](/docs/cli/) - same trash-walking logic.
+[`forgeplan undo-last`](/docs/cli/) - same receipt-selection operation. The selected CLI does not register `forgeplan undo`.
 
 ## See also
 
@@ -83,3 +85,51 @@ Wider search after an idle period:
 - [`forgeplan_activity`](/docs/mcp/forgeplan_activity/) - inspect the destructive-op timeline
 - [`forgeplan_delete`](/docs/mcp/forgeplan_delete/) - the soft-delete this reverses
 - [MCP overview](/docs/mcp/)
+
+<!-- forgeplan-runtime:start -->
+## Captured tools/list
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, profile `full`.
+
+Reverse the most recent destructive operation (delete, supersede, or deprecate) by reading the soft-delete trash and applying forgeplan_restore to the most recently written non-consumed receipt. Params: within_hours (default 24, max 720). If no matching receipt is found, returns an error with guidance; the tool never guesses.
+
+### Input parameters
+
+| Name | Required | Type | Description |
+|---|---|---|---|
+| `within_hours` | no | integer \| null | Time window (hours) to search for the last destructive op.<br>Default 24, max 720 (30 days). |
+| `workspace` | no | string \| null | Optional explicit workspace directory for this call. When set, the MCP<br>server resolves the `.forgeplan/` projection from this path instead of<br>the server's startup CWD. Use this when the calling agent is running<br>in a git worktree separate from the MCP server's launch directory.<br>PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "within_hours": {
+      "default": null,
+      "description": "Time window (hours) to search for the last destructive op.\nDefault 24, max 720 (30 days).",
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "workspace": {
+      "default": null,
+      "description": "Optional explicit workspace directory for this call. When set, the MCP\nserver resolves the `.forgeplan/` projection from this path instead of\nthe server's startup CWD. Use this when the calling agent is running\nin a git worktree separate from the MCP server's launch directory.\nPRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "UndoLastParams",
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

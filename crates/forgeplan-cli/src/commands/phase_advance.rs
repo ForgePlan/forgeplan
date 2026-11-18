@@ -8,7 +8,6 @@
 use console::style;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::phase::{self, Phase};
-use forgeplan_core::workspace;
 
 use crate::commands::common;
 
@@ -59,28 +58,31 @@ pub async fn run(id: &str, to: PhaseArg, reason: Option<&str>, json: bool) -> an
         anyhow::bail!("reason too long: {} bytes (max: 4096)", r.len());
     }
 
-    let cwd = std::env::current_dir()?;
-    let ws = workspace::find_workspace(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+    // Serialize the phase store's read-modify-write without opening an
+    // artifact index merely to find the workspace.
+    let (ws, _lock) = common::open_workspace_locked().await?;
+    let source = common::read_source_for(&ws, &_lock).await?;
 
-    // Phase 2.5 (PROB-060) — accept slug или display id form. Phase state
+    // Phase 2.5 (PROB-060) — accept slug or display id form. Phase state
     // file named by canonical id; without resolver slug input creates
     // a NEW state file at .forgeplan/state/<slug>.yaml instead of updating
     // existing canonical one — silent state divergence.
-    let store = common::store().await?;
-    let canonical = store
-        .resolve_id(id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' not found"))?;
+    let (canonical, display) = common::resolve_required_identity(&source, &ws, id).await?;
+    common::ensure_ordinary_mutation_allowed(&ws)?;
+    // A state file written before the key existed carries the display id in
+    // its name. The name resolved to exactly one document, so the file moves
+    // to the key's name.
+    phase::store::migrate_legacy_state_held(&ws, Some(&_lock), &display, &canonical).await?;
 
     let target: Phase = to.into();
     let state =
         // #330 — the explicit operator path may move a phase in either
         // direction; the guard belongs on automation, not on a deliberate
         // command someone typed.
-        phase::store::advance_phase_unchecked(
+        phase::store::advance_phase_unchecked_for(
             &ws,
             &canonical,
+            &display,
             target,
             reason.map(|s| s.to_string()),
         )
@@ -93,7 +95,7 @@ pub async fn run(id: &str, to: PhaseArg, reason: Option<&str>, json: bool) -> an
         hints_vec.push(
             Hint::suggestion(format!("Advance to {}", next.as_str())).with_action(format!(
                 "forgeplan phase-advance {} --to {}",
-                state.artifact_id,
+                display,
                 next.as_str()
             )),
         );
@@ -101,7 +103,8 @@ pub async fn run(id: &str, to: PhaseArg, reason: Option<&str>, json: bool) -> an
 
     if json {
         let payload = serde_json::json!({
-            "artifact_id": state.artifact_id,
+            "artifact_id": display,
+            "canonical_key": canonical,
             "current_phase": state.current_phase.as_str(),
             "workflow_type": format!("{:?}", state.workflow_type).to_lowercase(),
             "advanced_at": state.advanced_at,
@@ -120,7 +123,7 @@ pub async fn run(id: &str, to: PhaseArg, reason: Option<&str>, json: bool) -> an
     let current = state.current_phase.as_str();
     println!(
         "{} advanced to {} ({} history entries)",
-        style(&state.artifact_id).bold(),
+        style(&display).bold(),
         style(current).green().bold(),
         state.history.len(),
     );

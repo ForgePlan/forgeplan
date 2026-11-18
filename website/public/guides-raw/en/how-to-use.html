@@ -1,0 +1,530 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How to introduce decision logging into your team - Forgeplan Guides</title>
+<link rel="preconnect" href="https://rsms.me/">
+<link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@2.304/web/web.css">
+<style>
+  :root {
+    --bg: #050505;
+    --bg-1: #0b0b0b;
+    --bg-2: #141414;
+    --bg-3: #1a1a1a;
+    --text:   #f5f5f5;
+    --text-1: #e5e5e5;
+    --text-2: #a3a3a3;
+    --text-3: #737373;
+    --text-4: #525252;
+    --line:   rgba(255, 255, 255, 0.06);
+    --line-2: rgba(255, 255, 255, 0.14);
+    --accent:      #ff5a1f;
+    --accent-soft: #ff8a5b;
+    --accent-bg:   rgba(255, 90, 31, 0.18);
+    --ok:   #22c55e;
+    --err:  #ef4444;
+    --warn: #f59e0b;
+    --font-sans: "Inter", "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono: "JetBrains Mono", "Geist Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text-1); font-family: var(--font-sans); }
+  body {
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    background-image: radial-gradient(rgba(255, 255, 255, 0.10) 0.9px, transparent 1.4px);
+    background-size: 24px 24px;
+  }
+  main { max-width: 1080px; margin: 0 auto; padding: 64px 32px 96px; }
+
+  .eyebrow { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin: 0 0 14px; }
+  h1 { font-family: var(--font-sans); font-size: clamp(40px, 5.4vw, 60px); line-height: 1.05; letter-spacing: -0.02em; font-weight: 500; color: var(--text); margin: 0 0 18px; }
+  h2 { font-family: var(--font-sans); font-size: 28px; line-height: 1.25; letter-spacing: -0.015em; font-weight: 500; color: var(--text); margin: 64px 0 14px; }
+  h3 { font-family: var(--font-sans); font-size: 19px; line-height: 1.3; font-weight: 500; color: var(--text); margin: 32px 0 10px; }
+  p { margin: 0 0 16px; color: var(--text-2); font-size: 17px; line-height: 1.65; max-width: 820px; }
+  p.lead { font-size: 19.5px; color: var(--text-1); line-height: 1.6; max-width: 820px; }
+  ul, ol { color: var(--text-2); font-size: 17px; line-height: 1.65; list-style: none; padding-left: 0; margin: 16px 0; }
+  /* Plain inline lists (no class) - narrow for readability.
+     Grid lists (.timeline, .ways-grid, .anti) override via their own styles. */
+  main > ul, main > ol { max-width: 820px; }
+  ul li, ol li { margin-bottom: 12px; padding-left: 28px; position: relative; }
+  ul li::before { content: "▸"; position: absolute; left: 6px; top: 0; color: var(--accent); font-family: var(--font-mono); font-size: 17px; line-height: 1.65; }
+  ol { counter-reset: list-counter; }
+  ol li::before { content: counter(list-counter, decimal-leading-zero); counter-increment: list-counter; position: absolute; left: 0; top: 1px; color: var(--accent); font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.1em; font-weight: 500; }
+  ol li { padding-left: 36px; }
+  /* Reset for classes with own numbering / custom layout */
+  .timeline li { padding-left: 0; }
+  .timeline li::before { content: ""; }
+  .anti ul { padding-left: 0; }
+  .anti li { padding-left: 14px; }
+  .anti li::before { content: "·"; position: absolute; left: 0; top: -2px; color: var(--err); font-size: 20px; font-family: var(--font-mono); }
+  code { font-family: var(--font-mono); font-size: 14.5px; color: var(--accent-soft); background: var(--accent-bg); padding: 1px 6px; border-radius: 0; }
+  pre { font-family: var(--font-mono); font-size: 14px; background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 16px 18px; overflow-x: auto; line-height: 1.6; color: var(--text-1); margin: 16px 0; max-width: 820px; }
+  pre code { background: transparent; color: var(--text-1); padding: 0; }
+  b.k { color: var(--text); font-weight: 500; }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-bg); transition: border-color .15s ease; }
+  a:hover { border-color: var(--accent); }
+
+  .rule-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin: 20px 0 0; }
+  @media (max-width: 720px) { .rule-grid { grid-template-columns: 1fr; } }
+  .rule-card { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 18px 20px 20px; }
+  .rule-card .rule-num { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.16em; color: var(--accent); margin-bottom: 6px; }
+  .rule-card .rule-q { font-size: 15px; color: var(--text); font-weight: 500; margin: 0 0 8px; }
+  .rule-card .rule-detail { font-size: 13px; color: var(--text-2); line-height: 1.55; margin: 0; }
+
+  .depth-table { margin: 18px 0 0; background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; overflow: hidden; }
+  .depth-row { display: grid; grid-template-columns: 160px 1fr 1.4fr; border-bottom: 1px solid var(--line); }
+  .depth-row:last-child { border-bottom: 0; }
+  .depth-row.depth-head { background: var(--bg-2); }
+  .depth-cell { padding: 14px 18px; font-size: 14px; color: var(--text-2); border-right: 1px solid var(--line); }
+  .depth-cell:last-child { border-right: 0; }
+  .depth-row.depth-head .depth-cell { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); }
+  .depth-cell .depth-level { color: var(--accent); font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; }
+  .depth-cell .depth-name { color: var(--text); font-weight: 500; margin-top: 2px; display: block; font-size: 14px; }
+
+  .timeline { margin: 24px 0 0; padding: 0; list-style: none; border-left: 2px solid var(--accent); padding-left: 22px; max-width: none; }
+  .timeline li { margin-bottom: 22px; position: relative; }
+  .timeline li::before { content: ""; position: absolute; left: -29px; top: 6px; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); }
+  .timeline .when { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); margin-bottom: 4px; }
+  .timeline .what { color: var(--text-1); font-size: 14.5px; line-height: 1.55; }
+  .timeline .what b { color: var(--text); font-weight: 500; }
+
+  .ways-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin: 20px 0 0; }
+  @media (max-width: 720px) { .ways-grid { grid-template-columns: 1fr; } }
+  .way-card { background: var(--bg-1); border: 1px solid var(--line-2); border-left: 2px solid var(--accent); border-radius: 0; padding: 16px 20px 18px; }
+  .way-card .way-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; color: var(--accent); margin-bottom: 6px; }
+  .way-card .way-title { color: var(--text); font-weight: 500; font-size: 14.5px; margin: 0 0 6px; }
+  .way-card .way-body { color: var(--text-2); font-size: 13px; line-height: 1.55; margin: 0; }
+
+  .anti { margin: 20px 0 0; background: var(--bg-1); border: 1px solid var(--line-2); border-left: 3px solid var(--err); border-radius: 0; padding: 18px 22px 20px; }
+  .anti .anti-tag { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--err); margin-bottom: 10px; }
+  .anti ul { margin: 0; padding-left: 18px; }
+  .anti li { color: var(--text-2); font-size: 14px; line-height: 1.55; margin-bottom: 8px; }
+  .anti li b { color: var(--text); font-weight: 500; }
+
+  .aside { border-left: 2px solid var(--accent); background: var(--accent-bg); padding: 14px 18px; margin: 18px 0; font-size: 14.5px; color: var(--text-1); border-radius: 0; max-width: 820px; }
+
+  .next-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 16px 0 0; }
+  @media (max-width: 640px) { .next-grid { grid-template-columns: 1fr; } }
+  .next-link { display: block; background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 14px 16px; color: var(--text-1); border-bottom: 1px solid var(--line-2); transition: all .15s ease; }
+  .next-link:hover { border-color: var(--accent); color: var(--text); }
+  .next-link .next-who { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent); margin-bottom: 4px; }
+  .next-link .next-where { font-size: 14px; color: var(--text); }
+  .next-link .next-arrow { float: right; color: var(--accent); }
+
+  hr.sep { border: 0; border-top: 1px solid var(--line); margin: 56px 0 0; }
+</style>
+</head>
+<body>
+<main>
+
+  <p class="eyebrow">DECISION LOG · PRACTICE</p>
+  <h1>How to introduce decision logging into your team</h1>
+  <p class="lead">
+    A decision log is not «one more document for the team». It is a set of
+    concrete rules: when to write a record and when not to; how to set it
+    up to give an AI agent (Claude Code, Cursor, Codex) access to context,
+    tell it what to read, or explicitly load records of rejected options;
+    what a day looks like for an engineer whose process includes
+    the log - without overload and without bureaucracy.
+  </p>
+
+  <hr class="sep">
+
+  <h2>When to write a record, and when not to</h2>
+  <p>
+    The most common mistake is trying to record every decision. It is
+    tiring and it kills the habit fast. A good empirical rule: write a
+    record if the answer is «yes» to at least two of the four questions
+    below.
+  </p>
+
+  <div class="rule-grid">
+    <div class="rule-card">
+      <div class="rule-num">QUESTION 01</div>
+      <p class="rule-q">Does this decision affect code in 6+ months?</p>
+      <p class="rule-detail">A library choice, a data schema, an exchange protocol - yes. Fixing a typo in a log line - no.</p>
+    </div>
+    <div class="rule-card">
+      <div class="rule-num">QUESTION 02</div>
+      <p class="rule-q">Is the context the decision was taken in not obvious from the code?</p>
+      <p class="rule-detail">If the code will not answer «why this way» a year from now - you need a record. If the code itself says «because» - you do not.</p>
+    </div>
+    <div class="rule-card">
+      <div class="rule-num">QUESTION 03</div>
+      <p class="rule-q">Was there a discussion with two or more viable options?</p>
+      <p class="rule-detail">A ten-message argument in chat - definitely yes. The decision to write a switch instead of an if - no.</p>
+    </div>
+    <div class="rule-card">
+      <div class="rule-num">QUESTION 04</div>
+      <p class="rule-q">Is rolling this decision back quickly and painlessly impossible?</p>
+      <p class="rule-detail">Changing an environment variable - reversible. Changing the database - not. The more expensive the rollback, the more important the record.</p>
+    </div>
+  </div>
+
+  <div class="aside">
+    If fewer than two answers are «yes» - skip it. A record written «just
+    in case» is worse than no record: it takes up space, it costs writing
+    time, and over time it becomes noise in which the important records get
+    lost.
+  </div>
+
+  <hr class="sep">
+
+  <h2>Task depth scale - how many records, and which ones</h2>
+  <p>
+    Not every task needs the same set of documents. An empirical scale of
+    four levels has settled in - it correlates well with the risk and the
+    reversibility of a task. Each level has its own minimum set of
+    records. This is our series' working scale, not a description of any
+    tool's internal router.
+  </p>
+
+  <div class="depth-table">
+    <div class="depth-row depth-head">
+      <div class="depth-cell">Level</div>
+      <div class="depth-cell">What to write</div>
+      <div class="depth-cell">Example tasks</div>
+    </div>
+    <div class="depth-row">
+      <div class="depth-cell">
+        <span class="depth-level">01 · TACTICAL</span>
+        <span class="depth-name">1 file, reversible in an hour</span>
+      </div>
+      <div class="depth-cell">Nothing. Just the code plus a commit message.</div>
+      <div class="depth-cell">A typo in a log line, renaming a variable, fixing a rounding error.</div>
+    </div>
+    <div class="depth-row">
+      <div class="depth-cell">
+        <span class="depth-level">02 · STANDARD</span>
+        <span class="depth-name">1-3 days, there is a choice</span>
+      </div>
+      <div class="depth-cell">A product document plus a draft architectural decision.</div>
+      <div class="depth-cell">A new feature in an existing module, choosing a library for one task.</div>
+    </div>
+    <div class="depth-row">
+      <div class="depth-cell">
+        <span class="depth-level">03 · DEEP</span>
+        <span class="depth-name">1-2 weeks, irreversible</span>
+      </div>
+      <div class="depth-cell">A product document plus a specification plus a decision plus measured evidence.</div>
+      <div class="depth-cell">A new service, a move to another database, a change to a public API schema.</div>
+    </div>
+    <div class="depth-row">
+      <div class="depth-cell">
+        <span class="depth-level">04 · CRITICAL</span>
+        <span class="depth-name">cross-team, strategy</span>
+      </div>
+      <div class="depth-cell">A group of documents (5-10 records), including a separate architecture overview.</div>
+      <div class="depth-cell">Migrating from one authentication model to another, splitting a new product out of the monolith.</div>
+    </div>
+  </div>
+
+  <p>
+    Start with two questions: «is it easy to roll back?» and «are other teams
+    affected?». A small local change with «yes/no» answers is tactical.
+    A larger reversible task with a choice of options is standard.
+    A hard-to-reverse change is deep; cross-team strategy is critical
+    on our scale. Use the table, not just the two answers.
+    A detailed calculator is in one of the later lessons of the series.
+  </p>
+
+  <hr class="sep">
+
+  <h2>A typical day for an engineer with the log in the process</h2>
+  <p>
+    To stay out of abstraction - a real day. From the life of a six-person
+    team building a B2B product. Without tying it to one specific tool:
+    any way of storing records works - a folder in the repo, your own CLI,
+    an off-the-shelf product.
+  </p>
+
+  <ul class="timeline">
+    <li>
+      <div class="when">09:15 · MORNING · GETTING INTO CONTEXT</div>
+      <div class="what">
+        I open the project's decision directory. I skim the active
+        records and the ones whose revisit condition is approaching. That
+        gives a picture of «what is in flight» and a signal «this one is
+        due for discussion».
+      </div>
+    </li>
+    <li>
+      <div class="when">09:30 · STARTING THE TASK</div>
+      <div class="what">
+        I pick up the ticket «optimize the file upload processing».
+        Other teams are not affected and the change is reversible, but
+        there are implementation choices and several days of work - standard
+        according to the table. I create a product document stub: markdown
+        from a template, or a record in the chosen tool.
+      </div>
+    </li>
+    <li>
+      <div class="when">10:00 · THREE OPTIONS · TESTABLE CONSEQUENCES</div>
+      <div class="what">
+        I fill in the main sections. I write out three implementation
+        options with testable consequences (if we pick option A, X should
+        be observed; if B - Y; if C - Z). An hour goes into running three
+        prototypes, and the metrics are recorded as evidence. <b>I would
+        do this work even without the log</b> - just without writing it
+        down.
+      </div>
+    </li>
+    <li>
+      <div class="when">14:00 · IMPLEMENTATION</div>
+      <div class="what">
+        I give the AI agent access to the records and instructions to «read
+        the project's active decisions before starting a task». I check that
+        the relevant record was read and yesterday's rejection was considered.
+        The instruction alone does not guarantee correct application.
+      </div>
+    </li>
+    <li>
+      <div class="when">17:30 · RECORDING THE RESULT</div>
+      <div class="what">
+        The implementation is done and the measurement showed the numbers
+        we needed. I create a short evidence record (one page: what was
+        measured, on which data, what the result was). I link it to the
+        decision. I move the decision to the «active» status - it is now
+        marked as in force rather than a draft. Editing the file itself is
+        still technically possible: the rule «a new version explicitly
+        replaces the old one» is one we keep, not one the tool enforces.
+      </div>
+    </li>
+    <li>
+      <div class="when">18:00 · END OF DAY</div>
+      <div class="what">
+        I open a pull request. The description links to the related
+        records. The reviewer reads them before the code review and
+        arrives with the right context instead of «let us try to remember
+        what we wanted here».
+      </div>
+    </li>
+  </ul>
+
+  <p>
+    This example allocates about an hour to filling in the record and
+    activating the decision. The record preserves the reasons for future
+    discussions and can provide context for an agent if read. A person or
+    explicitly configured external automation checks the revisit condition.
+  </p>
+
+  <hr class="sep">
+
+  <h2>How an AI agent reads your context at session start</h2>
+  <p>
+    This matters for anyone who codes with an AI assistant. A new session
+    with Claude Code or Cursor may lack the reasons for choosing library X,
+    so the agent may propose Y. Give it access to the records and instructions
+    to read the relevant files, or explicitly load them into the session.
+    A folder of markdown files and an instruction may suit this task,
+    but they guarantee neither reading the records nor drawing correct
+    conclusions from them.
+  </p>
+
+  <p>Three ways to connect it, from simple to advanced.</p>
+
+  <h3>Way 1 · Plain text files in the repository</h3>
+  <p>
+    The records live in a dedicated project directory as ordinary
+    markdown files. Any AI agent with file access can read them. Name the
+    relevant directory in the project instructions (such as <code>CLAUDE.md</code>,
+    <code>.cursorrules</code> or an equivalent):
+  </p>
+
+  <pre><code># CLAUDE.md or .cursorrules
+Before starting any task, read the files in the docs/decisions/
+directory whose status is active. These are the project's active
+architectural decisions.
+Do not propose options that are explicitly recorded as rejected.</code></pre>
+
+  <p>
+    This way can be sufficient for a suitable task: you need no plugin and
+    no special integration, the agent reads ordinary markdown files. But
+    remember: a line in the system instruction gives the agent knowledge of
+    the directory, not a guarantee that it will open those files itself -
+    and still less a guarantee that the conclusions it draws from them are
+    correct.
+  </p>
+
+  <h3>Way 2 · Through your agent's own tooling</h3>
+  <p>
+    Modern agents have their own mechanisms for pulling in external
+    context - Cursor Rules for Cursor, slash commands and connectable
+    tools in Claude Code, custom GPTs at OpenAI. Each of them can fetch
+    decision records in its own way: wholesale, on request, or by
+    semantic search. If the tool has its own data-connection mechanism -
+    consider it: for some tasks it is more convenient than reading whole
+    files every time. There is no universal rule here - the choice depends
+    on the task and on how your agent works.
+  </p>
+
+  <h3>Way 3 · Gates in the continuous integration pipeline</h3>
+  <p>
+    The strictest option: a pull request does not merge if it touches
+    files that have no active decision. This is not «bureaucracy» - it is
+    protection against accidentally bypassing constraints that were
+    already agreed on. It is implemented as an ordinary CI step (GitHub
+    Actions, GitLab CI, Buildkite - whatever you use) that compares the
+    diff against the decision directory and blocks the merge when it
+    finds a mismatch.
+  </p>
+
+  <hr class="sep">
+
+  <h2>Five ways an agent works with the records</h2>
+  <p>
+    With access to the records and the necessary tools, an agent can be
+    asked to perform these tasks. Its results need to be checked.
+  </p>
+
+  <div class="ways-grid">
+
+    <div class="way-card">
+      <div class="way-tag">01 · READ CONTEXT</div>
+      <p class="way-title">«Which active decisions relate to module X?»</p>
+      <p class="way-body">Ask the agent to read the relevant architectural decisions and briefly list the current constraints and rejected options. Check the references and how those constraints are reflected in the work that follows.</p>
+    </div>
+
+    <div class="way-card">
+      <div class="way-tag">02 · CREATE RECORDS</div>
+      <p class="way-title">«Create a decision record from the discussion we are having right now»</p>
+      <p class="way-body">The agent gathers context from the conversation, writes out the three options considered, proposes a revisit condition. A human checks the «rejected alternatives» - the real reasons are often internal.</p>
+    </div>
+
+    <div class="way-card">
+      <div class="way-tag">03 · CHECK CONFORMANCE</div>
+      <p class="way-title">«Does this code conform to active decision X?»</p>
+      <p class="way-body">The agent reads the decision, reads the code, and says «conforms» / «violates it in part X». Useful before a commit or a code review.</p>
+    </div>
+
+    <div class="way-card">
+      <div class="way-tag">04 · LINK EVIDENCE</div>
+      <p class="way-title">«Create an evidence record from the test result and link it to decision X»</p>
+      <p class="way-body">The agent takes the benchmark output or the load test result, formats it as structured evidence, links it to the decision, and updates the reliability assessment.</p>
+    </div>
+
+    <div class="way-card">
+      <div class="way-tag">05 · INITIATE A REVIEW</div>
+      <p class="way-title">«Find the decisions whose revisit trigger is approaching»</p>
+      <p class="way-body">The agent checks the metrics (if any are connected), compares them with the revisit conditions of the records, and proposes a list of «these three decisions are due for another look».</p>
+    </div>
+
+  </div>
+
+  <hr class="sep">
+
+  <h2>What to show a new team member on day one</h2>
+  <p>
+    If the team already has a decision log, a new person should get
+    through four steps on their first day to get up to speed. That takes
+    about an hour in total.
+  </p>
+
+  <ol>
+    <li><b class="k">Open the decision directory</b> and look at the structure. This shows which record types live in the project.</li>
+    <li><b class="k">Skim the active records</b> - sort by date, read the 10-15 most recent ones. Do not study them; just get a sense of «what this team actually decides about».</li>
+    <li><b class="k">Open the relationship graph</b> (if you have a visualisation) or simply look at which decisions reference each other. This shows how the project «map» is laid out.</li>
+    <li><b class="k">Try creating one test record</b> (for example a note about a day-one observation). This takes away the fear of «what if I break something».</li>
+  </ol>
+
+  <p>
+    After those four steps the person knows: where decisions live, how to
+    read them, how to create new ones, and how they relate to each other.
+    Everything after that is learned organically - on real tasks.
+  </p>
+
+  <hr class="sep">
+
+  <h2>Anti-patterns: what not to do</h2>
+  <p>
+    Six typical mistakes I have seen in teams that started keeping a
+    decision log. Each one lowers trust in the process and often leads to
+    abandoning the practice after a few months.
+  </p>
+
+  <div class="anti">
+    <div class="anti-tag">DO NOT DO THIS</div>
+    <ul>
+      <li><b>A record for every commit.</b> If the repository collected 200 decisions in a month - that is noise in which the real ones get lost. The four rules from the first section of this lesson are the filter.</li>
+      <li><b>A record written after the fact «for the record».</b> If the decision was already made and was not discussed while being recorded - it is not a decision record but a report of something that happened. Reports are useful too, but that is a different genre.</li>
+      <li><b>Copying the template without context.</b> The six fields of every record must be filled in specifically for that task. «Context: a typical situation» is not context.</li>
+      <li><b>One person writes all the records.</b> If the writing is delegated to a «team secretary» - the records will be written formally, without knowledge of the internal reasons. Everyone who owns a task writes their own records.</li>
+      <li><b>A record without a revisit condition.</b> The sixth section is the most important one. Without it a record becomes a monument that nobody looks at a year later.</li>
+      <li><b>Activation without evidence.</b> If a decision has no linked evidence at all - it is not a decision, it is an intention. Activate only after at least one measurement, or an explicit argument.</li>
+    </ul>
+  </div>
+
+  <hr class="sep">
+
+  <h2>What it integrates with, and what it does not replace</h2>
+  <p>
+    So it is clear where a decision log fits, and what should stay with
+    separate tools.
+  </p>
+
+  <h3>Integrates well with</h3>
+  <ul>
+    <li><b class="k">git</b> - the records live next to the code, in the same repository. The edit history is visible through <code>git log</code>.</li>
+    <li><b class="k">AI agents</b> (Claude Code, Cursor, Codex and others) - through direct file reading or through dedicated protocols.</li>
+    <li><b class="k">CI/CD</b> (GitHub Actions, GitLab CI, Buildkite) - gates before merging, checking a pull request against the active decisions.</li>
+    <li><b class="k">Slack / Telegram</b> - notifications about approaching revisit conditions through a small script.</li>
+    <li><b class="k">Monitoring systems</b> (Grafana, Datadog, Prometheus) - metrics from monitoring dashboards as a revisit trigger.</li>
+  </ul>
+
+  <h3>Does not replace</h3>
+  <ul>
+    <li><b class="k">Jira / Linear / Trello</b> - task and deadline management. A decision log does not know who is doing what right now, nor when the deadline is.</li>
+    <li><b class="k">Notion / Confluence</b> - shared documents, design systems, meeting notes. Not for retelling meetings.</li>
+    <li><b class="k">Slack / Discord</b> - communication. Decisions are recorded after a discussion in chat, not instead of it.</li>
+  </ul>
+
+  <hr class="sep">
+
+  <h2>Where to go next</h2>
+  <p>
+    After the two introductory lessons come breakdowns of specific parts
+    of the process. Pick whichever is most relevant to you right now.
+  </p>
+
+  <div class="next-grid">
+    <a class="next-link" href="decision-cycle.html">
+      <div class="next-who">FORMAL CYCLE</div>
+      <div class="next-where">How one decision gets formulated <span class="next-arrow">→</span></div>
+    </a>
+    <a class="next-link" href="trust-calculus.html">
+      <div class="next-who">3D INTERACTIVE</div>
+      <div class="next-where">Trust Calculus in F/G/R space <span class="next-arrow">→</span></div>
+    </a>
+    <a class="next-link" href="bmad-cycle.html">
+      <div class="next-who">FROM IDEA TO FEATURE</div>
+      <div class="next-where">BMAD · 13-step PRD · adversarial review <span class="next-arrow">→</span></div>
+    </a>
+    <a class="next-link" href="spec-cycle.html">
+      <div class="next-who">SPECIFICATION</div>
+      <div class="next-where">How a specification differs from a PRD <span class="next-arrow">→</span></div>
+    </a>
+    <a class="next-link" href="lifecycle-cycle.html">
+      <div class="next-who">LIFECYCLE</div>
+      <div class="next-where">What happens after a record is activated: stale / renew / supersede <span class="next-arrow">→</span></div>
+    </a>
+    <a class="next-link" href="depth-calibrator.html">
+      <div class="next-who">CALIBRATION</div>
+      <div class="next-where">Interactive task depth calculator <span class="next-arrow">→</span></div>
+    </a>
+    <a class="next-link" href="agent-protocol-cycle.html">
+      <div class="next-who">CONTRACT WITH THE AGENT</div>
+      <div class="next-where">How the agent stopped hallucinating the next steps <span class="next-arrow">→</span></div>
+    </a>
+    <a class="next-link" href="multi-agent-cycle.html">
+      <div class="next-who">SEVERAL AGENTS</div>
+      <div class="next-where">Coordinating 2-5 agents in one repository <span class="next-arrow">→</span></div>
+    </a>
+  </div>
+
+
+</main>
+</body>
+</html>

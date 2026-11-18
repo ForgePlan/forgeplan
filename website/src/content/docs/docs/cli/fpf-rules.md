@@ -5,7 +5,7 @@ description: "List active FPF rules grouped by action: EXPLORE, INVESTIGATE, EXP
 
 `forgeplan fpf rules` lists every active rule in the **First Principles Framework** rule engine, grouped by its recommended action bucket: **EXPLORE** (generate more hypotheses), **INVESTIGATE** (gather more evidence for existing hypotheses), or **EXPLOIT** (commit to a proven path).
 
-The rules encode FPF's trust calculus in machine-executable form. They're what [`fpf check`](/docs/cli/fpf-check/) evaluates against individual artifacts and what [`fpf dashboard`](/docs/cli/fpf-dashboard/) aggregates into project-level recommendations.
+These are ForgePlan's executable methodology rules, not a complete implementation of upstream FPF. [`fpf check`](/docs/cli/fpf-check/) evaluates them per artifact and [`fpf dashboard`](/docs/cli/fpf-dashboard/) provides a project view. A nonempty `fpf.rules` configuration replaces the built-in set.
 
 ## When to use
 
@@ -58,19 +58,19 @@ forgeplan fpf dashboard
 
 Rules map onto the explore→investigate→exploit axis from FPF Part B:
 
-- **EXPLORE** - the artifact or context has too few hypotheses. The rule suggests generating alternatives (e.g. "Fewer than 3 hypotheses on Deep depth - run `forgeplan reason`").
-- **INVESTIGATE** - hypotheses exist but evidence is weak or low-congruence. The rule suggests gathering more (e.g. "R_eff below threshold - attach a measurement EvidencePack").
-- **EXPLOIT** - trust is strong enough to commit. The rule clears the artifact for activation or supersession.
+- **EXPLORE** - built-in rules flag a draft with R_eff < 0.01 or an active artifact without links.
+- **INVESTIGATE** - built-in rules flag weak evidence or medium reliability.
+- **EXPLOIT** - the built-in recommendation requires R_eff ≥ 0.7 and overall quality ≥ 0.6; it does not itself authorize activation or supersession.
 
-Each rule carries a condition (predicate on artifact metadata), an action label, and a human-readable justification tied to an FPF section (e.g. `ref: B.3`).
+Each rule has a name, priority, condition, action, and optional message. The built-in set does not count hypotheses or fetch live KB citations.
 
 ## How it fits
 
-The rule engine was introduced in **PRD-041** and extended in **PRD-043** (methodology integrity). It reads artifact state from LanceDB and consults the FPF KB for justification text. Output flows into:
+`rules` reads workspace configuration and lists active rules without evaluating an artifact or loading KB section bodies. Rule evaluation and lifecycle checks are separate operations:
 
-- `fpf check <id>` - per-artifact view
-- `fpf dashboard` - aggregated per-context view
-- `forgeplan validate` / `activate` gates (for integrity rules)
+- `fpf check <id>` - per-artifact matches
+- `fpf dashboard` - project recommendations
+- `forgeplan validate` / `activate` - separate validation and lifecycle checks
 
 ## See also
 
@@ -79,3 +79,21 @@ The rule engine was introduced in **PRD-041** and extended in **PRD-043** (metho
 - [`forgeplan fpf dashboard`](/docs/cli/fpf-dashboard/) - rules aggregated per context
 - [`forgeplan validate`](/docs/cli/validate/) - validation gate that consults integrity rules
 - [Methodology guide](/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan fpf rules --help`.
+
+```text
+List active FPF rules grouped by action (EXPLORE/INVESTIGATE/EXPLOIT)
+
+Usage: forgeplan fpf rules [OPTIONS]
+
+Options:
+      --flat     Flat priority-linear table instead of action-grouped tree
+      --json     Output full rule dump as JSON
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

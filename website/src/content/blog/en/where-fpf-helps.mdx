@@ -12,15 +12,17 @@ translations:
   ru: where-fpf-helps
 ---
 
-In [the previous post](/blog/en/what-is-fpf/) I covered what FPF is as a whole: where the framework comes from, why it exists, and how its basic vocabulary works. This post is a companion: where exactly these patterns apply.
+> **Examples and edition note, 2026-10-23.** All 25 cases are teaching scenarios, not a sourced dataset of interventions. Their figures — including 90 days, 60/25/15%, half the negotiation time, doubled reputation damage and 92%/40% benchmark results — are illustrative, not measured effects or reports about an identified organization. Clinical, legal and investment examples do not replace professional standards or evidence. Pattern summaries are the author's May 2026 adaptations without a pinned May revision, not verbatim current requirements. Current references: [FPF 34a1ae7145309f8c18b4c8864513e3456d43de71](https://github.com/ailev/FPF/blob/34a1ae7145309f8c18b4c8864513e3456d43de71/FPF-Spec.md), especially [A.6](https://fpf.tools/A.6), [B.5.2](https://fpf.tools/B.5.2), [E.9](https://fpf.tools/E.9). The proposed dashboards, refresh tasks and source-change alerts require separately configured tooling; writing a pattern or date does not install them.
 
-25 situations across 12 fields. For each one: which FPF pattern solves the problem and what changes as a result.
+In [the previous post](/blog/what-is-fpf/) I covered what FPF is as a whole: where the framework comes from, why it exists, and how its basic vocabulary works. This post is a companion: where exactly these patterns apply.
+
+25 situations across 12 fields. Each proposes a pattern-inspired intervention and an outcome to evaluate, not a guaranteed solution.
 
 Every case follows the same structure:
 
-- **Situation** - a real scenario where something goes wrong
-- **FPF Pattern** - a specific mechanism from the specification
-- **What changes** - a concrete result after applying the pattern
+- **Situation** — a hypothetical or adapted scenario where something goes wrong
+- **FPF Pattern** — the author's pattern-inspired interpretation
+- **What changes** — a proposed result, not an observed causal effect
 
 An important caveat: this is not a call to "implement FPF everywhere." On the contrary - each specific pattern answers a specific problem. If the problem does not exist, the pattern is not needed. The cases below show where the problem does exist and which tool resolves it.
 
@@ -34,7 +36,7 @@ The cases are independent of each other: you can start from whichever section ma
 
 - **Situation.** The payments team ships API v2. A single document mixes: "no refunds older than 180 days," "the merchant must return HTTP 200 to the webhook within 5 seconds," "on failure - log to audit," and "the partner bank decides the FX rate." Integrators break unpredictably; support drowns.
 - **FPF Pattern.** A.6 Boundary Discipline (L/A/D/E) - separate into Laws / Admissibility / Deontics / Effects.
-- **What changes.** Every statement gets a type. Testers write separate suites for prohibitions and for obligations. Lawyers read only L+D; SRE reads only E.
+- **What changes.** Statements are classified as laws/definitions, admissibility, duties/prohibitions and effects/evidence. Separate tests can follow; readers still need all clauses relevant to their duties, not only one or two letter classes.
 
 ### 2. "The release deployed itself"
 
@@ -45,7 +47,7 @@ The cases are independent of each other: you can start from whichever section ma
 ### 3. The SRE dashboard is green - and lying
 
 - **Situation.** 12 SLI graphs are green; the customer complains about latency. It turns out that alerting rules had not been updated in 9 months, the latency bucket was widened in March, and no one revised the thresholds.
-- **FPF Pattern.** B.3.4 Evidence Decay + Epistemic Debt - every SLI needs a valid_until date and a refresh policy.
+- **FPF Pattern.** B.3.4 inspires an explicit freshness policy for the threshold evidence; a universal expiry for every SLI does not follow.
 - **What changes.** The dashboard shows not only the color but also the age of the threshold definition. Older than 90 days triggers a visual "stale" marker and a Refresh task to the owner.
 
 ### 4. The architect chose Kafka "because Kafka"
@@ -71,7 +73,7 @@ The cases are independent of each other: you can start from whichever section ma
 ### 7. A 5-year strategy with no alternatives
 
 - **Situation.** The CEO presents to the board: "Strategy 2030: focus on enterprise." One board member asks: "What else did you consider and why did you discard it?" No coherent answer exists.
-- **FPF Pattern.** E.9 DRR - Problem frame + Decision + Alternatives + Basis + Loss/Recoverability.
+- **FPF Pattern.** A local decision record inspired by E.9. Current E.9 is a DRR for FPF content decisions; applying its rationale discipline to business strategy is an adaptation, not a claim that its schema governs boards.
 - **What changes.** The strategy comes with a ledger of 4-5 rejected options and the criteria that eliminated them. The board can contest the choice on its merits rather than taking it on faith. At the next review it is easy to see which input assumptions have changed.
 
 ### 8. Pre-IPO: "we're ready"
@@ -85,8 +87,8 @@ The cases are independent of each other: you can start from whichever section ma
 ### 9. The lab and the "obvious" experiment
 
 - **Situation.** The PI publishes a result; the reviewer asks for the protocol. The PhD student who ran the experiment has left. Nobody can reproduce it: "we did it the usual way." A repeat experiment produces a different curve.
-- **FPF Pattern.** A.15 Role-Method-Work - distinguish MethodDescription (the text), Method (the bearer), Work (the specific run).
-- **What changes.** The lab introduces a requirement: every Work is linked to a version of the MethodDescription and an explicit Method-bearer (instrument + calibration). Reproducibility becomes verifiable.
+- **FPF Pattern.** Distinguish MethodDescription (description), Method (way of acting), actual performer and Work (dated occurrence). A Method is not the instrument or bearer.
+- **What changes.** Link a run to the method description/version, performer, equipment, calibration and actual observations. This makes a reproduction attempt inspectable; it does not guarantee that the result will reproduce.
 
 ### 10. A strange observation in the data
 
@@ -99,14 +101,14 @@ The cases are independent of each other: you can start from whichever section ma
 ### 11. The sepsis guideline that was never revised
 
 - **Situation.** The unit works from a 2019 protocol. New meta-analyses show that some fluid recommendations have been updated. During rounds a resident suggests the newer approach; the attending responds "we have a protocol."
-- **FPF Pattern.** B.3.4 Evidence Decay + Refresh policy - every protocol item needs a valid_until date.
+- **FPF Pattern.** An explicit review policy for clinical guidance, informed by evidence freshness. No universal valid_until interval or treatment recommendation is established by this scenario.
 - **What changes.** Each block of the protocol gets a "next review by" date and an owner-expert. The protocol does not become scripture. During rounds anyone can point to the date.
 
 ### 12. "The mass is most likely benign"
 
 - **Situation.** A radiologist writes "lesion, most probably benign." The clinician treats it as "benign" and defers follow-up. A year later it turns out this was one of three hypotheses the radiologist considered - and not the leading one given all the features.
-- **FPF Pattern.** B.5.2.1 Creative Abduction + NQD - return a Pareto-front, not a winner.
-- **What changes.** The report contains not a "diagnosis" but a ranked set: three hypotheses with weights and the criteria that would distinguish them. The clinician sees which additional workup resolves the ambiguity.
+- **FPF Pattern.** Preserve serious rival explanations and distinguishing evidence. The historic B.5.2.1/NQD analogy does not establish a clinical ranking rule.
+- **What changes.** Qualified clinicians document uncertainty and follow the applicable clinical reporting/follow-up standards. Three weighted hypotheses or a Pareto front cannot be prescribed from this hypothetical example.
 
 ## Education
 
@@ -128,13 +130,13 @@ The cases are independent of each other: you can start from whichever section ma
 
 - **Situation.** A 40-page SaaS contract. The client's lawyer complains: impossible to tell where the vendor's obligations are, where the admissibility conditions are, where the penalties are, and where the automatic effects (late fees) are. Negotiations drag on.
 - **FPF Pattern.** A.6 Boundary Discipline (L/A/D/E) - sort provisions into 4 types.
-- **What changes.** The contract is rewritten with markers: [L] prohibition, [A] admissibility condition, [D] obligation, [E] consequence. Time to agreement drops by half; disputes address a specific type.
+- **What changes.** Mark definitions/invariants [L], mechanism entry conditions [A], duties/prohibitions [D], and effect/evidence claims [E]. The original “time halved” figure is illustrative and supplies no estimate of negotiation savings.
 
 ### 16. The compliance checklist is green - the audit fails
 
 - **Situation.** Internal compliance shows 100% on the GDPR checklist. An external auditor finds that the checklist was last reviewed before Schrems II, several items are no longer current, and the DPAs with sub-processors are from an old template.
 - **FPF Pattern.** B.3.4 Evidence Decay - a checklist is evidence with a TTL.
-- **What changes.** Every item has a validation date and a regulatory source. When the source changes, the items are automatically marked stale. "100%" becomes "100% as of 2019" - which is immediately uncomfortable.
+- **What changes.** Record validation dates and governing sources, assign an owner, and configure source-change alerts if needed. A source change prompts assessment, not automatic legal invalidity; the example's 100% is a dated checklist count, not proof of compliance.
 
 ## Government & Regulatory
 
@@ -148,7 +150,7 @@ The cases are independent of each other: you can start from whichever section ma
 
 ### 18. Crisis: the first plausible version
 
-- **Situation.** A data breach. The PR team assembles a version - "breach via a contractor" - within 2 hours and publishes a statement. The next day it turns out the source was an insider. The second statement contradicts the first; reputational damage doubles.
+- **Situation.** In a hypothetical breach, an early contractor explanation is later contradicted by insider evidence. Conflicting statements can damage credibility; “damage doubles” has no defined metric or supporting measurement here.
 - **FPF Pattern.** B.5.2 Abductive Loop - no first hypothesis goes to publication without a second hypothesis and a distinguishing filter.
 - **What changes.** The PR protocol requires: before any public statement - at minimum 2 hypotheses and at least one filter that distinguishes them. If a filter is impossible within the timebox, the publication says "under investigation," not "here is what happened."
 
@@ -164,13 +166,13 @@ The cases are independent of each other: you can start from whichever section ma
 
 - **Situation.** An LLM agent in an internal tool executes `DROP TABLE staging_users`. Postmortem: "the model decided the table was no longer needed." The team demands "forbid the agent dangerous commands" but cannot articulate which ones.
 - **FPF Pattern.** A.3 Transformer Quartet + A.6 Boundary Discipline (L/A/D/E).
-- **What changes.** The agent is not a "decider"; it is a Method executing the Role "assistant under supervision." The L/A/D/E contract explicitly lists Laws (forbidden operations), Admissibility (when DROP is allowed), Deontics (obligation to confirm), Effects (audit log). "Decided on its own" becomes "violated A."
+- **What changes.** Identify the actual executing system, assigned role, method and dated work, rather than calling the agent itself a Method. Separate normative prohibitions [D], mechanism entry predicates [A], definitions [L] and observed effects/evidence [E]. A written rule alone does not enforce access control; establish which rule and mechanism failed before saying “violated A.”
 
 ### 21. The benchmark says "AGI-level"
 
 - **Situation.** A model scores 92% on a new benchmark. Press release: "surpasses PhD-level experts." A month later an independent team shows that 40% of the benchmark tasks were in the training set, and the "PhD-level" claim was calculated over a narrow subset.
-- **FPF Pattern.** E.17 Source-support posture - 19 explicit positions on how well evidence supports a claim.
-- **What changes.** Every statement in the model card gets a posture: directly-evidenced / partially / contested / unsupported. The marketing "PhD-level" is classified as partially - and must specify which subset and which expert baseline.
+- **FPF Pattern.** Separate publication appearance from source support. The historical “19 positions” phrase is not a verified current schema or an empirical reliability scale.
+- **What changes.** For each claim, state the exact benchmark subset, expert baseline, contamination limits and source. Choose a support disposition from that evidence; do not automatically call a misleading “PhD-level” claim partially supported.
 
 ## HR
 
@@ -210,9 +212,9 @@ The cases are independent of each other: you can start from whichever section ma
 
 `A.15 Role-Method-Work Alignment` - surprisingly, it's not engineers who need it most. HR, science, education: "process" is fuzziest there, and "do we have one?" resolves to "which of the five things is missing?".
 
-Two more quick takes. `B.5.2 Abductive Loop` saves PR crises, medical diagnoses, and architecture reviews in the same way - "don't publish the first plausible version" translates to non-technical audiences in under a minute. And `E.9 DRR` lands well where decisions are politically charged: strategy, hiring, promotion, curriculum. Gives defensibility without bureaucracy.
+The author's cross-domain suggestion is to retain rivals and rationale rather than publish the first plausible explanation. Whether that helps a particular crisis, diagnosis or decision needs domain evidence; neither a one-minute explanation nor use of E.9 establishes effectiveness or defensibility.
 
 To go deeper into the patterns themselves:
 
-- Full FPF overview: [/blog/en/what-is-fpf/](/blog/en/what-is-fpf/)
+- Full FPF overview: [/blog/what-is-fpf/](/blog/what-is-fpf/)
 - Specification: [github.com/ailev/FPF](https://github.com/ailev/FPF)

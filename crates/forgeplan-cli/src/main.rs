@@ -826,6 +826,32 @@ enum Commands {
     ReconcileIds(commands::reconcile_ids::ReconcileIdsArgs),
     /// Rebuild LanceDB index from .md files (files-first sync)
     Reindex,
+    /// Run one Constellation index maintenance pass (capture → reconcile →
+    /// publish, verified), optionally draining the embedding queue
+    Index {
+        /// Also drain the embedding queue for this profile (requires the
+        /// semantic-search build feature)
+        #[arg(long)]
+        embed_profile: Option<String>,
+        /// Deadline for the whole pass, in seconds
+        #[arg(long, default_value = "300")]
+        deadline_secs: u64,
+        /// List a read-only page of documents in the published generation
+        #[arg(long, conflicts_with = "embed_profile")]
+        list: bool,
+        /// First document to show with --list
+        #[arg(long, default_value = "0", requires = "list")]
+        offset: usize,
+        /// List all generations under lance/ with size and protection
+        /// state (current / leased / keepable) — the generation index
+        #[arg(long, conflicts_with_all = ["embed_profile", "list"])]
+        generations: bool,
+        /// Garbage-collect generations: keep the newest N deletable ones
+        /// plus CURRENT and anything a live reader holds pinned
+        #[arg(long, conflicts_with_all = ["embed_profile", "list", "generations"],
+               value_name = "KEEP")]
+        gc: Option<usize>,
+    },
     /// Generate embeddings for all artifacts (semantic search)
     Embed,
     /// Show change log — audit trail of artifact mutations
@@ -871,7 +897,12 @@ enum Commands {
         json: bool,
     },
     /// Watch .forgeplan/ files and sync changes to LanceDB in real time
-    Watch,
+    Watch {
+        /// Also run a Constellation maintenance pass after each change batch:
+        /// the corrected 0A/0B index stays fresh alongside the legacy sync
+        #[arg(long)]
+        constellation: bool,
+    },
     /// Sync artifact changes from git operations (pull/merge) into LanceDB
     GitSync {
         /// Git ref to diff against (default: ORIG_HEAD from last pull/merge)
@@ -879,7 +910,29 @@ enum Commands {
         since: Option<String>,
     },
     /// Start MCP server (stdio transport) for AI agent integration
-    Serve,
+    Serve {
+        /// Run a Constellation maintenance pass + embedding-queue drain in the
+        /// background while serving (explicit opt-in; the index itself is
+        /// never required for reads)
+        #[arg(long)]
+        auto_index: bool,
+        /// Server profile: `full` (default — all tools) or
+        /// `constellation-read` (stage-5 read profile — only scope/snapshot
+        /// handle reads; no write tools, no raw paths accepted)
+        #[arg(long, default_value = "full")]
+        profile: String,
+        /// Workspace this process maintains, when it is not the one the server
+        /// was started in.
+        ///
+        /// Absent, the maintenance host follows the process's working directory.
+        /// Present, it follows **this** path — so `serve --auto-index
+        /// --workspace Y` in a checkout of X maintains Y and never X. Without
+        /// the flag, `forgeplan serve` started in X had no way to keep a second
+        /// workspace current at all, and any attempt to infer one from the
+        /// server's own default resolution would silently pick X again.
+        #[arg(long, value_name = "PATH")]
+        workspace: Option<std::path::PathBuf>,
+    },
     /// MCP integration helpers (install config for AI agent clients)
     Mcp {
         #[command(subcommand)]
@@ -916,12 +969,30 @@ enum Commands {
         #[command(subcommand)]
         action: PluginsAction,
     },
+    /// Constellation registry — named sets of `.forgeplan` sources that
+    /// `search`/`get` fan out over. The registry lives in
+    /// `~/.forgeplan/constellations.yaml`: per-user, shared by every
+    /// ForgePlan instance on the machine.
+    Constellation {
+        #[command(subcommand)]
+        action: commands::constellation::ConstellationAction,
+    },
 }
 
 #[derive(Subcommand)]
 enum McpAction {
     /// Start MCP server (alias for `forgeplan serve`)
-    Serve,
+    Serve {
+        /// Run a Constellation maintenance pass + embedding-queue drain in the
+        /// background while serving. Same meaning as `forgeplan serve
+        /// --auto-index`, and on an already-migrated workspace it is implied.
+        #[arg(long)]
+        auto_index: bool,
+        /// Workspace this process maintains, when it is not the one the server
+        /// was started in. Same meaning as `forgeplan serve --workspace`.
+        #[arg(long, value_name = "PATH")]
+        workspace: Option<std::path::PathBuf>,
+    },
     /// Install forgeplan MCP config into a client (Claude / Cursor / Windsurf).
     ///
     /// Smart-merge: replaces command/args/transport, preserves existing `env`.
@@ -1099,7 +1170,19 @@ enum FpfCommands {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> std::process::ExitCode {
+    match run().await {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("Error: {error:#}");
+            std::process::ExitCode::from(
+                forgeplan::commands::common::resolution_exit_code(&error).unwrap_or(1),
+            )
+        }
+    }
+}
+
+async fn run() -> anyhow::Result<()> {
     // Load .env from workspace first (.forgeplan/.env via walk-up from cwd),
     // then fall back to cwd .env. Neither call overrides shell env vars —
     // precedence: shell env > workspace .env > cwd .env.
@@ -1470,6 +1553,24 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Commands::Reindex => commands::reindex::run().await,
+        Commands::Index {
+            embed_profile,
+            deadline_secs,
+            list,
+            offset,
+            generations,
+            gc,
+        } => {
+            if list {
+                commands::index::list(offset).await
+            } else if generations {
+                commands::index::generations()
+            } else if let Some(keep) = gc {
+                commands::index::gc(keep).await
+            } else {
+                commands::index::run(embed_profile, deadline_secs).await
+            }
+        }
         Commands::Embed => commands::embed::run().await,
         Commands::Log {
             id,
@@ -1497,16 +1598,34 @@ async fn main() -> anyhow::Result<()> {
             limit,
             json,
         } => commands::recall::run(query.as_deref(), category.as_deref(), limit, json).await,
-        Commands::Watch => commands::watch::run().await,
+        Commands::Watch { constellation } => commands::watch::run(constellation).await,
+        Commands::Constellation { action } => commands::constellation::run(action).await,
         Commands::GitSync { since } => commands::git_sync::run(since.as_deref()).await,
-        Commands::Serve => {
-            let cwd = std::env::current_dir()?;
-            forgeplan_mcp::run_stdio(cwd).await
-        }
-        Commands::Mcp { action } => match action {
-            McpAction::Serve => {
+        Commands::Serve {
+            auto_index,
+            profile,
+            workspace,
+        } => match profile.as_str() {
+            "constellation-read" => forgeplan_mcp::constellation_read::run_read_stdio().await,
+            "full" => {
                 let cwd = std::env::current_dir()?;
-                forgeplan_mcp::run_stdio(cwd).await
+                forgeplan_mcp::serve_with_maintenance(cwd, workspace.as_deref(), auto_index).await
+            }
+            other => {
+                anyhow::bail!("unknown serve profile {other:?} — `full` or `constellation-read`")
+            }
+        },
+        Commands::Mcp { action } => match action {
+            McpAction::Serve {
+                auto_index,
+                workspace,
+            } => {
+                let cwd = std::env::current_dir()?;
+                // `forgeplan mcp serve` is an alias for `forgeplan serve`, so
+                // it takes the same `--workspace` scoping for maintenance: an
+                // alias that silently ignored the flag would be a second way to
+                // maintain the wrong workspace.
+                forgeplan_mcp::serve_with_maintenance(cwd, workspace.as_deref(), auto_index).await
             }
             McpAction::Install {
                 client,

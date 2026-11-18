@@ -1,7 +1,10 @@
+use std::borrow::Cow;
+
 use anyhow::Result;
 use console::style;
 
 use forgeplan_core::artifact::sanitize::sanitize_for_hint;
+use forgeplan_core::db::store::ArtifactRecord;
 use forgeplan_core::estimate::types::ItemSource;
 use forgeplan_core::estimate::{calculator, confidence, extractor, scorer};
 use forgeplan_core::hints::{self, Hint};
@@ -22,18 +25,20 @@ pub async fn run(artifact_id: &str, actual_hours: f64, grade: Option<&str>) -> R
         );
     }
 
-    let store = common::store().await?;
+    let (ws, source, _read_guard) = common::open_read_source().await?;
 
     // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id.
-    let artifact_id = store.resolve_id(artifact_id).await?.ok_or_else(|| {
-        anyhow::anyhow!("Artifact '{artifact_id}' not found\nFix: forgeplan list")
-    })?;
-    let artifact_id = artifact_id.as_str();
+    let (canonical, _) = common::resolve_required_identity(&source, &ws, artifact_id).await?;
+    let artifact_id = canonical.as_str();
 
-    // Get the artifact
-    let record = store.get_record(artifact_id).await?.ok_or_else(|| {
-        anyhow::anyhow!("Artifact '{}' not found\nFix: forgeplan list", artifact_id)
-    })?;
+    let record: Cow<'_, ArtifactRecord> = match &source {
+        common::ReadSource::Legacy(store) => store
+            .get_record(&_read_guard, artifact_id)
+            .await?
+            .map(Cow::Owned),
+        common::ReadSource::Captured(read) => read.get_record(artifact_id).map(Cow::Borrowed),
+    }
+    .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found\nFix: forgeplan list", artifact_id))?;
 
     // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — slug pre-merge / display
     // id post-merge so the follow-up `estimate` / `score` hints stay
@@ -63,11 +68,20 @@ pub async fn run(artifact_id: &str, actual_hours: f64, grade: Option<&str>) -> R
         .filter(|w| w.source == ItemSource::Phase)
         .collect();
 
-    let outgoing = store.get_relations(&record.id).await.unwrap_or_default();
-    let incoming = store
-        .get_incoming_relations(&record.id)
-        .await
-        .unwrap_or_default();
+    let (outgoing, incoming) = match &source {
+        common::ReadSource::Legacy(store) => (
+            store
+                .get_relations(&_read_guard, &record.canonical_key)
+                .await?,
+            store
+                .get_incoming_relations(&_read_guard, &record.canonical_key)
+                .await?,
+        ),
+        common::ReadSource::Captured(read) => (
+            read.get_relations(&record.canonical_key),
+            read.get_incoming_relations(&record.canonical_key),
+        ),
+    };
 
     let has_spec = outgoing
         .iter()

@@ -11,7 +11,7 @@
 |---|---|---|---|
 | **Артефактная** (решения, требования, evidence) | `.forgeplan/` markdown в git | ForgePlan | нет — это и есть truth |
 | **Плановая** (work intents) | issues форджа → с момента ingestion: projection DB | фордж (ingress) → ForgeFarm | — |
-| **Исполнительная** (runs, leases, retries, verdicts, approvals) | Projection DB ForgeFarm | ForgeFarm control plane | да, из git + tracker + ForgePlan |
+| **Исполнительная** (runs, leases, retries, verdicts, approvals) | Projection DB ForgeFarm | ForgeFarm control plane | целевая проекция — из git + tracker + ForgePlan **и сохранённых audit/run events**, при наличии replay |
 | **Evidence/наблюдаемость** | commits/PRs + event/trace store + audit log | git + ForgeFarm audit | append-only |
 
 Правило зеркалирования: в трекер возвращаются только человекочитаемый summary-статус, ссылки на PR и evidence. Labels вида `state:*`, `risk:*`, `lease:held` — исходящие проекции; переход НИКОГДА не инициируется из трекера.

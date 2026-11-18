@@ -2,7 +2,7 @@
 
 # Multi-Agent Workflow (v0.24.0+)
 
-С версии **v0.24.0** (PRD-057) Forgeplan умеет **диспетчеризовать работу** между 2–5 суб-агентами в одном workspace. Один MCP-вызов возвращает готовый план: кто над чем работает, что идёт параллельно, что ждёт в serial queue, и почему.
+С **v0.24.0** (PRD-057) Forgeplan предлагает справочные dispatch-планы и claims. Типичная цель — 2–5 агентов; текущий предел core — 1–64. План не является файловым lock и не гарантирует отсутствие конфликтов: overlap между buckets не проверяется.
 
 ## Зачем это нужно
 
@@ -18,7 +18,7 @@
 - **Serial wasted** — A ждёт B, хотя могла бы идти параллельно с C
 - **Забытый блокер** — активировали PRD, deps ещё в draft
 
-v0.24.0 закрывает это через четыре MCP-инструмента.
+Эти инструменты помогают координации, но не устраняют перечисленные риски автоматически.
 
 ## Четыре MCP-инструмента
 
@@ -45,7 +45,7 @@ v0.24.0 закрывает это через четыре MCP-инструмен
 ```jsonc
 {
   "buckets": [["PRD-901"], ["PRD-902"], ["PRD-903"]],  // один bucket на агента
-  "serial_queue": ["PRD-905"],                           // ждут своей очереди
+  "serial_queue": [{"id": "PRD-905", "reason": "no matching skill"}],
   "reasoning": [                                          // NFR-005 — почему каждое решение
     "PRD-901: assigned to agent 0 (no file conflict, skill match)",
     "PRD-905: serialized (conflicts with every bucket or no matching skill)"
@@ -68,7 +68,7 @@ v0.24.0 закрывает это через четыре MCP-инструмен
 4. **Domain/skill match** — если передан `agent_skills`, артефакт идёт только к агенту с совпадающим skill. Skill mismatch → serial queue.
 5. **Least-loaded-first greedy** — распределяет работу равномерно; не валит всё на agent 0.
 
-**Read-only:** не мутирует workspace, не берёт `workspace_lock`. Безопасно поллить с частотой 1 Hz — не блокирует writers.
+**Read-only:** не мутирует workspace и не берёт `workspace_lock`. Это не гарантия производительности/SLA при polling 1 Hz; перепланируйте по необходимости.
 
 ### `forgeplan_claim` — «я беру этот артефакт»
 
@@ -86,7 +86,7 @@ v0.24.0 закрывает это через четыре MCP-инструмен
 
 Пишет `.forgeplan/claims/PRD-901.yaml` (gitignored). Если уже держит другой агент — **отказ** с `agent_id` и `expires_at` держащего. Same-agent calls **продлевают** TTL. Истёкшие claims **transparent overwrite** (AC-3).
 
-**Атомарная запись** через tempfile + rename — SIGKILL mid-write не оставляет битый YAML.
+**Атомарная видимость** — tempfile + rename, не гарантия durability при потере питания. Claims — справочные отметки намерения, не access-control locks и не лимит «один claim на агента». Обычное чтение фильтрует expired claims, не удаляя файлы. Явный claim-agent ограничен 64 байтами.
 
 ### `forgeplan_release` — «закончил»
 
@@ -95,7 +95,7 @@ v0.24.0 закрывает это через четыре MCP-инструмен
   "name": "forgeplan_release",
   "arguments": {
     "id": "PRD-901",
-    "agent": "worker-1",  // обязателен, если force=false
+    "agent": "worker-1",  // optional в schema; default MCP identity должен совпасть с holder
     "force": false         // true — orchestrator override для упавшего агента
   }
 }
@@ -130,40 +130,35 @@ Sorted by `expires_at` ASC (earliest-expiring first). **Read-only** — не б�
 
 ### Оркестратор распределяет работу между 3 агентами
 
-```
-1. orchestrator → forgeplan_dispatch --agents 3 --epic EPIC-005
-   ← { buckets: [[PRD-A], [PRD-B], [PRD-C]], serial: [PRD-D], ... }
+Иллюстративная CLI-координация (подставьте реальные ID):
 
-2. orchestrator → worker-1 "работай над PRD-A"
-   orchestrator → worker-2 "работай над PRD-B"
-   orchestrator → worker-3 "работай над PRD-C"
-
-3. worker-1 → forgeplan_claim PRD-A --ttl 30
-   worker-2 → forgeplan_claim PRD-B --ttl 30
-   worker-3 → forgeplan_claim PRD-C --ttl 30
-
-4. Агенты работают параллельно. Каждые ~N минут:
-   worker-1 → forgeplan_claim PRD-A (same agent, продлевает TTL)
-
-5. worker-1 done → forgeplan_release PRD-A
-   orchestrator → forgeplan_dispatch --agents 3 (re-plan — PRD-D может стать parallelizable)
+```text
+1. orchestrator → forgeplan dispatch --agents 3 --epic EPIC-005
+   До делегации сверить buckets, serial_queue objects и файловое владение.
+2. worker-1 → forgeplan claim PRD-A --agent worker-1 --ttl-minutes 30
+   worker-2 → forgeplan claim PRD-B --agent worker-2 --ttl-minutes 30
+   worker-3 → forgeplan claim PRD-C --agent worker-3 --ttl-minutes 30
+3. worker-1 продлевает claim до expiry той же командой и с тем же holder.
+4. worker-1 закончил → forgeplan release PRD-A --agent worker-1
+5. orchestrator → forgeplan dispatch --agents 3
 ```
 
 ### Агент упал — orchestrator reap'ит claim
 
-```
-worker-2 crashed; claim на PRD-B ещё валиден 20 минут.
-orchestrator → forgeplan_release PRD-B --force
-orchestrator → forgeplan_dispatch --agents 3 (PRD-B снова доступен)
+```text
+worker-2 упал; live claim на PRD-B ещё остался.
+orchestrator → forgeplan release PRD-B --force
+orchestrator → forgeplan dispatch --agents 3
 ```
 
-Альтернатива: просто подождать TTL expiry — claim сам истечёт через 30 минут.
+Альтернатива — дождаться фактического `expires_at`. Expiry снимает справочную
+резервацию, но не останавливает процессы и файловые записи упавшего worker.
 
 ## Что v0.24.0 НЕ включает
 
-(Deferred to v0.25+ per PRD-057 Growth Vision)
+Исторический список v0.24.0, а не утверждение, что всё перечисленное отсутствует сейчас:
 
-- **CLI parity** — нет CLI-команд `forgeplan dispatch/claim/release/claims`; только MCP. Для использования из CLI — через `forgeplan serve` stdio MCP.
+- **CLI parity** отсутствовал в v0.24.0; выбранная текущая сборка содержит `forgeplan dispatch/claim/release/claims`. CLI claim использует `--ttl-minutes`; явный agent отвергает slash, в отличие от канонического MCP `name/version`.
 - **Профили `agents/<id>.yaml`** — skills передаются per-call, не персистятся. Roadmapped на v0.27.
 - **HTTP/SSE transport** — identity capture работает только на stdio (один клиент на connection). Multi-connection HTTP требует per-request identity extraction.
 - **Inter-bucket overlap check** — dispatcher проверяет file-conflicts внутри bucket, но не между агентами. Два overlapping PRD могут попасть в разные buckets (они будут конфликтовать при merge на main — user-level mitigation: не давать их одновременно). Треккается как v0.25 follow-up.
@@ -189,14 +184,14 @@ domain: backend   # frontend | backend | api | infra | docs | testing | general
 ```
 
 - **Без `affected_files`:** dispatcher применяет R-2 safety bias и отправляет в serial queue (consider shared-ground).
-- **С `affected_files`:** dispatcher считает Jaccard overlap с другими кандидатами и решает, совместимы ли они в параллель.
+- **С `affected_files`:** Jaccard проверяется внутри bucket, не между агентами. Glob-подобные строки не доказывают непересечение раскрытых файловых наборов.
 - **С `domain`:** если orchestrator передал `agent_skills`, артефакт идёт к совпадающему агенту. `domain` валидируется на ASCII `[a-z0-9_-]` — non-ASCII (Cyrillic, RTL, ZWJ) **отклоняется** (security CWE-176).
 
 **Fallback для legacy-артефактов** (без FM-ключа): dispatcher читает секцию `## Affected Files` в теле — обратная совместимость.
 
 ## Identity stamping (Inc 2)
 
-**Автоматически** на каждый MCP write-tool, если клиент передал `clientInfo` во время `initialize`:
+**Best-effort в подключённых new/update handlers**, если `initialize` передал валидный `clientInfo`. Отказ stamping логируется, но не отменяет запись артефакта. Это не реализовано на каждом MCP write-tool:
 
 ```yaml
 # В .forgeplan/prds/PRD-042-title.md после forgeplan_update:

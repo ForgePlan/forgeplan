@@ -21,7 +21,8 @@ forgeplan mcp install --client cursor
 forgeplan mcp install --client windsurf
 ```
 
-Restart the client. Done - all 47 `forgeplan_*` MCP tools are now available.
+Restart the client and inspect its tool list. The interface is version- and
+profile-specific; see the [live MCP overview](/docs/mcp/).
 
 ## What it does
 
@@ -32,18 +33,50 @@ The command writes a `forgeplan` entry into your client's MCP config:
   "mcpServers": {
     "forgeplan": {
       "command": "/opt/homebrew/bin/forgeplan",
-      "args": ["serve"],
-      "transport": "stdio"
+      "args": ["serve"]
     }
   }
 }
 ```
 
 It's **smart-merge**:
-- Replaces `command` / `args` / `transport` (so `forgeplan upgrade` works cleanly)
+- Replaces `command` / `args` when re-run after a Forgeplan upgrade
 - **Preserves your `env`** (API keys, `RUST_LOG`, custom paths)
 - Leaves other MCP servers in the file untouched
-- Idempotent - safe to re-run
+- Idempotent for its generated defaults; custom `args` are still replaced. After re-running, review `--profile`, `--workspace` and `--auto-index` before reconnecting a customized Constellation server.
+
+Captured `mcp install --help` still says “command/args/transport”; the current
+writer actually omits `transport` and removes legacy `transport: "stdio"`
+and `type: "stdio"` entries. It preserves other unknown fields. Review
+custom HTTP/SSE settings rather than assuming they become valid stdio config.
+
+### Profiles, workspaces, and maintenance
+
+In local `0.39.0+constellation.s1.1` (not published 0.38.0), `serve` defaults
+to `--profile full`, including writes. `--profile constellation-read` is a
+separate registry/handle read interface, not the full namespace with writes
+disabled. `forgeplan mcp serve` and standalone `forgeplan-mcp` accept
+`--auto-index` and `--workspace`, but not `--profile`.
+
+For an explicit full-profile target, use this illustrative argument list in
+your client's server entry:
+
+```json
+["serve", "--profile", "full", "--workspace", "/path/to/project", "--auto-index"]
+```
+
+`--workspace` sets the server default. Full-server startup selects maintenance
+using `FORGEPLAN_WORKSPACE` → server default → CWD discovery. Bind the client's
+environment to the project, or explicitly set `FORGEPLAN_WORKSPACE=""`:
+unsetting alone allows the CLI's ancestor `.env` loader to restore a value.
+A tool's explicit `workspace` wins for that request; the remaining order is
+environment → server default → CWD. Another request target does not move
+maintenance. The agent's CWD is not automatically the server's CWD.
+
+`--auto-index` alone does not configure embeddings. Auto-drain needs explicit
+`embedding:` config, a semantic-search build, BGE-M3 and a complete cached
+snapshot. See [Constellation setup](/docs/guides/constellation/) and its
+[read contracts](/docs/reference/constellation/).
 
 ## Options
 
@@ -71,10 +104,10 @@ forgeplan mcp install --client claude --use-name forgeplan # writes "forgeplan"
 ```
 
 :::caution
-**macOS GUI applications** (Claude Code Mac app, Cursor app) get only the
-system default `$PATH` - `/opt/homebrew/bin` is **not** in it. Short names
-fail silently in those clients. Stick with the default (absolute path)
-unless you've configured `launchctl setenv PATH ...` system-wide.
+macOS GUI applications may not inherit your shell's `$PATH`, so a short
+binary name can fail if its directory is absent. Prefer the generated
+absolute path; inspect the client's actual environment before relying on
+short names.
 :::
 
 ### Custom binary
@@ -110,7 +143,9 @@ forgeplan init -y
 #    Ask the AI agent: "use forgeplan_health to check the project"
 ```
 
-If the agent reports back a healthy project status, MCP is working.
+A successful `forgeplan_health` response from the intended workspace shows
+that this call reached the server. A reported health problem can still be a
+valid MCP response; one call does not verify every tool or semantic readiness.
 
 ## Config paths per client
 
@@ -151,9 +186,11 @@ After install, the agent calls a `forgeplan_*` tool and gets:
 Workspace not initialized. Call forgeplan_init first.
 ```
 
-Run `forgeplan init -y` in your project directory, or ask the agent to call
-`forgeplan_init` via MCP - it will use whatever directory the agent's
-working in.
+Initialize from the intended project root, then check the reported path.
+`init -y` can find an ancestor workspace and return without changes. For
+existing workspaces, follow [Configuration](/docs/getting-started/configuration/).
+Pass explicit `workspace` in tools that accept it; do not assume the
+agent's directory controls the server.
 
 ### Re-run after `brew upgrade`
 
@@ -176,4 +213,4 @@ If you'd rather edit the JSON yourself, here's the minimal entry:
 }
 ```
 
-The `transport: "stdio"` field is optional (most clients default to stdio).
+For this stdio entry, omit `transport`; the generated configuration does.

@@ -26,7 +26,7 @@ Code → Evidence → Activate).
 | Tool | Purpose | CLI equivalent |
 |---|---|---|
 | `forgeplan_health` | Project health: gaps, risks, blind spots, next actions | `forgeplan health` |
-| `forgeplan_route` | Rule-based depth + pipeline (instant, no LLM) | `forgeplan route` |
+| `forgeplan_route` | Depth + pipeline; MCP may use configured LLM classification with keyword fallback | `forgeplan route` (`--level 0` forces keywords; `--level 1` requests LLM) |
 | `forgeplan_new` | Create artifact from template with auto-ID | `forgeplan new` |
 | `forgeplan_validate` | Check completeness against schema rules | `forgeplan validate` |
 | `forgeplan_review` | Lifecycle checklist: ready to activate? | `forgeplan review` |
@@ -42,6 +42,13 @@ Code → Evidence → Activate).
 | `forgeplan_deprecate` | → Deprecated with reason | `forgeplan deprecate` |
 
 ---
+The table describes the full MCP profile; the read-only profile exposes no
+artifact mutations. The call notation below is pseudocode: send JSON named
+arguments matching the connected tool schema, including the real title/IDs.
+CLI help describes keywords as the default, but the matching handler can
+auto-select configured LLM routing and escalate Deep results. Use explicit
+`--level 0` when deterministic keyword routing is required.
+
 
 ## Core loop — every non-trivial task
 
@@ -58,10 +65,11 @@ forgeplan_validate(id)          ← PASS (0 MUST errors)
   ↓ (if Deep+)
 forgeplan_reason(id)            ← ADI: 3+ hypotheses
   ↓
-[Code → Test → Fmt → Lint → Audit]
+[Code → Audit → Fix → Test → Fmt → Lint → Verify]
   ↓
-forgeplan_new(kind: "evidence") ← with structured fields (see below!)
-forgeplan_link(EVID, artifact)
+forgeplan_new(kind: "evidence", title: "Observed result")
+[fill the evidence body with actual results and structured fields]
+forgeplan_link(source: EVID, target: artifact, relation: "informs")
   ↓
 forgeplan_activate(id)          ← draft → active
 ```
@@ -77,6 +85,9 @@ forgeplan_activate(id)          ← draft → active
 | Irreversible, 1-2 weeks | **Deep** | PRD → Spec → RFC → ADR | **required** |
 | Cross-team, strategic | **Critical** | Epic → PRD[] → Spec[] → RFC[] → ADR[] | **required + review** |
 
+Critical is a methodology label here; the current core parses it as Deep.
+The durations are sizing examples, not a runtime timing guarantee.
+
 Automatic escalation triggers (in `forgeplan_route`):
 - `security`, `auth`, `compliance` → Deep+
 - `breaking change`, `migration` → Deep+
@@ -89,25 +100,30 @@ If user disagrees with routing, offer alternatives — don't force the depth.
 
 ## Artifact MUST sections
 
-Validator blocks activation if MUST sections are missing. Aliases are accepted.
+Validator blocks activation on MUST failures. The table summarizes current
+section checks, not the entire validation contract; depth and domain add rules.
+Aliases are accepted.
 
 | Kind | MUST sections | Aliases |
 |---|---|---|
-| **PRD** | Problem, Goals, Non-Goals, Functional Requirements, Target Users, Related Artifacts | Motivation = Problem; Out of Scope = Non-Goals; Target Audience = Target Users; Success Criteria = Goals |
-| **RFC** | Summary, Motivation, Options Considered, Proposed Direction, Implementation Phases | — |
-| **ADR** | Context, Decision, Consequences | — |
-| **Epic** | Vision, Goals, Children | — |
-| **Spec** | Contract, Data Models, Errors | — |
+| **PRD** | Problem, Goals, Non-Goals, Functional Requirements, Related Artifacts; Target Users at Standard/Deep; additional Deep/domain rules | Motivation = Problem; Out of Scope = Non-Goals; Target Audience = Target Users; Success Criteria = Goals |
+| **RFC** | Summary, Motivation, Proposed Direction; Risks at Deep | Options Considered and Implementation Phases are SHOULD checks |
+| **ADR** | Context, Decision, Consequences; Invariants and Rollback Plan at Deep | — |
+| **Epic** | Vision, Outcomes, Children, Phases, Progress | Artifacts = Children |
+| **Spec** | Summary, API/Data Model/Contract **or** Requirements/Behavioral Contract, Related | Structural and behavioral forms are alternatives, not cumulative requirements |
 
-**Notes and Problems** skip the validation gate. PRD/RFC/ADR/Epic/Spec require MUST rules.
+Notes and Problems have base metadata checks, not the PRD/RFC/ADR/Epic/Spec
+section rule sets. Brownfield kinds have their own required sections and
+source/verification checks; this table is not a complete kind list.
 
 ---
 
 ## Critical gotcha — Evidence structured fields
 
-Evidence **body MUST** contain three structured fields. Without them, the R_eff parser
-silently defaults to CL0 (penalty 0.9), making R_eff = 0.1 and your decision
-effectively unsupported.
+Evidence **body MUST** contain three structured fields. Missing or unrecognized
+`verdict`, or missing/invalid congruence information, fails closed to CL0
+(penalty 0.9). A supports pack then scores 0.1; the aggregate also depends
+on the other current evidence.
 
 ```markdown
 ## Structured Fields
@@ -129,12 +145,17 @@ Link relations: `informs`, `based_on`, `supersedes`, `contradicts`, `refines`.
 
 ## R_eff scoring — weakest link, never average
 
-- `R_eff = min(evidence_scores)` — trust is the weakest link
+- `R_eff = min(evidence_scores)` over current evidence; superseded/deprecated packs are excluded, drafts still count, no eligible packs → 0
 - CL penalties: CL3=0.0, CL2=0.1, CL1=0.4, CL0=0.9
 - Evidence decay: past `valid_until` → score drops to 0.1
-- Derived status: UNDERFRAMED → FRAMED → EXPLORING → COMPARED → DECIDED → APPLIED
+- Derived display categories: Stub, Shaped, Validated, Evidenced, Activated; these are not persisted lifecycle statuses
 
 One CL0 or expired evidence tanks the whole score. This is intentional — forces honesty.
+
+The formula above summarizes the flat evidence population. The explicit score
+report also evaluates dependencies and evidence-type modifiers (benchmark 0.1,
+audit 0.2); measurement/test have no type modifier. Record scores and the
+recursive report can therefore differ. These are heuristics, not probabilities.
 
 ---
 
@@ -142,13 +163,19 @@ One CL0 or expired evidence tanks the whole score. This is intentional — force
 
 ```
 draft ──review──► draft (if MUST failures)
-draft ──activate──► active (if validation passes)
+draft ──activate──► active (validation + applicable activation gates)
 active ──supersede──► superseded (+ link to replacement)  [TERMINAL]
 active ──deprecate──► deprecated (+ reason)               [TERMINAL]
-active ──(valid_until expires)──► stale
+active ──(overdue valid_until)──► listed as stale (no automatic status rewrite)
 stale ──renew──► active (extend valid_until)
 stale ──reopen──► deprecated + NEW draft
 ```
+
+The stored transition guard permits stale→active renewal, but an overdue
+record can still be stored as active; detection alone does not make
+active→active renewal legal. Reopen accepts active or stale and creates the
+new draft before deprecating the original. Renew/reopen are CLI operations,
+not tool names in the captured full MCP catalog.
 
 Rule: **supersede, don't delete.** History is the source of why-decisions-changed.
 
@@ -166,15 +193,19 @@ Rule: **supersede, don't delete.** History is the source of why-decisions-change
 
 ## Section router — deeper dives
 
-Match the user's question to a section and read only that file (lazy load, save tokens):
+The installed bundle is a single `SKILL.md`; `setup-skill` does not install a
+`sections/` tree. In a Forgeplan source checkout, read the relevant file:
 
-| User asks about... | Section to read |
+| User asks about... | Source-checkout reference |
 |---|---|
-| Workflow, process, steps, "how do I start" | `sections/01-workflow/route-shape-build.md` |
-| PRD, RFC, ADR, Evidence (specific artifact) | `sections/02-artifacts/` (pick file) |
-| Depth, routing, tactical vs deep | `sections/03-depth/calibration.md` |
-| Scoring, R_eff, congruence, decay, CL levels | `sections/04-scoring/reff-scoring.md` |
-| Quality gates, adversarial review, audits | `sections/05-quality/gates.md` |
+| Workflow, process, steps, "how do I start" | `docs/methodology/HOW-TO-USE.md` |
+| PRD, RFC, ADR, Evidence (specific artifact) | `docs/methodology/ARTIFACT-MODEL.md` |
+| Depth, routing, tactical vs deep | `docs/methodology/DEPTH-CALIBRATION.md` |
+| Scoring, R_eff, congruence, decay, CL levels | `docs/methodology/EVIDENCE-PROTOCOL.md` |
+| Quality gates, adversarial review, audits | `docs/methodology/QUALITY-GATES.md` |
+
+Outside that checkout, use https://forgeplan.dev/ or the connected tool schema
+and matching `forgeplan <command> --help`; do not assume those local files exist.
 
 ---
 
@@ -185,7 +216,7 @@ you save a sentence, and you find it by searching its text:
 
 - **Store**: `forgeplan remember "<text>" --category <fact|convention|procedure|insight>`
 - **Search**: `forgeplan recall "<query>"` — substring match over title and body
-- **List all**: `forgeplan recall` — no query lists everything
+- **List**: `forgeplan recall` — no query lists up to 10 memories by default; use `--limit <N>` for a larger result set
 - **Promote**: `forgeplan promote <mem-id> --kind note` — turn a memory into an artifact
 
 The id is derived from the text (`mem-we-picked-tract-over-onnx`), so write the
@@ -219,6 +250,8 @@ progress checkpoints on long tasks.
 
 **Pipeline = guideline, NOT bureaucracy.**
 
-Don't create all 10 artifact types for every task. Tactical = just do it. Standard = PRD + RFC. Deep+ only needs the full pipeline when the decision is irreversible or cross-team.
+Don't create every artifact type for every task. Tactical = just do it.
+Standard = PRD + RFC. Use the routed depth and applicable project policy for
+Deep/Critical work rather than treating this summary as an exemption.
 
 The goal is to **think before coding**, not to generate documents nobody reads.

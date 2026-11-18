@@ -22,28 +22,21 @@ _No input parameters. Call this tool with an empty object `{}`._
 
 ## Returns
 
+Illustrative response excerpt, not a workspace measurement. The grouped counts are arrays of objects, not maps.
+
 ```json
 {
-  "total": 184,
-  "by_kind": {
-    "prd": 42,
-    "rfc": 18,
-    "adr": 12,
-    "epic": 5,
-    "spec": 9,
-    "evidence": 57,
-    "problem": 34,
-    "solution": 7,
-    "note": 45,
-    "refresh": 3
-  },
-  "by_status": {
-    "draft": 12,
-    "active": 98,
-    "stale": 4,
-    "superseded": 23,
-    "deprecated": 47
-  }
+  "project": "example",
+  "workspace": "/abs/path/.forgeplan",
+  "total": 2,
+  "by_kind": [
+    { "kind": "evidence", "count": 1 },
+    { "kind": "prd", "count": 1 }
+  ],
+  "by_status": [
+    { "status": "active", "count": 1 },
+    { "status": "draft", "count": 1 }
+  ]
 }
 ```
 
@@ -70,3 +63,29 @@ forgeplan status
 - [`forgeplan_health`](/docs/mcp/forgeplan_health/) - full health report with blind spots and next actions.
 - [`forgeplan_list`](/docs/mcp/forgeplan_list/) - filtered artifact listing.
 - [Methodology guide](/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Captured tools/list
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, profile `full`.
+
+Show project status dashboard — total artifacts, counts by kind and status.
+
+### Input parameters
+
+| Name | Required | Type | Description |
+|---|---|---|---|
+| — | — | — | No parameters. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "properties": {},
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>What a good DDR looks like - a template with an example - Forgeplan Guides</title>
+<link rel="preconnect" href="https://rsms.me/">
+<link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@2.304/web/web.css">
+<style>
+  :root {
+    --bg: #050505;
+    --bg-1: #0b0b0b;
+    --bg-2: #141414;
+    --bg-3: #1a1a1a;
+    --text:   #f5f5f5;
+    --text-1: #e5e5e5;
+    --text-2: #a3a3a3;
+    --text-3: #737373;
+    --text-4: #525252;
+    --line:   rgba(255, 255, 255, 0.06);
+    --line-2: rgba(255, 255, 255, 0.14);
+    --accent:      #ff5a1f;
+    --accent-soft: #ff8a5b;
+    --accent-bg:   rgba(255, 90, 31, 0.18);
+    --ok:   #22c55e;
+    --err:  #ef4444;
+    --warn: #f59e0b;
+    --font-sans: "Inter", "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono: "JetBrains Mono", "Geist Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text-1); font-family: var(--font-sans); }
+  body {
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    background-image: radial-gradient(rgba(255, 255, 255, 0.10) 0.9px, transparent 1.4px);
+    background-size: 24px 24px;
+  }
+  main { max-width: 1080px; margin: 0 auto; padding: 64px 32px 96px; }
+
+  .eyebrow { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin: 0 0 14px; }
+  h1 { font-family: var(--font-sans); font-size: clamp(40px, 5.4vw, 60px); line-height: 1.05; letter-spacing: -0.02em; font-weight: 500; color: var(--text); margin: 0 0 18px; }
+  h2 { font-family: var(--font-sans); font-size: 28px; line-height: 1.25; letter-spacing: -0.015em; font-weight: 500; color: var(--text); margin: 64px 0 14px; }
+  h3 { font-family: var(--font-sans); font-size: 18px; line-height: 1.3; font-weight: 500; color: var(--text); margin: 0; }
+  p { margin: 0 0 16px; color: var(--text-2); font-size: 17px; line-height: 1.65; max-width: 760px; }
+  p.lead { font-size: 19.5px; color: var(--text-1); line-height: 1.6; max-width: 820px; }
+  ul, ol { color: var(--text-2); font-size: 17px; line-height: 1.65; list-style: none; padding-left: 0; margin: 16px 0; }
+  main > ul, main > ol { max-width: 820px; }
+  ul li, ol li { margin-bottom: 12px; padding-left: 28px; position: relative; }
+  ul li::before { content: "▸"; position: absolute; left: 6px; top: 0; color: var(--accent); font-family: var(--font-mono); font-size: 17px; line-height: 1.65; }
+  ol { counter-reset: list-counter; }
+  ol li::before { content: counter(list-counter, decimal-leading-zero); counter-increment: list-counter; position: absolute; left: 0; top: 1px; color: var(--accent); font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.1em; font-weight: 500; }
+  ol li { padding-left: 36px; }
+  .deflist, .deflist li { padding-left: 0; margin-bottom: 0; }
+  .deflist li::before { content: none; }
+  code { font-family: var(--font-mono); font-size: 14.5px; color: var(--accent-soft); background: var(--accent-bg); padding: 1px 6px; border-radius: 0; }
+  b.k { color: var(--text); font-weight: 500; }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-bg); transition: border-color .15s ease; }
+  a:hover { border-color: var(--accent); }
+
+  /* Definition list (6 fields) */
+  .deflist { margin: 16px 0 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; max-width: none; }
+  @media (max-width: 960px) { .deflist { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 640px) { .deflist { grid-template-columns: 1fr; } }
+  .deflist li { background: var(--bg-1); border: 1px solid var(--line); border-left: 2px solid var(--accent); border-radius: 0; padding: 14px 16px 16px; }
+  .deflist .def-num { font-family: var(--font-mono); font-size: 11px; color: var(--accent); letter-spacing: 0.16em; text-transform: uppercase; margin-bottom: 6px; }
+  .deflist .def-title { font-size: 14px; color: var(--text); font-weight: 500; margin-bottom: 6px; }
+  .deflist .def-body { font-size: 13px; color: var(--text-2); line-height: 1.55; }
+
+  /* Start-here grid */
+  .start-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 16px 0 0; }
+  @media (max-width: 640px) { .start-grid { grid-template-columns: 1fr; } }
+  .start-link { display: block; background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 14px 16px; color: var(--text-1); border-bottom: 1px solid var(--line-2); transition: all .15s ease; }
+  .start-link:hover { border-color: var(--accent); color: var(--text); }
+  .start-link .start-who { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent); margin-bottom: 4px; }
+  .start-link .start-where { font-size: 14px; color: var(--text); }
+  .start-link .start-arrow { float: right; color: var(--accent); }
+
+  .aside { border-left: 2px solid var(--accent); background: var(--accent-bg); padding: 14px 18px; margin: 18px 0; font-size: 14.5px; color: var(--text-1); border-radius: 0; max-width: 820px; }
+
+  .closing { margin: 48px 0 0; padding: 28px 32px 30px; background: var(--bg-1); border: 1px solid var(--line-2); border-left: 3px solid var(--accent); border-radius: 0; }
+  .closing p { color: var(--text-1); font-size: 15.5px; max-width: 820px; }
+
+  hr.sep { border: 0; border-top: 1px solid var(--line); margin: 56px 0 0; }
+
+  /* Code block for DDR example */
+  .code-block {
+    background: var(--bg-1);
+    border: 1px solid var(--line-2);
+    border-radius: 0;
+    padding: 28px 32px;
+    margin: 24px 0 0;
+    overflow-x: auto;
+    max-width: none;
+  }
+  .code-block pre {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 13.5px;
+    line-height: 1.7;
+    color: var(--text-2);
+    white-space: pre;
+  }
+  .code-block .cb-heading { color: var(--accent-soft); }
+  .code-block .cb-field { color: var(--text); }
+  .code-block .cb-value { color: var(--text-2); }
+  .code-block .cb-comment { color: var(--text-4); font-style: italic; }
+
+  /* Length hint bar */
+  .length-bar {
+    background: var(--bg-1);
+    border: 1px solid var(--line);
+    border-radius: 0;
+    padding: 22px 28px;
+    margin: 24px 0 0;
+    max-width: 760px;
+  }
+  .length-bar .lb-row { display: flex; align-items: center; gap: 16px; margin-bottom: 10px; }
+  .length-bar .lb-row:last-child { margin-bottom: 0; }
+  .length-bar .lb-label { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-3); width: 130px; flex-shrink: 0; }
+  .length-bar .lb-track { flex: 1; height: 6px; background: var(--bg-2); border-radius: 0; }
+  .length-bar .lb-fill { height: 6px; border-radius: 0; }
+  .length-bar .lb-fill.good { background: var(--ok); width: 45%; }
+  .length-bar .lb-fill.warn { background: var(--warn); width: 75%; }
+  .length-bar .lb-fill.bad  { background: var(--err);  width: 100%; }
+  .length-bar .lb-note { font-size: 12.5px; color: var(--text-3); width: 110px; flex-shrink: 0; text-align: right; }
+</style>
+</head>
+<body>
+<main>
+
+  <p class="eyebrow">DECISION LOG · FORMAT</p>
+  <h1>What a good DDR looks like - a template with an example</h1>
+  <p class="lead">
+    A good DDR should be readable in two minutes. If you open a record
+    and after two minutes you still do not know what was chosen, why, and
+    under what conditions it should be revisited - the record was written
+    wrong. We break the format into parts and show what it looks like on an
+    illustrative example.
+  </p>
+
+  <hr class="sep">
+
+  <h2>What a DDR is</h2>
+  <p>
+    DDR - Detailed Decision Record - is an extended form of decision
+    record. The classic ADR (Architecture Decision Record) has existed for
+    more than ten years and is essentially four fields: status, context,
+    decision, consequences. For many cases that is enough.
+  </p>
+  <p>
+    An important caveat: the six fields we walk through below are our own
+    working convention for this series of lessons, not a widely accepted
+    external standard. Real ADR templates in projects often contain more
+    sections.
+  </p>
+  <p>
+    DDR appeared once it became clear that two things are easy to skip in
+    a classic ADR, and both make a record useless a year later. The first
+    is <b class="k">evidence</b>: what exactly the choice rested on. The
+    second is the <b class="k">revisit condition</b>: on which event you
+    need to come back to the question. Without evidence the record looks
+    like an opinion. Without a revisit condition it turns into a
+    monument - nobody touches it any more, even when the context has
+    long since changed.
+  </p>
+  <p>
+    How the formats relate:
+  </p>
+  <ul>
+    <li><b class="k">ADR</b> - context, decision, consequences. Fast, minimal. Good for small technical choices with a short horizon.</li>
+    <li><b class="k">DDR</b> - everything from the ADR plus explicit evidence and revisit conditions. A little more to write, but the record stays alive after one year and three.</li>
+  </ul>
+  <p>
+    The difference is not in length - it is in content. A 250-word DDR is
+    better than a 250-word ADR whenever it carries evidence and a revisit
+    condition.
+  </p>
+
+  <hr class="sep">
+
+  <h2>Six mandatory fields</h2>
+  <p>
+    If even one field is missing - it is not a DDR, it is a stub. It is
+    exactly the mandatory nature of the fields that separates a living
+    record from free text.
+  </p>
+
+  <ol class="deflist">
+    <li>
+      <div class="def-num">01 · CONTEXT</div>
+      <div class="def-title">The situation the decision was taken in</div>
+      <div class="def-body">What was known, which constraints applied, what the scale was. Without this, a year later nobody can tell whether the decision still applies or the context has changed completely.</div>
+    </li>
+    <li>
+      <div class="def-num">02 · OPTIONS</div>
+      <div class="def-title">What was considered</div>
+      <div class="def-body">At least three options, each with a brief plus and minus. If there are fewer than two, there was no choice - and the record should say so explicitly.</div>
+    </li>
+    <li>
+      <div class="def-num">03 · EVIDENCE</div>
+      <div class="def-title">What the choice rested on</div>
+      <div class="def-body">Concrete sources: a measurement on your own data, the vendor's documentation, a colleague's experience from another team. Each piece of evidence carries a short note on how far it applies to your context.</div>
+    </li>
+    <li>
+      <div class="def-num">04 · DECISION</div>
+      <div class="def-title">One option, one line</div>
+      <div class="def-body">The exact wording of the chosen option. No «we settled on», no «we decided to try». This line lets a year later check unambiguously whether the decision is still being followed.</div>
+    </li>
+    <li>
+      <div class="def-num">05 · REJECTED</div>
+      <div class="def-title">Why the other options did not work</div>
+      <div class="def-body">Every rejected option with a concrete reason. Not «it does not work», but «it does not work, because X». A year later that reason is either still valid or out of date - and that in itself is a signal to revisit.</div>
+    </li>
+    <li>
+      <div class="def-num">06 · REVISIT CONDITIONS</div>
+      <div class="def-title">When to come back to this question</div>
+      <div class="def-body">The most important and most often skipped section. A concrete event, metric or date at which the record needs to be opened again. Without this field the record is dead from day one.</div>
+    </li>
+  </ol>
+
+  <div class="aside">
+    The sixth field is the main difference between a DDR and a note.
+    A note describes the past. A revisit condition says when a person
+    or explicitly configured external automation needs to check the decision.
+  </div>
+
+  <hr class="sep">
+
+  <h2>Full example</h2>
+  <p>
+    Below is the shape of a DDR file for a typical decision: choosing an
+    authorization mechanism for a note-taking app used by a small team.
+    Three options: JWT tokens, server-side sessions, OAuth through a
+    third-party provider. The fields are filled in the way they would look
+    in practice. The example itself is illustrative: the dates, numbers
+    and team names inside it show the shape of a record, not the results
+    of real measurements.
+  </p>
+
+  <div class="code-block">
+<pre>
+<span class="cb-heading"># DDR-007: Authorization mechanism - JWT vs sessions vs OAuth</span>
+
+<span class="cb-field">Date:</span>       <span class="cb-value">2025-11-14</span>
+<span class="cb-field">Status:</span>     <span class="cb-value">active</span>
+<span class="cb-field">Author:</span>      <span class="cb-value">Mikhail D.</span>
+<span class="cb-field">Revisit if:</span>  <span class="cb-value">DAU exceeds 5,000, or an SSO requirement appears</span>
+
+<span class="cb-heading">## Context</span>
+
+<span class="cb-value">A personal notes app - 4 developers, one Node.js backend,
+planned DAU of 200-800 people. The only sign-in method required is
+email + password. No SSO requirement, no corporate customers.
+Infrastructure: a single server with no horizontal scaling.</span>
+
+<span class="cb-heading">## Options</span>
+
+<span class="cb-value">A. JWT tokens
+   + No server-side state storage required.
+   − Token revocation is hard: needs a blacklist, or a short TTL + refresh.
+
+B. Server-side sessions (httpOnly cookie + session store)
+   + Simple revocation: delete the entry from the store.
+   + Mature libraries, minimal client-side logic.
+   − Requires permanent server-side storage (a Redis instance or a DB table).
+
+C. OAuth through a third-party provider (Google, GitHub)
+   + No password logic of our own.
+   − Dependency on an external service; needs a domain and HTTPS from day one.
+   − Complicates onboarding: users without a Google/GitHub account.</span>
+
+<span class="cb-heading">## Evidence</span>
+
+<span class="cb-value">1. An in-team benchmark: a server-side session with a PostgreSQL store -
+   p95 session check of 4 ms on our own hardware (measurement 14.11.2025,
+   1,000 concurrent requests). Enough for our load.
+
+2. express-session documentation: pg-simple store support,
+   production-ready, last updated November 2025.
+
+3. Experience of Arkady's team (similar stack, similar DAU): they moved
+   from JWT to sessions, because the JWT blacklist added more complexity
+   than the missing state saved. Subjectively applicable to our situation.</span>
+
+<span class="cb-heading">## Decision</span>
+
+<span class="cb-value">We use server-side sessions: express-session + pg-simple store in the same
+PostgreSQL database the project already has.</span>
+
+<span class="cb-heading">## Rejected options</span>
+
+<span class="cb-value">A (JWT): rejected, because without horizontal scaling the advantage of JWT
+over sessions disappears, while token revocation is more complex.
+
+C (OAuth): rejected, because it adds a dependency on an external service
+and complicates onboarding for our target audience.</span>
+
+<span class="cb-heading">## Revisit conditions</span>
+
+<span class="cb-value">1. DAU exceeds 5,000 - check whether pg-simple store has become a bottleneck.
+2. An SSO requirement appears from a corporate customer - move to OAuth/SAML.
+3. A move to horizontal scaling - revisit the store (Redis).</span>
+</pre>
+  </div>
+
+  <p>
+    Notice a few things. First: the evidence is concrete. Not «from our
+    experience», but «measurement 14.11.2025, 1,000 requests, 4 ms»: in
+    the example, «from our experience» is replaced by a date, a volume and
+    a number. Second: in the rejected options every reason refers to our
+    own context specifically - not «JWT is complex», but «the advantage of
+    JWT disappears without horizontal scaling». Third: the revisit
+    conditions are tied to concrete triggers rather than to an abstract
+    «when necessary».
+  </p>
+
+  <hr class="sep">
+
+  <h2>Length and readability</h2>
+  <p>
+    A good DDR fits in 200-400 words of body text. That is one screen at a
+    standard font size. If a record is longer - it is most likely one of
+    two things: either several unrelated decisions are being crammed into
+    it (split them into separate records), or the explanation is written
+    where a reference belongs.
+  </p>
+  <p>
+    Three guidelines for field length:
+  </p>
+
+  <div class="length-bar">
+    <div class="lb-row">
+      <div class="lb-label">CONTEXT</div>
+      <div class="lb-track"><div class="lb-fill good"></div></div>
+      <div class="lb-note">3-5 sentences</div>
+    </div>
+    <div class="lb-row">
+      <div class="lb-label">OPTIONS</div>
+      <div class="lb-track"><div class="lb-fill good"></div></div>
+      <div class="lb-note">2-3 lines per option</div>
+    </div>
+    <div class="lb-row">
+      <div class="lb-label">EVIDENCE</div>
+      <div class="lb-track"><div class="lb-fill good"></div></div>
+      <div class="lb-note">1-2 sentences per source</div>
+    </div>
+    <div class="lb-row">
+      <div class="lb-label">DECISION</div>
+      <div class="lb-track"><div class="lb-fill good" style="width:20%"></div></div>
+      <div class="lb-note">1 line</div>
+    </div>
+    <div class="lb-row">
+      <div class="lb-label">REJECTED</div>
+      <div class="lb-track"><div class="lb-fill good"></div></div>
+      <div class="lb-note">1-2 lines per option</div>
+    </div>
+    <div class="lb-row">
+      <div class="lb-label">CONDITIONS</div>
+      <div class="lb-track"><div class="lb-fill good"></div></div>
+      <div class="lb-note">2-4 items</div>
+    </div>
+  </div>
+
+  <p>
+    The most common mistake is a huge context (5-10 paragraphs) in which
+    everything anyone knew gets written down, plus quotes from
+    documentation. That is not context, that is the minutes of a meeting.
+    Context is the minimum needed for a year later to understand the
+    constraints under which the decision was taken.
+  </p>
+  <p>
+    The second mistake is a decision spread over three paragraphs. The
+    «Decision» field is one statement. The argumentation belongs in the
+    other fields. If you want to explain the decision - look at the
+    «Evidence» and «Rejected» fields.
+  </p>
+
+  <div class="aside">
+    The test: give the record to somebody who was not in the meeting. If
+    in two minutes of reading they can say what was chosen and why - the
+    length is right. If they start scrolling to find the decision - the
+    record is overloaded.
+  </div>
+
+  <hr class="sep">
+
+  <h2>Going deeper</h2>
+  <p>
+    Two topics that complement this format from different sides: the formal
+    cycle the DDR lives in, and what happens to a record after it has been
+    activated.
+  </p>
+
+  <div class="start-grid">
+    <a class="start-link" href="decision-cycle.html">
+      <div class="start-who">FORMAL CYCLE</div>
+      <div class="start-where">How one decision is formulated and moves from draft to activation <span class="start-arrow">→</span></div>
+    </a>
+    <a class="start-link" href="lifecycle-cycle.html">
+      <div class="start-who">LIFECYCLE</div>
+      <div class="start-where">What happens after a DDR is activated: stale, renew, supersede <span class="start-arrow">→</span></div>
+    </a>
+  </div>
+
+  <div class="closing">
+    <p>
+      <b class="k">The point:</b> a DDR is not longer than an ADR - it is
+      more precise. The two sections the format adds - evidence and
+      revisit conditions - turn a record from «we decided so» into «we
+      decided so, here is why, and here is when to check whether it has
+      gone stale». That is what separates a living log from an archive.
+    </p>
+  </div>
+
+</main>
+</body>
+</html>

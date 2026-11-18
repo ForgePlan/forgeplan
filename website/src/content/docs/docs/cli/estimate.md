@@ -3,19 +3,19 @@ title: forgeplan estimate
 description: "Calibrated effort estimate from FR/Phase items with grade profiles and AI multipliers."
 ---
 
-`forgeplan estimate` turns an artifact's Functional Requirements and Implementation
-Phases into an effort number. It reads the complexity of each item (Fibonacci
-1/2/3/5/8/13) and multiplies by the grade profile from your config - junior, middle,
-senior, principal, or AI - per domain (backend/frontend/devops/ai_ml). Review overhead
-and a safety margin are added on top, so the output is a realistic planning number, not
-a best-case.
+`forgeplan estimate` extracts FR and phase work items, assigns Fibonacci complexity,
+and maps that complexity to base senior hours. It computes all grade totals;
+`--grade` and `--my-grade` select the highlighted grade rather than changing every item.
+Human grades use configured grade multipliers. AI estimates use task-type multipliers
+and review overhead. The calculator does not currently apply `safety_margin`.
+These are planning heuristics, not measured delivery commitments.
 
 ## When to use
 
 - Sprint planning: estimate every candidate PRD/RFC to fit capacity (≈40–50% of nominal).
 - Capacity check before committing to an epic - is this 2 weeks or 2 months?
 - Delegating to a teammate - `--grade middle` to see what the task looks like for them.
-- Agent planning - `--grade ai` to get the AI-assisted fast path (×0.03–0.4 multiplier).
+- Agent planning - `--grade ai` highlights AI estimates; default task multipliers range from 0.10 to 1.00 before review overhead.
 
 ## When NOT to use
 
@@ -37,7 +37,7 @@ forgeplan estimate [OPTIONS] <ID>
 ## Options
 
 ```text
-      --grade <GRADE>            Override grade for all items (junior|middle|senior|principal|ai)
+      --grade <GRADE>            Highlight one grade total (junior|middle|senior|principal|ai)
       --my-grade                 Use grade profile from config (domain-aware)
       --llm-score                Use LLM-based complexity scoring instead of rule-based heuristics
       --complexity <COMPLEXITY>  Manual complexity overrides: FR-001=5,FR-002=3 (Fibonacci: 1,2,3,5,8,13)
@@ -54,18 +54,10 @@ forgeplan estimate [OPTIONS] <ID>
 forgeplan estimate PRD-001 --my-grade
 ```
 
-Output:
-
-```text
-PRD-001 - Auth System
-  FR-001  login flow          complexity=5  senior  → 6h
-  FR-002  session refresh     complexity=3  senior  → 3h
-  FR-003  logout              complexity=2  senior  → 1h
-  Subtotal:    10h
-  Review:      +20%   → 2h
-  Safety:      +15%   → 1.5h
-  Total: 13.5h senior  (≈ 2 days)
-```
+The report lists work items, complexity, task type, grade totals and confidence.
+With default settings, a complexity-3 item has 8 base senior hours. A pure-coding
+AI estimate is `8 × 0.10 × 1.30 = 1.04` hours. These are arithmetic examples,
+not benchmark results; configured multipliers can change them.
 
 ### Compare human vs AI-assisted path
 
@@ -74,8 +66,8 @@ forgeplan estimate PRD-001 --grade senior
 forgeplan estimate PRD-001 --grade ai
 ```
 
-The AI line uses ×0.03–0.4 multipliers depending on item type; use both numbers to
-decide when to drive yourself vs delegate to an agent.
+AI task multipliers default to 0.10 (coding), 0.25 (coding/infra), 0.30
+(design/coding), 0.50 (infra) and 1.00 (coordination), with 30% review overhead.
 
 ### Manual complexity override
 
@@ -91,18 +83,18 @@ Use when heuristics misjudge complexity (e.g., an "easy" FR hides a migration).
 forgeplan estimate PRD-001 --llm-score
 ```
 
-Asks the configured LLM to score complexity per FR. Slower, but catches semantic
-nuance the rule engine misses.
+Asks the configured LLM to score complexity per item, with rule-based fallback
+on model failure. Review the classifications rather than assuming better accuracy.
 
 ## Output interpretation
 
 | Line         | What it shows                                                      |
 |--------------|--------------------------------------------------------------------|
-| per-FR row   | complexity (Fibonacci) × grade-multiplier = item hours             |
-| Subtotal     | sum of item hours                                                  |
-| Review       | +20% overhead for review cycles (adversarial, audit)               |
-| Safety       | +15% buffer for surprise                                           |
-| Total        | realistic sprint-planning number                                   |
+| per-item row | complexity mapped to base senior hours, then grade/task factors |
+| Totals | sum of computed item hours for each grade |
+| Review | configurable AI-only overhead; default 30% |
+| Safety | config field exists, but the current calculator does not add it |
+| Confidence | heuristic input completeness, not a measured error bound |
 
 Red flag: totals over 40h - consider splitting the PRD or escalating depth.
 
@@ -123,3 +115,27 @@ shows how accurate the number was.
 - [`forgeplan route`](/docs/cli/route/) - routing to depth before estimating
 - [Depth Calibration](/docs/methodology/routing/)
 - [CLI overview](/docs/cli/)
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan estimate --help`.
+
+```text
+Estimate effort for an artifact based on FR and Phase items
+
+Usage: forgeplan estimate [OPTIONS] <ID>
+
+Arguments:
+  <ID>  Artifact ID to estimate
+
+Options:
+      --grade <GRADE>            Override grade for all items (junior|middle|senior|principal|ai)
+      --my-grade                 Use grade profile from config (domain-aware)
+      --llm-score                Use LLM-based complexity scoring instead of rule-based heuristics
+      --complexity <COMPLEXITY>  Manual complexity overrides: FR-001=5,FR-002=3 (Fibonacci: 1,2,3,5,8,13)
+      --json                     Output as JSON for machine consumption
+  -h, --help                     Print help
+  -V, --version                  Print version
+```
+<!-- forgeplan-runtime:end -->

@@ -2,6 +2,8 @@
 
 > Formal specification of the export format produced by C12 for RAG ingestion.
 
+> Proposed external export format, not Constellation's index schema or an implemented core exporter. All counts, hashes, dates, token counts and vectors below are illustrative; no export or ingestion was exercised here. The `text-embedding-3-small`/1536 example is not Forgeplan's BGE-M3 runtime configuration. See [implementation status](../README.md#implementation-status-2026-10-23).
+
 ## Directory structure
 
 ```
@@ -87,35 +89,20 @@ Each line is a chunk. Schema enforced by `schemas/chunk.schema.json`:
 
 One JSON per line; references chunk by ID:
 
-```json
+```text
 { "id": "orders.use-case.UC-003.confirm.main-flow", "vector": [0.012, -0.453, ...] }
 ```
 
-Dimensions match `manifest.embedding_dimensions`. Produced only if `--embed` was passed.
+The vector above is abbreviated pseudo-JSON, not a loadable record. Actual JSONL must contain only numeric values, with exactly `manifest.embedding_dimensions` entries. Proposed generation occurs only when the exporter is implemented and embedding is requested.
 
 ## `cross-references.jsonl`
 
 Edge list for graph-RAG:
 
-```json
-{
-  "from": "orders.use-case.UC-003.confirm.main-flow",
-  "to": "orders.invariant.INV-003.statement",
-  "type": "references",
-  "weight": 1.0
-}
-{
-  "from": "orders.use-case.UC-003.confirm.preconditions",
-  "to": "orders.glossary.TERM-012.definition",
-  "type": "uses-term",
-  "weight": 1.0
-}
-{
-  "from": "orders.scenario.SC-042.happy-path",
-  "to": "orders.use-case.UC-003.main-flow",
-  "type": "verifies",
-  "weight": 1.0
-}
+```jsonl
+{"from":"orders.use-case.UC-003.confirm.main-flow","to":"orders.invariant.INV-003.statement","type":"references","weight":1.0}
+{"from":"orders.use-case.UC-003.confirm.preconditions","to":"orders.glossary.TERM-012.definition","type":"uses-term","weight":1.0}
+{"from":"orders.scenario.SC-042.happy-path","to":"orders.use-case.UC-003.confirm.main-flow","type":"verifies","weight":1.0}
 ```
 
 Edge types:
@@ -156,7 +143,7 @@ Human-readable navigation:
 
 ## `README.md`
 
-```markdown
+````markdown
 # {{project}} RAG Package v1.0
 
 Generated: {{timestamp}}
@@ -168,7 +155,11 @@ Embedding model: {{model or 'not embedded'}}
 
 ### PostgreSQL + pgvector
 
+Example for a disposable database with pgvector installed and permission to enable it. Run through `psql` with `ON_ERROR_STOP=1` from the package directory. The optional embedding section requires a complete `embeddings.jsonl`; omit that section when no vectors were exported. The column dimension must match the manifest. PostgreSQL COPY has no JSON format: stage each valid JSONL object as one CSV field, using control-byte delimiters/quotes that cannot occur literally in valid JSON.
+
 ```sql
+\set ON_ERROR_STOP on
+CREATE EXTENSION IF NOT EXISTS vector;
 CREATE TABLE rag_chunks (
   id TEXT PRIMARY KEY,
   domain TEXT,
@@ -180,12 +171,21 @@ CREATE TABLE rag_chunks (
   embedding vector(1536)
 );
 
--- Load chunks
-\copy rag_chunks FROM 'chunks.jsonl' WITH (FORMAT json);
+-- Stage complete JSONL rows; CSV mode preserves JSON backslash escapes.
+CREATE TEMP TABLE chunk_rows (value jsonb);
+\copy chunk_rows FROM 'chunks.jsonl' WITH (FORMAT csv, DELIMITER E'\x01', QUOTE E'\x02')
+INSERT INTO rag_chunks (id, domain, kind, artifact_id, section, text, metadata)
+SELECT value->>'id', value->>'domain', value->>'kind', value->>'artifact_id',
+       value->>'section', value->>'text', value->'metadata'
+FROM chunk_rows;
 
--- Load embeddings (if provided)
-UPDATE rag_chunks SET embedding = e.vector
-FROM embeddings_loaded e WHERE rag_chunks.id = e.id;
+-- Optional: only when a complete embeddings.jsonl is present.
+CREATE TEMP TABLE embedding_rows (value jsonb);
+\copy embedding_rows FROM 'embeddings.jsonl' WITH (FORMAT csv, DELIMITER E'\x01', QUOTE E'\x02')
+UPDATE rag_chunks AS c
+SET embedding = (e.value->'vector')::text::vector(1536)
+FROM embedding_rows AS e
+WHERE c.id = e.value->>'id';
 
 -- Create index
 CREATE INDEX ON rag_chunks USING hnsw (embedding vector_cosine_ops);
@@ -194,16 +194,21 @@ CREATE INDEX ON rag_chunks USING hnsw (embedding vector_cosine_ops);
 ### LlamaIndex
 
 ```python
-from llama_index import Document, VectorStoreIndex
+from llama_index.core import VectorStoreIndex
+from llama_index.core.schema import TextNode
 import json
 
-docs = []
-with open("chunks.jsonl") as f:
+# These are already-exported chunks: preserve their IDs instead of re-chunking.
+# Configure a supported embedding provider separately; embedding may send text
+# to that provider and incur charges.
+nodes = []
+with open("chunks.jsonl", encoding="utf-8") as f:
     for line in f:
         c = json.loads(line)
-        docs.append(Document(text=c["text"], doc_id=c["id"], extra_info=c["metadata"]))
+        metadata = {**c["metadata"], "domain": c["domain"]}
+        nodes.append(TextNode(text=c["text"], id_=c["id"], metadata=metadata))
 
-index = VectorStoreIndex.from_documents(docs)
+index = VectorStoreIndex(nodes)
 ```
 
 ### Qdrant / Weaviate / Pinecone
@@ -212,18 +217,18 @@ Use the chunk's `metadata` fields for filtering. For graph-RAG, load `cross-refe
 
 ## Retrieval tips
 
-- **Scope answers**: filter by `metadata.domain`.
-- **High-stakes**: filter by `metadata.confidence in ('verified', 'strong-inferred')`.
+- **Scope answers**: the export stores `domain` at top level. Filter the SQL `domain` column, or `metadata.domain` after explicitly copying it into a consumer's metadata as in the LlamaIndex example.
+- **High-stakes**: confidence labels can help retrieval filtering, but `verified`/`strong-inferred` do not guarantee correctness; inspect supporting evidence.
 - **Freshness**: prefer `metadata.last_updated` within last 90 days.
 - **Graph expansion**: after initial retrieval, expand via `cross-references.jsonl` to related chunks.
 
 ## Freshness policy
 
 Chunks have `metadata.last_updated`. Recommended refresh cycles:
-- Daily: re-run `forgeplan_drift` to detect stale chunks.
+- Daily: inspect `forgeplan_drift` affected-file signals, then determine which source assertions and chunks actually need review; it does not detect semantic chunk staleness itself.
 - Weekly: re-export changed chunks only.
 - Monthly: full re-embedding.
-```
+````
 
 ## Versioning
 

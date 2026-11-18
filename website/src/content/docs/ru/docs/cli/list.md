@@ -3,10 +3,8 @@ title: forgeplan list
 description: "Выводит список артефактов с фильтрами - основная команда инвентаризации"
 ---
 
-Выводит список артефактов в текущем рабочем пространстве, опционально отфильтрованных по типу, статусу,
-тегу или дате создания. Это основная команда инвентаризации - используйте её, чтобы
-ответить на вопрос "что у нас есть в этом проекте?" перед планированием, роутингом или
-поиском.
+Показывает артефакты выбранного workspace с фильтрами типа, статуса и тега.
+Фильтра даты создания нет.
 
 ## Когда использовать
 
@@ -70,9 +68,9 @@ forgeplan list --tag security --json | jq '.[] | .id'
 | `STATUS` | Жизненный цикл: draft / active / superseded / deprecated / stale |
 | `TITLE`  | Человекочитаемое название из frontmatter                     |
 
-Строки отсортированы по `created` в порядке убывания (сначала самые новые). С опцией `--json` каждая
-запись включает полный frontmatter, а также `score` и `R_eff`, если они доступны -
-полезно для передачи в `jq` для дашбордов.
+JSON - массив сводок `id`, `kind`, `status`, `title`, не полный frontmatter
+и не оценки. Тело читается через `get`. Команда не задаёт отдельную
+сортировку по дате создания.
 
 ## Как это работает
 
@@ -93,3 +91,23 @@ list → get → tree → graph   (понять, что существует и 
 - [`forgeplan search`](/docs/cli/search/) - умный поиск по ключевым словам + семантический поиск
 - [`forgeplan health`](/docs/cli/health/) - дашборд на уровне проекта
 - [Руководство по методологии](/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan list --help`.
+
+```text
+List artifacts
+
+Usage: forgeplan list [OPTIONS]
+
+Options:
+  -t, --type <TYPE>      Filter by kind (prd, epic, spec, rfc, adr, etc.)
+  -s, --status <STATUS>  Filter by status (draft, active, etc.)
+      --tag <TAG>        Filter by tag. Supports "key=value" or bare "key" (matches any value). Examples: --tag source=code, --tag legacy
+      --json             Output as JSON for machine consumption
+  -h, --help             Print help
+  -V, --version          Print version
+```
+<!-- forgeplan-runtime:end -->

@@ -31,13 +31,13 @@ forgeplan unlink [OPTIONS] <SOURCE> <TARGET>
 
 ## What it does
 
-1. Looks up the relation in the LanceDB `links` table keyed on
-   `(source, target, relation)`.
-2. Deletes the row if found.
-3. Refreshes any derived caches - `score`, `graph`, and `blocked` will reflect
-   the change on next run.
-4. Exits cleanly even if no matching relation exists, making the command
-   idempotent and safe to script.
+The command removes the matching `(source, target, relation)` edge and
+updates the canonical projection. On a Constellation-owned workspace in
+local `0.39.0+constellation.s1.1`, it edits the source file's `links:`
+frontmatter and requests reconcile without reopening legacy storage.
+
+A missing edge is an error (`Relation '…' from … to … not found`), not a
+successful no-op. A second identical invocation therefore need not succeed.
 
 Unlinking does **not** delete either artifact. It only removes the edge.
 
@@ -65,43 +65,35 @@ forgeplan unlink EVID-017 ADR-004 --relation contradicts
 
 ## Relation type must match
 
-The `--relation` flag must match the type of the edge you want to remove. If
-you linked `EVID-001 → PRD-001` with `--relation informs`, calling
-`forgeplan unlink EVID-001 PRD-001 --relation based_on` will be a no-op because
-no such edge exists.
+`--relation` must match the recorded edge. If the link uses `informs`,
+requesting removal of `based_on` reports that the relation was not found.
 
 When in doubt, inspect the graph first:
 
 ```bash
-forgeplan graph PRD-001         # see all edges touching PRD-001
-forgeplan show PRD-001 --links  # list links in tabular form
+forgeplan graph                 # workspace graph; no positional artifact ID
+forgeplan get PRD-001 --json     # inspect links in the artifact response
 ```
 
 ## Self-link guard (PROB-019)
 
-Since self-links cannot be created (see [`forgeplan link`](/docs/cli/link/)),
-`forgeplan unlink PRD-001 PRD-001` will never find a match and exits as a
-no-op.
+Self-links are rejected at creation. Attempting to unlink a nonexistent
+self-link therefore reports a missing relation, not a successful no-op.
 
 ## Side effects
 
-- [`forgeplan score`](/docs/cli/score/) recomputes R_eff for the target. If
-  you remove the only supporting `informs` edge, the score drops to 0 and the
-  artifact becomes a blind spot on [`forgeplan health`](/docs/cli/health/).
+- [`forgeplan score`](/docs/cli/score/) recomputes R_eff. Removing the only
+  supporting `informs` edge can remove the decision's evidence support.
 - [`forgeplan blocked`](/docs/cli/blocked/) and
-  [`forgeplan order`](/docs/cli/order/) re-run topological sort.
-- The Mermaid graph from [`forgeplan graph`](/docs/cli/graph/) loses the edge.
+  [`forgeplan order`](/docs/cli/order/) reread dependency structure.
+- [`forgeplan graph`](/docs/cli/graph/) no longer shows the removed edge.
 
 ## Notes
 
-- Unlink is idempotent - running it twice has the same effect as running it
-  once. No error on a missing edge.
-- To remove an artifact entirely (including all its links), use
-  [`forgeplan delete`](/docs/cli/delete/) - it cascade-deletes relations in a
-  single pass.
-- Direct edits to `.forgeplan/<kind>s/<id>.md` never touch the `links` table.
-  If you need to hand-edit relations, run
-  [`forgeplan scan-import`](/docs/cli/scan-import/) afterward.
+- Removing a missing edge reports an error; scripts must handle that outcome explicitly.
+- Unlink removes an edge, not an artifact. Do not delete the artifact to correct a relation.
+- Prefer `link`/`unlink` to direct frontmatter edits. For derived-state maintenance,
+  use `forgeplan index` on Constellation or legacy `reindex` as appropriate, not `scan-import`.
 
 ## See also
 
@@ -110,3 +102,24 @@ no-op.
 - [`forgeplan graph`](/docs/cli/graph/) - visualize current relations
 - [`forgeplan score`](/docs/cli/score/) - recompute R_eff after unlinking
 - [Methodology guide](/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan unlink --help`.
+
+```text
+Remove a relation between two artifacts
+
+Usage: forgeplan unlink [OPTIONS] <SOURCE> <TARGET>
+
+Arguments:
+  <SOURCE>  Source artifact ID
+  <TARGET>  Target artifact ID
+
+Options:
+      --relation <RELATION>  Relationship type to remove [default: informs]
+  -h, --help                 Print help
+  -V, --version              Print version
+```
+<!-- forgeplan-runtime:end -->

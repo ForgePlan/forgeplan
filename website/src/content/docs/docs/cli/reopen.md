@@ -3,7 +3,7 @@ title: forgeplan reopen
 description: "Deprecate an artifact AND create a new draft successor - lineage-preserving re-evaluation of a past decision."
 ---
 
-`forgeplan reopen` is the "let's think about this again" transition. It deprecates the current artifact (moving it into the terminal `deprecated` state with the reason you supply) and simultaneously creates a new `draft` artifact of the same kind, linked back to the original as a lineage pointer. Use it when a decision has aged out and needs a fresh pass through Shape → Validate → ADI rather than a quick extension. Unlike `supersede`, you are not replacing with an already-active successor - you are starting the exploration over.
+`forgeplan reopen` starts re-evaluation of an active or stale decision. It creates a same-kind draft, links the new artifact `based_on` the original, then deprecates the original with your reason. These are ordered writes, not an atomic simultaneous transition: a failure can leave a new draft before retirement completes. Fill the draft and follow the applicable Shape → Validate → ADI → Code → Evidence → Activate workflow.
 
 ## When to use
 
@@ -17,7 +17,7 @@ description: "Deprecate an artifact AND create a new draft successor - lineage-p
 - The decision is still valid and just needs a fresh expiry - use [`forgeplan renew`](/docs/cli/renew/).
 - You already have an active replacement - use [`forgeplan supersede`](/docs/cli/supersede/) with `--by`.
 - The decision is simply retired with nothing to take its place - use [`forgeplan deprecate`](/docs/cli/deprecate/).
-- You need a small amendment - edit the artifact directly or create a follow-up artifact without disturbing the current one.
+- You need a small amendment — use `forgeplan update` or create a follow-up without retiring the current artifact.
 
 ## Usage
 
@@ -61,11 +61,11 @@ The new draft inherits the kind (`PRD`) and is linked as the successor under re-
 
 ```bash
 forgeplan stale
-forgeplan refresh ADR-012
+forgeplan new refresh "Review ADR-012"
 forgeplan reopen ADR-012 --reason "refresh report identified 3 invalidated invariants"
 ```
 
-Combine with `refresh` when the re-evaluation needs a structured report before the new draft is opened.
+There is no `forgeplan refresh` command. Create and fill a RefreshReport with `new refresh` when a structured review is needed before reopening.
 
 ## How it fits the workflow
 
@@ -89,3 +89,23 @@ Reopen is the most expensive lifecycle transition: it restarts the `Shape → Va
 - [`forgeplan activate`](/docs/cli/activate/) - activate the new draft once it's ready
 - [Lifecycle v2 guide](/docs/guides/lifecycle-v2/)
 - [Methodology: Artifact Lifecycle](/docs/methodology/lifecycle/)
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan reopen --help`.
+
+```text
+Reopen an artifact — creates a NEW draft artifact, deprecates the old one
+
+Usage: forgeplan reopen --reason <REASON> <ID>
+
+Arguments:
+  <ID>  Artifact ID to reopen
+
+Options:
+      --reason <REASON>  Reason for reopening
+  -h, --help             Print help
+  -V, --version          Print version
+```
+<!-- forgeplan-runtime:end -->

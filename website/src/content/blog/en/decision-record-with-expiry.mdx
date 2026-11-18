@@ -15,6 +15,8 @@ translations:
   ru: decision-record-with-expiry
 ---
 
+> **Scope note, 2026-10-23.** DDR here is a local six-field writing convention, not a separate Forgeplan artifact kind or FPF's DRR. The court comparison is an analogy, not a jurisdiction-specific account of appeal rights. The anecdotes, percentages, timings and cover are uncorroborated illustrations. A written condition does not monitor metrics or reopen a record: that requires an assigned reviewer or separately configured alerting. The same applies to the hypothetical dashboard below.
+
 ## The courtroom analogy
 
 A judge doesn't just say "guilty." They write a reasoned opinion: which evidence was considered, which was dismissed and why, on what basis the conclusion was reached.
@@ -33,7 +35,7 @@ DDR (Detailed Decision Record) - an extended ADR format that explicitly captures
 
 **Context**. One or two paragraphs: the situation at decision time, the constraints, the requirements. Without this, a year later it's impossible to tell whether the decision still applies to the new situation. "Chose JWT" without context is useless. "Chose JWT because we had a single authentication provider and needed to ship the integration in two weeks" - a year later that gives you the ability to say "we now have three providers and no time pressure, the context has changed."
 
-**Alternatives considered**. At minimum three. Not "JWT vs sessions" but "JWT with refresh-token rotation, classic sessions backed by Redis, delegating to an external OAuth provider." Three is the empirical threshold below which a choice almost always turns out to be false.
+**Alternatives considered**. Try three meaningfully different options, not three labels for the same design. JWT/session mechanisms and external identity providers operate at different layers and can be combined; compare complete authentication designs. Three is a writing heuristic, not an established empirical threshold.
 
 **Evidence**. What you relied on to make the call. Not "discussed and decided" but specific references: "benchmark on our own data," "vendor documentation," "a colleague's experience on a similar project." Each piece of evidence annotated with a reliability rating - the F/G/R logic from the previous post in this series, plus a context-match level.
 
@@ -49,7 +51,7 @@ Take a typical scenario: a year ago the team decided "don't launch a free tier."
 
 The decision persists by inertia. Another six months pass and someone at a quarterly review says "why don't we do freemium like every competitor?" The team sits down, re-hashes all the arguments. Two weeks spent on something that could have been one line in the original record.
 
-With a reopening condition: "revisit if support automates 80% of tickets or paid conversion climbs above 12%." Six months later the support metric hits 78%, conversion hits 14%. **The decision opens itself for review** - no heroism of memory required. The team sits down, reads the old record with its alternatives, and makes a new decision in 30 minutes.
+With a reopening condition: "revisit if support automates 80% of tickets or paid conversion climbs above 12%." In the example, 78% automation does not cross the first threshold, but 14% conversion crosses the second. A reviewer or separately configured alert can flag the decision; writing the condition alone cannot. The 30-minute review is illustrative.
 
 That one section turns a record from a monument into a living document. Without it, any decision capture becomes "that's what we decided back then, don't touch it."
 
@@ -66,9 +68,9 @@ The key is that the event must be observable automatically. "Revisit when it bec
 
 Related to the reopening condition: the evidence that underpinned a decision also expires.
 
-A benchmark from last year for one version of a library is no longer valid for a new one. A production observation at 50 requests per second doesn't apply at 500. A colleague's experience on a Postgres 12 project doesn't transfer directly to Postgres 16.
+A change of library version or load can limit what an old benchmark establishes; it does not automatically invalidate every observation. State the tested scope, then check whether it covers the new version or the move from 50 to 500 requests per second. A Postgres 12 result does not by itself establish Postgres 16 behavior.
 
-A good record acknowledges this upfront. Each piece of evidence gets a note: "valid under conditions X, reverify if Y changes." When load grows tenfold, the system automatically flags the evidence as "stale," and the decision tied to it moves into the reopen queue.
+A good record says "valid under conditions X, reverify if Y changes." An owner or external monitoring can notice a tenfold load increase and queue a review. Forgeplan's `stale` detects expired `valid_until` dates; it does not evaluate arbitrary prose conditions or ingest these business metrics.
 
 This is the second guard against the "we have a record about the cache" situation. The record exists - but the evidence it was built on doesn't. And nobody noticed because nobody was checking.
 
@@ -86,7 +88,7 @@ Hard limit: one screen, no "supporting appendices." If something doesn't fit, it
 
 ## A concrete example: the decision that reopens itself
 
-Let me walk through a real case, details changed.
+The following changed-detail author account has no linked measurements. Treat the numbers and dashboard as an illustration of how a team might arrange review, not as verified default product behavior.
 
 A B2B SaaS team decided two quarters ago not to launch a free tier. They wrote it up as a DDR. All six sections:
 
@@ -97,7 +99,7 @@ A B2B SaaS team decided two quarters ago not to launch a free tier. They wrote i
 - **Rejected alternatives**: full free tier - would overwhelm support; restricted without support - hurts reputation (users don't distinguish "free without support" from "free with bad support"); partner pilot - risk of damaging relationships if we can't sustain it.
 - **Conditions for reopening**: revisit if support automates 80% of tickets OR if paid conversion climbs above 12% OR in one year regardless.
 
-Six months later the support manager posts the quarterly report: 78% of tickets automated (the bot handles most standard requests). The metric lands on the DDR dashboard - the system sees "DDR-014 reopen trigger approaching." Two weeks later the metric crosses 80%. The team pulls up DDR-014, reads the old alternatives. They look different now:
+In the illustrative setup, an external dashboard receives the support report: 78% of tickets automated. It flags an approaching threshold; two weeks later the figure crosses 80%. The team opens DDR-014 and reads the old alternatives. This integration must be built or configured separately. The alternatives now look different:
 
 - Full free tier - with automation the load is manageable. Better.
 - Restricted without support - no longer needed, support can handle it. Better.
@@ -128,4 +130,4 @@ Coming next:
 - How a single Slack message turns into a product document with 13 sections without scope-creep monstering.
 - How to tell intent apart from behavior when documenting requirements.
 
-This post comes with an interactive DDR template: enter your decision across six sections and get a complete record with automatic reopening triggers. It lives at [/guides](/guides).
+The [DDR guide](/guides/ddr-format/) provides the six-field template and a worked example. It is not a form generator or a service that monitors reopening conditions.

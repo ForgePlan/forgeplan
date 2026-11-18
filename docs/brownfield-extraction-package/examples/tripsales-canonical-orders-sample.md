@@ -1,12 +1,14 @@
 # Canonical Orders Domain (sample render)
 
-> Sample output of skill C10 (`canonical-reproducer`) for the Orders domain. Shows what a self-contained, standalone render looks like — zero `file:line` references.
+> Illustrative desired output of proposed C10 (`canonical-reproducer`), not an executed render or verified rebuild specification. Domain behavior and all validation results below are examples without pinned TripSales sources or run receipts.
 
 ## canonical/orders/ddl.sql
 
+The DDL excerpt requires the `quotes(id)` and `companies(id)` tables from other domains before its foreign keys can be applied; this file alone is not a complete fresh-database schema.
+
 ```sql
 -- Standalone DDL for Orders domain
--- Generated from domain-model DM-001; validated by C11 (psql --check passes).
+-- Illustrative domain-model DM-001 output; no C11 execution evidence supplied.
 
 CREATE TYPE order_status_enum AS ENUM (
   'created',
@@ -101,7 +103,7 @@ ALTER TABLE orders ADD CONSTRAINT fk_orders_operator
 
 ```graphql
 # Standalone GraphQL SDL for the Orders domain
-# Parses with graphql-js (validated by C11).
+# Illustrative SDL; no C11 parse receipt supplied.
 
 enum Orders_StatusEnum {
   created
@@ -109,9 +111,10 @@ enum Orders_StatusEnum {
   cargo_owner_confirmed
   forwarder_confirmed
   fulfillment
-  paid
+  rejected
   canceled
   completed
+  removed
 }
 
 type Orders_Order {
@@ -172,7 +175,7 @@ Rationale: privacy between business parties; order content is competitive info.
 Violation: `__NOT_FOUND__` (indistinguishable from non-existing order).
 
 ## INV-005 — Order status transitions
-Order status follows a state machine. See state diagram in use-cases.md#state-machine.
+Order status follows a state machine. A complete export would include its state diagram in `use-cases.md#state-machine`; that companion document is not shipped in this partial sample, and confirmation guards remain unresolved.
 
 ## INV-012 — Cargo initialized on forwarder confirm
 Cargo is initialized only when the forwarder confirms (not cargo_owner). This is the point at which the forwarder commits transport resources.
@@ -194,7 +197,9 @@ Order status indicating the cargo_owner has confirmed cargo data.
 Order status where transport execution is active; only reachable after both forwarder_confirmed and cargo_owner_confirmed.
 ```
 
-## Validation evidence
+## Illustrative validation report (not execution evidence)
+
+The original example values below show a proposed report shape, not measurements from this review. In particular, `PASS` and `82%` are unverified illustrative values; the cross-domain DDL prerequisites above are not supplied here. PostgreSQL `psql` has no `--check` flag.
 
 ```
 C11 reproducibility-validator results:

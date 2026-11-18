@@ -12,7 +12,7 @@ const theoryCount = guides.filter(g => g.pill === 'theory').length;
 ---
 <Landing
   title="Guides — Forgeplan"
-  description="Interactive lessons on Forgeplan methodology — ADI, R_eff, BMAD, multi-agent dispatch. Theory + 3D visualizations."
+  description="Lessons on engineering decisions — ADI, evidence, BMAD, and agent coordination. Methodology, interactive teaching models, and practical examples."
   slug="guides"
 >
   <Header />
@@ -21,10 +21,9 @@ const theoryCount = guides.filter(g => g.pill === 'theory').length;
       <p class="guides-eyebrow">GUIDES · INTERACTIVE LESSONS</p>
       <h1 class="guides-heading">Methodology in motion</h1>
       <p class="guides-lead">
-        A dozen standalone interactive lessons that explain Forgeplan methodology
-        from the inside out: how decisions are scored, why R_eff equals min()
-        not average, how a PRD becomes a Spec becomes a shipped feature, and
-        how multiple AI agents stay out of each other's way.
+        Twenty lessons on engineering decisions: comparing alternatives, weighing
+        evidence, revisiting assumptions, and coordinating work. Explore theory
+        and interactive teaching models, then see Forgeplan as one implementation.
       </p>
 
       <GuideMap lang="en" />
@@ -33,7 +32,7 @@ const theoryCount = guides.filter(g => g.pill === 'theory').length;
         <div class="guides-stat"><strong>{guides.length}</strong> lessons</div>
         <div class="guides-stat"><strong>{theoryCount}</strong> theory</div>
         <div class="guides-stat"><strong>{interactiveCount}</strong> interactive</div>
-        <div class="guides-stat"><strong>~120 min</strong> total reading</div>
+        <div class="guides-stat"><strong>Self-paced</strong> reading</div>
       </div>
 
       <h2 class="guides-section-title">Reading order</h2>
@@ -69,7 +68,7 @@ const theoryCount = guides.filter(g => g.pill === 'theory').length;
       <a class="guides-ext-link" href="/docs/methodology/overview">
         <div class="guides-ext-body">
           <span class="guides-ext-tag">forgeplan.dev · official docs</span>
-          <span class="guides-ext-title">Methodology Overview · 10 Rules · CLI Reference · MCP Reference · Marketplace</span>
+          <span class="guides-ext-title">Methodology Overview · Engineering Rules · CLI Reference · MCP Reference · Marketplace</span>
         </div>
         <span class="guides-ext-arrow">→</span>
       </a>

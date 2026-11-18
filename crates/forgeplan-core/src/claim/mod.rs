@@ -12,10 +12,13 @@
 //! PRD-057 FR-004..006, FR-014, AC-2, AC-3.
 
 use crate::artifact::identity::{self, MAX_FIELD_LEN as IDENTITY_MAX_FIELD_LEN};
+use crate::workspace::lock::{WorkspaceLock, WorkspaceReadPermit};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use tokio::io::AsyncReadExt;
 
 /// Maximum permitted agent-string length. Mirrors the per-field cap in
 /// `artifact::identity::MAX_FIELD_LEN` (64) doubled to leave room for the
@@ -29,6 +32,13 @@ const MAX_AGENT_LEN: usize = IDENTITY_MAX_FIELD_LEN;
 /// pathological claim file (billion-laughs attempt, oversized note) on
 /// `get` / `list_active` deserialization. R1-audit security finding.
 const MAX_CLAIM_FILE_BYTES: u64 = 65_536;
+
+/// Upper bound on the canonical key a claim file may be named after.
+///
+/// The key is escaped into a file name, so the escaped form is what has to
+/// fit a file system: 255 bytes on ext4, less on other file systems. The
+/// cap leaves room for the escape expansion and the `.yaml` extension.
+const MAX_CANONICAL_KEY_LEN: usize = 128;
 
 /// Minimum permitted TTL — claims shorter than this would churn more than
 /// they coordinate. Orchestrators can still force-release earlier.
@@ -47,7 +57,19 @@ pub const DEFAULT_TTL: Duration = Duration::minutes(30);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Claim {
     /// Artifact being claimed (e.g. `PRD-057`). Uppercased on disk.
+    ///
+    /// This is the document's **display alias** — the name a person reads.
+    /// The alias is not the claim's address: two documents may share one
+    /// alias, so the address is the canonical key below.
     pub id: String,
+    /// The document's **canonical key** — the identity this claim belongs to.
+    ///
+    /// The sidecar file is named after this key, so two documents that share
+    /// a display alias never share a claim. `None` for a claim written
+    /// before the key was recorded; its legacy alias path is read only when
+    /// the workspace scan proves that alias has a unique owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_key: Option<String>,
     /// Caller identity — typically `AgentIdentity::as_frontmatter_value()`
     /// ("name/version"), but kept as a free-form string so orchestrator
     /// tools can inject synthetic names like `worker-1`.
@@ -97,6 +119,13 @@ pub enum ClaimError {
         "artifact id contains invalid characters (allowed: A-Z, a-z, 0-9, '-', '_'; must start with a letter): {0:?}"
     )]
     InvalidId(String),
+    #[error(
+        "the display alias {selector:?} names more than one document — address one by its canonical key"
+    )]
+    AmbiguousAlias {
+        /// The alias the caller wrote.
+        selector: String,
+    },
     #[error("agent id must be non-empty")]
     EmptyAgent,
     #[error(
@@ -111,6 +140,10 @@ pub enum ClaimError {
     Io(#[from] std::io::Error),
     #[error("yaml error: {0}")]
     Yaml(#[from] serde_yaml::Error),
+    #[error("artifact selector could not be resolved: {0}")]
+    Resolution(String),
+    #[error("prepared claim no longer matches the workspace or its inspected state")]
+    PreparedStateChanged,
 }
 
 /// Validate an artifact ID is safe for filesystem use.
@@ -141,6 +174,26 @@ fn validate_id(id: &str) -> Result<(), ClaimError> {
     // but explicit rejection of traversal sequences is cheap insurance.
     if id.contains("..") || id.contains('/') || id.contains('\\') || id.contains('\0') {
         return Err(ClaimError::InvalidId(id.to_string()));
+    }
+    Ok(())
+}
+
+/// Validate a canonical key that is about to become a file name.
+///
+/// The key is escaped into exactly one path component (see
+/// [`crate::artifact::sidecar::sidecar_file_stem`]), so whatever it holds
+/// cannot escape the claims directory. The check only refuses what cannot
+/// be a key at all: an empty name, a name too long for a file, and a name
+/// with a NUL byte in it.
+fn validate_canonical_key(key: &str) -> Result<(), ClaimError> {
+    if key.is_empty() {
+        return Err(ClaimError::EmptyId);
+    }
+    if key.len() > MAX_CANONICAL_KEY_LEN {
+        return Err(ClaimError::InvalidId(key.to_string()));
+    }
+    if key.contains('\0') {
+        return Err(ClaimError::InvalidId(key.to_string()));
     }
     Ok(())
 }
@@ -260,25 +313,239 @@ async fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 /// On-disk claim store rooted at `<workspace>/claims/`.
+///
+/// Every claim file is named after the document's **canonical key** — the
+/// identity — and never after its display alias. `PRD-001` is a name two
+/// documents may share; a claim named after it would give those two
+/// documents one row, and one agent's claim would silently block the
+/// other's work. The canonical key is unique, so a claim named after the key
+/// belongs to exactly one document.
+///
+/// An alias-named file is read without mutation only after the workspace scan
+/// proves that the alias belongs to exactly one canonical key.
 #[derive(Debug, Clone)]
 #[must_use = "ClaimStore is a lightweight handle — bind it before calling methods"]
 pub struct ClaimStore {
+    /// `<workspace>/claims/` — where the claim files live.
     dir: PathBuf,
+    /// The `.forgeplan/` directory the store belongs to. Read to learn the
+    /// canonical key of a document a caller names by its alias.
+    root: PathBuf,
+}
+
+/// A claim prepared under the borrowed exclusive workspace lock.
+#[derive(Debug)]
+pub struct PreparedClaim<'a> {
+    state: PreparedState<'a>,
+    claim: Claim,
+    yaml: String,
+    keyed_path: PathBuf,
+    legacy_path: Option<PathBuf>,
+}
+
+/// A release prepared under the borrowed exclusive workspace lock.
+#[derive(Debug)]
+pub struct PreparedRelease<'a> {
+    state: PreparedState<'a>,
+    paths: Vec<PathBuf>,
+}
+
+#[derive(Debug)]
+struct PreparedState<'a> {
+    guard: Option<&'a WorkspaceLock>,
+    workspace: PathBuf,
+    canonical_key: String,
+    display_alias: String,
+    candidates: Vec<crate::artifact::canonical_key::ArtifactCandidate>,
+    files: Vec<(PathBuf, Option<[u8; 32]>)>,
+}
+
+impl PreparedClaim<'_> {
+    /// The resolved document key.
+    pub fn canonical_key(&self) -> &str {
+        &self.state.canonical_key
+    }
+
+    /// The resolved document display alias.
+    pub fn display_alias(&self) -> &str {
+        &self.state.display_alias
+    }
+}
+
+impl PreparedRelease<'_> {
+    /// Whether applying this release removes a claim file.
+    pub fn is_mutation(&self) -> bool {
+        !self.paths.is_empty()
+    }
+
+    /// The resolved document key.
+    pub fn canonical_key(&self) -> &str {
+        &self.state.canonical_key
+    }
+
+    /// The resolved document display alias.
+    pub fn display_alias(&self) -> &str {
+        &self.state.display_alias
+    }
 }
 
 impl ClaimStore {
     /// `workspace` is the `.forgeplan/` directory. The store creates
     /// `<workspace>/claims/` lazily on first write.
     pub fn new(workspace: impl AsRef<Path>) -> Self {
+        let root = workspace.as_ref().to_path_buf();
         Self {
-            dir: workspace.as_ref().join("claims"),
+            dir: root.join("claims"),
+            root,
         }
     }
 
-    fn path_for(&self, id: &str) -> PathBuf {
-        self.dir.join(format!("{}.yaml", id.to_uppercase()))
+    fn guarded_store(&self, guard: &WorkspaceLock) -> Result<Self, ClaimError> {
+        guard
+            .matches_workspace(&self.root)
+            .map_err(|_| ClaimError::PreparedStateChanged)?;
+        Ok(Self::new(self.root.canonicalize()?))
     }
 
+    /// The path of a document's claim file, named after its canonical key.
+    ///
+    /// The name is the escaped key — see
+    /// [`crate::artifact::sidecar::sidecar_file_stem`] — so a key that
+    /// carries a separator still names exactly one file inside the claims
+    /// directory.
+    fn path_for(&self, canonical_key: &str) -> PathBuf {
+        crate::artifact::sidecar::sidecar_path(&self.dir, canonical_key, "yaml")
+    }
+
+    /// Find a document's claim file without migrating a pre-key file.
+    ///
+    /// Alias-named legacy files are read only when a complete scan proves the
+    /// alias has one owner. This read never migrates or renames sidecars.
+    async fn sidecar_path_for(
+        &self,
+        canonical_key: &str,
+        display_alias: &str,
+    ) -> Result<PathBuf, ClaimError> {
+        Ok(crate::artifact::sidecar::resolve_sidecar_path(
+            &self.dir,
+            canonical_key,
+            display_alias,
+            "yaml",
+        )
+        .await?)
+    }
+
+    /// The identity a selector names: the canonical key of the document, and
+    /// the display alias it is known by.
+    ///
+    /// The selector may be a display alias (`PRD-001`) or a canonical key
+    /// (`prd-auth-system`); both name the same document and therefore the
+    /// same claim file. A selector that names no document keeps the pre-key
+    /// naming — the alias upper-cased — so a forward reference lands where
+    /// the old code put it and an old workspace stays readable.
+    ///
+    /// An alias several documents share is refused: the claim would belong
+    /// to one of them, and which one is not the store's decision.
+    /// Resolve a selector without failing open on an incomplete workspace.
+    async fn resolve_identity(&self, selector: &str) -> Result<(String, String), ClaimError> {
+        let fallback = || (selector.to_uppercase(), selector.to_string());
+        let candidates = crate::artifact::documents::workspace_candidates(&self.root)
+            .await
+            .map_err(|error| ClaimError::Io(std::io::Error::other(error)))?;
+        match crate::artifact::canonical_key::resolve_artifact(selector, &candidates) {
+            Ok(Some(resolved)) => Ok((
+                resolved.identity.canonical_key,
+                resolved.identity.display_id,
+            )),
+            Ok(None) => Ok(fallback()),
+            Err(crate::artifact::canonical_key::ResolveError::InvalidSelector { .. }) => {
+                Ok(fallback())
+            }
+            Err(crate::artifact::canonical_key::ResolveError::Ambiguous { .. }) => {
+                Err(ClaimError::AmbiguousAlias {
+                    selector: selector.to_string(),
+                })
+            }
+            Err(problem) => Err(ClaimError::Resolution(problem.to_string())),
+        }
+    }
+
+    async fn prepare_state<'a>(
+        &self,
+        canonical_key: &str,
+        display_alias: &str,
+        guard: Option<&'a WorkspaceLock>,
+    ) -> Result<PreparedState<'a>, ClaimError> {
+        let workspace = if let Some(guard) = guard {
+            guard
+                .matches_workspace(&self.root)
+                .map_err(|_| ClaimError::PreparedStateChanged)?;
+            self.root.canonicalize()?
+        } else {
+            self.root.clone()
+        };
+        let candidates = crate::artifact::documents::workspace_candidates(&self.root)
+            .await
+            .map_err(|error| ClaimError::Io(std::io::Error::other(error)))?;
+        let display_alias = if display_alias == canonical_key {
+            candidates
+                .iter()
+                .find(|candidate| candidate.canonical_key == canonical_key)
+                .map_or(display_alias, |candidate| candidate.display_id.as_str())
+        } else {
+            display_alias
+        };
+        let mut paths = crate::artifact::sidecar::legacy_sidecar_paths(
+            &self.dir,
+            canonical_key,
+            display_alias,
+            "yaml",
+        );
+        let keyed = self.path_for(canonical_key);
+        if !paths.contains(&keyed) {
+            paths.push(keyed);
+        }
+        let mut files = Vec::with_capacity(paths.len());
+        for path in paths {
+            let digest = file_digest(&path).await?;
+            files.push((path, digest));
+        }
+        Ok(PreparedState {
+            guard,
+            workspace,
+            canonical_key: canonical_key.to_string(),
+            display_alias: display_alias.to_string(),
+            candidates,
+            files,
+        })
+    }
+
+    async fn check_prepared_state(&self, state: &PreparedState<'_>) -> Result<(), ClaimError> {
+        if let Some(guard) = state.guard {
+            guard
+                .matches_workspace(&self.root)
+                .map_err(|_| ClaimError::PreparedStateChanged)?;
+            if self.root.canonicalize()? != state.workspace {
+                return Err(ClaimError::PreparedStateChanged);
+            }
+        } else if self.root != state.workspace {
+            return Err(ClaimError::PreparedStateChanged);
+        }
+        let candidates = crate::artifact::documents::workspace_candidates(&self.root)
+            .await
+            .map_err(|error| ClaimError::Io(std::io::Error::other(error)))?;
+        if candidates != state.candidates {
+            return Err(ClaimError::PreparedStateChanged);
+        }
+        for (path, digest) in &state.files {
+            if file_digest(path).await? != *digest {
+                return Err(ClaimError::PreparedStateChanged);
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
     /// Ensure the claims directory exists. Called before any write.
     async fn ensure_dir(&self) -> Result<(), ClaimError> {
         tokio::fs::create_dir_all(&self.dir).await?;
@@ -288,14 +555,36 @@ impl ClaimStore {
     /// Read a claim if present AND not expired. Expired claims are treated
     /// as absent so downstream logic can acquire without a separate purge
     /// step (AC-3).
+    ///
+    /// The selector may be a display alias or a canonical key: both name
+    /// the same document, so both read the same claim file.
     pub async fn get(&self, id: &str) -> Result<Option<Claim>, ClaimError> {
         validate_id(id)?;
-        let path = self.path_for(id);
+        let (canonical_key, display_alias) = self.resolve_identity(id).await?;
+        self.get_for(&canonical_key, &display_alias).await
+    }
+
+    /// Read the claim of a document named by its canonical key.
+    ///
+    /// The display alias is only used to find a claim written before the key
+    /// existed; the file itself is addressed by the key.
+    pub async fn get_for(
+        &self,
+        canonical_key: &str,
+        display_alias: &str,
+    ) -> Result<Option<Claim>, ClaimError> {
+        validate_canonical_key(canonical_key)?;
+        let path = self.sidecar_path_for(canonical_key, display_alias).await?;
         let raw = match read_bounded(&path).await? {
             Some(s) => s,
             None => return Ok(None),
         };
-        let claim: Claim = serde_yaml::from_str(&raw)?;
+        let mut claim: Claim = serde_yaml::from_str(&raw)?;
+        if claim.canonical_key.is_none() {
+            // A claim written before the key was recorded still belongs to
+            // the document the key names.
+            claim.canonical_key = Some(canonical_key.to_string());
+        }
         if claim.is_expired() {
             Ok(None)
         } else {
@@ -306,10 +595,26 @@ impl ClaimStore {
     /// Raw get without TTL filtering. Exposed for diagnostics (`--include-expired`).
     pub async fn get_including_expired(&self, id: &str) -> Result<Option<Claim>, ClaimError> {
         validate_id(id)?;
-        let path = self.path_for(id);
+        let (canonical_key, display_alias) = self.resolve_identity(id).await?;
+        self.get_including_expired_for(&canonical_key, &display_alias)
+            .await
+    }
+
+    /// Raw get of a document named by its canonical key, without TTL
+    /// filtering.
+    pub async fn get_including_expired_for(
+        &self,
+        canonical_key: &str,
+        display_alias: &str,
+    ) -> Result<Option<Claim>, ClaimError> {
+        validate_canonical_key(canonical_key)?;
+        let path = self.sidecar_path_for(canonical_key, display_alias).await?;
         match read_bounded(&path).await? {
             Some(raw) => {
-                let claim: Claim = serde_yaml::from_str(&raw)?;
+                let mut claim: Claim = serde_yaml::from_str(&raw)?;
+                if claim.canonical_key.is_none() {
+                    claim.canonical_key = Some(canonical_key.to_string());
+                }
                 Ok(Some(claim))
             }
             None => Ok(None),
@@ -323,6 +628,9 @@ impl ClaimStore {
     ///
     /// Fails with `AlreadyHeld` otherwise (AC-2).
     ///
+    /// The selector may be a display alias or a canonical key: both name
+    /// the same document, so both take the same claim.
+    ///
     /// Callers should already hold the workspace lock (`workspace::lock`)
     /// to make the read-modify-write atomic across sub-agents sharing the
     /// filesystem — this function does no internal locking.
@@ -333,6 +641,33 @@ impl ClaimStore {
         ttl: Duration,
         note: Option<String>,
     ) -> Result<Claim, ClaimError> {
+        let prepared = self.prepare_claim_impl(id, agent, ttl, note, None).await?;
+        self.apply_prepared_claim(prepared).await
+    }
+
+    /// Resolve and check a claim without modifying the workspace. Hold the
+    /// workspace lock until the plan is applied or discarded.
+    pub async fn prepare_claim<'a>(
+        &self,
+        id: &str,
+        agent: &str,
+        ttl: Duration,
+        note: Option<String>,
+        guard: &'a WorkspaceLock,
+    ) -> Result<PreparedClaim<'a>, ClaimError> {
+        self.guarded_store(guard)?
+            .prepare_claim_impl(id, agent, ttl, note, Some(guard))
+            .await
+    }
+
+    async fn prepare_claim_impl<'a>(
+        &self,
+        id: &str,
+        agent: &str,
+        ttl: Duration,
+        note: Option<String>,
+        guard: Option<&'a WorkspaceLock>,
+    ) -> Result<PreparedClaim<'a>, ClaimError> {
         validate_id(id)?;
         // PROB-066: full character-class filter (mirrors AgentIdentity::new).
         // Previously only is_empty() was checked — letting `\n`, `\u{202E}`,
@@ -346,17 +681,76 @@ impl ClaimStore {
             return Err(ClaimError::TtlOutOfRange(ttl));
         }
 
-        // Persist the trimmed form — validate_agent_id accepted ` foo ` as
-        // equivalent to `foo`, so the on-disk value must reflect that
-        // canonicalisation. Otherwise `is_held_by(agent)` round-trips break
-        // (caller passes `foo`, file says ` foo `).
+        let (canonical_key, display_alias) = self.resolve_identity(id).await?;
+        let plan = self
+            .prepare_claim_for_impl(&canonical_key, &display_alias, agent, ttl, note, guard)
+            .await?;
+        if self.resolve_identity(id).await? != (canonical_key, display_alias) {
+            return Err(ClaimError::PreparedStateChanged);
+        }
+        Ok(plan)
+    }
+
+    /// Attempt to take a claim on a document named by its canonical key.
+    ///
+    /// The claim file is named after the key, so two documents that share a
+    /// display alias never share a claim. The display alias is kept inside
+    /// the file for the humans who read it, and is used to find a claim
+    /// written before the key existed.
+    pub async fn claim_for(
+        &self,
+        canonical_key: &str,
+        display_alias: &str,
+        agent: &str,
+        ttl: Duration,
+        note: Option<String>,
+    ) -> Result<Claim, ClaimError> {
+        let prepared = self
+            .prepare_claim_for_impl(canonical_key, display_alias, agent, ttl, note, None)
+            .await?;
+        self.apply_prepared_claim(prepared).await
+    }
+
+    /// Check a claim without modifying the workspace.
+    ///
+    /// Hold the workspace lock until the returned plan has been applied or
+    /// discarded. This keeps ownership and identity stable across the write.
+    pub async fn prepare_claim_for<'a>(
+        &self,
+        canonical_key: &str,
+        display_alias: &str,
+        agent: &str,
+        ttl: Duration,
+        note: Option<String>,
+        guard: &'a WorkspaceLock,
+    ) -> Result<PreparedClaim<'a>, ClaimError> {
+        self.guarded_store(guard)?
+            .prepare_claim_for_impl(canonical_key, display_alias, agent, ttl, note, Some(guard))
+            .await
+    }
+
+    async fn prepare_claim_for_impl<'a>(
+        &self,
+        canonical_key: &str,
+        display_alias: &str,
+        agent: &str,
+        ttl: Duration,
+        note: Option<String>,
+        guard: Option<&'a WorkspaceLock>,
+    ) -> Result<PreparedClaim<'a>, ClaimError> {
+        validate_canonical_key(canonical_key)?;
+        validate_agent_id_relaxed(agent)?;
+        if ttl < MIN_TTL || ttl > MAX_TTL {
+            return Err(ClaimError::TtlOutOfRange(ttl));
+        }
         let agent = agent.trim();
-
-        self.ensure_dir().await?;
-
-        // Check for live claim by a different agent.
-        if let Some(existing) = self.get(id).await?
+        let state = self
+            .prepare_state(canonical_key, display_alias, guard)
+            .await?;
+        let existing_path = self.sidecar_path_for(canonical_key, display_alias).await?;
+        if let Some(existing) = read_claim_at(&existing_path).await?
             && !existing.is_held_by(agent)
+            && !existing.is_expired()
         {
             return Err(ClaimError::AlreadyHeld {
                 id: existing.id,
@@ -367,16 +761,41 @@ impl ClaimStore {
 
         let now = Utc::now();
         let claim = Claim {
-            id: id.to_uppercase(),
+            id: display_alias.to_uppercase(),
+            canonical_key: Some(canonical_key.to_string()),
             agent_id: agent.to_string(),
             claimed_at: now,
             expires_at: now + ttl,
             note,
         };
-
         let yaml = serde_yaml::to_string(&claim)?;
-        atomic_write(&self.path_for(id), yaml.as_bytes()).await?;
-        Ok(claim)
+        let keyed_path = self.path_for(canonical_key);
+        let legacy_path = (existing_path != keyed_path).then_some(existing_path);
+        self.check_prepared_state(&state).await?;
+        Ok(PreparedClaim {
+            state,
+            claim,
+            yaml,
+            keyed_path,
+            legacy_path,
+        })
+    }
+
+    /// Apply a prepared claim while still holding the preparation lock.
+    pub async fn apply_prepared_claim(
+        &self,
+        prepared: PreparedClaim<'_>,
+    ) -> Result<Claim, ClaimError> {
+        self.check_prepared_state(&prepared.state).await?;
+        atomic_write(&prepared.keyed_path, prepared.yaml.as_bytes()).await?;
+        if let Some(path) = prepared.legacy_path {
+            match tokio::fs::remove_file(path).await {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(ClaimError::Io(error)),
+            }
+        }
+        Ok(prepared.claim)
     }
 
     /// Remove a claim.
@@ -387,7 +806,35 @@ impl ClaimStore {
     ///   a confirmed-dead agent (R-4 mitigation).
     ///
     /// Missing claim is a no-op (not an error) to make release idempotent.
+    ///
+    /// The selector may be a display alias or a canonical key: both name
+    /// the same document, so both release the same claim.
     pub async fn release(&self, id: &str, agent: &str, force: bool) -> Result<(), ClaimError> {
+        let prepared = self.prepare_release_impl(id, agent, force, None).await?;
+        self.apply_prepared_release(prepared).await
+    }
+
+    /// Resolve and check a release without modifying the workspace. Hold the
+    /// workspace lock until the plan is applied or discarded.
+    pub async fn prepare_release<'a>(
+        &self,
+        id: &str,
+        agent: &str,
+        force: bool,
+        guard: &'a WorkspaceLock,
+    ) -> Result<PreparedRelease<'a>, ClaimError> {
+        self.guarded_store(guard)?
+            .prepare_release_impl(id, agent, force, Some(guard))
+            .await
+    }
+
+    async fn prepare_release_impl<'a>(
+        &self,
+        id: &str,
+        agent: &str,
+        force: bool,
+        guard: Option<&'a WorkspaceLock>,
+    ) -> Result<PreparedRelease<'a>, ClaimError> {
         validate_id(id)?;
         // R2 audit HIGH #2 (rust-pro): the empty-agent guard must run BEFORE
         // the filesystem read so that a bogus `release("X", "", false)` call
@@ -407,9 +854,69 @@ impl ClaimStore {
         // pass `" foo "` against a stored `foo` consistently.
         let agent = agent.trim();
 
-        let path = self.path_for(id);
+        let (canonical_key, display_alias) = self.resolve_identity(id).await?;
+        let plan = self
+            .prepare_release_for_impl(&canonical_key, &display_alias, agent, force, guard)
+            .await?;
+        if self.resolve_identity(id).await? != (canonical_key, display_alias) {
+            return Err(ClaimError::PreparedStateChanged);
+        }
+        Ok(plan)
+    }
+
+    /// Remove the claim of a document named by its canonical key.
+    ///
+    /// Keyed claims take priority. Any shadowed legacy claims are removed
+    /// only when their unique ownership and holder can also be established.
+    pub async fn release_for(
+        &self,
+        canonical_key: &str,
+        display_alias: &str,
+        agent: &str,
+        force: bool,
+    ) -> Result<(), ClaimError> {
+        let prepared = self
+            .prepare_release_for_impl(canonical_key, display_alias, agent, force, None)
+            .await?;
+        self.apply_prepared_release(prepared).await
+    }
+
+    /// Check a release without modifying the workspace.
+    ///
+    /// Hold the workspace lock until the returned plan has been applied or
+    /// discarded. A missing claim produces a non-mutating plan.
+    pub async fn prepare_release_for<'a>(
+        &self,
+        canonical_key: &str,
+        display_alias: &str,
+        agent: &str,
+        force: bool,
+        guard: &'a WorkspaceLock,
+    ) -> Result<PreparedRelease<'a>, ClaimError> {
+        self.guarded_store(guard)?
+            .prepare_release_for_impl(canonical_key, display_alias, agent, force, Some(guard))
+            .await
+    }
+
+    async fn prepare_release_for_impl<'a>(
+        &self,
+        canonical_key: &str,
+        display_alias: &str,
+        agent: &str,
+        force: bool,
+        guard: Option<&'a WorkspaceLock>,
+    ) -> Result<PreparedRelease<'a>, ClaimError> {
+        validate_canonical_key(canonical_key)?;
+        if !force {
+            validate_agent_id_relaxed(agent)?;
+        }
+        let agent = agent.trim();
+        let state = self
+            .prepare_state(canonical_key, display_alias, guard)
+            .await?;
+        let path = self.sidecar_path_for(canonical_key, display_alias).await?;
         if !force
-            && let Some(existing) = self.get_including_expired(id).await?
+            && let Some(existing) = read_claim_at(&path).await?
             && !existing.is_held_by(agent)
             && !existing.is_expired()
         {
@@ -419,12 +926,67 @@ impl ClaimStore {
                 requester: agent.to_string(),
             });
         }
-
-        match tokio::fs::remove_file(&path).await {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(ClaimError::Io(e)),
+        let mut paths = Vec::new();
+        if state
+            .files
+            .iter()
+            .any(|(candidate, digest)| candidate == &path && digest.is_some())
+        {
+            paths.push(path.clone());
+            for (candidate, digest) in &state.files {
+                if candidate == &path || digest.is_none() {
+                    continue;
+                }
+                let owner = crate::artifact::canonical_key::resolve_artifact(
+                    &state.display_alias,
+                    &state.candidates,
+                )
+                .map_err(|error| ClaimError::Resolution(error.to_string()))?;
+                if owner.is_none_or(|owner| owner.identity.canonical_key != canonical_key) {
+                    return Err(ClaimError::Resolution(
+                        "legacy claim ownership is not unique".to_string(),
+                    ));
+                }
+                let shadow = read_claim_at(candidate)
+                    .await?
+                    .ok_or(ClaimError::PreparedStateChanged)?;
+                if shadow
+                    .canonical_key
+                    .as_deref()
+                    .is_some_and(|key| key != canonical_key)
+                {
+                    return Err(ClaimError::Resolution(
+                        "legacy claim names a different canonical key".to_string(),
+                    ));
+                }
+                if !force && !shadow.is_held_by(agent) && !shadow.is_expired() {
+                    return Err(ClaimError::NotHeldByRequester {
+                        id: shadow.id,
+                        held_by: shadow.agent_id,
+                        requester: agent.to_string(),
+                    });
+                }
+                paths.push(candidate.clone());
+            }
         }
+        self.check_prepared_state(&state).await?;
+        Ok(PreparedRelease { state, paths })
+    }
+
+    /// Apply a prepared release while still holding the preparation lock.
+    pub async fn apply_prepared_release(
+        &self,
+        prepared: PreparedRelease<'_>,
+    ) -> Result<(), ClaimError> {
+        self.check_prepared_state(&prepared.state).await?;
+        for path in prepared.paths {
+            match tokio::fs::remove_file(path).await {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(ClaimError::Io(error)),
+            }
+        }
+        Ok(())
     }
 
     /// List every live claim in the workspace, sorted by `expires_at`
@@ -434,14 +996,13 @@ impl ClaimStore {
         Ok(self.list_active_with_stats().await?.0)
     }
 
-    /// Map view of `list_active` — keyed by claim ID uppercased. O(1)
-    /// lookups when joining against a large artifact graph (Inc 4
-    /// dispatcher needs `claims.get(id)` per artifact; iterating a Vec
-    /// would be `O(artifacts × claims)`).
+    /// Map view of `list_active`, keyed by canonical key for identity-safe
+    /// joins. Legacy claims without a stored key use their historical ID.
     pub async fn list_active_map(&self) -> Result<BTreeMap<String, Claim>, ClaimError> {
         let mut out = BTreeMap::new();
         for c in self.list_active().await? {
-            out.insert(c.id.clone(), c);
+            let key = c.canonical_key.clone().unwrap_or_else(|| c.id.clone());
+            out.insert(key, c);
         }
         Ok(out)
     }
@@ -489,9 +1050,44 @@ impl ClaimStore {
                 }
             }
         }
+        // Listing claims is read-only. Legacy migration must be performed by
+        // a locked owner-aware operation, never as a read side effect.
         out.sort_by_key(|c| c.expires_at);
         Ok((out, skipped))
     }
+}
+
+async fn file_digest(path: &Path) -> Result<Option<[u8; 32]>, ClaimError> {
+    let mut file = match tokio::fs::File::open(path).await {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if file.metadata().await?.len() > MAX_CLAIM_FILE_BYTES {
+        return Err(ClaimError::FileTooLarge);
+    }
+    Ok(Some(digest_claim_reader(&mut file).await?))
+}
+
+async fn digest_claim_reader(
+    reader: &mut (impl tokio::io::AsyncRead + Unpin),
+) -> Result<[u8; 32], ClaimError> {
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 8192];
+    let mut total = 0u64;
+    loop {
+        let limit = (MAX_CLAIM_FILE_BYTES - total + 1).min(buffer.len() as u64) as usize;
+        let count = reader.read(&mut buffer[..limit]).await?;
+        if count == 0 {
+            break;
+        }
+        total += count as u64;
+        if total > MAX_CLAIM_FILE_BYTES {
+            return Err(ClaimError::FileTooLarge);
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(hasher.finalize().into())
 }
 
 /// Read a file with the MAX_CLAIM_FILE_BYTES cap enforced. Returns
@@ -499,18 +1095,37 @@ impl ClaimStore {
 /// failure. Centralized so every read path (`get`, `list_active`) applies
 /// the same protection.
 async fn read_bounded(path: &Path) -> Result<Option<String>, ClaimError> {
-    let meta = match tokio::fs::metadata(path).await {
-        Ok(m) => m,
+    let file = match tokio::fs::File::open(path).await {
+        Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(ClaimError::Io(e)),
     };
-    if meta.len() > MAX_CLAIM_FILE_BYTES {
+    let len = file.metadata().await?.len();
+    if len > MAX_CLAIM_FILE_BYTES {
         return Err(ClaimError::FileTooLarge);
     }
-    match tokio::fs::read_to_string(path).await {
-        Ok(s) => Ok(Some(s)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(ClaimError::Io(e)),
+    let mut bytes = Vec::with_capacity(len as usize);
+    file.take(MAX_CLAIM_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .await?;
+    if bytes.len() as u64 > MAX_CLAIM_FILE_BYTES {
+        return Err(ClaimError::FileTooLarge);
+    }
+    let raw = String::from_utf8(bytes).map_err(|error| {
+        ClaimError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+    })?;
+    Ok(Some(raw))
+}
+
+/// Read the claim stored at a path, expired or not.
+///
+/// A missing file is `None`; a file that does not parse is an error, the
+/// same way [`read_bounded`] reports an oversized one. The caller decides
+/// what an expired claim means.
+async fn read_claim_at(path: &Path) -> Result<Option<Claim>, ClaimError> {
+    match read_bounded(path).await? {
+        Some(raw) => Ok(Some(serde_yaml::from_str::<Claim>(&raw)?)),
+        None => Ok(None),
     }
 }
 
@@ -527,6 +1142,7 @@ mod tests {
     fn claim_is_expired_matches_now() {
         let past = Claim {
             id: "PRD-001".into(),
+            canonical_key: None,
             agent_id: "a/1".into(),
             claimed_at: Utc::now() - Duration::minutes(10),
             expires_at: Utc::now() - Duration::minutes(1),
@@ -545,6 +1161,7 @@ mod tests {
     fn is_held_by_exact_match() {
         let c = Claim {
             id: "PRD-001".into(),
+            canonical_key: None,
             agent_id: "orchestrator/1.0".into(),
             claimed_at: Utc::now(),
             expires_at: Utc::now() + Duration::minutes(30),
@@ -623,6 +1240,7 @@ mod tests {
 
         let past = Claim {
             id: "PRD-005".into(),
+            canonical_key: None,
             agent_id: "dead-agent".into(),
             claimed_at: Utc::now() - Duration::minutes(20),
             expires_at: Utc::now() - Duration::minutes(5),
@@ -683,6 +1301,7 @@ mod tests {
         store.ensure_dir().await.unwrap();
         let past = Claim {
             id: "PRD-405".into(),
+            canonical_key: None,
             agent_id: "x".into(),
             claimed_at: Utc::now() - Duration::hours(1),
             expires_at: Utc::now() - Duration::seconds(1),
@@ -763,6 +1382,7 @@ mod tests {
         store.ensure_dir().await.unwrap();
         let past = Claim {
             id: "PRD-013".into(),
+            canonical_key: None,
             agent_id: "ghost".into(),
             claimed_at: Utc::now() - Duration::hours(2),
             expires_at: Utc::now() - Duration::minutes(5),
@@ -819,6 +1439,7 @@ mod tests {
 
         let expired = Claim {
             id: "PRD-031".into(),
+            canonical_key: None,
             agent_id: "stale/1".into(),
             claimed_at: Utc::now() - Duration::hours(2),
             expires_at: Utc::now() - Duration::seconds(1),
@@ -967,6 +1588,100 @@ mod tests {
         assert!(map.contains_key("PRD-300"));
         assert!(map.contains_key("PRD-301"));
         assert_eq!(map["PRD-300"].agent_id, "a/1");
+    }
+    #[tokio::test]
+    async fn conflicting_canonical_keys_refuse_claim_without_writing_sidecars() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = ws(&tmp);
+        let prds = workspace.join("prds");
+        tokio::fs::create_dir_all(&prds).await.unwrap();
+        for (name, id) in [("first.md", "PRD-001"), ("second.md", "PRD-002")] {
+            tokio::fs::write(
+                prds.join(name),
+                format!(
+                    "---\nid: {id}\nslug: prd-repeated-key\ntitle: {id}\nkind: prd\n---\nbody\n"
+                ),
+            )
+            .await
+            .unwrap();
+        }
+        let store = ClaimStore::new(workspace.clone());
+
+        let error = store
+            .claim("prd-repeated-key", "agent", DEFAULT_TTL, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ClaimError::Resolution(_)));
+        assert!(!workspace.join("claims").exists());
+    }
+
+    #[tokio::test]
+    async fn incomplete_document_scan_refuses_claim_without_writing_sidecars() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = ws(&tmp);
+        let prds = workspace.join("prds");
+        tokio::fs::create_dir_all(&prds).await.unwrap();
+        tokio::fs::write(prds.join("broken.md"), "not frontmatter")
+            .await
+            .unwrap();
+        let store = ClaimStore::new(workspace.clone());
+
+        let error = store
+            .claim("PRD-001", "agent", DEFAULT_TTL, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ClaimError::Io(_)));
+        assert!(!workspace.join("claims").exists());
+    }
+
+    #[tokio::test]
+    async fn resolved_claim_cannot_bypass_an_incomplete_document_scan() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = ws(&tmp);
+        let store = ClaimStore::new(&workspace);
+        let key = "prd-alpha";
+        store
+            .claim_for(key, "PRD-001", "agent", DEFAULT_TTL, None)
+            .await
+            .unwrap();
+        let claim_path = store.path_for(key);
+        let before = tokio::fs::read(&claim_path).await.unwrap();
+        tokio::fs::create_dir_all(workspace.join("prds"))
+            .await
+            .unwrap();
+        tokio::fs::write(workspace.join("prds/broken.md"), "not frontmatter")
+            .await
+            .unwrap();
+
+        assert!(store.get_for(key, "PRD-001").await.is_err());
+        assert!(
+            store
+                .release_for(key, "PRD-001", "agent", false)
+                .await
+                .is_err()
+        );
+        assert_eq!(tokio::fs::read(claim_path).await.unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn list_active_map_keeps_shared_alias_claims_by_canonical_key() {
+        let tmp = TempDir::new().unwrap();
+        let store = ClaimStore::new(ws(&tmp));
+        let alpha = "prd-alpha-k11111111111111111111111111111111";
+        let beta = "prd-beta-k22222222222222222222222222222222";
+        store
+            .claim_for(alpha, "PRD-001", "alpha-agent", DEFAULT_TTL, None)
+            .await
+            .unwrap();
+        store
+            .claim_for(beta, "PRD-001", "beta-agent", DEFAULT_TTL, None)
+            .await
+            .unwrap();
+
+        let map = store.list_active_map().await.unwrap();
+        assert_eq!(map.len(), 2);
+        assert_eq!(map[alpha].agent_id, "alpha-agent");
+        assert_eq!(map[beta].agent_id, "beta-agent");
     }
 
     #[tokio::test]
@@ -1141,5 +1856,595 @@ mod tests {
         // The original claim is still on disk — release was refused before
         // any filesystem mutation.
         assert!(store.get("PRD-067").await.unwrap().is_some());
+    }
+
+    // ── ADR-030 — the claim is addressed by the canonical key ──────────────
+
+    /// A workspace holding the given documents, and the temp directory that
+    /// holds it.
+    ///
+    /// The documents are what the resolver reads, so a claim written against
+    /// one of them is addressed by that document's canonical key.
+    fn workspace_with(documents: &[(&str, &str)]) -> (TempDir, PathBuf) {
+        let tmp = TempDir::new().unwrap();
+        let ws = ws(&tmp);
+        let dir = ws.join("prds");
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, body) in documents {
+            std::fs::write(dir.join(name), body).unwrap();
+        }
+        (tmp, ws)
+    }
+
+    /// One document, as the projection writes it.
+    fn document(id: &str, slug: Option<&str>) -> String {
+        let slug_line = slug.map(|s| format!("slug: {s}\n")).unwrap_or_default();
+        format!("---\nid: {id}\n{slug_line}kind: prd\ntitle: Doc\nstatus: draft\n---\n\nBody.\n")
+    }
+
+    #[tokio::test]
+    async fn legacy_claim_conflicts_leave_files_unchanged() {
+        let (_tmp, ws) = workspace_with(&[("a.md", &document("PRD-001", Some("prd-auth-system")))]);
+        let claims = ws.join("claims");
+        std::fs::create_dir_all(&claims).unwrap();
+        let legacy = claims.join("PRD-001.yaml");
+        let contents = b"id: PRD-001\nagent_id: owner/1\nclaimed_at: 2026-01-01T00:00:00+00:00\nexpires_at: 2099-01-01T00:00:00+00:00\n";
+        std::fs::write(&legacy, contents).unwrap();
+        let store = ClaimStore::new(&ws);
+        let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            store
+                .prepare_claim_for(
+                    "prd-auth-system",
+                    "prd-001",
+                    "other/1",
+                    DEFAULT_TTL,
+                    None,
+                    &guard
+                )
+                .await,
+            Err(ClaimError::AlreadyHeld { .. })
+        ));
+        assert!(matches!(
+            store
+                .prepare_release_for("prd-auth-system", "prd-001", "other/1", false, &guard)
+                .await,
+            Err(ClaimError::NotHeldByRequester { .. })
+        ));
+        assert!(matches!(
+            store.claim("prd-001", "other/1", DEFAULT_TTL, None).await,
+            Err(ClaimError::AlreadyHeld { .. })
+        ));
+        assert!(matches!(
+            store.release("prd-001", "other/1", false).await,
+            Err(ClaimError::NotHeldByRequester { .. })
+        ));
+        assert_eq!(std::fs::read(&legacy).unwrap().as_slice(), contents);
+        assert_eq!(std::fs::read_dir(&claims).unwrap().count(), 1);
+        assert!(!claims.join("prd-auth-system.yaml").exists());
+    }
+
+    #[tokio::test]
+    async fn keyed_claim_takes_priority_over_legacy_claim_on_conflict() {
+        let (_tmp, ws) = workspace_with(&[("a.md", &document("PRD-001", Some("prd-auth-system")))]);
+        let claims = ws.join("claims");
+        std::fs::create_dir_all(&claims).unwrap();
+        let legacy = claims.join("PRD-001.yaml");
+        let keyed = claims.join("prd-auth-system.yaml");
+        let claim = |agent: &str| {
+            format!(
+                "id: PRD-001\nagent_id: {agent}\nclaimed_at: 2026-01-01T00:00:00+00:00\nexpires_at: 2099-01-01T00:00:00+00:00\n"
+            )
+        };
+        let legacy_bytes = claim("legacy/1");
+        let keyed_bytes = claim("keyed/1");
+        std::fs::write(&legacy, &legacy_bytes).unwrap();
+        std::fs::write(&keyed, &keyed_bytes).unwrap();
+        let store = ClaimStore::new(&ws);
+        let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            store.prepare_claim_for("prd-auth-system", "prd-001", "legacy/1", DEFAULT_TTL, None, &guard).await,
+            Err(ClaimError::AlreadyHeld { agent_id, .. }) if agent_id == "keyed/1"
+        ));
+        assert!(matches!(
+            store.prepare_release_for("prd-auth-system", "prd-001", "legacy/1", false, &guard).await,
+            Err(ClaimError::NotHeldByRequester { held_by, .. }) if held_by == "keyed/1"
+        ));
+        assert_eq!(std::fs::read_to_string(legacy).unwrap(), legacy_bytes);
+        assert_eq!(std::fs::read_to_string(keyed).unwrap(), keyed_bytes);
+        assert_eq!(std::fs::read_dir(claims).unwrap().count(), 2);
+    }
+
+    #[tokio::test]
+    async fn prepared_claim_migrates_only_when_applied_and_release_noop_is_read_only() {
+        let (_tmp, ws) = workspace_with(&[("a.md", &document("PRD-001", Some("prd-auth-system")))]);
+        let claims = ws.join("claims");
+        let store = ClaimStore::new(&ws);
+        let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+            .await
+            .unwrap();
+        let absent = store
+            .prepare_release_for("prd-auth-system", "PRD-001", "owner/1", false, &guard)
+            .await
+            .unwrap();
+        assert!(!absent.is_mutation());
+        assert!(!claims.exists());
+        let plan = store
+            .prepare_claim_for(
+                "prd-auth-system",
+                "PRD-001",
+                "owner/1",
+                DEFAULT_TTL,
+                None,
+                &guard,
+            )
+            .await
+            .unwrap();
+        assert!(!claims.exists());
+        drop(plan);
+        std::fs::create_dir_all(&claims).unwrap();
+        let legacy = claims.join("PRD-001.yaml");
+        let bytes = b"id: PRD-001\nagent_id: owner/1\nclaimed_at: 2026-01-01T00:00:00+00:00\nexpires_at: 2099-01-01T00:00:00+00:00\n";
+        std::fs::write(&legacy, bytes).unwrap();
+
+        let plan = store
+            .prepare_claim("prd-001", " owner/1 ", DEFAULT_TTL, None, &guard)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&legacy).unwrap().as_slice(), bytes);
+        assert!(!claims.join("prd-auth-system.yaml").exists());
+        let renewed = store.apply_prepared_claim(plan).await.unwrap();
+        assert_eq!(renewed.agent_id, "owner/1");
+        assert!(!legacy.exists());
+        assert!(claims.join("prd-auth-system.yaml").exists());
+        let release = store
+            .prepare_release("prd-001", "owner/1", false, &guard)
+            .await
+            .unwrap();
+        assert!(release.is_mutation());
+        store.apply_prepared_release(release).await.unwrap();
+        assert!(!claims.join("prd-auth-system.yaml").exists());
+    }
+
+    #[tokio::test]
+    async fn legacy_expiry_and_force_are_checked_before_mutation() {
+        let (_tmp, ws) = workspace_with(&[("a.md", &document("PRD-001", Some("prd-auth-system")))]);
+        let claims = ws.join("claims");
+        std::fs::create_dir_all(&claims).unwrap();
+        let legacy = claims.join("PRD-001.yaml");
+        let expired = b"id: PRD-001\nagent_id: owner/1\nclaimed_at: 2000-01-01T00:00:00+00:00\nexpires_at: 2000-01-01T00:01:00+00:00\n";
+        std::fs::write(&legacy, expired).unwrap();
+        let store = ClaimStore::new(&ws);
+        let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+            .await
+            .unwrap();
+        let plan = store
+            .prepare_claim_for(
+                "prd-auth-system",
+                "PRD-001",
+                "new/1",
+                DEFAULT_TTL,
+                None,
+                &guard,
+            )
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&legacy).unwrap().as_slice(), expired);
+        store.apply_prepared_claim(plan).await.unwrap();
+        assert!(!legacy.exists());
+
+        let plan = store
+            .prepare_release_for("prd-auth-system", "PRD-001", "", true, &guard)
+            .await
+            .unwrap();
+        assert!(plan.is_mutation());
+        assert!(claims.join("prd-auth-system.yaml").exists());
+        store.apply_prepared_release(plan).await.unwrap();
+        assert!(!claims.join("prd-auth-system.yaml").exists());
+    }
+
+    #[tokio::test]
+    async fn prepared_plans_reject_other_workspaces_and_stale_files_or_identity() {
+        let (_a, ws_a) = workspace_with(&[("a.md", &document("PRD-001", Some("prd-auth-system")))]);
+        let (_b, ws_b) = workspace_with(&[("a.md", &document("PRD-001", Some("prd-auth-system")))]);
+        let a = ClaimStore::new(&ws_a);
+        let b = ClaimStore::new(&ws_b);
+        let guard = crate::workspace::lock::acquire_workspace_lock(&ws_a)
+            .await
+            .unwrap();
+        assert!(matches!(
+            b.prepare_claim("PRD-001", "owner", DEFAULT_TTL, None, &guard)
+                .await,
+            Err(ClaimError::PreparedStateChanged)
+        ));
+        let plan = a
+            .prepare_claim("PRD-001", "owner", DEFAULT_TTL, None, &guard)
+            .await
+            .unwrap();
+        assert!(matches!(
+            b.apply_prepared_claim(plan).await,
+            Err(ClaimError::PreparedStateChanged)
+        ));
+        assert!(!ws_a.join("claims").exists());
+        assert!(!ws_b.join("claims").exists());
+
+        let plan = a
+            .prepare_claim("PRD-001", "owner", DEFAULT_TTL, None, &guard)
+            .await
+            .unwrap();
+        a.claim_for("prd-auth-system", "PRD-001", "other", DEFAULT_TTL, None)
+            .await
+            .unwrap();
+        assert!(matches!(
+            a.apply_prepared_claim(plan).await,
+            Err(ClaimError::PreparedStateChanged)
+        ));
+        let plan = a
+            .prepare_release("PRD-001", "other", false, &guard)
+            .await
+            .unwrap();
+        assert!(matches!(
+            b.apply_prepared_release(plan).await,
+            Err(ClaimError::PreparedStateChanged)
+        ));
+        assert!(ws_a.join("claims/prd-auth-system.yaml").exists());
+        let plan = a
+            .prepare_release("PRD-001", "other", false, &guard)
+            .await
+            .unwrap();
+        a.claim_for(
+            "prd-auth-system",
+            "PRD-001",
+            "other",
+            DEFAULT_TTL,
+            Some("renewed".into()),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            a.apply_prepared_release(plan).await,
+            Err(ClaimError::PreparedStateChanged)
+        ));
+        assert_eq!(
+            a.get("PRD-001").await.unwrap().unwrap().note.as_deref(),
+            Some("renewed")
+        );
+
+        let plan = a
+            .prepare_release("PRD-001", "other", false, &guard)
+            .await
+            .unwrap();
+        std::fs::write(
+            ws_a.join("prds/a.md"),
+            document("PRD-002", Some("prd-auth-system")),
+        )
+        .unwrap();
+        assert!(matches!(
+            a.apply_prepared_release(plan).await,
+            Err(ClaimError::PreparedStateChanged)
+        ));
+        assert!(ws_a.join("claims/prd-auth-system.yaml").exists());
+    }
+
+    #[tokio::test]
+    async fn relative_store_prepares_only_canonical_workspace_paths() {
+        let tmp = tempfile::Builder::new()
+            .prefix("claim-path-binding-")
+            .tempdir_in(std::env::current_dir().unwrap())
+            .unwrap();
+        let workspace = tmp.path().join(".forgeplan");
+        std::fs::create_dir_all(workspace.join("prds")).unwrap();
+        std::fs::write(
+            workspace.join("prds/a.md"),
+            document("PRD-001", Some("prd-auth-system")),
+        )
+        .unwrap();
+        let relative = PathBuf::from(tmp.path().file_name().unwrap()).join(".forgeplan");
+        let store = ClaimStore::new(relative);
+        let absolute = ClaimStore::new(&workspace);
+        let guard = crate::workspace::lock::acquire_workspace_lock(&workspace)
+            .await
+            .unwrap();
+        let plan = store
+            .prepare_claim("PRD-001", "owner", DEFAULT_TTL, None, &guard)
+            .await
+            .unwrap();
+        let canonical = workspace.canonicalize().unwrap();
+        assert!(plan.keyed_path.is_absolute() && plan.keyed_path.starts_with(&canonical));
+        assert!(
+            plan.state
+                .files
+                .iter()
+                .all(|(path, _)| path.is_absolute() && path.starts_with(&canonical))
+        );
+        absolute.apply_prepared_claim(plan).await.unwrap();
+        let release = store
+            .prepare_release("PRD-001", "owner", false, &guard)
+            .await
+            .unwrap();
+        assert!(
+            release
+                .paths
+                .iter()
+                .all(|path| path.is_absolute() && path.starts_with(&canonical))
+        );
+        assert!(
+            release
+                .state
+                .files
+                .iter()
+                .all(|(path, _)| path.is_absolute() && path.starts_with(&canonical))
+        );
+        absolute.apply_prepared_release(release).await.unwrap();
+        assert!(!workspace.join("claims/prd-auth-system.yaml").exists());
+    }
+
+    #[tokio::test]
+    async fn prepared_operations_bound_sidecar_fingerprints_and_growing_streams() {
+        let (_tmp, ws) = workspace_with(&[("a.md", &document("PRD-001", Some("prd-auth-system")))]);
+        let claims = ws.join("claims");
+        std::fs::create_dir_all(&claims).unwrap();
+        let legacy = claims.join("PRD-001.yaml");
+        std::fs::write(&legacy, vec![b'x'; MAX_CLAIM_FILE_BYTES as usize + 1]).unwrap();
+        let store = ClaimStore::new(&ws);
+        let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+            .await
+            .unwrap();
+        assert!(matches!(
+            store
+                .prepare_claim("PRD-001", "owner", DEFAULT_TTL, None, &guard)
+                .await,
+            Err(ClaimError::FileTooLarge)
+        ));
+        assert!(matches!(
+            store.prepare_release("PRD-001", "", true, &guard).await,
+            Err(ClaimError::FileTooLarge)
+        ));
+        assert_eq!(
+            std::fs::metadata(&legacy).unwrap().len(),
+            MAX_CLAIM_FILE_BYTES + 1
+        );
+        assert!(!claims.join("prd-auth-system.yaml").exists());
+        let mut stream =
+            tokio::io::AsyncReadExt::take(tokio::io::repeat(0), MAX_CLAIM_FILE_BYTES + 1);
+        assert!(matches!(
+            digest_claim_reader(&mut stream).await,
+            Err(ClaimError::FileTooLarge)
+        ));
+    }
+
+    #[tokio::test]
+    async fn release_checks_and_removes_uniquely_owned_shadow_claims() {
+        let (_tmp, ws) = workspace_with(&[("a.md", &document("PRD-001", Some("prd-auth-system")))]);
+        let claims = ws.join("claims");
+        std::fs::create_dir_all(&claims).unwrap();
+        let keyed = claims.join("prd-auth-system.yaml");
+        let legacy = claims.join("PRD-001.yaml");
+        let claim = |agent: &str| {
+            format!(
+                "id: PRD-001\nagent_id: {agent}\nclaimed_at: 2026-01-01T00:00:00+00:00\nexpires_at: 2099-01-01T00:00:00+00:00\n"
+            )
+        };
+        std::fs::write(&keyed, claim("owner")).unwrap();
+        std::fs::write(&legacy, claim("other")).unwrap();
+        let store = ClaimStore::new(&ws);
+        let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+            .await
+            .unwrap();
+        assert!(matches!(
+            store.prepare_release("PRD-001", "owner", false, &guard).await,
+            Err(ClaimError::NotHeldByRequester { held_by, .. }) if held_by == "other"
+        ));
+        assert!(keyed.exists() && legacy.exists());
+        let plan = store
+            .prepare_release("PRD-001", "", true, &guard)
+            .await
+            .unwrap();
+        store.apply_prepared_release(plan).await.unwrap();
+        assert!(!keyed.exists() && !legacy.exists());
+        assert!(store.get("PRD-001").await.unwrap().is_none());
+        std::fs::write(&keyed, claim("owner")).unwrap();
+        std::fs::write(&legacy, claim("owner")).unwrap();
+        let plan = store
+            .prepare_release("PRD-001", "owner", false, &guard)
+            .await
+            .unwrap();
+        store.apply_prepared_release(plan).await.unwrap();
+        assert!(!keyed.exists() && !legacy.exists());
+        assert!(store.get("PRD-001").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn release_preserves_ambiguous_or_foreign_shadow_claims() {
+        let (_tmp, ws) = workspace_with(&[("a.md", &document("PRD-001", Some("prd-auth-system")))]);
+        let claims = ws.join("claims");
+        std::fs::create_dir_all(&claims).unwrap();
+        let keyed = claims.join("prd-auth-system.yaml");
+        let legacy = claims.join("PRD-001.yaml");
+        let base = "id: PRD-001\nagent_id: owner\nclaimed_at: 2026-01-01T00:00:00+00:00\nexpires_at: 2099-01-01T00:00:00+00:00\n";
+        std::fs::write(&keyed, base).unwrap();
+        std::fs::write(&legacy, format!("{base}canonical_key: prd-foreign\n")).unwrap();
+        let store = ClaimStore::new(&ws);
+        let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+            .await
+            .unwrap();
+        assert!(matches!(
+            store.prepare_release("PRD-001", "", true, &guard).await,
+            Err(ClaimError::Resolution(_))
+        ));
+        assert!(keyed.exists() && legacy.exists());
+        std::fs::write(&legacy, base).unwrap();
+        std::fs::write(ws.join("prds/b.md"), document("PRD-001", Some("prd-other"))).unwrap();
+        assert!(
+            store
+                .prepare_release_for("prd-auth-system", "PRD-001", "", true, &guard)
+                .await
+                .is_err()
+        );
+        assert!(keyed.exists() && legacy.exists());
+    }
+
+    #[tokio::test]
+    async fn two_documents_sharing_an_alias_keep_their_own_claim() {
+        // The pilot corpus holds documents that share one number across two
+        // projects. A claim named after the alias gave those two documents
+        // one row, so one agent's claim blocked the other's work.
+        let (_tmp, ws) = workspace_with(&[
+            ("a.md", &document("PRD-001", Some("prd-first-document"))),
+            ("b.md", &document("PRD-001", Some("prd-second-document"))),
+        ]);
+        let store = ClaimStore::new(&ws);
+
+        store
+            .claim_for("prd-first-document", "PRD-001", "a/1", DEFAULT_TTL, None)
+            .await
+            .unwrap();
+        store
+            .claim_for("prd-second-document", "PRD-001", "b/1", DEFAULT_TTL, None)
+            .await
+            .unwrap();
+
+        let claims = ws.join("claims");
+        assert!(
+            claims.join("prd-first-document.yaml").exists(),
+            "the first document's claim is filed under its own key"
+        );
+        assert!(
+            claims.join("prd-second-document.yaml").exists(),
+            "the second document's claim is filed under its own key"
+        );
+        assert!(
+            !claims.join("PRD-001.yaml").exists(),
+            "the shared alias names no claim file"
+        );
+
+        // The two claims are independent: the second holder does not block
+        // the first document.
+        let err = store
+            .claim_for("prd-second-document", "PRD-001", "c/1", DEFAULT_TTL, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ClaimError::AlreadyHeld { .. }), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn the_alias_and_the_key_address_one_claim() {
+        let (_tmp, ws) = workspace_with(&[("a.md", &document("PRD-001", Some("prd-auth-system")))]);
+        let store = ClaimStore::new(&ws);
+
+        let by_alias = store
+            .claim("PRD-001", "a/1", DEFAULT_TTL, None)
+            .await
+            .unwrap();
+        let by_key = store
+            .claim("prd-auth-system", "a/1", DEFAULT_TTL, None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            by_alias.canonical_key.as_deref(),
+            Some("prd-auth-system"),
+            "the claim records the document's key"
+        );
+        assert_eq!(by_alias.canonical_key, by_key.canonical_key);
+        assert_eq!(by_alias.id, by_key.id);
+
+        let claims = ws.join("claims");
+        assert!(claims.join("prd-auth-system.yaml").exists());
+        assert_eq!(
+            std::fs::read_dir(&claims).unwrap().count(),
+            1,
+            "one document, one claim row"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_legacy_claim_file_is_read_without_migration() {
+        let (_tmp, ws) = workspace_with(&[("a.md", &document("PRD-001", Some("prd-auth-system")))]);
+        let claims = ws.join("claims");
+        std::fs::create_dir_all(&claims).unwrap();
+        // A claim written by the old code: named after the display alias.
+        std::fs::write(
+            claims.join("PRD-001.yaml"),
+            "id: PRD-001\nagent_id: old/1\nclaimed_at: 2026-01-01T00:00:00+00:00\n\
+             expires_at: 2099-01-01T00:00:00+00:00\n",
+        )
+        .unwrap();
+
+        let store = ClaimStore::new(&ws);
+        let found = store
+            .get("PRD-001")
+            .await
+            .unwrap()
+            .expect("the legacy claim is still found");
+        assert_eq!(found.agent_id, "old/1");
+        assert_eq!(
+            found.canonical_key.as_deref(),
+            Some("prd-auth-system"),
+            "the claim names the document it belongs to"
+        );
+
+        assert!(!claims.join("prd-auth-system.yaml").exists());
+        assert!(claims.join("PRD-001.yaml").exists());
+    }
+
+    #[tokio::test]
+    async fn a_legacy_claim_file_is_found_by_its_key_without_migration() {
+        let (_tmp, ws) = workspace_with(&[("a.md", &document("PRD-001", Some("prd-auth-system")))]);
+        let claims = ws.join("claims");
+        std::fs::create_dir_all(&claims).unwrap();
+        std::fs::write(
+            claims.join("PRD-001.yaml"),
+            "id: PRD-001\nagent_id: old/1\nclaimed_at: 2026-01-01T00:00:00+00:00\n\
+             expires_at: 2099-01-01T00:00:00+00:00\n",
+        )
+        .unwrap();
+
+        let store = ClaimStore::new(&ws);
+        let found = store
+            .get("prd-auth-system")
+            .await
+            .unwrap()
+            .expect("the legacy claim is found under the key too");
+        assert_eq!(found.agent_id, "old/1");
+        assert!(!claims.join("prd-auth-system.yaml").exists());
+        assert!(claims.join("PRD-001.yaml").exists());
+    }
+
+    #[tokio::test]
+    async fn a_claim_file_name_is_never_built_from_the_alias_alone() {
+        // The file name carries the key, escaped. A key that carries a
+        // separator still names exactly one file inside the claims
+        // directory.
+        let (_tmp, ws) = workspace_with(&[("a.md", &document("PRD-001", Some("prd-auth-system")))]);
+        let store = ClaimStore::new(&ws);
+        store
+            .claim_for(
+                "forgeplan/plugins/x--PRD-074",
+                "PRD-074",
+                "a/1",
+                DEFAULT_TTL,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let claims = ws.join("claims");
+        assert!(
+            claims
+                .join("forgeplan%2Fplugins%2Fx--PRD-074.yaml")
+                .exists(),
+            "the key is escaped into one file name"
+        );
+        assert!(
+            !claims.join("forgeplan").exists(),
+            "no directory is created for the separator"
+        );
     }
 }

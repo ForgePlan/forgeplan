@@ -19,13 +19,15 @@ Show the decision journal - a chronological timeline of ADR, Note, Problem and S
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `kind` | `string` | no | Filter by kind: `adr`, `note`, `problem`, or `solution`. Omit for all. |
-| `risk` | `bool` | no | When `true`, show only at-risk decisions (weak R_eff or expired evidence). |
+| `risk` | `bool` | no | If `true`, retain entries with no linked evidence, `R_eff < 0.3`, or expired scoring-eligible evidence. |
 
 _Schema source: `crates/forgeplan-mcp/src/server.rs::JournalParams`_
 
 ## Returns
 
-An ordered list of journal entries, newest first:
+Entries are sorted newest first. The response has `entries`, `total`, and a hint. Each entry exposes `id`, `kind`, `title`, `created_at`, `r_eff`, `evidence_count`, and `has_stale_evidence`; it does not include evidence IDs, artifact status, or an `at_risk` field.
+
+Illustrative response excerpt:
 
 ```json
 {
@@ -33,25 +35,18 @@ An ordered list of journal entries, newest first:
     {
       "id": "ADR-005",
       "kind": "adr",
-      "title": "Lifecycle v2 - terminal deprecated/superseded",
+      "title": "Example decision",
       "created_at": "2026-04-03",
-      "status": "active",
       "r_eff": 0.82,
-      "evidence": ["EVID-047", "EVID-051"],
-      "at_risk": false
-    },
-    {
-      "id": "PROB-034",
-      "kind": "problem",
-      "title": "F1/F2 validator penalizes bmad density",
-      "created_at": "2026-04-09",
-      "r_eff": 0.0,
-      "evidence": [],
-      "at_risk": true
+      "evidence_count": 2,
+      "has_stale_evidence": false
     }
-  ]
+  ],
+  "total": 1
 }
 ```
+
+The summary hint uses `R_eff < 0.5` for its at-risk count, whereas `risk: true` filtering uses `< 0.3`; do not treat the hint count as the filter definition.
 
 ## Example invocation
 
@@ -68,7 +63,7 @@ An ordered list of journal entries, newest first:
 ## CLI equivalent
 
 ```bash
-forgeplan journal --kind adr --risk
+forgeplan journal --type adr --risk
 ```
 
 ## See also
@@ -76,3 +71,72 @@ forgeplan journal --kind adr --risk
 - [`forgeplan_blindspots`](/docs/mcp/forgeplan_blindspots/) - decisions with no evidence at all.
 - [`forgeplan_decay`](/docs/mcp/forgeplan_decay/) - R_eff degradation from aging evidence.
 - [Methodology guide](/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Captured tools/list
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, profile `full`.
+
+Show decision journal — chronological timeline of ADR, Note, Problem, Solution artifacts with R_eff scores and evidence status.
+
+### Input parameters
+
+| Name | Required | Type | Description |
+|---|---|---|---|
+| `kind` | no | JournalKind \| null | Filter by artifact kind (decision-kinds only) |
+| `risk` | no | boolean \| null | Show only at-risk decisions |
+| `workspace` | no | string \| null | Optional explicit workspace directory for this call. When set, the MCP<br>server resolves the `.forgeplan/` projection from this path instead of<br>the server's startup CWD. Use this when the calling agent is running<br>in a git worktree separate from the MCP server's launch directory.<br>PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "$defs": {
+    "JournalKind": {
+      "enum": [
+        "adr",
+        "note",
+        "problem",
+        "solution"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "kind": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/JournalKind"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Filter by artifact kind (decision-kinds only)"
+    },
+    "risk": {
+      "default": null,
+      "description": "Show only at-risk decisions",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "workspace": {
+      "default": null,
+      "description": "Optional explicit workspace directory for this call. When set, the MCP\nserver resolves the `.forgeplan/` projection from this path instead of\nthe server's startup CWD. Use this when the calling agent is running\nin a git worktree separate from the MCP server's launch directory.\nPRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "JournalParams",
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

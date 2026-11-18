@@ -3,12 +3,9 @@ title: forgeplan_phase_advance
 description: "Manually advance (or set) the advisory phase marker for an artifact and record a transition."
 ---
 
-Записывает следующую фазу в `.forgeplan/state/<id>.yaml`, дописывая неизменяемую
-запись в историю с timestamp и опциональной причиной. Рекомендательный слой - **не**
-валидирует порядок фаз, поэтому скачки не по порядку (например, сразу к `done` для
-однострочной правки) разрешены by design. Полное обеспечение фаз появится в более
-позднем PRD в рамках EPIC-005. Используйте, когда авто-продвижение пропустило
-переход или при переклассификации состояния workflow.
+Записывает рекомендательную фазу артефакта в `.forgeplan/state/<id>.yaml`. Явное исправление допускает движение вперёд, назад и сразу к `done`; оно не подтверждает выполненную работу и не обходит политику. Смена фазы добавляет временную метку и причину в ограниченную историю; повтор той же фазы не добавляет запись.
+
+Это не автомат фаз **сессии** методологии, который проверяет `forgeplan_guard`.
 
 **Категория**: Lifecycle (рекомендательный)
 
@@ -32,6 +29,8 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::PhaseAdvanceP
 
 ## Возвращает
 
+Иллюстративный успешный ответ:
+
 ```json
 {
   "artifact_id": "PRD-057",
@@ -44,15 +43,15 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::PhaseAdvanceP
 }
 ```
 
-Сбой (config disabled, файловая система недоступна для записи):
+При повреждённом state-файле или недоступной записи MCP возвращает ошибочный результат с текстом, не JSON-оболочку `ok`/`error`. Иллюстративный текст:
 
-```json
-{
-  "ok": false,
-  "error": "Failed to advance phase: ...",
-  "_next_action": "Check `.forgeplan/state/` is writable; verify phase tracking is enabled in config.yaml (`phase.enabled: true`)."
-}
+```text
+Failed to advance phase: ...
+
+_next_action: Check `.forgeplan/state/` is writable; verify phase tracking is enabled in config.yaml (`phase.enabled: true`).
 ```
+
+Подсказка упоминает config, но явное продвижение не проверяет `phase.enabled`.
 
 ## Пример вызова
 
@@ -77,11 +76,86 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::PhaseAdvanceP
 
 ## CLI эквивалент
 
-[`forgeplan phase advance <id> --to <phase>`](/ru/docs/cli/) - та же запись, та же
-рекомендательная семантика.
+[`forgeplan phase-advance <id> --to <phase>`](/ru/docs/cli/) — тот же путь явного исправления отметки.
 
 ## См. также
 
 - [`forgeplan_phase`](/ru/docs/mcp/forgeplan_phase/) - прочитать текущее состояние + историю
 - [`forgeplan_activate`](/ru/docs/mcp/forgeplan_activate/) - гейт активации методологии
 - [Methodology guide](/ru/docs/methodology/overview/) - Shape → Validate → Code → Evidence → Activate
+
+<!-- forgeplan-runtime:start -->
+## Снимок tools/list
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, профиль `full`.
+
+Manually advance (or set) the advisory **artifact lifecycle phase** marker for an artifact (shape/validate/adi/code/test/audit/evidence/done). Appends a transition to the history. Forward and out-of-order jumps are allowed, including a direct `done` override, and so is moving BACKWARDS — this tool is the deliberate-correction path (PRD-086 FR-007). Automatic advancement triggered by other tools refuses to move a phase backwards. Full phase enforcement lands in a later PRD under EPIC-005. Use when auto-advancement missed a transition or when reclassifying workflow state. NOTE: this targets the artifact lifecycle phase machine, NOT the methodology session phase machine (idle/routing/shaping/coding/evidence/pr) — for that use `forgeplan_guard` (PROB-065).
+
+### Входные параметры
+
+| Имя | Обязателен | Тип | Описание |
+|---|---|---|---|
+| `id` | да | string | Artifact ID to advance |
+| `reason` | нет | string \| null | Optional reason / justification (recorded in history) |
+| `to` | да | PhaseArg | Target phase to advance to |
+| `workspace` | нет | string \| null | Optional explicit workspace directory for this call. When set, the MCP<br>server resolves the `.forgeplan/` projection from this path instead of<br>the server's startup CWD. Use this when the calling agent is running<br>in a git worktree separate from the MCP server's launch directory.<br>PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "$defs": {
+    "PhaseArg": {
+      "description": "JSON-Schema enum mirroring `forgeplan_core::phase::Phase`.\nLLM clients constrain-sample against this so `advance` tools\nget exact values (\"shape\", \"validate\", etc.) rather than paraphrases.",
+      "enum": [
+        "shape",
+        "validate",
+        "adi",
+        "code",
+        "test",
+        "audit",
+        "evidence",
+        "done"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "id": {
+      "description": "Artifact ID to advance",
+      "type": "string"
+    },
+    "reason": {
+      "default": null,
+      "description": "Optional reason / justification (recorded in history)",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "to": {
+      "$ref": "#/$defs/PhaseArg",
+      "description": "Target phase to advance to"
+    },
+    "workspace": {
+      "default": null,
+      "description": "Optional explicit workspace directory for this call. When set, the MCP\nserver resolves the `.forgeplan/` projection from this path instead of\nthe server's startup CWD. Use this when the calling agent is running\nin a git worktree separate from the MCP server's launch directory.\nPRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "id",
+    "to"
+  ],
+  "title": "PhaseAdvanceParams",
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

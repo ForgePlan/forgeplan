@@ -642,6 +642,21 @@ async fn c30_forgeplan_calibrate_no_id_smoke() {
 #[tokio::test]
 async fn c31_forgeplan_capture_no_llm_smoke() {
     let fx = McpFixture::new().await;
+    // The host may have API keys. This case must not make a provider request.
+    let mut config = forgeplan_core::workspace::load_config(&fx.workspace_path).unwrap();
+    config.llm = Some(forgeplan_core::config::LlmConfig {
+        provider: "openai".into(),
+        api_key_env: Some(format!(
+            "FORGEPLAN_TEST_UNCONFIGURED_KEY_{}",
+            std::process::id()
+        )),
+        ..Default::default()
+    });
+    std::fs::write(
+        fx.workspace_path.join("config.yaml"),
+        serde_yaml::to_string(&config).unwrap(),
+    )
+    .unwrap();
     let env = fx
         .call_tool_json(
             "forgeplan_capture",
@@ -870,11 +885,22 @@ async fn c41_forgeplan_phase_read_smoke() {
     // renamed `workflow_type` → `kind`.
     let fx = McpFixture::new().await;
     let id = fx.seed_prd("Phaseable").await;
-    let env = fx
+    let artifact = fx
+        .call_tool_json("forgeplan_get", json!({"id": id}))
+        .await
+        .assert_ok()
+        .clone();
+    let key = artifact["canonical_key"].as_str().expect("canonical key");
+    let resp = fx
         .call_tool_json("forgeplan_phase", json!({"id": id}))
-        .await;
-    let resp = env.assert_ok();
-    assert_eq!(resp["artifact_id"], id, "phase echoes artifact id: {resp}");
+        .await
+        .assert_ok()
+        .clone();
+    assert_eq!(
+        resp["artifact_id"], key,
+        "phase refers to canonical subject"
+    );
+    assert_eq!(resp["canonical_key"], key);
     assert!(
         resp["current_phase"].is_string(),
         "phase response carries current_phase string: {resp}"
@@ -887,45 +913,58 @@ async fn c41_forgeplan_phase_read_smoke() {
         resp["history"].is_array(),
         "phase response carries history[]: {resp}"
     );
+    assert!(
+        resp["history"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|entry| entry["to"].is_string() && entry["at"].is_string()),
+        "phase history carries its transition and timestamp: {resp}"
+    );
 }
 
 #[tokio::test]
 async fn c42_forgeplan_phase_advance_smoke() {
-    // Contract pinned: phase_advance can return EITHER a success envelope
-    // (`{artifact_id, current_phase, workflow_type, advanced_at,
-    // history_entries, reason}`) when phase tracking is enabled, OR an
-    // is_error envelope when phase tracking is disabled in the workspace
-    // config. Both outcomes carry deterministic shape. Previously
-    // assert_reachable accepted any envelope.
+    // A newly created artifact is already in Shape. Request an actual transition.
     let fx = McpFixture::new().await;
     let id = fx.seed_prd("Advance Subject").await;
+    let artifact = fx
+        .call_tool_json("forgeplan_get", json!({"id": id}))
+        .await
+        .assert_ok()
+        .clone();
+    let key = artifact["canonical_key"].as_str().expect("canonical key");
     let env = fx
         .call_tool_json(
             "forgeplan_phase_advance",
-            json!({"id": id, "to": "shape", "reason": "starting work"}),
+            json!({"id": id, "to": "validate", "reason": "starting work"}),
         )
         .await;
-    if env.is_error {
-        assert!(
-            env.raw_text.contains("phase") || env.raw_text.contains("state"),
-            "phase_advance error body must explain the failure, got: {}",
-            env.raw_text
-        );
-    } else {
-        let resp = env.assert_ok();
-        assert_eq!(
-            resp["artifact_id"], id,
-            "phase_advance echoes artifact id: {resp}"
-        );
-        assert_eq!(
-            resp["current_phase"], "shape",
-            "phase_advance sets current_phase to the requested target: {resp}"
-        );
-        assert!(
-            resp["history_entries"].is_number(),
-            "phase_advance response carries numeric history_entries: {resp}"
-        );
-    }
+    let resp = env.assert_ok();
+    assert_eq!(
+        resp["artifact_id"], key,
+        "phase_advance addresses the canonical subject: {resp}"
+    );
+    assert_eq!(
+        resp["current_phase"], "validate",
+        "phase_advance sets current_phase to the requested target: {resp}"
+    );
+    assert!(resp["history_entries"].is_number());
+    let history = fx
+        .call_tool_json("forgeplan_phase", json!({"id": key}))
+        .await
+        .assert_ok()
+        .clone();
+    assert_eq!(history["artifact_id"], key);
+    assert_eq!(history["current_phase"], "validate");
+    assert!(
+        history["history"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["to"] == "validate" && entry["reason"] == "starting work"),
+        "phase history records the requested subject transition: {history}"
+    );
 }
 
 #[tokio::test]

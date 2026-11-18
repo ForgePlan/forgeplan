@@ -270,6 +270,31 @@ pub(crate) enum LocalCliProvider {
     Cursor,
 }
 
+/// Reasoning effort passed to the Codex CLI when explicitly configured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+    None,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    Xhigh,
+}
+
+impl ReasoningEffort {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
     /// Provider: HTTP (`openai`, `claude`, `gemini`, `ollama`, `custom`) or
@@ -280,6 +305,9 @@ pub struct LlmConfig {
     /// Model name
     #[serde(default = "default_model")]
     pub model: String,
+    /// Optional Codex reasoning effort; omitted for other providers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<ReasoningEffort>,
     /// Environment variable name containing the API key
     #[serde(default)]
     pub api_key_env: Option<String>,
@@ -362,6 +390,7 @@ impl Default for LlmConfig {
         Self {
             provider: default_provider(),
             model: default_model(),
+            effort: None,
             api_key_env: Some("OPENAI_API_KEY".into()),
             base_url: None,
             max_tokens: default_max_tokens(),
@@ -1212,5 +1241,67 @@ mod integrity_tests {
             .expect("pre-PROB-096 configs must not break on upgrade");
         assert_eq!(parsed.timeout_seconds, default_timeout_seconds());
         assert_eq!(parsed.reason_timeout_seconds, None);
+    }
+
+    #[test]
+    fn optional_effort_preserves_legacy_config_and_null() {
+        assert_eq!(LlmConfig::default().effort, None);
+        for yaml in [
+            "provider: codex-cli\nmodel: gpt-6.1-sol\n",
+            "provider: codex-cli\nmodel: gpt-6.1-sol\neffort: null\n",
+        ] {
+            let config: LlmConfig = serde_yaml::from_str(yaml).unwrap();
+            assert_eq!(config.effort, None);
+            let serialized = serde_yaml::to_value(&config).unwrap();
+            assert!(serialized.get("effort").is_none());
+        }
+    }
+
+    #[test]
+    fn effort_config_roundtrips_all_supported_values() {
+        for (value, expected) in [
+            ("none", ReasoningEffort::None),
+            ("minimal", ReasoningEffort::Minimal),
+            ("low", ReasoningEffort::Low),
+            ("medium", ReasoningEffort::Medium),
+            ("high", ReasoningEffort::High),
+            ("xhigh", ReasoningEffort::Xhigh),
+        ] {
+            let yaml =
+                format!("llm:\n  provider: codex-cli\n  model: gpt-6.1-sol\n  effort: {value}\n");
+            let config: Config = serde_yaml::from_str(&yaml).unwrap();
+            assert_eq!(config.llm.as_ref().unwrap().effort, Some(expected));
+            let serialized = serde_yaml::to_string(&config).unwrap();
+            let roundtrip: Config = serde_yaml::from_str(&serialized).unwrap();
+            assert_eq!(roundtrip.llm.unwrap().effort, Some(expected));
+            assert_eq!(serde_json::to_value(expected).unwrap(), value);
+        }
+    }
+
+    #[test]
+    fn effort_config_rejects_unknown_and_flag_shaped_values() {
+        for value in [
+            "",
+            "HIGH",
+            "max",
+            " high ",
+            "--sandbox",
+            "high\" --sandbox danger-full-access",
+            "high\nmodel=\"other\"",
+            "high;echo injected",
+        ] {
+            let yaml = format!(
+                "provider: codex-cli\neffort: {}\n",
+                serde_json::to_string(value).unwrap()
+            );
+            assert!(
+                serde_yaml::from_str::<LlmConfig>(&yaml).is_err(),
+                "{value:?}"
+            );
+        }
+        for value in ["42", "true", "[]", "{}"] {
+            let yaml = format!("provider: codex-cli\neffort: {value}\n");
+            assert!(serde_yaml::from_str::<LlmConfig>(&yaml).is_err(), "{value}");
+        }
     }
 }

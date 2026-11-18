@@ -23,7 +23,10 @@ plugin-name/
 
 ## Agentic RAG Pattern
 
-Skills use **agentic RAG** -- intelligent retrieval that loads only ~300 lines at a time, not the entire knowledge base. For a real-world example of this pattern in action, see the [Forgeplan Workflow plugin](/docs/marketplace/forgeplan-workflow/) which uses a `SKILL.md` router to serve methodology sections on demand.
+Skills can use **agentic RAG** -- a `SKILL.md` router directs the host to
+relevant files rather than loading the entire corpus. The [Forgeplan Workflow
+plugin](/docs/marketplace/forgeplan-workflow/) illustrates this pattern.
+About 300 lines per read is a writing convention, not a loader-enforced cap.
 
 ### How it works:
 
@@ -60,19 +63,20 @@ Install: `npx skills add ForgePlan/skill-name -g`
 ## Publishing to Marketplace
 
 ```bash
-# 1. Copy plugin to marketplace
-cp -R my-plugin forgeplan-marketplace/plugins/
-
-# 2. Add to marketplace.json catalog
-# Edit .claude-plugin/marketplace.json → plugins[]
-
-# 3. Validate
+# In a separate, reviewed marketplace checkout, place plugins/my-plugin/.
+# Register it in .claude-plugin/marketplace.json and bump catalog metadata.version.
+node scripts/gen-omp-catalog.js
 ./scripts/validate-all-plugins.sh my-plugin
 
 # 4. Create PR
 git add -A && git commit -m "feat: add my-plugin v1.0.0"
 gh pr create --base main
 ```
+
+This is an illustrative contribution sequence, not a command to run in a
+Forgeplan project. Review and stage only intended files; `git add -A`
+would also include unrelated changes. Follow the marketplace's current
+CONTRIBUTING instructions and required checks before committing or opening a PR.
 
 ## Example Plugins
 
@@ -85,5 +89,6 @@ See [CONTRIBUTING.md](https://github.com/ForgePlan/marketplace/blob/main/CONTRIB
 ### PR Requirements:
 - Plugin structure validated
 - Version bumped in plugin.json + marketplace.json
+- Catalog `metadata.version` bumped and `.omp-plugin/marketplace.json` regenerated when the catalog changes
 - README with install commands
 - No secrets or credentials

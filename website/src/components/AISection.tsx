@@ -7,10 +7,10 @@ const AI_COMMANDS = [
 ];
 
 const MCP_CATEGORIES = [
-  { name: 'Create', tools: ['artifact_create', 'artifact_from_description', 'evidence_create'], start: 0.55 },
-  { name: 'Analyze', tools: ['validate', 'score', 'health', 'blindspots'], start: 0.62 },
-  { name: 'Navigate', tools: ['search', 'graph', 'blocked', 'context'], start: 0.69 },
-  { name: 'Decide', tools: ['route', 'reason', 'decompose', 'capture'], start: 0.76 },
+  { name: 'Create', tools: ['forgeplan_new', 'forgeplan_generate'], start: 0.55 },
+  { name: 'Analyze', tools: ['forgeplan_validate', 'forgeplan_score', 'forgeplan_health', 'forgeplan_blindspots'], start: 0.62 },
+  { name: 'Navigate', tools: ['forgeplan_search', 'forgeplan_graph', 'forgeplan_blocked', 'forgeplan_get'], start: 0.69 },
+  { name: 'Decide', tools: ['forgeplan_route', 'forgeplan_reason', 'forgeplan_decompose', 'forgeplan_capture'], start: 0.76 },
 ];
 
 export default function AISection() {
@@ -49,8 +49,8 @@ export default function AISection() {
                 AI Amplifies,<br />Doesn't Replace
               </h2>
               <p className="text-sm text-forge-dim max-w-[400px]" style={{ opacity: fade(0.08) }}>
-                73 MCP tools let Claude, GPT, or any AI agent create, validate, and manage artifacts.
-                But decisions are yours. Structure + AI = force multiplier.
+                The selected 0.39.0+constellation.s1.1 build registers 76 full-profile MCP tools and a separate 9-tool read profile.
+                Registration is not end-to-end acceptance. Decisions remain yours.
               </p>
             </div>
 
@@ -60,7 +60,7 @@ export default function AISection() {
                 <div className="w-2.5 h-2.5 rounded-full bg-[#FF5F57]" />
                 <div className="w-2.5 h-2.5 rounded-full bg-[#FEBC2E]" />
                 <div className="w-2.5 h-2.5 rounded-full bg-[#28C840]" />
-                <span className="font-mono text-[10px] text-forge-dim ml-2">forgeplan + AI</span>
+                <span className="font-mono text-[10px] text-forge-dim ml-2">Illustrative output; confidence is heuristic. reason/decompose require an LLM.</span>
               </div>
               <div className="p-4 space-y-4 font-mono text-sm">
                 {AI_COMMANDS.map((cmd, ci) => {
@@ -87,10 +87,10 @@ export default function AISection() {
           <div className="flex flex-col justify-between p-6 lg:p-10 h-full">
             <div>
               <p className="font-mono text-[11px] tracking-[3px] text-forge-ember mb-4" style={{ opacity: fade(0.50) }}>
-                63 MCP TOOLS
+                MCP TOOL CATEGORIES
               </p>
               <p className="text-sm text-forge-dim mb-6" style={{ opacity: fade(0.52) }}>
-                Model Context Protocol — any AI assistant can manage your artifacts.
+                Model Context Protocol — connect an MCP-capable AI assistant to your artifacts.
               </p>
 
               <div className="space-y-4">
@@ -113,7 +113,7 @@ export default function AISection() {
             <div className="border border-forge-ember p-4 mt-4" style={{ opacity: fade(0.76) }}>
               <p className="font-heading text-lg text-forge-ember">Structure + AI = Force Multiplier</p>
               <p className="text-sm text-forge-dim mt-1">
-                AI generates hypotheses. Forgeplan validates them. Evidence proves them. You decide.
+                AI proposes hypotheses. Forgeplan checks artifact structure and scores evidence. You assess the evidence and decide.
               </p>
             </div>
           </div>

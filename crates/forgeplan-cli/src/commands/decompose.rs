@@ -4,7 +4,8 @@ use forgeplan_core::llm::decompose;
 use crate::commands::common;
 
 pub async fn run(prd_id: &str) -> anyhow::Result<()> {
-    let (_ws, _lock, store) = common::open_store_locked().await?;
+    let (ws, source, _read_guard) = common::open_read_source().await?;
+    let (key, _) = common::resolve_required_identity(&source, &ws, prd_id).await?;
 
     // PRD-071 contract: emit `Fix:` when LLM unavailable so the agent has a
     // deterministic remediation step instead of free-form prose.
@@ -16,18 +17,31 @@ pub async fn run(prd_id: &str) -> anyhow::Result<()> {
             anyhow::bail!("LLM not configured");
         }
     };
-    // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — accept slug or display id.
-    let prd_id = store.resolve_id(prd_id).await?.ok_or_else(|| {
-        anyhow::anyhow!("Artifact '{prd_id}' not found\nFix: forgeplan list --type prd")
-    })?;
-    let prd_id = prd_id.as_str();
-    let record = store.get_record(prd_id).await?.ok_or_else(|| {
-        anyhow::anyhow!(
-            "Artifact '{}' not found\n\
-             Fix: forgeplan list --type prd",
-            prd_id
-        )
-    })?;
+    // Decompose only READS the artifact — it prompts the model and prints a
+    // plan; nothing here mutates the workspace. That is why it never needed
+    // the store write lock, and why the capture answers it just as well.
+    let record = match &source {
+        common::ReadSource::Legacy(store) => {
+            let id = &key;
+            store.get_record(&_read_guard, id).await?.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Artifact '{}' not found\n\
+                     Fix: forgeplan list --type prd",
+                    id
+                )
+            })?
+        }
+        common::ReadSource::Captured(read) => {
+            let id = &key;
+            read.get_record(id).cloned().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Artifact '{}' not found\n\
+                         Fix: forgeplan list --type prd",
+                    id
+                )
+            })?
+        }
+    };
 
     if record.kind != "prd" {
         eprintln!(

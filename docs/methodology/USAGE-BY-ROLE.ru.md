@@ -2,6 +2,13 @@
 
 # ForgePlan — Usage Guide by Role
 
+Границы ролей — конвенции команды, не CLI authorization. Используйте реальные ID
+созданных артефактов; примеры предполагают наличие PRD-001/RFC-001. `context`
+принимает ID, не путь или тему. `drift` показывает изменения affected files,
+не доказанные нарушения. CLI `validate` работает на legacy и migrated Constellation
+layout; full MCP validation также проверен.
+Границы проверки см. в [оговорках пилота](../operations/CONSTELLATION-PILOT.ru.md).
+
 ## Quick Start по ролям
 
 ### Человек: Product Manager / Product Owner
@@ -9,9 +16,9 @@
 ```
 Твой flow:
   1. forgeplan new prd "User Authentication"    ← Описываешь ЧТО и ЗАЧЕМ
-  2. forgeplan new epic "Auth System" --prd 1   ← Группируешь в инициативу
+  2. forgeplan new epic "Auth System"            ← Создать инициативу; membership фиксируется отдельно
   3. Заполняешь: Problem, Users, Goals, Metrics
-  4. forgeplan validate --type prd              ← Проверка полноты
+  4. forgeplan validate PRD-001                   ← Проверка полноты
   5. forgeplan status                           ← Dashboard
 
 Артефакты: PRD, Epic
@@ -23,10 +30,10 @@
 ```
 Твой flow:
   1. Читаешь PRD → понимаешь ЧТО нужно
-  2. forgeplan new spec "OAuth2 API" --prd 1    ← Формальные контракты
-  3. forgeplan new rfc "Auth Architecture" --prd 1  ← Архитектура
-  4. forgeplan new adr "Choose Passport.js" --rfc 1 ← Решение + rationale
-  5. forgeplan score                            ← R_eff по всем артефактам
+  2. forgeplan new spec "OAuth2 API"             ← Формальные контракты
+  3. forgeplan new rfc "Auth Architecture"        ← Связать реальный ID с PRD-001 через based_on
+  4. forgeplan new adr "Choose Passport.js"       ← Связать реальный ID с RFC-001 через based_on (ADR зависит от этого RFC)
+  5. forgeplan score --all                       ← Обновить scores
   6. forgeplan coverage                         ← Blind modules
 
 Артефакты: Spec, RFC, ADR
@@ -39,9 +46,9 @@
 ```
 Твой flow:
   1. forgeplan status                           ← Что в работе?
-  2. forgeplan context src/auth/                ← Какие решения покрывают?
+  2. forgeplan context ADR-001                  ← Прочитать нужное решение и его граф
   3. Кодишь по ADR
-  4. forgeplan drift                            ← Мои изменения нарушили решение?
+  4. forgeplan drift                            ← Какие affected files изменились? Conformance проверяется вручную
   5. forgeplan new note "Edge case found"       ← Заметка для будущего
 
 Артефакты: Notes (заметки)
@@ -52,9 +59,9 @@
 
 ```
 Твой flow:
-  1. forgeplan context {changed_files}          ← Какие решения затронуты?
-  2. forgeplan drift                            ← Есть ли нарушения?
-  3. forgeplan score                            ← R_eff < 0.5 = стоит проверить
+  1. forgeplan coverage                         ← Найти declared decision coverage
+  2. forgeplan drift                            ← Какие affected files изменились?
+  3. forgeplan score --all                      ← R_eff < 0.5 = стоит проверить
   4. forgeplan validate                         ← Все артефакты полны?
 
 Проверяешь: drift, coverage, R_eff scores
@@ -71,7 +78,7 @@
 
 Flow:
   1. forgeplan status → проверить текущие артефакты
-  2. forgeplan context {topic} → что уже решено по теме
+  2. forgeplan search "topic" → найти нужные артефакты, затем context ID
   3. /research или /deep-research → изучить
   4. Результат → memory_retain() + forgeplan new note
 
@@ -105,10 +112,10 @@ Flow:
 Триггер: пользователь говорит "реализуй", "сделай", /sprint
 
 Flow:
-  1. forgeplan context {scope} → какие ADR покрывают область работы
+  1. forgeplan coverage → найти решения; forgeplan context ADR-001 → прочитать одно
   2. Читать ADR → соблюдать решения
   3. Кодить по Spec (контрактам)
-  4. После кода: forgeplan drift → проверить не нарушил ли решения
+  4. После кода: forgeplan drift → review изменений affected files
   5. Если drift → уведомить пользователя
 
 Правило: код ДОЛЖЕН соответствовать ADR. Если нужно отклониться →
@@ -121,16 +128,16 @@ Flow:
 Триггер: /audit, code review, PR
 
 Flow:
-  1. forgeplan context {changed_files}
+  1. forgeplan coverage, затем forgeplan context ADR-001 для нужного решения
   2. Для каждого файла: есть ли покрывающий ADR?
      - Нет → пометить как "blind module"
      - Есть → проверить соответствие
-  3. forgeplan score → R_eff по затронутым артефактам
-  4. forgeplan drift → есть ли нарушения?
+  3. forgeplan score ADR-001 → R_eff нужного артефакта
+  4. forgeplan drift → изменённые affected files, затем ручной conformance review
   5. Отчёт: compliance + gaps + drift
 
-Правило: Adversarial Review — ОБЯЗАН найти хотя бы 1 проблему.
-Zero findings = неполный review.
+Native /forge-cycle предписывает квоту замечаний; этот документ policy не меняет.
+Квота не доказывает наличие дефекта. Сообщайте подтверждённые findings и границы review.
 ```
 
 ---
@@ -140,17 +147,17 @@ Zero findings = неполный review.
 | Сложность | Depth | Артефакты | Пример |
 |-----------|-------|-----------|--------|
 | **Tactical** | 1 вызов | Note | Быстрый fix, typo, config change |
-| **Standard** | Frame → Explore → Decide | ADR | Выбор библиотеки, API design |
-| **Deep** | Full ADI + Evidence | PRD → RFC → ADR | Новая фича, архитектурное решение |
-| **Critical** | Formal verification | Epic → PRD → Spec → RFC → ADR | Миграция, security, compliance |
+| **Standard** | Сравнение умеренно значимых подходов | PRD → RFC | Выбор библиотеки, API design |
+| **Deep** | Full ADI + Evidence | PRD → Spec → RFC → ADR | Новый модуль, security/public API |
+| **Critical** | Стратегическая конвенция авторинга | Epic → PRD → Spec → RFC → ADR | Несколько команд; core разбирает critical как Deep |
 
 ### Routing Rules (для агента)
 
 ```
-IF задача < 1 файл AND reversible в 1 час → Tactical (Note)
-IF задача < 5 файлов AND reversible в 1 день → Standard (ADR)
-IF задача > 5 файлов OR новый модуль → Deep (PRD → RFC → ADR)
-IF задача затрагивает security OR data OR infrastructure → Critical (полный цикл)
+Иллюстративная конвенция авторинга, не реализация router:
+Очевидно и обратимо → Tactical; умеренные альтернативы → Standard.
+Security, public API или необратимый выбор → Deep.
+Стратегия с несколькими PRD → конвенция Critical; явно проверьте route и scope.
 ```
 
 ## Связанные документы

@@ -1,6 +1,6 @@
 ---
-title: "Before you fix it, write three versions of the cause: the detective's move that turns 30 minutes of guesswork into 5 minutes of accurate diagnosis"
-description: "A good detective doesn't lock onto the first version of events. They propose three or four, describe what evidence each predicts, then go check. The same move - ADI - turns the hasty wrong fix into ten minutes of honest diagnosis. I walk through two real cases: a conversion drop and a slow search."
+title: "Before you fix it, write three versions of the cause: a detective's approach to diagnosis"
+description: "Propose competing explanations, describe what evidence each predicts, then check. Two worked scenarios — a conversion drop and slow search — show the ADI habit without promising a fixed diagnosis time."
 slug: before-fixing-write-three-versions
 lang: en
 publishedAt: 2026-05-16
@@ -14,6 +14,8 @@ seriesDescription: "The single-decision cycle · 8 posts on discipline for archi
 translations:
   ru: before-fixing-write-three-versions
 ---
+
+> **Evidence note, 2026-10-23.** The incident narratives and cover timings are author accounts without linked logs or controlled comparisons. Read the counterfactual outcomes and cost figures as illustrations, not measured savings or proof of causality. Three hypotheses is a practical prompt, not an empirically established threshold or a guarantee that the third is correct.
 
 ## The familiar scene
 
@@ -31,7 +33,7 @@ I've seen this pattern in dozens of teams. Good developer. Plausible hypothesis.
 
 In psychology this is called the anchoring effect: the first idea that comes to mind becomes the reference point, and every thought after that gets measured against it rather than against the facts.
 
-In engineering this anchor has a particular character. It's almost always whatever you touched recently. Rolled out a new form last week - that's the first suspect. Changed indexes in the database - must be the indexes. Added a new library - it must be breaking the build. This is reasonable: things that changed tend to be the things that break. But that reasoning holds only statistically, over a long run. On any specific incident it misses just as often as it hits.
+Recent changes are useful suspects: a form rollout, an index change, a new library. They are leads to test, not evidence of the cause; no hit rate for this heuristic is established here.
 
 The second culprit is the desire to close the ticket fast. The brain is wired so that uncertainty is a painful state. Any hypothesis that promises a clear action plan feels like relief. "Roll back the form" is a plan. "Investigate first" is yet another uncertain state.
 
@@ -43,17 +45,17 @@ These three mechanisms - anchor, desire to close, chat pressure - operate simult
 
 A good detective doesn't lock onto the first version of events. At the scene they propose three or four, describe what evidence each one predicts, and go check. The version that survives all the checks stays.
 
-In engineering this technique has a short name: **ADI** (write three versions of the cause, describe a testable consequence for each, check against facts). The name doesn't matter. The logic does: between "first thought" and "started fixing" you insert ten minutes in which you articulate not one but three hypotheses - and immediately write down how you'd verify each one.
+Here **ADI** means **Abduction → Deduction → Induction**: propose rival explanations, derive discriminating predictions, then revise the conclusion using observations. Writing three hypotheses is this article's practical exercise, not the definition of the whole cycle.
 
 Why three, not two, not one?
 
-One version isn't thinking, it's a reflex. If only one hypothesis exists in your head, there's nothing to check: everything you find will be interpreted in its favor.
+A single hypothesis can be tested, but without a rival it is easier to interpret ambiguous observations in its favor.
 
-Two is a false choice. "It's either the payment form or the backend." At this stage the brain already narrows the picture to a binary and discards anything that doesn't fit. Classic example: "do we need Redis or Memcached?" - that's not a choice between alternatives, it's a choice between two flavors of the same alternative (external cache). The real choice is whether you need an external cache at all, or whether profiling the queries might be enough.
+Two options can still hide a false choice when they share an untested premise. “Redis or Memcached?” assumes an external cache is needed. Also consider whether query profiling could remove that need. Two genuinely different, well-supported alternatives are not a false choice merely because there are two.
 
-Three is the minimum that breaks the tunnel. The third version almost always comes at things from an unexpected angle and forces a separate check. It's often the one that turns out to be right - not because there's anything magical about being third, but because the first and second fall into the same groove, and the third breaks out of it.
+A third explanation can expose an assumption shared by the first two. What matters is meaningful rivalry and a discriminating check, not the hypothesis's position in a list.
 
-If you can write four, great. Fewer than three means you haven't left the anchor yet.
+Write more candidates if useful; two well-founded rivals can also support a real comparison.
 
 ## Concrete example: the conversion drop
 
@@ -61,13 +63,13 @@ Back to that team. What would have happened if instead of "going to roll it back
 
 They'd have written out three versions.
 
-**Version one.** The new payment form rolled out last week is the culprit. Testable consequence: the conversion drop should align in time with the form release and be uniform across all devices and payment methods. Metric to check: break down conversion over the past week by day and by device, look for a sharp inflection point.
+**Version one.** The new payment form is the culprit. Check release timing and conversion by device and payment method. A form defect can be device-specific, so uniform decline is not a necessary prediction.
 
-**Version two.** The external payment provider is the culprit. Testable consequence: there should be errors on the provider side visible in the logs; API response time should have increased; the provider's status page should show an incident. Metric: 4xx/5xx error rate from the provider over the past week, p95 response time.
+**Version two.** The payment provider is the culprit. Check error rates, response times and provider incident reports. Normal aggregate metrics or an empty status page weaken some versions of this hypothesis but do not rule out every provider fault.
 
 **Version three.** The layout broke after the release, but not the payment form itself - a neighboring block moved something critical. Testable consequence: the drop should be visible only on one category of devices (e.g., mobile at a specific viewport width); session recordings should show users reaching the payment step but not tapping the button.
 
-Ten minutes to formulate. Then twenty minutes to check. Version one metric: did conversion drop uniformly across all devices? No - on desktop it didn't change. Version one eliminated in five minutes without rolling back anything. Version two metric: provider errors at normal levels, response time stable. Version two eliminated in two minutes, just by opening the dashboard. Version three metric: open a session recording on mobile - immediately visible that users reach the payment screen, scroll around, can't find the button, leave.
+In this scenario, desktop conversion is unchanged and provider metrics look normal. These observations narrow the search; neither alone refutes the first two hypotheses. The mobile recording then exposes an unreachable button. Check the affected layout and compare behavior after the fix before attributing the conversion change to it.
 
 Thirty minutes from the analyst's message to an exact diagnosis. Three lines of CSS - another twenty minutes. By lunch the release is fixed, conversion restored.
 
@@ -83,9 +85,9 @@ Ten minutes of ADI would have stopped that trajectory. Three versions:
 
 **Version one.** The index can't keep up. Consequence: the profiler should show most time is spent in the index scan. Check: one `EXPLAIN ANALYZE` run, or the equivalent in your database.
 
-**Version two.** The ranking/scoring step can't keep up. Consequence: the profiler should show the index returns results quickly, but sorting/scoring takes the bulk of the time. Check: same `EXPLAIN ANALYZE`, look at the lower half of the query plan.
+**Version two.** Ranking is expensive. Inspect the query plan for database-side sorting and profile the application separately for application-side scoring; a plan's visual position does not determine its cost.
 
-**Version three.** The candidate window is too large - the index returns ten thousand documents and we pull all of them into memory to sort and then take the top twenty. Consequence: time grows linearly with the number of candidates, not with corpus size. Check: queries with varying selectivity should show different latencies.
+**Version three.** Too many candidates are transferred into application memory before choosing twenty. Vary candidate count and measure transfer and ranking separately. Sorting need not grow linearly, and a SQL limit is valid only if it preserves the intended ranking.
 
 Fifteen minutes to check all three versions - and it's the third. The index runs in 30 milliseconds. The other 770 are spent pulling ten thousand candidates into application memory. The fix: add a limit in SQL so the database returns an already-sorted top twenty. No engine change needed. No index rewrite. Thirty minutes of work instead of three days migrating to a new search service.
 
@@ -97,19 +99,17 @@ When I first introduced ADI on a team, the reaction was: "we don't have ten minu
 
 I understand that reflex. But if you do the math, ten minutes to write three versions is the cheapest part. Ten minutes - against two and a half days of work in the wrong direction, a re-release, a slipped deadline, an explanation to management about why the incident counter reset.
 
-Rough math for an average team:
+An illustrative calculation, not an estimate of a typical team:
 
-- One "fixed the wrong thing" incident - two or three engineers × one or two days = four to six person-days.
-- Incidents like this in a team of 10-15 people - one or two a month.
-- That's five to fifteen person-days a month fixing the wrong thing.
+- Two or three engineers × one or two days is **two to six person-days per incident**.
+- Assuming one or two such incidents a month gives **two to twelve person-days per month**.
+- At an assumed $8,000/month and 20 working days/month, that is $400/person-day, or **$9,600–$57,600/year**.
 
-In money for a team with a median engineer salary of $8,000/month - that's somewhere between $30,000 and $90,000 a year thrown at the wall. And that's only the visible cost - the time spent. The invisible cost is the work those engineers could have done instead of running in the wrong direction.
-
-Ten minutes of ADI on every complex incident is a premium of ten percent of that budget. The best deal I know of in engineering.
+This is salary-equivalent time under those assumptions, not observed cash savings. The cost and benefit of ADI depend on incident frequency and whether the checks actually avoid wrong work; no ten-percent premium has been measured here.
 
 ## What to hand to the AI agent, what to keep for yourself
 
-An AI agent (Claude Code, Cursor, any coding assistant) handles the first step of ADI well: generating three hypotheses. Give it the symptom and context ("conversion dropped in checkout, we released these files last week, here are the metrics") and in a minute it'll give you three versions with a suggested check for each. Often better than a human, because the agent doesn't have the anchor of "what I touched recently."
+An AI agent can suggest rival hypotheses and checks from the symptom and supplied context. It can also anchor on the prompt or invent a cause; neither speed nor superiority to a human is established here. Verify both the evidence and whether the proposed check distinguishes the rivals.
 
 But the final call - which version to check first, which data to look at, how to interpret an ambiguous result - is worth keeping for yourself. The agent doesn't know you have a demo for an important client tomorrow, and a five-minute check is worth more than a ten-minute precise one. It doesn't know the network team changed load balancer settings yesterday and there's noise in the logs because of that. It doesn't know the analyst who wrote "conversion dropped" occasionally misconfigures their cohort boundaries.
 

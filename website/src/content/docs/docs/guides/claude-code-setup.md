@@ -73,9 +73,15 @@ forgeplan route "task description"   # determines depth
 Just code. No artifacts needed.
 ```
 
+This example describes the workflow, not runtime coverage for every tool or
+workspace layout. See [Constellation](/docs/guides/constellation/) for
+recorded compatibility coverage and remaining limits.
+
 ## Enforcement Hooks
 
-Hooks in `.claude/hooks/` automate quality checks:
+Project-supplied hooks can automate quality checks. The names below are
+examples, not scripts installed by `forgeplan setup-skill`; provide and
+review each executable script before enabling it:
 
 ```bash
 # .claude/hooks/forge-safety-hook.sh
@@ -90,19 +96,29 @@ Hooks in `.claude/hooks/` automate quality checks:
 
 ### Setting Up Hooks
 
+Example `.claude/settings.json`:
+
 ```json
-// .claude/settings.json
 {
   "hooks": {
     "PreToolUse": [
       {
         "matcher": "Bash",
-        "hooks": [".claude/hooks/forge-safety-hook.sh"]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/forge-safety-hook.sh"
+          }
+        ]
       }
     ]
   }
 }
 ```
+
+This uses Claude Code's [command-hook schema](https://code.claude.com/docs/en/hooks).
+The configured script must inspect the tool input and return the documented
+blocking result; a filename alone does not enforce the policy.
 
 ## MCP Server Configuration
 
@@ -120,7 +136,13 @@ Add Forgeplan as MCP server for AI agents:
 }
 ```
 
-This gives AI agents access to 73 tools: create, validate, score, search, graph, reason, route, plus playbook orchestration, FPF KB, dispatch, claims, and more.
+This starts the default full MCP profile, including write tools. Tool names
+and schemas are version-specific; consult [MCP overview](/docs/mcp/) and
+the running server's `tools/list`. For multiple workspaces, pass
+`serve --workspace /path/to/project`; request `workspace` takes priority
+over `FORGEPLAN_WORKSPACE`, server default and CWD discovery, but does not
+retarget maintenance. See [MCP setup](/docs/guides/mcp-setup/) for the
+separate `constellation-read` profile and auto-index prerequisites.
 
 ## Memory Integration (Hindsight)
 
@@ -134,14 +156,21 @@ Save knowledge between sessions:
 
 ## Recommended Permissions
 
+Example `.claude/settings.json`:
+
 ```json
-// .claude/settings.json
 {
   "permissions": {
     "allow": [
       "Bash(cargo:*)",
       "Bash(forgeplan:*)",
-      "Bash(git:add,commit,status,diff,log,branch,checkout)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git branch:*)",
+      "Bash(git checkout:*)",
       "Bash(npm:*)",
       "Read",
       "Glob",
@@ -155,6 +184,12 @@ Save knowledge between sessions:
   }
 }
 ```
+
+These are example [permission rules](https://code.claude.com/docs/en/permissions),
+not a complete shell sandbox. Each Git subcommand needs its own rule; a comma
+list inside `Bash(...)` is not an alternative list. Review broad command grants
+for your project, and do not treat the three deny patterns as exhaustive
+protection against differently written shell commands.
 
 ## Multi-Project Setup
 

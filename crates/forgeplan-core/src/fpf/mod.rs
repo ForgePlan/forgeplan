@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, HashMap};
 use serde::{Deserialize, Serialize};
 
 use crate::artifact::types::{ArtifactKind, Mode};
+use crate::constellation::workspace_read::WorkspaceRead;
 use crate::db::store::LanceStore;
 use crate::fpf::core::config::FpfConfig;
 use crate::fpf::core::model::ArtifactData;
@@ -32,6 +33,12 @@ pub struct FpfDashboard {
     pub fgr_scores: Vec<fgr::FgrScore>,
     pub pipeline_status: String,
     pub artifact_count: usize,
+    /// The display id of every document, by its canonical key.
+    ///
+    /// The cluster members are held by their canonical key, because that is
+    /// the identity and the display id may repeat. A reader of the report
+    /// knows the documents by their display id, so the report prints those.
+    pub display_by_key: BTreeMap<String, String>,
 }
 
 impl std::fmt::Display for FpfDashboard {
@@ -52,13 +59,30 @@ impl std::fmt::Display for FpfDashboard {
             )?;
         } else {
             for ctx in &self.contexts {
+                // The report names the documents the way a reader knows them.
+                // The members are held by canonical key; the display id is
+                // what the reader can act on.
+                let mut named: Vec<(&str, &str)> = ctx
+                    .members
+                    .iter()
+                    .map(|key| {
+                        let display = self
+                            .display_by_key
+                            .get(key)
+                            .map(String::as_str)
+                            .unwrap_or(key.as_str());
+                        (display, key.as_str())
+                    })
+                    .collect();
+                named.sort();
+                let members: Vec<&str> = named.into_iter().map(|(display, _)| display).collect();
                 writeln!(
                     f,
                     "  [{}] {} members, cohesion {:.0}%: {}",
                     ctx.name,
                     ctx.members.len(),
                     ctx.cohesion * 100.0,
-                    ctx.members.join(", ")
+                    members.join(", ")
                 )?;
             }
         }
@@ -128,61 +152,52 @@ impl std::fmt::Display for FpfDashboard {
 /// Pass `fpf_config` to use custom weights/thresholds, or `None` for defaults.
 pub async fn dashboard(
     store: &LanceStore,
+    permit: &dyn crate::workspace::lock::WorkspaceReadPermit,
     fpf_config: Option<&FpfConfig>,
 ) -> anyhow::Result<FpfDashboard> {
-    let records = store.list_records(None).await?;
-    let all_relations = store.get_all_relations().await?;
+    let records = store.list_records(permit, None).await?;
+    let all_relations = store.get_all_relations(permit).await?;
+    Ok(dashboard_from_records(&records, &all_relations, fpf_config))
+}
 
-    // Build edges for context detection
+/// Build the FPF dashboard from one captured workspace without opening legacy tables.
+///
+/// Uses the same context detection, F-G-R scoring and rules as [`dashboard`].
+pub async fn dashboard_captured(
+    read: &WorkspaceRead,
+    fpf_config: Option<&FpfConfig>,
+) -> anyhow::Result<FpfDashboard> {
+    let all_relations = read.get_all_relations();
+    Ok(dashboard_from_records(
+        read.records(),
+        &all_relations,
+        fpf_config,
+    ))
+}
+
+fn dashboard_from_records(
+    records: &[crate::db::store::ArtifactRecord],
+    all_relations: &[(String, String, String)],
+    fpf_config: Option<&FpfConfig>,
+) -> FpfDashboard {
     let edges: Vec<(String, String)> = all_relations
         .iter()
         .map(|(src, tgt, _)| (src.clone(), tgt.clone()))
         .collect();
+    let contexts = contexts::detect(records, &edges);
+    let fgr_scores: Vec<fgr::FgrScore> = records
+        .iter()
+        .map(|record| compute_fgr_for_record(record, all_relations, fpf_config))
+        .collect();
 
-    // Bounded Contexts
-    let contexts = contexts::detect(&records, &edges);
-
-    // F-G-R Scores
-    let mut fgr_scores = Vec::new();
-    for record in &records {
-        let kind = record.kind.parse().unwrap_or(ArtifactKind::Note);
-        let depth = record.depth.parse().unwrap_or(Mode::Standard);
-        let fm = record.frontmatter_map();
-        let link_count = all_relations
-            .iter()
-            .filter(|(src, tgt, _)| src == &record.id || tgt == &record.id)
-            .count();
-        let is_stale = record
-            .valid_until
-            .as_ref()
-            .and_then(|v| chrono::NaiveDateTime::parse_from_str(v, "%Y-%m-%dT%H:%M:%S").ok())
-            .is_some_and(|dt| chrono::Utc::now().naive_utc() > dt);
-
-        let score = fgr::compute(
-            &record.id,
-            &record.body,
-            &fm,
-            &kind,
-            &depth,
-            record.r_eff_score,
-            link_count,
-            is_stale,
-            fpf_config.map(|c| &c.weights),
-        );
-        fgr_scores.push(score);
-    }
-
-    // Explore-Exploit Actions — use rule engine if rules configured, else legacy
     let cfg = fpf_config.cloned().unwrap_or_default();
     let active_rules = if cfg.rules.is_empty() {
         rules::default_rules()
     } else {
         cfg.rules.clone()
     };
+    let actions = build_rule_actions(records, &fgr_scores, all_relations, &active_rules, &cfg);
 
-    let actions = build_rule_actions(&records, &fgr_scores, &all_relations, &active_rules, &cfg);
-
-    // Pipeline Status — compute aggregate across all PRDs
     let active_count = records.iter().filter(|r| r.status == "active").count();
     let draft_count = records.iter().filter(|r| r.status == "draft").count();
     let pipeline_status = format!(
@@ -192,13 +207,17 @@ pub async fn dashboard(
         draft_count,
     );
 
-    Ok(FpfDashboard {
+    FpfDashboard {
         contexts,
         actions,
         fgr_scores,
         pipeline_status,
         artifact_count: records.len(),
-    })
+        display_by_key: records
+            .iter()
+            .map(|record| (record.canonical_key.clone(), record.id.clone()))
+            .collect(),
+    }
 }
 
 /// Build explore-exploit actions using the rule engine.
@@ -359,27 +378,77 @@ pub struct MatchedRule {
 /// consider batching multiple check calls via `build_rule_actions`.
 pub async fn check_artifact_against_rules(
     store: &LanceStore,
+    permit: &dyn crate::workspace::lock::WorkspaceReadPermit,
     artifact_id: &str,
     fpf_config: Option<&FpfConfig>,
 ) -> anyhow::Result<Option<RuleCheckResult>> {
-    let record = match store.get_record(artifact_id).await? {
+    let record = match store.get_record(permit, artifact_id).await? {
         Some(r) => r,
         None => return Ok(None),
     };
 
-    let all_relations = store.get_all_relations().await?;
-    let records = store.list_records(None).await?;
+    let all_relations = store.get_all_relations(permit).await?;
+    let records = store.list_records(permit, None).await?;
+
+    Ok(check_against_rules_from_records(
+        artifact_id,
+        Some(&record),
+        &records,
+        &all_relations,
+        fpf_config,
+    ))
+}
+
+/// Check a single artifact against the active rules, over one
+/// captured/pinned read view.
+///
+/// Same [`check_against_rules_from_records`] computation the legacy path
+/// runs — same active-rule resolution, same FGR score, same enrichment maps
+/// built from the current records and relations, same matched/unmatched/
+/// winning split. Only the record source differs, so a migrated workspace is
+/// checked against the rules it was actually captured with and no legacy
+/// table is opened to do it.
+pub async fn check_artifact_against_rules_captured(
+    read: &WorkspaceRead,
+    artifact_id: &str,
+    fpf_config: Option<&FpfConfig>,
+) -> anyhow::Result<Option<RuleCheckResult>> {
+    let all_relations = read.get_all_relations();
+    let record = read.get_record(artifact_id);
+
+    Ok(check_against_rules_from_records(
+        artifact_id,
+        record,
+        read.records(),
+        &all_relations,
+        fpf_config,
+    ))
+}
+
+/// The rule check, over already-loaded records and relations.
+///
+/// `record` is the artifact under check, or `None` when no such artifact
+/// exists — which answers `Ok(None)`, the documented "nothing to check"
+/// outcome, on both layouts.
+fn check_against_rules_from_records(
+    artifact_id: &str,
+    record: Option<&crate::db::store::ArtifactRecord>,
+    records: &[crate::db::store::ArtifactRecord],
+    all_relations: &[(String, String, String)],
+    fpf_config: Option<&FpfConfig>,
+) -> Option<RuleCheckResult> {
+    let record = record?;
 
     // Build shared lookup maps once (same as build_rule_actions).
-    let (kind_map, linked_kinds_map, link_count_map) = build_lookup_maps(&records, &all_relations);
+    let (kind_map, linked_kinds_map, link_count_map) = build_lookup_maps(records, all_relations);
 
-    let fgr_score = compute_fgr_for_record(&record, &all_relations, fpf_config);
+    let fgr_score = compute_fgr_for_record(record, all_relations, fpf_config);
     let cfg_default = FpfConfig::default();
     let cfg = fpf_config.unwrap_or(&cfg_default);
     let now = chrono::Utc::now().naive_utc();
 
     let enriched = enrich_one(
-        &record,
+        record,
         &kind_map,
         &linked_kinds_map,
         &link_count_map,
@@ -418,14 +487,14 @@ pub async fn check_artifact_against_rules(
 
     let winning = matched.first().cloned();
 
-    Ok(Some(RuleCheckResult {
+    Some(RuleCheckResult {
         artifact_id: artifact_id.to_string(),
-        artifact_kind: record.kind,
-        artifact_status: record.status,
+        artifact_kind: record.kind.clone(),
+        artifact_status: record.status.clone(),
         matched,
         unmatched,
         winning,
-    }))
+    })
 }
 
 /// Build the three enrichment lookup maps shared by `build_rule_actions`
@@ -439,9 +508,11 @@ fn build_lookup_maps<'a>(
     HashMap<String, Vec<String>>,
     HashMap<String, usize>,
 ) {
+    // The relation endpoints are canonical keys (ADR-030), so the lookup maps
+    // are keyed by the key too — the display id is a repeatable alias.
     let kind_map: HashMap<&str, &str> = records
         .iter()
-        .map(|r| (r.id.as_str(), r.kind.as_str()))
+        .map(|r| (r.canonical_key.as_str(), r.kind.as_str()))
         .collect();
 
     let mut linked_kinds_map: HashMap<String, Vec<String>> = HashMap::new();
@@ -479,7 +550,10 @@ fn enrich_one(
     now: chrono::NaiveDateTime,
     config: &FpfConfig,
 ) -> rules::EnrichedData {
-    let link_count = link_count_map.get(&record.id).copied().unwrap_or(0);
+    let link_count = link_count_map
+        .get(&record.canonical_key)
+        .copied()
+        .unwrap_or(0);
 
     let is_stale = record
         .valid_until
@@ -514,7 +588,7 @@ fn enrich_one(
     };
 
     let linked_kinds = linked_kinds_map
-        .get(&record.id)
+        .get(&record.canonical_key)
         .cloned()
         .unwrap_or_default();
 
@@ -542,7 +616,9 @@ fn compute_fgr_for_record(
     let fm = record.frontmatter_map();
     let link_count = all_relations
         .iter()
-        .filter(|(src, tgt, _)| src == &record.id || tgt == &record.id)
+        // The relation endpoints are canonical keys (ADR-030); the display id
+        // is a repeatable alias, so the comparison is made on the key.
+        .filter(|(src, tgt, _)| src == &record.canonical_key || tgt == &record.canonical_key)
         .count();
     let is_stale = record
         .valid_until
@@ -579,7 +655,12 @@ mod prd041_tests {
 
     async fn make_store(tmp: &TempDir) -> LanceStore {
         let ws = tmp.path().join(".forgeplan");
-        LanceStore::init(&ws).await.unwrap()
+        {
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            LanceStore::init_new(&ws, &guard).await.unwrap()
+        }
     }
 
     fn custom_rule(name: &str, priority: u8) -> Rule {
@@ -627,15 +708,31 @@ mod prd041_tests {
     #[tokio::test]
     async fn check_returns_none_for_missing_id() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
-        let res = check_artifact_against_rules(&store, "DOES-NOT-EXIST", None)
-            .await
-            .unwrap();
+        let (store, guard) = {
+            let store = make_store(&tmp).await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(store.workspace_path())
+                .await
+                .unwrap();
+            (store, guard)
+        };
+        let res = check_artifact_against_rules(
+            &store,
+            &guard,
+            "prd-missing-k00000000000000000000000000000000",
+            None,
+        )
+        .await
+        .unwrap();
         assert!(res.is_none(), "missing artifact must return Ok(None)");
     }
 
-    async fn seed_draft_prd(store: &LanceStore, id: &str) {
+    async fn seed_draft_prd(
+        store: &LanceStore,
+        guard: &crate::workspace::lock::WorkspaceLock,
+        id: &str,
+    ) {
         let a = NewArtifact {
+            canonical_key: id.to_string(),
             id: id.to_string(),
             kind: "prd".to_string(),
             status: "draft".to_string(),
@@ -647,17 +744,23 @@ mod prd041_tests {
             valid_until: None,
             tags: Vec::new(),
         };
-        store.create_artifact(&a).await.unwrap();
+        store.create_artifact(guard, &a).await.unwrap();
     }
 
     #[tokio::test]
     async fn check_returns_all_matched_plus_unmatched_equals_total() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
-        seed_draft_prd(&store, "PRD-001").await;
+        let (store, guard) = {
+            let store = make_store(&tmp).await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(store.workspace_path())
+                .await
+                .unwrap();
+            (store, guard)
+        };
+        seed_draft_prd(&store, &guard, "PRD-001").await;
 
         let (default_rules, _) = active_rules(None);
-        let result = check_artifact_against_rules(&store, "PRD-001", None)
+        let result = check_artifact_against_rules(&store, &guard, "PRD-001", None)
             .await
             .unwrap()
             .expect("PRD-001 exists");
@@ -675,10 +778,16 @@ mod prd041_tests {
     #[tokio::test]
     async fn check_winning_is_first_of_matched() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
-        seed_draft_prd(&store, "PRD-001").await;
+        let (store, guard) = {
+            let store = make_store(&tmp).await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(store.workspace_path())
+                .await
+                .unwrap();
+            (store, guard)
+        };
+        seed_draft_prd(&store, &guard, "PRD-001").await;
 
-        let result = check_artifact_against_rules(&store, "PRD-001", None)
+        let result = check_artifact_against_rules(&store, &guard, "PRD-001", None)
             .await
             .unwrap()
             .expect("PRD-001 exists");
@@ -709,15 +818,21 @@ mod prd041_tests {
     #[tokio::test]
     async fn check_uses_custom_config_rules() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
-        seed_draft_prd(&store, "PRD-001").await;
+        let (store, guard) = {
+            let store = make_store(&tmp).await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(store.workspace_path())
+                .await
+                .unwrap();
+            (store, guard)
+        };
+        seed_draft_prd(&store, &guard, "PRD-001").await;
 
         let cfg = FpfConfig {
             rules: vec![custom_rule("only-rule", 1)],
             ..Default::default()
         };
 
-        let result = check_artifact_against_rules(&store, "PRD-001", Some(&cfg))
+        let result = check_artifact_against_rules(&store, &guard, "PRD-001", Some(&cfg))
             .await
             .unwrap()
             .expect("PRD-001 exists");
@@ -731,8 +846,14 @@ mod prd041_tests {
     #[tokio::test]
     async fn check_returns_empty_when_all_unmatched() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
-        seed_draft_prd(&store, "PRD-001").await;
+        let (store, guard) = {
+            let store = make_store(&tmp).await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(store.workspace_path())
+                .await
+                .unwrap();
+            (store, guard)
+        };
+        seed_draft_prd(&store, &guard, "PRD-001").await;
 
         // Custom rule that requires status="active" — won't match a draft.
         let cfg = FpfConfig {
@@ -749,7 +870,7 @@ mod prd041_tests {
             ..Default::default()
         };
 
-        let result = check_artifact_against_rules(&store, "PRD-001", Some(&cfg))
+        let result = check_artifact_against_rules(&store, &guard, "PRD-001", Some(&cfg))
             .await
             .unwrap()
             .expect("PRD-001 exists");
@@ -817,10 +938,16 @@ mod prd041_tests {
     async fn check_finds_winning_rule_in_priority_order() {
         // Draft PRD with r_eff = 0.0 should match `blind-spot` (priority 1).
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
-        seed_draft_prd(&store, "PRD-001").await;
+        let (store, guard) = {
+            let store = make_store(&tmp).await;
+            let guard = crate::workspace::lock::acquire_workspace_lock(store.workspace_path())
+                .await
+                .unwrap();
+            (store, guard)
+        };
+        seed_draft_prd(&store, &guard, "PRD-001").await;
 
-        let result = check_artifact_against_rules(&store, "PRD-001", None)
+        let result = check_artifact_against_rules(&store, &guard, "PRD-001", None)
             .await
             .unwrap()
             .expect("PRD-001 exists");
@@ -829,5 +956,311 @@ mod prd041_tests {
         assert_eq!(winning.name, "blind-spot");
         assert_eq!(winning.priority, 1);
         assert_eq!(winning.action, "EXPLORE");
+    }
+
+    /// A canonical workspace with one draft PRD and one active PRD that
+    /// informs it, so the rule check has a record, an edge and a mixed
+    /// status population to work over.
+    fn canonical_workspace() -> (TempDir, std::path::PathBuf) {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        for dir in crate::workspace::ARTIFACT_DIRS {
+            std::fs::create_dir_all(ws.join(dir)).unwrap();
+        }
+        for (dir, id, kind, status, links) in [
+            (
+                "prds",
+                "PRD-001",
+                "prd",
+                "draft",
+                vec![("PRD-002", "based_on")],
+            ),
+            ("prds", "PRD-002", "prd", "active", vec![]),
+        ] {
+            let mut fm = format!(
+                "---\nid: {id}\ntitle: Fixture {id}\nkind: {kind}\nstatus: {status}\n\
+                 depth: standard\ncreated_at: 2026-01-01T00:00:00Z\n"
+            );
+            if !links.is_empty() {
+                fm.push_str("links:\n");
+                for (target, relation) in &links {
+                    fm.push_str(&format!("  - target: {target}\n    relation: {relation}\n"));
+                }
+            }
+            let path = ws.join(dir).join(format!(
+                "{id}-{}.md",
+                crate::artifact::types::slugify(&format!("Fixture {id}"))
+            ));
+            std::fs::write(&path, format!("{fm}---\n\n## Problem\n\nFixture body.\n")).unwrap();
+        }
+        (tmp, ws)
+    }
+
+    async fn open_read(ws: &std::path::Path) -> WorkspaceRead {
+        crate::constellation::facade::open_workspace_read(
+            ws,
+            None,
+            crate::constellation::capture::CaptureLimits::default(),
+        )
+        .await
+        .expect("the fixture workspace captures completely")
+    }
+
+    async fn legacy_store_for(read: &WorkspaceRead) -> LanceStore {
+        let ws = read
+            .workspace()
+            .parent()
+            .unwrap()
+            .join("legacy-projection-fixture");
+        let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+            .await
+            .unwrap();
+        let store = LanceStore::init_new(&ws, &guard).await.unwrap();
+        for name in crate::workspace::ARTIFACT_DIRS {
+            let src = read.workspace().join(name);
+            if !src.exists() {
+                continue;
+            }
+            for entry in walkdir::WalkDir::new(&src).follow_links(false) {
+                let entry = entry.unwrap();
+                let dest = ws.join(entry.path().strip_prefix(read.workspace()).unwrap());
+                if entry.file_type().is_dir() {
+                    std::fs::create_dir_all(&dest).unwrap();
+                } else {
+                    std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+                    std::fs::copy(entry.path(), dest).unwrap();
+                }
+            }
+        }
+        // From `read.records()` (scores recomputed by `from_parts`), not
+        // from `record_from_parsed` whose output is 0.0 for every record.
+        for record in read.records() {
+            store
+                .create_artifact(
+                    &guard,
+                    &NewArtifact {
+                        canonical_key: record.id.clone(),
+                        id: record.id.clone(),
+                        kind: record.kind.clone(),
+                        status: record.status.clone(),
+                        title: record.title.clone(),
+                        body: record.body.clone(),
+                        depth: record.depth.clone(),
+                        author: record.author.clone(),
+                        parent_epic: record.parent_epic.clone(),
+                        valid_until: record.valid_until.clone(),
+                        tags: record.tags.clone(),
+                    },
+                )
+                .await
+                .unwrap();
+            store.replace_record(&guard, record).await.unwrap();
+        }
+        for (source, target, relation) in read.get_all_relations() {
+            store
+                .add_relation(&guard, &source, &target, &relation)
+                .await
+                .unwrap();
+        }
+        store
+    }
+
+    #[tokio::test]
+    async fn captured_dashboard_matches_legacy_records_relations_and_config() {
+        let (_tmp, ws) = canonical_workspace();
+        let read = open_read(&ws).await;
+        assert!(!ws.join("lance").exists());
+
+        let cfg = FpfConfig {
+            rules: vec![custom_rule("needs-draft", 3)],
+            ..Default::default()
+        };
+        let captured = dashboard_captured(&read, Some(&cfg)).await.unwrap();
+        assert_eq!(captured.artifact_count, 2);
+        assert_eq!(
+            captured.pipeline_status,
+            "2 artifacts total: 1 active, 1 draft"
+        );
+        assert_eq!(captured.contexts.len(), 1);
+        let context = &captured.contexts[0];
+        assert_eq!(context.name, "Context-1 (PRD)");
+        assert_eq!(context.members, ["PRD-001", "PRD-002"]);
+        assert_eq!((context.internal_links, context.external_links), (1, 0));
+        assert_eq!(context.cohesion, 1.0);
+        assert_eq!(captured.fgr_scores.len(), 2);
+        assert_eq!(captured.actions.len(), 1);
+        let action = &captured.actions[0];
+        assert_eq!(action.artifact_id, "PRD-001");
+        assert_eq!(action.action_type, "EXPLORE");
+        assert_eq!(action.priority, 3);
+        assert_eq!(action.reason, "custom rule needs-draft");
+        assert!(
+            !ws.join("lance").exists(),
+            "a dashboard must not create an index"
+        );
+
+        let store = legacy_store_for(&read).await;
+        let guard = crate::workspace::lock::acquire_workspace_read_lock(store.workspace_path())
+            .await
+            .unwrap();
+        let legacy = dashboard(&store, &guard, Some(&cfg)).await.unwrap();
+        assert_eq!(captured.to_string(), legacy.to_string());
+        for (captured, legacy) in captured.fgr_scores.iter().zip(&legacy.fgr_scores) {
+            assert_eq!(captured.artifact_id, legacy.artifact_id);
+            assert_eq!(captured.formality, legacy.formality);
+            assert_eq!(captured.granularity, legacy.granularity);
+            assert_eq!(captured.reliability, legacy.reliability);
+        }
+    }
+
+    #[tokio::test]
+    async fn captured_dashboard_of_an_empty_workspace_is_an_empty_report() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        std::fs::create_dir_all(&ws).unwrap();
+        let read = open_read(&ws).await;
+        let dashboard = dashboard_captured(&read, None).await.unwrap();
+
+        assert_eq!(dashboard.artifact_count, 0);
+        assert_eq!(
+            dashboard.pipeline_status,
+            "0 artifacts total: 0 active, 0 draft"
+        );
+        assert!(dashboard.contexts.is_empty());
+        assert!(dashboard.fgr_scores.is_empty());
+        assert!(dashboard.actions.is_empty());
+        assert!(!ws.join("lance").exists());
+    }
+
+    #[tokio::test]
+    async fn captured_check_returns_none_for_an_artifact_the_capture_does_not_hold() {
+        let (_tmp, ws) = canonical_workspace();
+        let read = open_read(&ws).await;
+
+        assert!(
+            check_artifact_against_rules_captured(&read, "DOES-NOT-EXIST", None)
+                .await
+                .unwrap()
+                .is_none(),
+            "an id outside the capture must answer Ok(None), not an empty result set"
+        );
+    }
+
+    #[tokio::test]
+    async fn captured_check_accounts_for_every_active_rule() {
+        let (_tmp, ws) = canonical_workspace();
+        let read = open_read(&ws).await;
+
+        let result = check_artifact_against_rules_captured(&read, "PRD-001", None)
+            .await
+            .unwrap()
+            .expect("PRD-001 is in the capture");
+
+        let (default_rules, _) = active_rules(None);
+        assert_eq!(result.artifact_id, "PRD-001");
+        assert_eq!(result.artifact_kind, "prd");
+        assert_eq!(result.artifact_status, "draft");
+        assert_eq!(
+            result.matched.len() + result.unmatched.len(),
+            default_rules.len(),
+            "matched + unmatched must account for every active rule"
+        );
+        // The same winning rule the legacy path reports for the same
+        // record, chosen by priority order.
+        let winning = result.winning.expect("a draft PRD matches a default rule");
+        assert_eq!(winning.name, "blind-spot");
+        assert_eq!(winning.priority, 1);
+        let priorities: Vec<u8> = result.matched.iter().map(|m| m.priority).collect();
+        let mut ascending = priorities.clone();
+        ascending.sort_unstable();
+        assert_eq!(
+            priorities, ascending,
+            "matched rules are reported in ascending priority order"
+        );
+    }
+
+    #[tokio::test]
+    async fn captured_check_honours_a_custom_rule_config() {
+        let (_tmp, ws) = canonical_workspace();
+        let read = open_read(&ws).await;
+
+        let cfg = FpfConfig {
+            rules: vec![custom_rule("needs-draft", 3)],
+            ..Default::default()
+        };
+        let result = check_artifact_against_rules_captured(&read, "PRD-001", Some(&cfg))
+            .await
+            .unwrap()
+            .expect("PRD-001 is in the capture");
+
+        // The config replaces the default set entirely — it is not merged.
+        assert_eq!(result.matched.len(), 1);
+        assert_eq!(result.matched[0].name, "needs-draft");
+        assert_eq!(result.matched[0].priority, 3);
+        assert_eq!(result.unmatched, Vec::<String>::new());
+        assert_eq!(result.winning.as_ref().unwrap().name, "needs-draft");
+    }
+
+    #[tokio::test]
+    async fn captured_check_matches_the_legacy_projection_rule_for_rule() {
+        let (_tmp, ws) = canonical_workspace();
+        let read = open_read(&ws).await;
+        let store = legacy_store_for(&read).await;
+        let guard = crate::workspace::lock::acquire_workspace_read_lock(store.workspace_path())
+            .await
+            .unwrap();
+
+        for id in ["PRD-001", "PRD-002"] {
+            let legacy = check_artifact_against_rules(&store, &guard, id, None)
+                .await
+                .unwrap()
+                .expect("the legacy projection holds the artifact");
+            let captured = check_artifact_against_rules_captured(&read, id, None)
+                .await
+                .unwrap()
+                .expect("the capture holds the artifact");
+
+            assert_eq!(
+                (
+                    &legacy.artifact_id,
+                    legacy.artifact_kind.as_str(),
+                    legacy.artifact_status.as_str()
+                ),
+                (
+                    &captured.artifact_id,
+                    captured.artifact_kind.as_str(),
+                    captured.artifact_status.as_str()
+                ),
+                "id={id}"
+            );
+            assert_eq!(legacy.matched.len(), captured.matched.len(), "id={id}");
+            assert_eq!(legacy.unmatched, captured.unmatched, "id={id}");
+            for (l, c) in legacy.matched.iter().zip(&captured.matched) {
+                assert_eq!(
+                    (
+                        l.name.as_str(),
+                        l.priority,
+                        l.action.as_str(),
+                        l.message.as_str()
+                    ),
+                    (
+                        c.name.as_str(),
+                        c.priority,
+                        c.action.as_str(),
+                        c.message.as_str()
+                    ),
+                    "id={id}"
+                );
+            }
+            match (&legacy.winning, &captured.winning) {
+                (None, None) => {}
+                (Some(l), Some(c)) => assert_eq!(
+                    (l.name.as_str(), l.priority, l.action.as_str()),
+                    (c.name.as_str(), c.priority, c.action.as_str()),
+                    "id={id}"
+                ),
+                _ => panic!("winning rule differs between layouts for {id}"),
+            }
+        }
     }
 }

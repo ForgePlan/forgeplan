@@ -3,10 +3,7 @@ title: forgeplan git-sync
 description: "Sync artifact changes from git operations (pull/merge) into LanceDB"
 ---
 
-Incrementally sync LanceDB with markdown changes introduced by a git
-operation - typically `git pull`, `git merge`, or `git rebase`. Instead of
-rebuilding the entire index, `git-sync` diffs the working tree against a
-git reference and only re-parses the artifacts that actually changed.
+Sync artifact state after a Git operation. On a legacy workspace the command selects committed changes between a ref and HEAD and synchronizes the corresponding files. On an already Constellation-managed workspace it runs canonical index reconciliation instead; ordinary `git-sync` does not migrate a legacy workspace by itself.
 
 ## Usage
 
@@ -24,11 +21,11 @@ forgeplan git-sync [OPTIONS]
 
 ## How it works
 
-1. Runs `git diff --name-only <SINCE> HEAD` scoped to `.forgeplan/`.
-2. Filters the result to artifact `.md` files.
-3. For each changed file: re-parses and updates its LanceDB row.
-4. For deleted files: removes the corresponding rows from the index.
-5. Recomputes derived fields (tags, links, scoring) for the touched set.
+1. Select the ref (`--since` or `ORIG_HEAD`) and inspect committed `.forgeplan/` changes.
+2. On a migrated workspace, reconcile the canonical view through Constellation.
+3. On a legacy workspace, parse changed artifact files, synchronize rows, and remove rows for deleted files.
+
+Do not infer universal ancestor-score reconciliation from this pass.
 
 `ORIG_HEAD` is the default because `git pull`/`git merge`/`git rebase` all
 set it to the previous tip of the current branch, giving `git-sync` an exact
@@ -36,9 +33,7 @@ set it to the previous tip of the current branch, giving `git-sync` an exact
 
 ## When to use it
 
-- **After `git pull`** - teammates merged new PRDs/RFCs into `dev`, you just
-  pulled, and you want them in your local LanceDB. `git-sync` runs in a
-  fraction of the time of a full reindex.
+- **After `git pull`** - make pulled artifact changes visible in the workspace's owning index. Runtime cost depends on layout and workspace size; no subsecond result is guaranteed.
 - **After `git merge feature/xyz`** - same idea for local merges.
 - **After `git checkout`** between branches with divergent artifact state -
   pass `--since <other-branch>` to sync the diff.
@@ -49,32 +44,29 @@ set it to the previous tip of the current branch, giving `git-sync` an exact
 # Morning routine with an active team
 git checkout dev
 git pull origin dev          # pulls 3 new PRDs from teammates
-forgeplan git-sync           # <1s: only the 3 new files re-indexed
-forgeplan list --since 1d    # see what arrived
+forgeplan git-sync           # synchronize using this workspace's owning layout
+forgeplan list              # inspect the current artifact listing
 forgeplan health             # check for new blind spots
 ```
 
 Compare against a cold rebuild:
 
 ```bash
-forgeplan reindex            # walks the whole workspace - safe but slower
+forgeplan reindex            # legacy rebuild, or Constellation reconcile on owned layouts
 ```
 
-For small workspaces the difference is negligible; for workspaces with
-hundreds of artifacts `git-sync` is substantially faster.
+Legacy selection can reduce the files synchronized. A migrated workspace uses a reconcile pass, so do not apply the same incremental-cost estimate to both layouts.
 
 ## `git-sync` vs `reindex` vs `watch`
 
-| Command     | Use when                                         | Cost              |
-|-------------|--------------------------------------------------|-------------------|
-| `git-sync`  | After git pull/merge, know the ref to diff from  | O(changed files)  |
-| `reindex`   | Manual edits, fresh clone, unknown drift         | O(all artifacts)  |
-| `watch`     | Interactive editing, want live sync              | daemon, O(event)  |
+| Command | Use when | Layout distinction |
+|---|---|---|
+| `git-sync` | After a Git operation with a known base | Legacy selected-file sync; migrated canonical reconcile |
+| `index` | Maintain Constellation explicitly | Can migrate a legacy workspace |
+| `reindex` | Rebuild derived state from canonical files | Legacy rebuild; selected build routes Constellation-owned layouts to reconcile |
+| `watch` | Maintain after save batches | Migrated workspace requires `--constellation` |
 
-**Rule of thumb:** if git just moved HEAD, use `git-sync`. If you edited
-files yourself in an editor, use `reindex` (or leave `watch` running). If
-you're unsure whether the index is in sync, `reindex` is always the safe
-fallback.
+For Constellation recovery prefer explicit `forgeplan index`; do not recreate retired tables or use `scan-import` as an index-repair command.
 
 ## Example
 
@@ -92,10 +84,9 @@ forgeplan git-sync --since dev
 
 ## Limitations
 
-- Requires a clean git working tree for reliable diffing - uncommitted
-  edits may be skipped or double-counted. Pair with `watch` for dirty trees.
-- If `ORIG_HEAD` is stale (no recent pull/merge), pass `--since` explicitly.
-- Doesn't detect out-of-band markdown edits - use `reindex` for those.
+- The legacy selection is a committed ref-to-HEAD comparison, not an uncommitted-edit detector. Use the appropriate watcher or explicit rebuild after manual edits.
+- If `ORIG_HEAD` is stale, pass `--since` explicitly.
+- Migrated reconciliation reads the canonical view, so the legacy selected-file limitation is not the migrated read contract.
 
 ## See also
 
@@ -103,3 +94,20 @@ forgeplan git-sync --since dev
 - [`forgeplan reindex`](/docs/cli/reindex/) - full rebuild fallback
 - [`forgeplan watch`](/docs/cli/watch/) - live sync daemon
 - [`forgeplan health`](/docs/cli/health/) - verify after sync
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan git-sync --help`.
+
+```text
+Sync artifact changes from git operations (pull/merge) into LanceDB
+
+Usage: forgeplan git-sync [OPTIONS]
+
+Options:
+      --since <SINCE>  Git ref to diff against (default: ORIG_HEAD from last pull/merge)
+  -h, --help           Print help
+  -V, --version        Print version
+```
+<!-- forgeplan-runtime:end -->

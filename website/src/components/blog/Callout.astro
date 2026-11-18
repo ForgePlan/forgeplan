@@ -3,12 +3,13 @@ interface Props {
   type: 'info' | 'warn' | 'tip' | 'danger';
 }
 const { type } = Astro.props;
+const isRu = Astro.url.pathname.startsWith('/ru/');
 
 const config = {
-  info:   { icon: 'ℹ',  label: 'Info' },
-  warn:   { icon: '⚠',  label: 'Warning' },
-  tip:    { icon: '✓',  label: 'Tip' },
-  danger: { icon: '✕',  label: 'Danger' },
+  info:   { icon: 'ℹ',  label: isRu ? 'Информация' : 'Info' },
+  warn:   { icon: '⚠',  label: isRu ? 'Предупреждение' : 'Warning' },
+  tip:    { icon: '✓',  label: isRu ? 'Совет' : 'Tip' },
+  danger: { icon: '✕',  label: isRu ? 'Опасность' : 'Danger' },
 };
 const { icon, label } = config[type];
 ---

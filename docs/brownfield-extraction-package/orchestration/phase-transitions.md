@@ -2,6 +2,8 @@
 
 > What must be true before moving from one phase to the next. Each gate is a quality check — premature progression produces garbage downstream.
 
+> Historical proposed policy for the C1–C12 orchestrator, which is not supplied by current core tools. Thresholds and proposed `--skip-gate` switches below are preserved as design history, **not supported CLI flags or permission to bypass native gates**. They do not change or waive G1/G2/G3. See [implementation status](../README.md#implementation-status-2026-10-23).
+
 ## Why gates matter
 
 Each phase consumes the previous phase's output. If the previous output is incomplete or low-quality:
@@ -96,7 +98,7 @@ Checks:
 
 ## Gate enforcement
 
-All gates are enforced by the orchestrator. Users can:
+Proposed orchestrator requirement: enforce the gates above and expose the following controls once implemented. This is not a statement of current native enforcement:
 - View gate status: `/extract-business-logic:status <domain>`.
 - See which check blocks progression.
 - Override with `--skip-gate=<phaseN>` (logged, visible in session history).

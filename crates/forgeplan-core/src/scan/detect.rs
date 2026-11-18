@@ -19,7 +19,9 @@ pub enum DetectionTier {
 pub struct DetectionResult {
     pub kind: ArtifactKind,
     pub tier: DetectionTier,
-    /// Suggested ID extracted from the document (e.g., "PRD-001" from frontmatter `id` field).
+    /// Suggested display selector extracted from the document (e.g., `PRD-001`).
+    /// Frontmatter ids are uppercased here for selector matching; this is not
+    /// the stored canonical identity, which import reads from the source frontmatter.
     pub suggested_id: Option<String>,
     /// Title extracted from frontmatter or first heading.
     pub suggested_title: Option<String>,

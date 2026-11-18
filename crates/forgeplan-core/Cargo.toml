@@ -33,7 +33,19 @@ tract-onnx = { version = "0.23", optional = true }
 # The same tokenizer library fastembed uses internally, loaded from the same
 # tokenizer.json. Matching tokenization exactly is what keeps the vectors
 # identical rather than merely similar.
-tokenizers = { version = "0.23", optional = true, default-features = false, features = ["onig"] }
+#
+# **No longer optional.** ADR-029 §2A: section windows are measured in tokens,
+# so capture needs a tokenizer in every build — including `no-semantic`, where
+# the layout fingerprint still has to record the real `max_tokens` and the
+# metadata checksums. Making it optional would have meant either a
+# character-window substitute under the previous layout identity (explicitly
+# forbidden) or a fingerprint that claimed a layout no build could measure.
+#
+# `onig` keeps the same regex engine the engine path always used, so the token
+# boundaries capture measures are the token boundaries inference produces.
+# The cost is a C toolchain in a `no-semantic` build; that is a real, accepted
+# consequence, not an oversight.
+tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
 # Model download. fastembed used this internally; with fastembed gone we call
 # it directly. `rustls-tls` to match the stack `reqwest` already pulls in —
 # a second TLS implementation in one binary is pure weight.
@@ -46,6 +58,38 @@ dirs = "6"
 tempfile = "3"
 bm25 = { version = "2.3.2", features = ["language_detection"] }
 sha2 = "0.11"
+# ADR-029 §0 durability seam. The two public injection points the protocol
+# is built on are `lance_io::object_store::WrappingObjectStore` (what
+# `NativeTable::{create,create_empty,open_with_params}` accepts as
+# `write_store_wrapper`) and `object_store::ObjectStore` (what a wrapping
+# store must implement to be wrapped). Pinned exactly so the lockfile's
+# already-resolved `lance-io 4.0.0` / `object_store 0.12.5` entries are
+# reused rather than re-resolved to a different version.
+#
+# `default-features = false` is **required**, not a preference. lance-io's
+# `default = ["aws", "azure", "gcp"]`, and each of those enables
+# `dep:opendal` + `dep:object_store_opendal` — which drags in the whole cloud
+# SDK stack (aws-config and friends, requiring rustc 1.94.1 against the
+# toolchain's 1.91.1) and added 75 packages to the lockfile. `lancedb` 0.27.2
+# declares its own `lance-io` with `default-features = false` precisely for
+# this reason; this line matches it.
+#
+# No feature is enabled in place of `default`: `lance_io::object_store` is a
+# plain, unconditional `pub mod` (`lance-io-4.0.0/src/lib.rs:17`) and
+# `WrappingObjectStore` is declared ungated (`src/object_store.rs:154`), so
+# the local `file-object-store` provider and the wrapper trait are reachable
+# with the crate's features off. The `file-object-store` registration in
+# `src/object_store/providers.rs:300-303` is likewise unconditional.
+lance-io = { version = "=4.0.0", default-features = false }
+# Already pinned transitively by lancedb. Managed restores need CommitBuilder
+# to skip age-based cleanup of versions our generation manifests still pin.
+lance = { version = "=4.0.0", default-features = false }
+# tgrep-core is Microsoft's trigram index library (MIT). Pinned to a tag —
+# never a floating branch — because the index format is on-disk state: a
+# drifting format would read a foreign index as ours. The vendored `ignore`
+# path dep resolves inside the git checkout; `rusqlite` pins itself.
+tgrep-core = { git = "https://github.com/microsoft/tgrep", tag = "v1.2.2" }
+object_store = "=0.12.5"
 tracing = "0.1"
 rand = "0.9"
 fs2.workspace = true
@@ -54,6 +98,13 @@ semver.workspace = true
 tera.workspace = true
 walkdir.workspace = true
 globset.workspace = true
+# `constellation::runtime::MaintenanceHost` — the long-lived watcher +
+# control-scan loop that `serve`, `watch` and the full MCP server all run. It
+# lives here rather than in the CLI because the standalone `forgeplan-mcp`
+# binary needs the same host and depends on this crate, not the other way
+# round. Same versions the CLI already used; no new crates enter the lockfile.
+notify.workspace = true
+notify-debouncer-mini.workspace = true
 
 # Audit-r3 M4 closure — O_NOFOLLOW flag for the anomalies-journal
 # tempfile open so a pre-created symlink with workspace-write access
@@ -66,6 +117,23 @@ globset.workspace = true
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# ADR-029 §0 `WindowsNtfsDurability`: public Win32 file and namespace
+# operations only — `CreateFileW` / `WriteFile` / `FlushFileBuffers` /
+# `CreateDirectoryW` / `MoveFileExW`. `Win32_Security` is required for the
+# security attributes the file and directory calls take. `Win32_System_IO`
+# is required because `WriteFile` is gated behind it in windows-sys 0.61.2.
+# `Win32_System_WindowsProgramming` is required for the `DRIVE_*` constants
+# that distinguish a local fixed volume from a network mount.
+# No administrator rights, no volume flush, no TxF.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_WindowsProgramming",
+] }
+
 [features]
 default = []
 # Vector search. Since RFC-013 this is the pure-Rust tract engine: it compiles
@@ -74,7 +142,10 @@ default = []
 # four of five targets). `tract-engine` is kept as the concrete name so the
 # parity tests can address the engine directly.
 semantic-search = ["tract-engine"]
-tract-engine = ["tract-onnx", "tokenizers", "hf-hub"]
+# `tokenizers` is deliberately absent: it is a required dependency now, because
+# the section layout is measured in tokens in every build. `tract-engine` is
+# the graph + weights + download, and only that stays behind this feature.
+tract-engine = ["tract-onnx", "hf-hub"]
 # Exposes test-only escape hatches (`*_for_test`) on `LanceStore` so
 # downstream test fixtures can seed the DB directly without going through
 # the projection pipeline they're not exercising. Production code MUST
@@ -123,4 +194,113 @@ proptest = "1"
 [[test]]
 name = "lance_stale_refresh_test"
 path = "tests/lance_stale_refresh_test.rs"
+required-features = ["test-helpers"]
+
+# Same PROB-074 gate for the remaining targets that call `*_for_test`
+# helpers: without `required-features` they fail E0599 under the default
+# `cargo test --workspace` / `cargo bench` baseline.
+[[test]]
+name = "health_verdict_test"
+path = "tests/health_verdict_test.rs"
+required-features = ["test-helpers"]
+
+[[test]]
+name = "integrity_test"
+path = "tests/integrity_test.rs"
+required-features = ["test-helpers"]
+
+[[test]]
+name = "phase_read_errors_e2e_test"
+path = "tests/phase_read_errors_e2e_test.rs"
+required-features = ["test-helpers"]
+
+[[test]]
+name = "scoring_cascade_test"
+path = "tests/scoring_cascade_test.rs"
+required-features = ["test-helpers"]
+
+# Canonical (Constellation) lifecycle transitions: review / activate /
+# supersede / deprecate / renew / reopen driven file-first against a real
+# published workspace.
+#
+# No `required-features` here: this target uses only the crate's public
+# surface (capture, `maintain_index`, `WorkspaceRead`, `MutationContext`), so
+# it must run on the DEFAULT `cargo test --workspace` baseline too. A test
+# that only exercises the feature-gated suite would leave the default build
+# claiming parity it never checked.
+[[test]]
+name = "lifecycle_canonical"
+path = "tests/lifecycle_canonical.rs"
+
+# These are `#[test]`-style latency probes (`Instant` + `#[ignore]`, no
+# criterion harness) that happen to carry "bench" in the name — declaring them
+# [[bench]] would demand a main() they do not have.
+[[test]]
+name = "create_roundtrip_bench"
+path = "tests/create_roundtrip_bench.rs"
+required-features = ["test-helpers"]
+
+[[test]]
+name = "health_bench"
+path = "tests/health_bench.rs"
+required-features = ["test-helpers"]
+
+# S1 runtime behaviour end to end: an empty body stays empty (L02), a
+# same-size/same-mtime rewrite is still detected (L05), a reader is served one
+# generation and a torn pointer is an explicit failure (L09), and the
+# maintenance host maintains the workspace its capability names.
+#
+# `required-features` for the same reason as the targets above: without it
+# `cargo test --workspace` (no flags) would fail rather than skip.
+[[test]]
+name = "constellation_runtime_e2e"
+path = "tests/constellation_runtime_e2e.rs"
+required-features = ["test-helpers"]
+
+# ADR-029 §8 process/native fault barriers: a child stops at a real publication
+# stage and a fresh process inspects the published generation afterwards. The
+# barrier code itself is `test-helpers`-only, so this target cannot run without
+# it.
+[[test]]
+name = "constellation_fault_process"
+path = "tests/constellation_fault_process.rs"
+required-features = ["test-helpers"]
+
+# SPEC-008 L09/F11 (issue #538) S14 fault-injection: process-crash proofs for
+# the three named write/read seams that the publication-stage harness above
+# does not reach — the artifact Markdown write ↔ derived index boundary
+# (projection), a pinned scope handle held across a writer SIGKILL and a
+# reader killed between read and return, and a crash between chunk admission
+# and the pending-jobs manifest publish (embed). Same real child/SIGKILL/
+# restart protocol, test-helpers-only barriers.
+[[test]]
+name = "fault_injection_s14"
+path = "tests/fault_injection_s14.rs"
+required-features = ["test-helpers"]
+
+# The metadata-only tokenizer loader and the section layout it resolves: the
+# fingerprint's inputs, the actual token limit, the header budget, and the
+# absent-metadata state. Runs in the `no-semantic` build on purpose — that is
+# the whole point of splitting the loader out of `tract_engine`.
+[[test]]
+name = "constellation_tokenizer"
+path = "tests/constellation_tokenizer.rs"
+required-features = ["test-helpers"]
+
+# Section windows measured in tokens: contiguous UTF-8 ranges whose
+# concatenation is the body exactly, for Russian, English, CJK, emoji,
+# no-space and whitespace-heavy input, plus the metadata absent / present /
+# absent transition and its effect on the published section set.
+[[test]]
+name = "constellation_section_windows"
+path = "tests/constellation_section_windows.rs"
+required-features = ["test-helpers"]
+
+# C23 legacy-layout compatibility: `init_legacy_for_test` is
+# `test-helpers`-gated, so this target needs the same declaration as the
+# other gated suites or `cargo clippy --all-targets` (no features) fails
+# E0599 instead of skipping it.
+[[test]]
+name = "constellation_history_compat"
+path = "tests/constellation_history_compat.rs"
 required-features = ["test-helpers"]

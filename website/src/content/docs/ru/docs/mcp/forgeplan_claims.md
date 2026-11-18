@@ -30,6 +30,8 @@ description: "List live claims in the workspace - who is working on what right n
 _Источник схемы: `crates/forgeplan-mcp/src/types.rs::ClaimsListParams`_
 
 ## Возвращает
+Иллюстративный ответ; отсутствующее необязательное поле `note` не выводится:
+
 
 ```json
 {
@@ -47,17 +49,15 @@ _Источник схемы: `crates/forgeplan-mcp/src/types.rs::ClaimsListPara
       "id": "RFC-012",
       "agent_id": "worker-2",
       "claimed_at": "2026-04-26T10:05:00Z",
-      "expires_at": "2026-04-26T11:05:00Z",
-      "note": null
+      "expires_at": "2026-04-26T11:05:00Z"
     }
   ],
-  "_next_action": "2 active claims. Use `forgeplan_dispatch --agents N` to plan ..."
+  "_next_action": "2 active claim(s). Plan around them: `forgeplan_dispatch agents=3`."
 }
 ```
 
-`skipped > 0` означает, что хотя бы один файл клейма не удалось распарсить или он
-превысил лимит размера - баг тихого молчаливого пропуска, отмеченный аудитом, теперь
-явно всплывает. Запустите `forgeplan health`, чтобы найти нарушителя.
+`skipped > 0` означает, что хотя бы один файл не удалось разобрать или он превысил лимит размера.
+Счётчик не указывает конкретный файл: найдите его в `.forgeplan/claims/`.
 
 ## Пример вызова
 
@@ -83,3 +83,45 @@ _Источник схемы: `crates/forgeplan-mcp/src/types.rs::ClaimsListPara
 - [`forgeplan_claim`](/ru/docs/mcp/forgeplan_claim/) - получить клейм
 - [`forgeplan_release`](/ru/docs/mcp/forgeplan_release/) - снять клейм
 - [`forgeplan_dispatch`](/ru/docs/mcp/forgeplan_dispatch/) - multi-agent план работы (полный протокол PRD-057)
+
+<!-- forgeplan-runtime:start -->
+## Снимок tools/list
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, профиль `full`.
+
+List live claims in the workspace, sorted by expiry ascending. Skips expired claims (they're considered practically released). Used by orchestrators to build dispatch plans and by sub-agents to avoid double-claiming.
+
+### Входные параметры
+
+| Имя | Обязателен | Тип | Описание |
+|---|---|---|---|
+| `active` | нет | boolean | Reserved for future filters; currently always returns only live claims. |
+| `workspace` | нет | string \| null | Optional explicit workspace directory for this call. When set, the MCP<br>server resolves the `.forgeplan/` projection from this path instead of<br>the server's startup CWD. Use this when the calling agent is running<br>in a git worktree separate from the MCP server's launch directory.<br>PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "active": {
+      "default": false,
+      "description": "Reserved for future filters; currently always returns only live claims.",
+      "type": "boolean"
+    },
+    "workspace": {
+      "description": "Optional explicit workspace directory for this call. When set, the MCP\nserver resolves the `.forgeplan/` projection from this path instead of\nthe server's startup CWD. Use this when the calling agent is running\nin a git worktree separate from the MCP server's launch directory.\nPRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "ClaimsListParams",
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

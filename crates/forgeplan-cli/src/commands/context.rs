@@ -1,11 +1,12 @@
-use std::collections::HashSet;
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{NaiveDate, Utc};
 use console::style;
 
 use forgeplan_core::artifact::frontmatter::Frontmatter;
 use forgeplan_core::artifact::types::{ArtifactKind, Mode};
-use forgeplan_core::db::store::ArtifactFilter;
+use forgeplan_core::db::store::{ArtifactRecord, frontmatter_map_with_links_from};
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::scoring::fgr;
 use forgeplan_core::scoring::reff;
@@ -16,13 +17,17 @@ use crate::commands::common;
 use crate::ui;
 
 pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
-    let store = common::store().await?;
+    let (workspace, source, _read_guard) = common::open_read_source().await?;
 
-    // 1. Fetch artifact
-    let record = store
-        .get_record(id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", id))?;
+    let (canonical, _) = common::resolve_required_identity(&source, &workspace, id).await?;
+    let id = canonical.as_str();
+    let record: Cow<'_, ArtifactRecord> = match &source {
+        common::ReadSource::Legacy(store) => {
+            store.get_record(&_read_guard, id).await?.map(Cow::Owned)
+        }
+        common::ReadSource::Captured(read) => read.get_record(id).map(Cow::Borrowed),
+    }
+    .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", id))?;
 
     // 2. Parse kind and depth
     let kind: ArtifactKind = record.kind.parse().unwrap_or_else(|_| {
@@ -41,8 +46,15 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     });
 
     // 3. Relations — outgoing and incoming
-    let outgoing = store.get_relations(id).await?;
-    let incoming = store.get_incoming_relations(id).await?;
+    let (outgoing, incoming) = match &source {
+        common::ReadSource::Legacy(store) => (
+            store.get_relations(&_read_guard, id).await?,
+            store.get_incoming_relations(&_read_guard, id).await?,
+        ),
+        common::ReadSource::Captured(read) => {
+            (read.get_relations(id), read.get_incoming_relations(id))
+        }
+    };
 
     // Categorize relations into graph structure
     let parent = record.parent_epic.clone().filter(|s| !s.is_empty());
@@ -52,32 +64,52 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     let mut dependents: Vec<String> = Vec::new();
     let mut related: Vec<String> = Vec::new();
 
-    // Check which outgoing targets are evidence
-    let evidence_filter = ArtifactFilter {
-        kind: Some("evidence".to_string()),
-        status: None,
+    // Every record, in both layouts: the display map below names the endpoint
+    // of every relation, not only of the evidence ones.
+    let all_records: Cow<'_, [ArtifactRecord]> = match &source {
+        common::ReadSource::Legacy(store) => {
+            Cow::Owned(store.list_records(&_read_guard, None).await?)
+        }
+        common::ReadSource::Captured(read) => Cow::Borrowed(read.records()),
     };
-    let all_evidence = store.list_records(Some(&evidence_filter)).await?;
-    let evidence_id_set: HashSet<String> =
-        all_evidence.iter().map(|r| r.id.to_uppercase()).collect();
+    let all_evidence = || {
+        all_records
+            .iter()
+            .filter(|record| record.kind.eq_ignore_ascii_case("evidence"))
+    };
+    // The relation endpoints are canonical keys (ADR-030) and the display id is
+    // a repeatable alias, so an endpoint is matched on the key. Every list a
+    // person reads still carries the display id.
+    let display_by_key: HashMap<String, String> = all_records
+        .iter()
+        .map(|r| (r.canonical_key.to_uppercase(), r.id.clone()))
+        .collect();
+    let display_of = |endpoint: &str| -> String {
+        display_by_key
+            .get(&endpoint.to_uppercase())
+            .cloned()
+            .unwrap_or_else(|| endpoint.to_string())
+    };
+    let evidence_id_set: HashSet<String> = all_evidence()
+        .map(|r| r.canonical_key.to_uppercase())
+        .collect();
     // ADR-020: displayed links keep ALL packs (context is a history view),
     // but `has_evidence` below reasons over non-terminal packs only — an
     // all-displaced artifact needs "link a live successor", not
     // "review evidence quality".
-    let eligible_evidence_id_set: HashSet<String> = all_evidence
-        .iter()
+    let eligible_evidence_id_set: HashSet<String> = all_evidence()
         .filter(|r| !forgeplan_core::lifecycle::transitions::is_terminal(&r.status))
-        .map(|r| r.id.to_uppercase())
+        .map(|r| r.canonical_key.to_uppercase())
         .collect();
 
     for (target, rel) in &outgoing {
         if evidence_id_set.contains(&target.to_uppercase()) {
-            evidence_ids.push(target.clone());
+            evidence_ids.push(display_of(target));
         } else {
             match rel.as_str() {
-                "based_on" | "refines" => depends_on.push(target.clone()),
-                "supersedes" | "contradicts" => related.push(target.clone()),
-                _ => related.push(target.clone()),
+                "based_on" | "refines" => depends_on.push(display_of(target)),
+                "supersedes" | "contradicts" => related.push(display_of(target)),
+                _ => related.push(display_of(target)),
             }
         }
     }
@@ -85,20 +117,29 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     // Incoming evidence links (evidence → this artifact)
     for (source, _rel) in &incoming {
         if evidence_id_set.contains(&source.to_uppercase())
-            && !evidence_ids.iter().any(|e| e.eq_ignore_ascii_case(source))
+            && !evidence_ids
+                .iter()
+                .any(|e| e.eq_ignore_ascii_case(&display_of(source)))
         {
-            evidence_ids.push(source.clone());
+            evidence_ids.push(display_of(source));
         } else if !evidence_id_set.contains(&source.to_uppercase()) {
-            dependents.push(source.clone());
+            dependents.push(display_of(source));
         }
     }
 
     // 4. R_eff via recursive scoring
     let mut visited = HashSet::new();
-    let report = reff::r_eff_recursive(id, &store, &mut visited).await?;
+    let report = match &source {
+        common::ReadSource::Legacy(store) => {
+            reff::r_eff_recursive(id, store, &_read_guard, &mut visited).await?
+        }
+        common::ReadSource::Captured(read) => {
+            reff::r_eff_recursive_captured(id, read, &mut visited).await?
+        }
+    };
 
     // 5. Validation (catch errors, don't propagate)
-    let fm = record.frontmatter_map();
+    let fm = frontmatter_map_with_links_from(&record, &outgoing);
     let val_result = validation::validate(&record.id, &record.body, &fm, &kind, &depth);
     let must_errors = val_result.error_count();
     let should_warnings = val_result.warning_count();
@@ -119,10 +160,18 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
         .map(|d| Utc::now().date_naive() > d)
         .unwrap_or(false);
 
-    let all_relations = store.get_all_relations().await?;
+    let all_relations = match &source {
+        common::ReadSource::Legacy(store) => store.get_all_relations(&_read_guard).await?,
+        common::ReadSource::Captured(read) => read.get_all_relations(),
+    };
     let link_count = all_relations
         .iter()
-        .filter(|(src, tgt, _)| src.eq_ignore_ascii_case(id) || tgt.eq_ignore_ascii_case(id))
+        // The relation endpoints are canonical keys (ADR-030); the display id
+        // is a repeatable alias, so the comparison is made on the key.
+        .filter(|(src, tgt, _)| {
+            src.eq_ignore_ascii_case(&record.canonical_key)
+                || tgt.eq_ignore_ascii_case(&record.canonical_key)
+        })
         .count();
 
     let fpf_weights = common::config().ok().and_then(|c| c.fpf.map(|f| f.weights));
@@ -139,9 +188,11 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     );
 
     // 7. Derived status
-    let has_evidence = evidence_ids
+    // Display aliases above are not keys in the eligible-evidence set.
+    let has_evidence = outgoing
         .iter()
-        .any(|e| eligible_evidence_id_set.contains(&e.to_uppercase()));
+        .chain(incoming.iter())
+        .any(|(endpoint, _)| eligible_evidence_id_set.contains(&endpoint.to_uppercase()));
     let derived = derive_status(
         &record.status,
         &record.body,

@@ -19,8 +19,8 @@ dev                     ← integration branch
 | Branch | Created from | Merges into | Strategy |
 |--------|-------------|-------------|----------|
 | `feat/*`, `fix/*` | **dev** | **dev** | Merge commit via PR |
-| `release/v0.x.0` | **dev** | **main** + **dev** | Merge commit |
-| `hotfix/*` | **main** | **main** + **dev** | Cherry-pick |
+| `release/v0.x.0` | **dev** | **main**, then a separate main → dev sync PR | Merge commit for release |
+| `hotfix/*` | **main** | **main**, then a backport PR to **dev** | Cherry-pick or merge for backport |
 
 ## Commit Format
 
@@ -31,6 +31,9 @@ dev                     ← integration branch
 
 Refs: RFC-001, FR-001..004
 ```
+
+Use the stable artifact slug in `Refs:` before merge-time number assignment;
+use an assigned display ID such as `RFC-001` only after assignment.
 
 ### Types
 
@@ -46,10 +49,12 @@ Refs: RFC-001, FR-001..004
 ## PR Pipeline
 
 ```
-Code → Audit → Fix → Test → Fmt → Lint → PR
+Code → Audit → Fix → Test → Fmt → Lint → Verify → PR
 ```
 
-**Never create PR immediately after code.** PR means: "I tested, audited, formatted, and everything works."
+**Never create a PR immediately after code.** Record the checks actually run,
+including real end-to-end verification of every affected surface. A passing
+unit suite is not proof that every workflow works.
 
 ## Before Every Commit
 
@@ -59,3 +64,7 @@ cargo fmt -- --check  # verify: 0 diffs
 cargo check         # compile: 0 warnings
 cargo test          # all pass
 ```
+
+These are Rust contributor checks, not commands required in every project
+using Forgeplan. In parallel work, one assigned build owner runs checks after
+source changes finish; other agents do not start competing Cargo processes.

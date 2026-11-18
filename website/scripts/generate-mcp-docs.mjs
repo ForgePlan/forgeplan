@@ -1,238 +1,74 @@
 #!/usr/bin/env node
-// Generate Starlight MCP reference pages by parsing #[tool(...)] attributes
-// in crates/forgeplan-mcp/src/server.rs.
-// Part of PRD-046 — closes MCP coverage gap from 1/45 to 45/45.
+// Use live tools/list JSON Schema for both profiles, never Rust-wrapper heuristics.
+import { readdirSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { options, locales, localePaths, managed, tableText, toolCatalog, updatePage, updateWholePage } from './reference-runtime.mjs';
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, unlinkSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolve(__dirname, '../..');
-const SERVER_RS = resolve(REPO_ROOT, 'crates/forgeplan-mcp/src/server.rs');
-const OUT_DIR = resolve(__dirname, '../src/content/docs/docs/mcp');
-
-function escapeYaml(s) {
-  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+const config = options();
+const profiles = [];
+// Metadata discovery is isolated. No tool call, model download or real index access.
+for (const name of ['full', 'constellation-read']) profiles.push({ name, tools: await toolCatalog(config.binary, name) });
+const allNames = new Set();
+for (const profile of profiles) for (const tool of profile.tools) {
+  if (allNames.has(tool.name)) throw new Error(`Tool page collision between profiles: ${tool.name}`);
+  allNames.add(tool.name);
 }
-
-function parseServer() {
-  const src = readFileSync(SERVER_RS, 'utf8');
-  const lines = src.split('\n');
-  const tools = [];
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line.trim().startsWith('#[tool(')) continue;
-
-    // Collect the full attribute (may span multiple lines until matching ')]')
-    let attr = line.trim().slice('#[tool('.length);
-    let end = i;
-    while (!attr.includes(')]')) {
-      end += 1;
-      if (end >= lines.length) break;
-      attr += ' ' + lines[end].trim();
-    }
-    attr = attr.replace(/\)\]\s*$/, '').trim();
-
-    // Extract description = "..." (may contain escaped quotes)
-    let description = '';
-    const dm = attr.match(/description\s*=\s*"((?:[^"\\]|\\.)*)"/);
-    if (dm) description = dm[1].replace(/\\"/g, '"').replace(/\\n/g, ' ');
-
-    // Skip attribute lines and find the async fn declaration
-    let fnLine = -1;
-    for (let j = end + 1; j < Math.min(end + 15, lines.length); j++) {
-      const ll = lines[j];
-      if (ll.includes('async fn ')) { fnLine = j; break; }
-      if (ll.includes('pub async fn ')) { fnLine = j; break; }
-    }
-    if (fnLine < 0) continue;
-
-    const nameMatch = lines[fnLine].match(/async fn ([a-z_][a-z0-9_]*)/);
-    if (!nameMatch) continue;
-    const name = nameMatch[1];
-
-    // Collect signature until opening brace or Result<...>
-    let sig = lines[fnLine];
-    let sj = fnLine;
-    while (!sig.includes('Result<') && sj < Math.min(fnLine + 40, lines.length)) {
-      sj += 1;
-      sig += ' ' + lines[sj];
-    }
-
-    // Extract parameters between first `(` and matching `)` before `->`
-    const parenStart = sig.indexOf('(');
-    let depth = 0;
-    let parenEnd = -1;
-    for (let k = parenStart; k < sig.length; k++) {
-      if (sig[k] === '(') depth++;
-      else if (sig[k] === ')') {
-        depth--;
-        if (depth === 0) { parenEnd = k; break; }
-      }
-    }
-    const paramsRaw = parenEnd > 0 ? sig.slice(parenStart + 1, parenEnd) : '';
-
-    // Split parameters on top-level commas
-    const params = [];
-    {
-      let d = 0;
-      let buf = '';
-      for (const ch of paramsRaw) {
-        if (ch === '<' || ch === '(' || ch === '[' || ch === '{') d++;
-        else if (ch === '>' || ch === ')' || ch === ']' || ch === '}') d--;
-        if (ch === ',' && d === 0) {
-          if (buf.trim()) params.push(buf.trim());
-          buf = '';
-        } else {
-          buf += ch;
-        }
-      }
-      if (buf.trim()) params.push(buf.trim());
-    }
-
-    // Skip &self / &mut self
-    const userParams = params
-      .filter(p => !/^&(mut\s+)?self$/.test(p.trim()))
-      .map(p => {
-        // Common shape: "Parameters(params): Parameters<ToolXxxParams>"
-        // Or: "name: Type"
-        const m = p.match(/([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.+)$/);
-        if (!m) return { name: p.trim(), type: 'unknown' };
-        return { name: m[1], type: m[2].trim() };
-      });
-
-    tools.push({ name, description, params: userParams });
+function typeName(schema) {
+  if (schema.$ref) return schema.$ref.split('/').at(-1);
+  if (schema.anyOf) return schema.anyOf.map(typeName).join(' | ');
+  if (schema.oneOf) return schema.oneOf.map(typeName).join(' | ');
+  if (schema.enum) return schema.enum.map(value => JSON.stringify(value)).join(' | ');
+  if (Array.isArray(schema.type)) return schema.type.join(' | ');
+  return schema.type ?? 'object';
+}
+let changed = 0;
+let obsolete = 0;
+for (const locale of locales) {
+  const { dir, url } = localePaths(config.outDir, locale, 'mcp');
+  const ru = locale === 'ru';
+  for (const profile of profiles) for (const tool of profile.tools) {
+    const schema = tool.inputSchema;
+    const required = new Set(schema.required ?? []);
+    const rows = Object.entries(schema.properties ?? {}).map(([name, field]) =>
+      `| \`${name}\` | ${required.has(name) ? (ru ? 'да' : 'yes') : (ru ? 'нет' : 'no')} | ${tableText(typeName(field))} | ${tableText(field.description)} |`).join('\n');
+    const block = managed(`## ${ru ? 'Снимок tools/list' : 'Captured tools/list'}\n\n`
+      + `${ru ? 'Источник' : 'Source'}: \`${config.version}\`, \`tools/list\`, ${ru ? 'профиль' : 'profile'} \`${profile.name}\`.\n\n`
+      + (tool.description ? tool.description + '\n\n' : '')
+      + `### ${ru ? 'Входные параметры' : 'Input parameters'}\n\n`
+      + `| ${ru ? 'Имя' : 'Name'} | ${ru ? 'Обязателен' : 'Required'} | ${ru ? 'Тип' : 'Type'} | ${ru ? 'Описание' : 'Description'} |\n|---|---|---|---|\n`
+      + (rows || `| — | — | — | ${ru ? 'Параметров нет.' : 'No parameters.'} |`) + '\n\n'
+      + `<details>\n<summary>JSON Schema</summary>\n\n\`\`\`json\n${JSON.stringify(schema, null, 2)}\n\`\`\`\n\n</details>\n`);
+    changed += updatePage(join(dir, tool.name + '.md'), block, generated =>
+      `---\ntitle: ${tool.name}\ndescription: ${JSON.stringify(ru ? `${tool.name} — профиль MCP ${profile.name}` : `${tool.name} — ${profile.name} MCP profile`)}\n---\n\n`
+      + `## ${ru ? 'Входные параметры' : 'Input parameters'}\n\n`
+      + (ru ? 'Таблица и JSON Schema ниже получены через tools/list выбранной сборки. Описания сохранены дословно как метаданные интерфейса, а не независимая проверка поведения. Каталог не подтверждает доступность всех операций на любой раскладке или без требуемого плагина.\n\n'
+        : 'The table and JSON Schema below come from tools/list in the selected build. Descriptions are preserved literally as interface metadata, not independently verified behavior. The catalog does not establish availability on every layout or without a required plugin.\n\n')
+      + generated + '\n\n'
+      + `## ${ru ? 'Примеры' : 'Examples'}\n\n`
+      + `- [${ru ? 'Настройка MCP и область workspace' : 'MCP setup and workspace scope'}](${url}/guides/mcp-setup/)\n`
+      + `- [${ru ? 'Сценарий Constellation и последовательность handles' : 'Constellation walkthrough and handle sequence'}](${url}/guides/constellation/)\n\n`
+      + `## ${ru ? 'См. также' : 'See also'}\n\n`
+      + `- [${ru ? 'Справочник MCP' : 'MCP reference'}](${url}/mcp/)\n- [${ru ? 'Справочник Constellation' : 'Constellation reference'}](${url}/reference/constellation/)\n`, config.check) ? 1 : 0;
   }
-  return tools;
-}
-
-function categoryFor(name) {
-  if (/^forgeplan_(init|migrate|import|export|scan|reindex)/.test(name)) return 'Workspace & Data';
-  if (/^forgeplan_(new|capture|generate)/.test(name)) return 'Creating Artifacts';
-  if (/^forgeplan_(list|get|search|graph|tree|order|blocked|journal|session|progress|log)/.test(name)) return 'Reading Artifacts';
-  if (/^forgeplan_(update|delete|link|tag|untag|unlink)/.test(name)) return 'Editing Artifacts';
-  if (/^forgeplan_(validate|score|fgr|review|estimate|calibrate|decay|stale|drift|coverage|guard)/.test(name)) return 'Quality & Validation';
-  if (/^forgeplan_(activate|supersede|deprecate|renew|reopen)/.test(name)) return 'Lifecycle';
-  if (/^forgeplan_(reason|decompose|route|context)/.test(name)) return 'Reasoning & AI';
-  if (/^forgeplan_(health|status|gaps|blindspots)/.test(name)) return 'Dashboards';
-  if (/^forgeplan_fpf_/.test(name)) return 'FPF Knowledge Base';
-  if (/^forgeplan_discover/.test(name)) return 'Brownfield Discovery';
-  return 'Other';
-}
-
-function exampleFor(tool) {
-  const examples = {
-    forgeplan_init: `{ "force": false, "scan": true }`,
-    forgeplan_new: `{ "kind": "prd", "title": "Authentication system" }`,
-    forgeplan_list: `{ "kind": "prd", "status": "active" }`,
-    forgeplan_get: `{ "id": "PRD-001" }`,
-    forgeplan_validate: `{ "id": "PRD-001" }`,
-    forgeplan_score: `{ "id": "PRD-001" }`,
-    forgeplan_link: `{ "source": "EVID-001", "target": "PRD-001", "relation": "informs" }`,
-    forgeplan_search: `{ "query": "authentication flow", "limit": 5 }`,
-    forgeplan_route: `{ "description": "add rate limiting to API" }`,
-    forgeplan_review: `{ "id": "PRD-001" }`,
-    forgeplan_activate: `{ "id": "PRD-001" }`,
-    forgeplan_reason: `{ "id": "PRD-001", "fpf": true }`,
-    forgeplan_decompose: `{ "id": "PRD-001" }`,
-    forgeplan_generate: `{ "kind": "prd", "description": "OAuth2 login flow" }`,
-    forgeplan_health: `{}`,
-    forgeplan_status: `{}`,
-    forgeplan_journal: `{ "limit": 10 }`,
-    forgeplan_blindspots: `{}`,
-    forgeplan_graph: `{}`,
-    forgeplan_blocked: `{}`,
-    forgeplan_order: `{}`,
-    forgeplan_fpf_search: `{ "query": "trust calculus" }`,
-    forgeplan_fpf_section: `{ "id": "B.3" }`,
-    forgeplan_fpf_list: `{}`,
-    forgeplan_discover_start: `{ "scope": "." }`,
-  };
-  return examples[tool.name] || `{}`;
-}
-
-function pageFor(tool) {
-  const title = tool.name;
-  const desc = tool.description || title;
-  let body = `---\ntitle: ${title}\ndescription: "${escapeYaml(desc)}"\n---\n\n`;
-  body += `${desc}\n\n`;
-  body += `**Category**: ${categoryFor(tool.name)}\n\n`;
-
-  body += `## Input parameters\n\n`;
-  if (!tool.params.length) {
-    body += `_No input parameters. Call this tool with an empty object \`{}\`._\n\n`;
-  } else {
-    body += `| Name | Rust type | Description |\n|---|---|---|\n`;
-    for (const p of tool.params) {
-      body += `| \`${p.name}\` | \`${p.type.replace(/\|/g, '\\|')}\` | see source |\n`;
+  const overview = `---\ntitle: ${JSON.stringify(ru ? 'Инструменты MCP' : 'MCP Tools')}\ndescription: ${JSON.stringify(ru ? 'Раздельные каталоги full и constellation-read из живого сервера.' : 'Separate full and constellation-read catalogs from the live server.')}\n---\n\n`
+    + `${ru ? 'Снимок интерфейса' : 'Interface snapshot'}: \`${config.version}\`.\n\n`
+    + (ru ? '**full сохраняет запись.** Дополнительный профиль constellation-read её не заменяет. Числа ниже — зарегистрированные инструменты, не число проверенных end-to-end сценариев. Некоторые инструменты требуют плагин.\n\n'
+      : '**full retains write tools.** The additional constellation-read profile does not replace it. Counts below describe registered tools, not accepted end-to-end scenarios. Some tools require a plugin.\n\n')
+    + `- [${ru ? 'Настройка подключения' : 'Connection setup'}](${url}/guides/mcp-setup/)\n`
+    + `- [${ru ? 'Практический сценарий Constellation' : 'Constellation how-to'}](${url}/guides/constellation/)\n`
+    + `- [${ru ? 'Контракты, ограничения и диагностика' : 'Contracts, limitations and diagnostics'}](${url}/reference/constellation/)\n\n`
+    + profiles.map(profile => `## \`${profile.name}\` — ${profile.tools.length} ${ru ? 'инструментов' : 'tools'}\n\n`
+      + '```bash\n' + `forgeplan serve --profile ${profile.name}\n` + '```\n\n'
+      + `| ${ru ? 'Инструмент' : 'Tool'} | ${ru ? 'Назначение из tools/list' : 'Purpose from tools/list'} |\n|---|---|\n`
+      + [...profile.tools].sort((a, b) => a.name.localeCompare(b.name)).map(tool =>
+        `| [\`${tool.name}\`](${url}/mcp/${tool.name}/) | ${tableText(tool.description)} |`).join('\n') + '\n').join('\n');
+  changed += updateWholePage(join(dir, 'index.md'), overview, config.check) ? 1 : 0;
+  if (existsSync(dir)) for (const file of readdirSync(dir)) {
+    if (file.endsWith('.md') && file !== 'index.md' && !allNames.has(file.slice(0, -3))) {
+      console.error(`[mcp-gen] page without a registered tool (review manually): ${join(dir, file)}`);
+      obsolete++;
     }
-    body += `\n`;
-    body += `_Parameter structs are defined in \`crates/forgeplan-mcp/src/types.rs\`. Refer to that file for exact field names and optionality._\n\n`;
   }
-
-  body += `## Example invocation\n\n\`\`\`json\n${exampleFor(tool)}\n\`\`\`\n\n`;
-  body += `## Usage from an AI agent\n\n`;
-  body += `This tool is exposed via MCP (stdio transport). Start the server with \`forgeplan serve\` and configure your AI client (Claude Code, Cursor, etc.) to connect to it.\n\n`;
-  body += `\`\`\`bash\nforgeplan serve\n\`\`\`\n\n`;
-  body += `## See also\n\n`;
-  body += `- [MCP overview](/docs/mcp/)\n`;
-  body += `- [\`forgeplan serve\`](/docs/cli/serve/)\n`;
-  body += `- [Methodology guide](/docs/methodology/overview/)\n`;
-  return body;
 }
-
-function writeOverview(tools) {
-  const groups = {};
-  for (const t of tools) {
-    const g = categoryFor(t.name);
-    (groups[g] ||= []).push(t);
-  }
-  const order = [
-    'Workspace & Data',
-    'Creating Artifacts',
-    'Reading Artifacts',
-    'Editing Artifacts',
-    'Quality & Validation',
-    'Lifecycle',
-    'Reasoning & AI',
-    'Dashboards',
-    'FPF Knowledge Base',
-    'Brownfield Discovery',
-    'Other',
-  ];
-  let body = `---\ntitle: MCP Tools\ndescription: "Reference for all ${tools.length} Model Context Protocol tools exposed by \`forgeplan serve\`."\n---\n\n`;
-  body += `Forgeplan ships with **${tools.length} MCP tools** that an AI agent can call over the Model Context Protocol (stdio transport).\n\n`;
-  body += `Start the MCP server:\n\n\`\`\`bash\nforgeplan serve\n\`\`\`\n\nConfigure your agent (Claude Code, Cursor, etc.) to connect, then invoke any of the tools listed below.\n\n`;
-  for (const g of order) {
-    const items = groups[g];
-    if (!items || !items.length) continue;
-    body += `### ${g}\n\n`;
-    body += `| Tool | Description |\n|---|---|\n`;
-    items.sort((a, b) => a.name.localeCompare(b.name));
-    for (const t of items) {
-      body += `| [\`${t.name}\`](/docs/mcp/${t.name}/) | ${t.description.replace(/\|/g, '\\|')} |\n`;
-    }
-    body += `\n`;
-  }
-  writeFileSync(resolve(OUT_DIR, 'index.md'), body);
-}
-
-function main() {
-  mkdirSync(OUT_DIR, { recursive: true });
-  for (const f of readdirSync(OUT_DIR)) {
-    if (f.endsWith('.md')) unlinkSync(resolve(OUT_DIR, f));
-  }
-
-  const tools = parseServer();
-  console.log(`[mcp-gen] found ${tools.length} tools`);
-
-  for (const t of tools) {
-    writeFileSync(resolve(OUT_DIR, `${t.name}.md`), pageFor(t));
-  }
-  writeOverview(tools);
-  console.log(`[mcp-gen] wrote ${readdirSync(OUT_DIR).filter(f => f.endsWith('.md')).length} files to ${OUT_DIR}`);
-}
-
-main();
+console.log(`[mcp-gen] ${profiles.map(profile => `${profile.name}=${profile.tools.length}`).join(', ')}, 2 locales; ${changed} ${config.check ? 'missing/stale' : 'updated'} pages; ${obsolete} unmatched pages`);
+if ((config.check && changed) || obsolete) process.exitCode = 1;

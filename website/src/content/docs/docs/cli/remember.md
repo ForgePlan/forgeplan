@@ -3,11 +3,7 @@ title: forgeplan remember
 description: "Save a memory (fact, convention, procedure, observation, constraint) for later recall"
 ---
 
-Capture a short-form memory - a fact, convention, procedure, observation, or
-constraint - into the Forgeplan decision journal. Memories are lightweight,
-local notes that you can later surface with
-[`recall`](/docs/cli/recall/) or promote into a full artifact (Note, Problem,
-ADR) with [`promote`](/docs/cli/promote/).
+Saves a short project-local memory for [`recall`](/docs/cli/recall/) or [`promote`](/docs/cli/promote/). These Markdown records are distinct from a Hindsight server bank. Memory creation does not set a validity deadline or automatically expire the record.
 
 Think of it as a working memory for the project: stuff you don't want to lose
 but that isn't ready to be a PRD or ADR yet.
@@ -27,25 +23,16 @@ forgeplan remember [OPTIONS] [TEXT]
 ## Options
 
 ```text
-  -c, --category <CATEGORY>  Memory kind: fact | convention | procedure | observation | constraint
+  -c, --category <CATEGORY>  Category string (default fact; examples: convention, procedure, insight)
       --list                 List all memories
       --forget <FORGET>      Forget (delete) a memory by ID
   -h, --help                 Print help
   -V, --version              Print version
 ```
 
-## The five kinds
+## Categories, not promotion rules
 
-Each memory has one kind, which determines how you search for it and how
-`promote` will later shape it into a full artifact.
-
-| Kind           | When to use                                                  | Promotes to     |
-|----------------|--------------------------------------------------------------|-----------------|
-| `fact`         | Ground truth about the project ("we use BGE-M3 for embeds")  | Note            |
-| `convention`   | Team agreement ("PRs always merge into dev, not main")       | Note / RFC      |
-| `procedure`    | Repeatable how-to ("always `git pull` before new branch")    | Note            |
-| `observation`  | Something you noticed, not yet explained                     | ProblemCard     |
-| `constraint`   | Hard limit or requirement ("binary must stay under 50MB")    | ADR / RFC       |
+`--category` stores a string tag, defaulting to `fact`. Help suggests `fact`, `convention`, `procedure`, and `insight`; the handler does not enforce a closed enumeration. A category does not select the promoted artifact kind: `promote` requires its own explicit `--kind`. Treat a remembered observation as an observation, not independently verified evidence.
 
 ## Examples
 
@@ -54,7 +41,7 @@ Record a procedure during a sprint:
 ```bash
 forgeplan remember \
   "always pull dev before creating feature branch" \
-  --kind procedure
+  --category procedure
 ```
 
 Record an observation that might need investigation:
@@ -62,7 +49,7 @@ Record an observation that might need investigation:
 ```bash
 forgeplan remember \
   "watch daemon drops events on nfs mounts" \
-  --kind observation
+  --category insight
 ```
 
 Record a team convention:
@@ -70,7 +57,7 @@ Record a team convention:
 ```bash
 forgeplan remember \
   "release branches merge with merge-commit, not squash" \
-  --kind convention
+  --category convention
 ```
 
 List everything you've captured:
@@ -82,7 +69,7 @@ forgeplan remember --list
 Forget a memory by its ID:
 
 ```bash
-forgeplan remember --forget MEM-012
+forgeplan remember --forget mem-example   # illustrative ID; copy the actual ID from --list
 ```
 
 ## Typical workflow
@@ -95,19 +82,14 @@ observe something → remember → recall later → promote to artifact
    immediately with `remember` so the context isn't lost.
 2. **Later** - [`forgeplan recall "keyword"`](/docs/cli/recall/) surfaces
    relevant memories when you start related work.
-3. **When it matures** - [`forgeplan promote MEM-XXX`](/docs/cli/promote/)
-   upgrades the memory into a proper Note, ProblemCard, or ADR, preserving
-   the original capture as evidence.
+3. **When it matures** - [`forgeplan promote`](/docs/cli/promote/) with the real memory ID and explicit `--kind` creates a draft carrying the content/provenance, then deletes the original local memory. It does not create an EvidencePack or preserve the original record as separate evidence.
 
 This is the lightweight end of the Forgeplan artifact spectrum: you don't
 need to validate, score, or activate a memory - just capture it and move on.
 
 ## Storage
 
-Memories live in `.forgeplan/memory/` as markdown files (git-tracked) and
-are indexed in LanceDB like any other artifact. They're subject to the same
-source-of-truth rules: edit via CLI, or edit the markdown and run
-[`reindex`](/docs/cli/reindex/).
+Canonical memories live in `.forgeplan/memory/` as Markdown. Whether Git tracks them depends on the repository. Mutation is file-first and reconciles the owning index; use `index` for Constellation maintenance, not legacy table recreation. A Hindsight bank is not the local memory source.
 
 ## See also
 
@@ -116,3 +98,25 @@ source-of-truth rules: edit via CLI, or edit the markdown and run
 - [`forgeplan promote`](/docs/cli/promote/) - upgrade a memory into an artifact
 - [`forgeplan journal`](/docs/cli/journal/) - full decision journal with R_eff
 - [`forgeplan new note`](/docs/cli/new/) - go straight to a Note if the memory is already mature
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan remember --help`.
+
+```text
+Save a memory (fact, convention, procedure) for later recall
+
+Usage: forgeplan remember [OPTIONS] [TEXT]
+
+Arguments:
+  [TEXT]  Text to remember (omit for --list or --forget)
+
+Options:
+  -c, --category <CATEGORY>  Memory category: fact, convention, procedure, insight
+      --list                 List all memories
+      --forget <FORGET>      Forget (delete) a memory by ID
+  -h, --help                 Print help
+  -V, --version              Print version
+```
+<!-- forgeplan-runtime:end -->

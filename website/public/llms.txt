@@ -5,13 +5,13 @@
 ## Core
 
 - [Home](https://forgeplan.dev/): Product overview, quickstart, and install instructions
-- [Guides - 19 interactive lessons](https://forgeplan.dev/guides/): Decision-logging, DDR/ADR format, Trust Calculus, AI-agent harness engineering
+- [Guides - 20 lessons](https://forgeplan.dev/guides/): Decision-logging, DDR/ADR format, Trust Calculus, AI-agent harness engineering; theory and interactive examples
 - [Blog - long-form](https://forgeplan.dev/blog/): Essays on engineering decisions, evidence scoring, and AI-agent context
 
 ## Getting Started
 
 - [Installation](https://forgeplan.dev/docs/getting-started/installation): brew, cargo, or scripted install
-- [Quick Start](https://forgeplan.dev/docs/getting-started/quick-start): From `forgeplan init` to first activated PRD in 5 minutes
+- [Quick Start](https://forgeplan.dev/docs/getting-started/quick-start): Worked draft-to-evidence workflow; activation requires real content and evidence
 - [Configuration](https://forgeplan.dev/docs/getting-started/configuration): config.yaml and LLM provider setup
 
 ## Methodology
@@ -21,27 +21,29 @@
 - [Artifact Lifecycle](https://forgeplan.dev/docs/methodology/lifecycle): draft → active → terminal states
 - [Evidence & Scoring](https://forgeplan.dev/docs/methodology/evidence): R_eff weakest-link calculus, why averaging trust is wrong
 - [ADI Reasoning](https://forgeplan.dev/docs/methodology/adi): Abduction → Deduction → Induction for non-trivial decisions
-- [Hint Contract](https://forgeplan.dev/docs/methodology/agent-protocol): Every CLI/MCP output emits `Next:` / `Or:` / `Wait:` / `Done.` / `Fix:` markers
+- [Hint Contract](https://forgeplan.dev/docs/methodology/agent-protocol): The five workflow markers: `Next:` / `Or:` / `Wait:` / `Done.` / `Fix:`; JSON may use `_next_action`
 
 ## Selected Guides
 
-- [What a decision log is](https://forgeplan.dev/guides/intro): Six mandatory fields, ADR/DDR formats, who needs one
-- [DDR format with full example](https://forgeplan.dev/guides/ddr-format): DDR vs ADR, six mandatory fields, JWT vs sessions example
-- [Trust Calculus: F/G/R axes](https://forgeplan.dev/guides/trust-calculus-overview): Weakest-link rule, R_eff formula, context-level penalty
+- [What a decision log is](https://forgeplan.dev/guides/intro): The lesson's six-field writing convention, ADR/DDR formats, who needs one
+- [DDR format with full example](https://forgeplan.dev/guides/ddr-format): Local DDR convention versus ADR, six fields, illustrative JWT versus sessions example
+- [Trust Calculus: F/G/R axes](https://forgeplan.dev/guides/trust-calculus-overview): Upstream concepts, local product adaptations and explicitly illustrative scoring
 - [Trust Calculus in 3D](https://forgeplan.dev/guides/trust-calculus): Interactive 3D F/G/R scene with seven evidence points
 - [ADI as a daily practice](https://forgeplan.dev/guides/adi-overview): Three-version analysis, when to apply
 - [Lifecycle: draft to terminal](https://forgeplan.dev/guides/lifecycle-cycle): State machine, stale as forgotten state, renew/reopen
 - [Hint Contract - 5 markers](https://forgeplan.dev/guides/agent-protocol-cycle): Next/Or/Wait/Done/Fix rules for agent tools
-- [Multi-agent coordination](https://forgeplan.dev/guides/multi-agent-cycle): Dispatch/claim/release, conflict-free buckets, WIP=1
+- [Multi-agent coordination](https://forgeplan.dev/guides/multi-agent-cycle): Dispatch heuristics, advisory claim/release and WIP=1 as a working convention, not an enforced lock
 - [Forgeplan as operational layer](https://forgeplan.dev/guides/forgeplan-cycle): CLI + MCP + artifact DAG, four depth levels
 - [First Artifact - hands-on walkthrough](https://forgeplan.dev/guides/first-artifact): Simulated terminal: init → activate in 20 minutes
 
 ## Reference
 
-- [CLI Reference](https://forgeplan.dev/docs/cli/): 76 subcommands with examples
-- [MCP Reference](https://forgeplan.dev/docs/mcp/): 73 MCP tools for Claude Code, Cursor, Codex
+- [CLI Reference](https://forgeplan.dev/docs/cli/): 120 command paths in the scoped `0.39.0+constellation.s1.1` help snapshot, not 120 accepted runtime scenarios
+- [MCP Reference](https://forgeplan.dev/docs/mcp/): 76 full-profile tools (including writes) and a separate 9-tool constellation-read profile in that snapshot; migrated-layout support varies by tool
 - [Marketplace](https://forgeplan.dev/docs/marketplace/): Playbooks, mappings, plugin packs
 - [Changelog](https://forgeplan.dev/docs/changelog): Release history with theme summaries
+- [Constellation guide](https://forgeplan.dev/docs/guides/constellation/): Source/index maintenance, local search, semantic readiness and read contracts
+- [Constellation reference](https://forgeplan.dev/docs/reference/constellation/): Scoped build limitations; the published release remains 0.38.0
 
 ## Blog
 
@@ -56,12 +58,12 @@
 
 ## Russian content
 
-- [Guides (RU)](https://forgeplan.dev/ru/guides/): All 19 lessons in Russian
+- [Guides (RU)](https://forgeplan.dev/ru/guides/): All 20 catalog lessons in Russian
 - [Blog (RU)](https://forgeplan.dev/ru/blog/): Long-form in Russian
 - [Blog RSS (RU)](https://forgeplan.dev/ru/blog/rss.xml)
 
 ## Source
 
 - [GitHub repository](https://github.com/ForgePlan/forgeplan): Rust source, MIT license, open development
-- [Releases](https://github.com/ForgePlan/forgeplan/releases): Pre-built binaries (cargo install, brew, curl)
+- [Releases](https://github.com/ForgePlan/forgeplan/releases): Published pre-built binaries and installers; Cargo source installation is a separate route
 - [Author - Eli Rum](https://elirum.me): Personal page

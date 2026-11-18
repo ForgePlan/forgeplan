@@ -12,7 +12,7 @@
   "page.nextLink": "Далее",
   "404.text": "Страница не найдена.",
   "themeSelect.accessibleLabel": "Тема",
-  "themeSelect.dark": "Dark",
-  "themeSelect.light": "Light",
-  "themeSelect.auto": "Auto"
+  "themeSelect.dark": "Тёмная",
+  "themeSelect.light": "Светлая",
+  "themeSelect.auto": "Системная"
 }

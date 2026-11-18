@@ -19,7 +19,7 @@ description: "Release an active claim - drop the lock so other sub-agents can pi
 ## Когда НЕ использовать
 
 - Чтобы удалить сам артефакт - release снимает только клейм. Для удаления артефакта используйте [`forgeplan delete`](/ru/docs/cli/delete/).
-- Чтобы сократить TTL клейма - release снимает клейм полностью. Для нового TTL просто вызовите [`forgeplan claim`](/ru/docs/cli/claim/) ещё раз с новым значением (для держателя это идемпотентно).
+- Для нового TTL повторите [`claim`](/ru/docs/cli/claim/) от того же держателя. Обновление перезаписывает время, срок и note; по байтам оно не идемпотентно.
 - Чтобы освободить клейм упавшего агента без `--force` - команда откажет, потому что идентичность не совпадает.
 
 ## Использование
@@ -55,7 +55,7 @@ forgeplan release PRD-057 --agent worker-1
 
 **Освобождать нужно под тем же именем, под которым захватывали.** `release` его не наследует: без `--agent` он представляется как `cli/<version>`, что не совпадёт с клеймом, взятым как `worker-1`, и команда откажет.
 
-Если вы захватывали вообще без `--agent`, то простое `forgeplan release PRD-057` корректно — обе стороны используют одну дефолтную идентичность. Повторный вызов на уже освобождённом артефакте - no-op (без ошибки).
+В выбранной сборке значения различаются: `claim` использует `cli-<version>`, а `release` - `cli/<version>`. Поэтому bare claim → bare release может отказать. Прочитайте настоящего держателя через `forgeplan claims` и передайте явно в `--agent`; не скрывайте расхождение через `--force`. После успешного удаления повторный release - no-op.
 
 Когда идентичности не совпали, правильный ответ — назвать владельца, а **не** `--force`: тот снимает клейм независимо от владельца (PROB-095).
 
@@ -85,3 +85,25 @@ forgeplan release SPEC-018 --agent worker-2
 - [`forgeplan claim`](/ru/docs/cli/claim/) - взять клейм
 - [`forgeplan claims`](/ru/docs/cli/claims/) - посмотреть, кто что держит
 - [`forgeplan dispatch`](/ru/docs/cli/dispatch/) - пере-планировать после release
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan release --help`.
+
+```text
+Release a claim (PRD-057). Idempotent — missing claim = success
+
+Usage: forgeplan release [OPTIONS] <ID>
+
+Arguments:
+  <ID>  Artifact ID to release
+
+Options:
+      --agent <AGENT>  Agent identity. Defaults to `cli/<version>` (or empty when --force)
+      --force          Force-release regardless of holder (orchestrator escape hatch)
+      --json           Output as JSON for machine consumption
+  -h, --help           Print help
+  -V, --version        Print version
+```
+<!-- forgeplan-runtime:end -->

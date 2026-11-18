@@ -1,9 +1,9 @@
 ---
 title: forgeplan_route
-description: "Предлагает уровень глубины (тактическая/стандартная/глубокая/критическая) и конвейер артефактов для описания задачи. Использует классификацию LLM (Уровень 1), если ключ API настроен, в противном случае возвращается к классификации на основе правил по ключевым словам (Уровень 0)."
+description: "Рекомендует глубину и цепочку артефактов. MCP и CLI могут использовать настроенный LLM с возвратом к ключевым словам; CLI auto может повысить Deep до Level 2."
 ---
 
-Классифицирует входящее описание задачи по уровню глубины и рекомендует конвейер артефактов. Это **первый** вызов MCP в каждом нетривиальном рабочем процессе - он сообщает агенту, следует ли просто кодировать (тактическая), создать PRD → RFC (стандартная), полную цепочку PRD → Spec → RFC → ADR (глубокая) или эскалировать до Epic с межкомандным ревью (критическая). Правильный роутинг экономит часы на излишнее или недостаточное обдумывание.
+Рекомендует глубину и цепочку артефактов перед нетривиальной работой. Сверяйте рекомендацию с реальным риском и объёмом задачи: это не доказательство правильности дизайна или трудоёмкости. MCP пробует Level 1 при наличии конфигурации LLM, иначе возвращается к ключевым словам Level 0. Настроенный локальный CLI-провайдер не обязательно требует API-ключа.
 
 **Категория**: Рассуждения и ИИ
 
@@ -11,7 +11,7 @@ description: "Предлагает уровень глубины (тактиче
 
 - Пользователь говорит «пожалуйста, добавьте X в проект» - агент выполняет роутинг, прежде чем решить, создавать ли артефакты.
 - Перед `forgeplan_new`: глубина из роутинга определяет, какие разделы шаблона являются обязательными.
-- Когда агент не уверен, является ли рефакторинг тактической или стандартной задачей - роутинг решает это.
+- Когда глубина рефакторинга неясна — использовать рекомендацию как основание для решения, а не безошибочный ответ.
 
 ## Входные параметры
 
@@ -23,19 +23,17 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::RouteParams`_
 
 ## Возвращает
 
-Рекомендацию с глубиной, конвейером (список типов артефактов по порядку), уверенностью (0-1), обоснованием и альтернативами, которые агент может предложить, если пользователь не согласен. Уровень 1 (LLM) возвращает более подробное обоснование; Уровень 0 (возврат к ключевым словам) возвращает более краткую форму, но все еще пригодную для действия.
+Возвращает `depth`, `pipeline`, `triggers`, `confidence`, `level`, `explanation`, `display`, `_alternatives`, `_next_action`. У альтернативы есть `depth`, `pipeline`, `reasoning`. Уверенность — оценка классификатора, не измеренная вероятность успеха.
 
-Пример формы ответа:
+Иллюстративный фрагмент:
 
 ```json
 {
   "depth": "Standard",
   "pipeline": ["prd", "rfc"],
-  "confidence": 0.85,
-  "rationale": "Многофайловая функция, затрагивающая поток аутентификации; обратима в рамках спринта.",
-  "alternatives": [
-    { "depth": "Deep", "pipeline": ["prd", "spec", "rfc", "adr"], "when": "если криптографические примитивы изменятся" }
-  ]
+  "level": 0,
+  "explanation": "Учебное объяснение классификации",
+  "_alternatives": []
 }
 ```
 
@@ -55,15 +53,60 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::RouteParams`_
 
 ## Типичная последовательность
 
-`forgeplan_route` → (если тактическая) сразу перейти к коду → (если стандартная+) `forgeplan_search` (проверка дубликатов) → `forgeplan_new` → `forgeplan_update` → `forgeplan_validate` → `forgeplan_reason`. Роутинг дёшев; вызывайте его всякий раз, когда задача кажется неоднозначной.
+`forgeplan_route` → проверить глубину → для Standard+ найти существующие решения и заполнить нужные артефакты → `forgeplan_validate` → ADI при необходимости (обязательно для Deep/Critical) → код. Tactical не отменяет тесты и применимую политику проекта.
 
 ## Эквивалент CLI
 
-- [`forgeplan route`](/ru/docs/cli/route/) - тот же классификатор, вывод для человека
+- [`forgeplan route`](/ru/docs/cli/route/) — выбранный CLI по умолчанию работает в auto: пробует настроенный LLM Level 1 с возвратом к ключевым словам и может повысить успешный ответ Deep Level 1 до Level 2, если `--level` не задан. В снимке help по-прежнему указан Level 0 по умолчанию, но обработчик ведёт себя иначе. Для классификации только по ключевым словам явно передавайте `--level 0` **без `--explain`**: добавление `--explain` может вызвать настроенного провайдера даже при Level 0.
 
 ## См. также
 
 - [Обзор MCP](/ru/docs/mcp/)
 - [Руководство по калибровке глубины](/ru/docs/methodology/routing/)
 - [`forgeplan_new`](/ru/docs/mcp/forgeplan_new/) - следующий шаг после роутинга
-- [`forgeplan_reason`](/ru/docs/mcp/forgeplan_reason/) - ADI для глубин уровня Standard+
+- [`forgeplan_reason`](/ru/docs/mcp/forgeplan_reason/) — ADI, обязательный для Deep/Critical
+
+<!-- forgeplan-runtime:start -->
+## Снимок tools/list
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, профиль `full`.
+
+Suggest depth level (Tactical/Standard/Deep/Critical) and artifact pipeline for a task description. Uses LLM classification (Level 1) when API key is configured, falls back to rule-based keywords (Level 0).
+
+### Входные параметры
+
+| Имя | Обязателен | Тип | Описание |
+|---|---|---|---|
+| `description` | да | string | Task description in natural language |
+| `workspace` | нет | string \| null | Optional explicit workspace directory for this call. When set, the MCP<br>server resolves the `.forgeplan/` projection from this path instead of<br>the server's startup CWD. Use this when the calling agent is running<br>in a git worktree separate from the MCP server's launch directory.<br>PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "description": {
+      "description": "Task description in natural language",
+      "type": "string"
+    },
+    "workspace": {
+      "default": null,
+      "description": "Optional explicit workspace directory for this call. When set, the MCP\nserver resolves the `.forgeplan/` projection from this path instead of\nthe server's startup CWD. Use this when the calling agent is running\nin a git worktree separate from the MCP server's launch directory.\nPRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "description"
+  ],
+  "title": "RouteParams",
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

@@ -3,13 +3,13 @@ title: forgeplan dispatch
 description: "Compute a parallel-safe work plan for N sub-agents - buckets, serial queue, reasoning. Read-only; the entry point for multi-agent orchestration."
 ---
 
-`forgeplan dispatch` планирует параллельную работу для нескольких агентов сразу. Вы говорите, сколько агентов есть; команда разбивает кандидатные артефакты на корзины (buckets) - по одной на агента - плюс последовательную очередь (serial queue) для всего, что нельзя пустить параллельно. Цель: каждую корзину можно вести одновременно, без того чтобы два агента трогали одни и те же файлы.
+`forgeplan dispatch` предлагает корзины агентам и последовательную очередь. Это рекомендация, не блокировка файлов и не гарантия отсутствия пересечений между агентами. В этой ревизии кандидат сравнивается лишь с уже назначенными элементами той же корзины; пересекающиеся задачи могут попасть в разные корзины. Перед параллельным выполнением проверьте владение файлами между корзинами.
 
 Как планировщик избегает конфликтов:
 
 - **Активные клеймы пропускаются** - если другой агент уже зарезервировал артефакт через [`forgeplan claim`](/ru/docs/cli/claim/), он исключается из плана.
-- **Проверяется пересечение файлов** - если два артефакта затрагивают одни и те же файлы, второй уходит в последовательную очередь. Планировщик использует **меру пересечения Жаккара** (Jaccard similarity) - это доля совпадающих путей: 0.3 значит «30% и более общих файлов».
-- **Учитываются зависимости** - если артефакт A блокирует B по графу, B не попадёт в корзину, пока A не закрыт.
+- **Пересечения внутри корзины** - Жаккар `|A ∩ B| / |A ∪ B|` по объявленным строкам путей. В последовательную очередь кандидат уходит, если не подошла ни одна корзина; отсутствие `affected_files` также ведёт туда. Glob-шаблоны не раскрываются в полный набор файлов.
+- **Структурные зависимости** - неразрешённые блокеры исключают задачи из параллельных корзин. Это снимок состояния, не защита от последующих изменений.
 - **Опциональные фильтры** - `--epic` / `--kind` сужают кандидатов до одного Epic или одного типа артефактов.
 
 Команда только читает: ничего не меняет в воркспейсе. После dispatch каждый агент должен вызвать [`forgeplan claim`](/ru/docs/cli/claim/) на свой артефакт, прежде чем трогать файлы. Аналог [`forgeplan_dispatch`](/ru/docs/mcp/forgeplan_dispatch/) на MCP-стороне - LLM-агенты обычно используют MCP-инструмент, shell-скрипты этот CLI.
@@ -62,7 +62,7 @@ forgeplan dispatch [OPTIONS] --agents <AGENTS>
 forgeplan dispatch --agents 3 --kind prd
 ```
 
-Возвращает три корзины черновых PRD, которые можно вести параллельно без конфликтов по файлам. Оркестратор передаёт `buckets[0]` агенту 0, `buckets[1]` агенту 1 и так далее.
+Возвращает до трёх непустых корзин. Перед назначением проверьте пересечения между ними. Оркестратор передаёт `buckets[0]` агенту 0 и так далее; корзины могут быть пустыми.
 
 ### Пример 2: Перепланирование всего Epic независимо от статуса
 
@@ -78,7 +78,7 @@ forgeplan dispatch --agents 4 --epic EPIC-005 --status any
 forgeplan dispatch --agents 2 --overlap-threshold 0.15 --json
 ```
 
-Понижает порог пересечения файлов до 0.15 (15% общих путей вместо дефолтных 30%) - даже умеренные пересечения уйдут в последовательную очередь, а не пойдут параллельно. Используйте, когда агенты постоянно сталкиваются на общих файлах.
+Порог Жаккара снижается до 0.15. Это ограничивает размещение внутри корзины, но не устраняет указанное ограничение между корзинами. Claims - сигналы координации, не исключительный доступ к файлам.
 
 ## Место в рабочем процессе
 
@@ -91,3 +91,33 @@ Multi-agent работа - это четырёхшаговый цикл: `dispat
 - [`forgeplan release`](/ru/docs/cli/release/) - вернуть слот в пул
 - [`forgeplan claims`](/ru/docs/cli/claims/) - мониторить in-flight работу
 - [Обзор CLI](/ru/docs/cli/)
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan dispatch --help`.
+
+```text
+Compute a parallel-safe work plan for N sub-agents (PRD-057 dispatcher)
+
+Usage: forgeplan dispatch [OPTIONS] --agents <AGENTS>
+
+Options:
+  -n, --agents <AGENTS>
+          Number of sub-agents the orchestrator can hand work to (>=1, max 64)
+      --epic <EPIC>
+          Optional filter: only artifacts with this parent Epic ID
+  -t, --kind <KIND>
+          Optional filter: only consider artifacts of this kind (prd/rfc/spec/...)
+  -s, --status <STATUS>
+          Status filter (default `draft`; pass `any` for all states) [default: draft]
+      --overlap-threshold <OVERLAP_THRESHOLD>
+          Jaccard threshold for file-overlap conflict detection (default 0.3) [default: 0.3]
+      --json
+          Output as JSON for machine consumption
+  -h, --help
+          Print help
+  -V, --version
+          Print version
+```
+<!-- forgeplan-runtime:end -->

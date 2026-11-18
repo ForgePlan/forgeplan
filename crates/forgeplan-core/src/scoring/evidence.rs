@@ -485,6 +485,7 @@ congruence_level: 3
 
     fn mk_record(body: &str) -> ArtifactRecord {
         ArtifactRecord {
+            canonical_key: "EVID-999".into(),
             id: "EVID-999".into(),
             kind: "evidence".into(),
             status: "draft".into(),
@@ -638,6 +639,7 @@ verdict: supports
 congruence_level: 3
 "#;
         let record = ArtifactRecord {
+            canonical_key: "EVID-001".into(),
             id: "EVID-001".into(),
             kind: "evidence".into(),
             status: "draft".into(),

@@ -1,9 +1,9 @@
 ---
 title: forgeplan_import
-description: "Import artifacts and relations from a JSON export bundle. Restores a full workspace snapshot produced by forgeplan_export. Set force=true to overwrite artifacts that already exist by ID."
+description: "Import artifact records and relations from a JSON export bundle. Use force=true to overwrite existing IDs."
 ---
 
-Loads a JSON bundle produced by `forgeplan_export` into the current workspace. Every artifact in the bundle is inserted into LanceDB, its markdown body is re-projected to `.forgeplan/{kind}s/`, and every relation is re-established. The primary use cases are **restoring after a reinit**, **migrating between machines**, **seeding CI pipelines** with a reference workspace, and **recovering from accidental deletion** when a prior export exists.
+Loads artifact records and relations from a `forgeplan_export` JSON bundle into the selected workspace using file-first projection helpers. Canonical Markdown is primary, not the LanceDB row. This is an artifact/relations transfer, not a full workspace backup: config, federation registry, runtime state, and all original metadata are not restored by this operation.
 
 **Category**: Workspace & Data
 
@@ -17,15 +17,15 @@ Loads a JSON bundle produced by `forgeplan_export` into the current workspace. E
 ## Idempotency and collision behaviour
 
 - **Default (`force=false`)**: existing artifacts with the same ID are **skipped**. The importer logs the count of skipped items so the agent can report what changed.
-- **`force=true`**: existing artifacts with the same ID are **overwritten** (metadata and body). Relations are re-applied; duplicates are de-duplicated by `(from, to, type)`.
-- IDs in the bundle are preserved. If the workspace is empty, import is effectively a clean restore.
+- **`force=true`**: attempts to replace existing IDs through delete/create helpers, then reapplies bundle relations. Inspect the result and canonical files; this is not an atomic whole-workspace restore.
+- IDs are preserved, but the importer reconstructs a selected set of metadata fields; it does not preserve every exported field (for example, artifact tags are initialized empty).
 - The operation is **not transactional across the whole bundle** in the classical sense - it writes artifacts one by one. If something fails midway, already-written artifacts remain. Always `forgeplan_export` a fresh backup before a `force=true` import.
 
 ## Safety notes
 
 - `forgeplan_import` modifies the workspace. Always take a safety export first.
-- The bundle does **not** contain API keys - after import you still need to reconfigure `.forgeplan/config.yaml` (LLM provider, Hindsight, Orchestra).
-- Derived indexes (`.forgeplan/lance/`) are rebuilt on-the-fly as artifacts are written; you don't need to run `forgeplan scan-import` afterwards.
+- The bundle excludes workspace configuration, but artifact text can itself contain secrets. Inspect and protect exported data; do not assume it is API-key-free.
+- On a migrated workspace, canonical writes and index reconciliation are distinct. Inspect `index_pending`; use `forgeplan index` for Constellation maintenance when needed. `scan-import` discovers new foreign Markdown and is not an index-repair step.
 
 ## Input parameters
 
@@ -38,45 +38,39 @@ _Schema source: `crates/forgeplan-mcp/src/server.rs::ImportParams`_
 
 ## Returns
 
-Counts plus any warnings the importer emitted:
+Illustrative response excerpts. The handler reports `imported`, `skipped`, and `relations_imported`, plus reconciliation and workspace-trace fields. It does not split inserts from overwrites.
 
 ```json
 {
-  "status": "ok",
-  "artifacts_imported": 187,
-  "artifacts_skipped": 0,
-  "relations_imported": 312,
-  "relations_skipped": 4,
-  "force": false,
-  "warnings": []
+  "imported": 2,
+  "skipped": 0,
+  "relations_imported": 1
 }
 ```
 
-With `force=true`, the response distinguishes inserts from overwrites:
+With `force=true`, overwritten artifacts count as `imported`; there is no separate overwrite count:
 
 ```json
 {
-  "status": "ok",
-  "artifacts_inserted": 14,
-  "artifacts_overwritten": 173,
-  "relations_imported": 312,
-  "force": true
+  "imported": 2,
+  "skipped": 0,
+  "relations_imported": 1
 }
 ```
 
 ## Example invocation
 
-Fresh restore into an empty workspace:
+Fresh import into an empty workspace. The following is an empty valid bundle example; use the actual export bytes for a restore:
 
 ```json
-{ "data": "{\"version\":1,\"artifacts\":[…],\"relations\":[…]}" }
+{ "data": "{\"version\":1,\"artifacts\":[],\"relations\":[]}" }
 ```
 
 Force-overwrite during a migration:
 
 ```json
 {
-  "data": "{\"version\":1,\"artifacts\":[…],\"relations\":[…]}",
+  "data": "{\"version\":1,\"artifacts\":[],\"relations\":[]}",
   "force": true
 }
 ```
@@ -92,12 +86,9 @@ forgeplan_health                  ← confirm workspace shape
 
 Recovery after an accident:
 
-```
-forgeplan_export → safety.json     (always keep one around)
-…something goes wrong…
-rm -rf .forgeplan && forgeplan init -y
-forgeplan_import (data=safety.json)
-```
+1. Keep an export outside `.forgeplan/` and preserve the damaged workspace before recovery.
+2. Initialize a separate empty recovery directory rather than deleting the original.
+3. Import the saved bundle into that explicit workspace, then inspect artifact bodies and relations. This procedure does not certify restoration of unexported state.
 
 ## CLI equivalent
 
@@ -109,3 +100,57 @@ forgeplan_import (data=safety.json)
 - [`forgeplan_export`](/docs/mcp/forgeplan_export/) - produce the bundle
 - [`forgeplan_init`](/docs/mcp/forgeplan_init/) - create the workspace before importing
 - [`forgeplan_list`](/docs/mcp/forgeplan_list/) - verify the import
+
+<!-- forgeplan-runtime:start -->
+## Captured tools/list
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, profile `full`.
+
+Import artifacts and relations from a JSON export bundle. Set force=true to overwrite existing artifacts.
+
+### Input parameters
+
+| Name | Required | Type | Description |
+|---|---|---|---|
+| `data` | yes | string | JSON export data as a string |
+| `force` | no | boolean \| null | Overwrite existing artifacts (default: false) |
+| `workspace` | no | string \| null | Optional explicit workspace directory for this call. When set, the MCP<br>server resolves the `.forgeplan/` projection from this path instead of<br>the server's startup CWD. Use this when the calling agent is running<br>in a git worktree separate from the MCP server's launch directory.<br>PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "data": {
+      "description": "JSON export data as a string",
+      "type": "string"
+    },
+    "force": {
+      "default": null,
+      "description": "Overwrite existing artifacts (default: false)",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "workspace": {
+      "default": null,
+      "description": "Optional explicit workspace directory for this call. When set, the MCP\nserver resolves the `.forgeplan/` projection from this path instead of\nthe server's startup CWD. Use this when the calling agent is running\nin a git worktree separate from the MCP server's launch directory.\nPRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "data"
+  ],
+  "title": "ImportParams",
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

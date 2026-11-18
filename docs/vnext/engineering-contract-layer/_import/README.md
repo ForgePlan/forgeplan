@@ -12,7 +12,7 @@
 | `FILE-INVENTORY.md` | полный список файлов пакета |
 | `01-IMPORT-MAP.md` | карта «источник в архиве → назначение в репозитории» |
 | `00-START-HERE.md` | инструкция по установке (человеку) |
-| `02-EXECUTION-PLAN.md` | дубликат `governance/EXECUTION-ORDER.md` |
+| `02-EXECUTION-PLAN.md` | исходный снимок `governance/EXECUTION-ORDER.md`; до уточнения зависимостей 2026-10-23 файлы были побайтово одинаковы, теперь живая последовательность исправлена отдельно |
 | `PROMPT-START-AGENT.md` | дубликат `prompts/PROGRAM-COORDINATOR.md` |
 | `install.sh` | скрипт импорта payload (отказывается перезаписывать при конфликте) |
 | `validate.sh` | обёртка над `scripts/validate_pack.py` + проверка манифеста |

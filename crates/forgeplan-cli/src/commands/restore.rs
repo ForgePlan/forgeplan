@@ -14,14 +14,7 @@ use crate::commands::common;
 
 /// Run restore for a specific artifact ID.
 pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
-    let (ws, _lock, store) = common::open_store_locked().await?;
-
-    // Lazy TTL purge — best-effort, never fails the command. Mirrors
-    // the MCP tool's defense against unbounded receipt accumulation.
-    let ws_clone = ws.clone();
-    tokio::spawn(async move {
-        let _ = undo::purge_expired(&ws_clone, undo::DEFAULT_TTL_DAYS).await;
-    });
+    let (ws, lock, store) = common::open_store_locked_tolerating_constellation().await?;
 
     // PROB-060 Phase 2.5: resolve receipt by display id OR slug. The
     // artifact is no longer in the main store (soft-deleted), so we
@@ -65,8 +58,29 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
             std::process::exit(1);
         }
     };
+    undo::restore::preflight_restore_with_target(&ws, &lock, &receipt, None).await?;
+    drop(store);
+    let store = common::prepare_store_locked_checked(&ws, &lock, &[]).await?;
+    undo::restore::preflight_restore_with_target(&ws, &lock, &receipt, None).await?;
 
-    let report = undo::restore::apply_restore(&ws, &store, &receipt).await?;
+    // The restore itself is the store-free sibling on a migrated workspace:
+    // the artifact comes back as canonical markdown, and the derived row is
+    // published by the reconcile pass below. Receipts are written by `delete`
+    // on BOTH layouts, so refusing here would make the recovery path `delete`
+    // prints a lie.
+    common::ensure_ordinary_mutation_allowed(&ws)?;
+    // Lazy TTL purge — best-effort, never fails the command. Mirrors
+    // the MCP tool's defense against unbounded receipt accumulation.
+    let ws_clone = ws.clone();
+    tokio::spawn(async move {
+        let _ = undo::purge_expired(&ws_clone, undo::DEFAULT_TTL_DAYS).await;
+    });
+    let report = match &store {
+        Some(store) => undo::restore::apply_restore(&ws, &lock, store, &receipt)
+            .await
+            .map_err(|e| common::describe_possible_legacy_partial_commit(true, e))?,
+        None => undo::restore::apply_restore_file_first(&ws, &lock, &receipt).await?,
+    };
     let op_str = match report.op {
         undo::DestructiveOp::Delete => "delete",
         undo::DestructiveOp::Supersede => "supersede",
@@ -80,7 +94,24 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
             .with_action(format!("forgeplan get {}", report.artifact_id)),
     ];
 
+    let migrated = store.is_none();
+    drop(store);
+    drop(lock);
+    let published = if migrated {
+        common::note_constellation_owns_index();
+        common::reconcile_after_file_mutation(&ws).await
+    } else {
+        common::drain_legacy_semantic_after_mutation(&ws).await?;
+        common::ReconcileOutcome::Published
+    };
+
     if json {
+        // Reconciliation diagnostics use stderr; stdout remains one JSON value
+        // carrying whether the derived index now agrees with the restore.
+        let index_pending = !published.is_published();
+        let index_pending_reason =
+            index_pending.then(|| "derived index not yet updated".to_string());
+
         let payload = serde_json::json!({
             "ok": true,
             "restored": report.artifact_id,
@@ -89,6 +120,8 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
             "relations_skipped": report.relations_skipped,
             "projection_restored": report.projection_restored,
             "warnings": report.warnings,
+            "index_pending": index_pending,
+            "index_pending_reason": index_pending_reason,
             "_next_action": hints::primary_action(&next_hints),
         });
         println!("{}", serde_json::to_string_pretty(&payload)?);

@@ -4,6 +4,9 @@
 > исследовательского корпуса (ни один из R1–R5 его не спроектировал; все
 > оставили сокеты). Этот документ фиксирует принятую двухслойную схему.
 > Решение развилки №9 → [../synthesis/02-open-decisions.md](../synthesis/02-open-decisions.md).
+>
+> Проектный контур ForgeFarm, не реализованный eval-сервис ForgePlan.
+> Примерные числа ниже не являются результатами прогона.
 
 ## Vision (формулировка владельца продукта)
 
@@ -38,9 +41,10 @@
 
 ### Слой 2: дистиллированные routing-claims (ForgePlan EvidencePacks)
 
-Периодический distillation job агрегирует строки per **(model × task-class)** и авторит EvidencePack:
+Периодический distillation job агрегирует строки per **(model × harness × task-class)**
+с сохранением версий модели/harness и условий прогона в claim:
 
-> «claude-x на T2 rust-impl: gate-pass 78%, $0.40/task, 0.2 interventions/task, n=40» — verdict: supports.
+> Иллюстрация, не замер: «claude-x в harness H на T2 rust-impl: gate-pass 78%, $0.40/task, 0.2 interventions/task, n=40» — verdict: supports.
 
 Маппинг на Structured Fields ForgePlan (семантика ложится точно):
 
@@ -49,9 +53,9 @@
 | `verdict: supports/weakens/refutes` | «модель X адекватна task-class Y» |
 | `congruence_level` | совпадение harness+task-type: CL3 = тот же harness и тот же класс задач; CL1–0 = перенос из другого контекста |
 | `evidence_type: benchmark` | — |
-| `valid_until` | **устаревание eval'а при выходе новой версии модели** — ровно TTL/decay-семантика R_eff |
+| `valid_until` | явный срок проверки evidence. Выход новой версии модели сам по себе не меняет дату: обнаружение релиза и запуск re-eval — проектная обязанность ForgeFarm |
 
-EVID линкуется `informs` к routing-policy артефакту (ADR). **Routing-таблица (`model-routing.yaml`) меняется только со ссылкой на активный, непросроченный EVID.** Тогда R_eff делает правильную weakest-link работу: routing-решение, опирающееся на просроченное/опровергнутое eval-evidence, видимо падает до 0.1 и всплывает в `blindspots`/`health`.
+EVID линкуется `informs` к routing-policy артефакту (ADR). **Routing-таблица (`model-routing.yaml`) меняется только со ссылкой на активный, непросроченный EVID.** Это проектное правило ForgeFarm, а не автоматический watcher ForgePlan. В текущем scorer просроченный вклад равен 0.1; непросроченный `refutes` даёт 0. Итог зависит и от остальных eligible evidence/зависимостей, а record-проекция и рекурсивный score report могут различаться (`scoring/reff.rs`). Ни одно из этих чисел не является вероятностью качества модели.
 
 ### Почему именно два слоя
 
@@ -64,13 +68,13 @@ EVID линкуется `informs` к routing-policy артефакту (ADR). **
 ```
 TaskRun завершён
   → outcome-строка в projection DB           (автоматически, каждый ран)
-  → [периодически] distillation job          (агрегация per model×task-class)
+  → [периодически] distillation job          (per model×harness×task-class)
   → EvidencePack в ForgePlan + link к ADR    (git-reviewed, malый объём)
   → Runtime Broker обновляет model-routing.yaml
         ТОЛЬКО с цитатой на активный EVID    (audit_event, policy diff)
   → следующие раны маршрутизируются новой таблицей
-  → decay: вышла новая версия модели → valid_until истекает
-        → health показывает routing на просроченном evidence → re-eval
+  → ForgeFarm обнаруживает новую версию → назначает re-eval
+        → отдельно проверяется явный valid_until; истёкший вклад = 0.1
 ```
 
 ## v1 policy (до накопления кортежей)

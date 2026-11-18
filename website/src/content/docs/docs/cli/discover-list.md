@@ -3,7 +3,7 @@ title: forgeplan discover list
 description: "List all brownfield discovery sessions in the workspace"
 ---
 
-`forgeplan discover list` prints every discovery session stored in the workspace - active and completed - with ID, status, creation time, and a short coverage summary. It's the index view across sessions.
+`forgeplan discover list` prints stored discovery sessions with Session ID, Project, Status, Phase, and Findings count. It reads session files without opening the artifact index.
 
 ## When to use
 
@@ -44,13 +44,13 @@ forgeplan discover complete disc-002
 
 ## What you see
 
-A table (or list) with one row per session, typically showing:
+The columns are:
 
-- **Session ID** (`disc-NNN`)
-- **Status** - active / completed
-- **Created at** - ISO timestamp
-- **Findings count** - how many `discover_finding` calls hit this session
-- **Coverage** - short tier summary (which of code/git/tests/docs were touched)
+- **Session ID** - copy the actual returned ID; `disc-002` above is illustrative.
+- **Project** - project name, possibly truncated.
+- **Status** - stored session status.
+- **Phase** - current discovery phase, not a coverage summary.
+- **Findings** - number of stored findings.
 
 ## How it fits
 
@@ -66,3 +66,19 @@ discover list → pick an ID → discover show / complete
 - [`forgeplan discover start`](/docs/cli/discover-start/) - create a new session
 - [`forgeplan discover show`](/docs/cli/discover-show/) - inspect a specific session
 - [`forgeplan discover complete`](/docs/cli/discover-complete/) - finalize a session
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan discover list --help`.
+
+```text
+List all discovery sessions in the workspace
+
+Usage: forgeplan discover list
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

@@ -4,8 +4,59 @@ use std::collections::BTreeMap;
 pub type Frontmatter = BTreeMap<String, serde_yaml::Value>;
 
 /// Parse YAML frontmatter from markdown content.
-/// Returns `(frontmatter, body)` where body is everything after the closing `---`.
+///
+/// Legacy projections wrap an already-rendered artifact in another metadata
+/// block. Supplement that wrapper from its original frontmatter without
+/// replacing explicit outer values or removing any bytes from the body.
+/// Repeated wrappers must declare the same identity to be followed.
 pub fn parse_frontmatter(content: &str) -> anyhow::Result<(Frontmatter, String)> {
+    let (fm, body) = parse_frontmatter_borrowed(content)?;
+    Ok((fm, body.to_string()))
+}
+
+/// The same metadata interpretation without copying the remaining document.
+pub(crate) fn parse_frontmatter_borrowed(content: &str) -> anyhow::Result<(Frontmatter, &str)> {
+    let (mut fm, body) = parse_frontmatter_slice(content)?;
+    if fm.get("id").and_then(|v| v.as_str()).is_some()
+        && fm.get("kind").and_then(|v| v.as_str()).is_some()
+    {
+        let mut remaining = body;
+        while remaining.trim_start().starts_with("---") {
+            let Ok((inner, next)) = parse_frontmatter_slice(remaining) else {
+                break;
+            };
+            if inner.get("id").is_some_and(|id| fm.get("id") != Some(id))
+                || inner
+                    .get("kind")
+                    .is_some_and(|kind| fm.get("kind") != Some(kind))
+            {
+                break;
+            }
+            let is_wrapper = inner.contains_key("id") && inner.contains_key("kind");
+            for (key, value) in inner {
+                fm.entry(key).or_insert(value);
+            }
+            if !is_wrapper {
+                break;
+            }
+            remaining = next;
+        }
+    }
+    Ok((fm, body))
+}
+
+#[derive(Debug)]
+struct FrontmatterLimitError(usize);
+
+impl std::fmt::Display for FrontmatterLimitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Frontmatter too large ({} bytes, max 64KB)", self.0)
+    }
+}
+
+impl std::error::Error for FrontmatterLimitError {}
+
+fn parse_frontmatter_slice(content: &str) -> anyhow::Result<(Frontmatter, &str)> {
     let content = content.trim_start();
     if !content.starts_with("---") {
         anyhow::bail!("No YAML frontmatter found (missing opening ---)");
@@ -17,15 +68,15 @@ pub fn parse_frontmatter(content: &str) -> anyhow::Result<(Frontmatter, String)>
     let yaml_str = &after_first[..end];
     // Guard against YAML bomb / excessively large frontmatter (max 64 KB)
     if yaml_str.len() > 65536 {
-        anyhow::bail!("Frontmatter too large ({} bytes, max 64KB)", yaml_str.len());
+        return Err(FrontmatterLimitError(yaml_str.len()).into());
     }
     let fm: Frontmatter = serde_yaml::from_str(yaml_str)?;
     // Body starts after closing --- and newline
     let body_start = 3 + end + 4; // "---" + yaml + "\n---"
     let body = if body_start < content.len() {
-        content[body_start..].trim_start_matches('\n').to_string()
+        content[body_start..].trim_start_matches('\n')
     } else {
-        String::new()
+        ""
     };
     Ok((fm, body))
 }
@@ -124,14 +175,125 @@ pub fn author_from_frontmatter(fm: &Frontmatter) -> Option<String> {
 /// Extract `slug` field from frontmatter (PROB-060 / SPEC-005).
 ///
 /// Returns `Some(&str)` if the field is present and string-valued, `None`
-/// otherwise. Slug is the canonical identity per ADR-012 — used for refs
-/// in commits and cross-artifact relations until a display number is
-/// assigned at merge.
+/// otherwise. The slug is the canonical identity per ADR-030 (which
+/// supersedes ADR-012 for the identity contract): it is the document's
+/// permanent key — the value a reference resolves to. A document that
+/// declares no valid slug keeps its display id as the key.
 ///
-/// Backward compat: legacy artifacts without this field return `None`;
-/// callers must fall back to filename-derived id.
+/// Backward compat: a document that declares no valid slug returns `None`;
+/// the caller falls back to the display id (ADR-030), or to the filename
+/// stem when the document declares no id either.
 pub fn slug_from_frontmatter(fm: &Frontmatter) -> Option<&str> {
     fm.get("slug").and_then(|v| v.as_str())
+}
+
+/// Every canonical key a document declares, across all of its frontmatter
+/// layers.
+///
+/// A document may carry more than one frontmatter block: the projection
+/// wrapper plus the original artifact body. A key that arrives through a
+/// nested block is still a declaration — an ordinary update must not
+/// change it, so it has to be seen before the update is written.
+///
+/// Walk every consecutively parseable block, including blocks beyond the
+/// merge boundary: an update must not hide a conflicting declaration in its
+/// body. An oversized block is an error, not a successful partial walk.
+pub fn declared_canonical_keys(content: &str) -> anyhow::Result<Vec<String>> {
+    let mut keys: Vec<String> = Vec::new();
+    let mut remaining = content.trim_start();
+    loop {
+        let (fm, next) = match parse_frontmatter_slice(remaining) {
+            Ok(parsed) => parsed,
+            Err(error) if error.is::<FrontmatterLimitError>() => return Err(error),
+            Err(_) => break,
+        };
+        if let Some(slug) = slug_from_frontmatter(&fm) {
+            let slug = slug.trim().to_string();
+            if !slug.is_empty() && !keys.contains(&slug) {
+                keys.push(slug);
+            }
+        }
+        let trimmed = next.trim_start();
+        if !trimmed.starts_with("---") {
+            break;
+        }
+        remaining = trimmed;
+    }
+    Ok(keys)
+}
+
+/// Write a canonical key into a document's frontmatter.
+///
+/// The key is written into the document's first frontmatter block. A
+/// document without one gets a block of its own — a document that does not
+/// declare its identity has no identity to resolve.
+///
+/// This is the creation path: the key is minted here, so a block that
+/// declares another key is replaced. An ordinary update never comes here —
+/// it goes through [`refuse_canonical_key_change`].
+pub fn ensure_canonical_key(content: &str, canonical_key: &str) -> anyhow::Result<String> {
+    let leading_len = content.len() - content.trim_start().len();
+    let trimmed = &content[leading_len..];
+    if !trimmed.starts_with("---") {
+        return Ok(format!("---\nslug: {canonical_key}\n---\n\n{content}"));
+    }
+    let after_first = &trimmed[3..];
+    let end = after_first
+        .find("\n---")
+        .ok_or_else(|| anyhow::anyhow!("No closing --- found for frontmatter"))?;
+    let (mut fm, _) = parse_frontmatter_slice(trimmed)?;
+    fm.insert(
+        "slug".to_string(),
+        serde_yaml::Value::String(canonical_key.to_string()),
+    );
+    let yaml = serde_yaml::to_string(&fm)?;
+    Ok(format!("---\n{yaml}---{}", &after_first[end + 4..]))
+}
+
+/// Refuse an ordinary update that would change the document's canonical key.
+///
+/// `current_key` is the canonical key the document carries today (see
+/// [`crate::artifact::canonical_key::canonical_key_from_document`]);
+/// `incoming` is the content an ordinary update wants to write. A key that
+/// arrives through nested or external frontmatter counts as a declaration:
+/// any declared key that differs from `current_key` is refused.
+///
+/// Only the verified identity-repair operation may change a key — it does
+/// not come through this path.
+pub fn refuse_canonical_key_change(current_key: &str, incoming: &str) -> anyhow::Result<()> {
+    for key in declared_canonical_keys(incoming)? {
+        if key != current_key {
+            anyhow::bail!(
+                "canonical key change refused: the document is '{current_key}', \
+                 but the update declares '{key}'"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Refuse an import whose complete source declares a different canonical key.
+///
+/// A body that is not a complete document for this id and kind remains
+/// literal body text. Call this before deleting or replacing an existing file.
+pub fn verify_import_canonical_key(
+    id: &str,
+    kind: &str,
+    body: &str,
+    key: &str,
+) -> anyhow::Result<()> {
+    let Ok((fm, _)) = parse_frontmatter_slice(body) else {
+        return Ok(());
+    };
+    if fm.get("id").and_then(|v| v.as_str()) == Some(id)
+        && fm.get("kind").and_then(|v| v.as_str()) == Some(kind)
+        && let Some(declared) = slug_from_frontmatter(&fm)
+        && crate::artifact::types::is_canonical_key(declared)
+        && declared != key
+    {
+        anyhow::bail!("import canonical key {key:?} conflicts with document key {declared:?}");
+    }
+    Ok(())
 }
 
 /// Sane upper bound on artifact numbers (MED-1, CWE-1284 — Round-1 audit).
@@ -204,8 +366,9 @@ pub fn is_pre_merge(fm: &Frontmatter) -> bool {
 ///
 /// Contract:
 /// - **Pre-merge** (`assigned_number` is `null` or absent) → return the
-///   `slug` field if present **and the slug passes [`crate::artifact::types::validate_slug`]**
-///   (`prd-auth-system`).
+///   `slug` field if present **and the slug is a canonical key**
+///   ([`crate::artifact::types::is_canonical_key`] — a minted SPEC-009 key
+///   or a grandfathered SPEC-005 slug like `prd-auth-system`).
 /// - **Post-merge** (`assigned_number` is set) → return `fallback_id`,
 ///   which the caller is expected to populate with the zero-padded
 ///   display ID (`PRD-074`) — typically the resolver's canonical form
@@ -230,7 +393,7 @@ pub fn is_pre_merge(fm: &Frontmatter) -> bool {
 pub fn refs_form<'a>(fm: &'a Frontmatter, fallback_id: &'a str) -> &'a str {
     if is_pre_merge(fm) {
         match slug_from_frontmatter(fm) {
-            Some(s) if crate::artifact::types::validate_slug(s).is_ok() => s,
+            Some(s) if crate::artifact::types::is_canonical_key(s) => s,
             _ => fallback_id,
         }
     } else {
@@ -370,6 +533,280 @@ pub fn has_tag_in(tags: &[String], key: &str, value: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn import_rejects_conflicting_full_document_identity() {
+        let source = "---\nid: NOTE-001\nkind: note\nslug: note-original\n---\n\nBody.\n";
+        assert!(verify_import_canonical_key("NOTE-001", "note", source, "note-other").is_err());
+        assert!(verify_import_canonical_key("NOTE-001", "note", source, "note-original").is_ok());
+        assert!(verify_import_canonical_key("NOTE-002", "note", source, "note-other").is_ok());
+    }
+
+    #[test]
+    fn ensure_canonical_key_writes_the_key_into_the_document() {
+        let key = "prd-auth-system-k0123456789abcdef0123456789abcdef";
+        // A document with frontmatter keeps its block and gains the key.
+        let with_fm = ensure_canonical_key(
+            "---\nid: PRD-001\nkind: prd\ntitle: Auth\n---\n\nBody.\n",
+            key,
+        )
+        .unwrap();
+        let (fm, body) = parse_frontmatter(&with_fm).unwrap();
+        assert_eq!(fm.get("slug").and_then(|v| v.as_str()), Some(key));
+        assert_eq!(fm.get("id").and_then(|v| v.as_str()), Some("PRD-001"));
+        assert_eq!(body.trim(), "Body.");
+
+        // A document without frontmatter gets a block of its own.
+        let without_fm = ensure_canonical_key("Just a body.\n", key).unwrap();
+        let (fm, body) = parse_frontmatter(&without_fm).unwrap();
+        assert_eq!(fm.get("slug").and_then(|v| v.as_str()), Some(key));
+        assert_eq!(body.trim(), "Just a body.");
+
+        // A block that declares another key is replaced — this is the
+        // creation path, where the key is minted.
+        let replaced =
+            ensure_canonical_key("---\nid: PRD-002\nslug: prd-other\n---\n\nBody.\n", key).unwrap();
+        let (fm, _body) = parse_frontmatter(&replaced).unwrap();
+        assert_eq!(fm.get("slug").and_then(|v| v.as_str()), Some(key));
+    }
+    #[test]
+    fn ensure_canonical_key_preserves_body_separator_and_bytes() {
+        let input = "---\nid: PRD-001\nkind: prd\n---\n\n\n## Body\n\n";
+        let body_suffix = "\n\n\n## Body\n\n";
+        let output =
+            ensure_canonical_key(input, "prd-body-k0123456789abcdef0123456789abcdef").unwrap();
+
+        assert!(output.ends_with(body_suffix));
+    }
+
+    #[test]
+    fn declared_canonical_keys_sees_nested_and_outer_layers() {
+        let content = "---\nid: PRD-001\nkind: prd\n---\n\n\
+                        ---\nslug: prd-auth-system\nid: PRD-001\n---\n\nBody.\n";
+        let keys = declared_canonical_keys(content).unwrap();
+        assert_eq!(
+            keys,
+            vec!["prd-auth-system".to_string()],
+            "the nested block declares the key"
+        );
+
+        let outer = "---\nid: PRD-001\nkind: prd\nslug: prd-auth-system\n---\n\nBody.\n";
+        assert_eq!(
+            declared_canonical_keys(outer).unwrap(),
+            vec!["prd-auth-system".to_string()]
+        );
+
+        // A body without any frontmatter declares nothing.
+        assert!(
+            declared_canonical_keys("Just a body.\n")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    fn layered_update(depth: usize, final_slug: &str) -> String {
+        let mut body = "---\nid: PRD-001\nkind: prd\n---\n\n".repeat(depth - 1);
+        body.push_str(&format!("---\nslug: {final_slug}\n---\n\nBody.\n"));
+        body
+    }
+
+    #[test]
+    fn declarations_are_not_truncated_and_limits_fail_closed() {
+        for depth in [8, 9, 32] {
+            let body = layered_update(depth, "prd-other");
+            let error = refuse_canonical_key_change("prd-original", &body).unwrap_err();
+            assert!(error.to_string().contains("prd-other"), "{error}");
+            let same = layered_update(depth, "prd-original");
+            refuse_canonical_key_change("prd-original", &same).unwrap();
+        }
+        let oversized = format!(
+            "---\nid: PRD-001\nkind: prd\n---\n\n---\ntitle: {}\n---\n",
+            "x".repeat(65536)
+        );
+        assert!(
+            refuse_canonical_key_change("prd-original", &oversized)
+                .unwrap_err()
+                .to_string()
+                .contains("Frontmatter too large")
+        );
+        assert!(refuse_canonical_key_change("prd-original", "---\ntitle: [\n---\n").is_ok());
+    }
+
+    #[tokio::test]
+    async fn both_update_paths_reject_deep_identity_substitution() {
+        use crate::db::store::{LanceStore, NewArtifact};
+        use crate::projection::{
+            MutationContext, create_artifact_with_projection, update_body_file_first,
+            update_body_with_projection,
+        };
+        use crate::workspace::{init_workspace, lock::acquire_workspace_lock};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = init_workspace(tmp.path(), "guard-test").unwrap();
+        let lock = acquire_workspace_lock(&ws).await.unwrap();
+        let store = LanceStore::init_new(&ws, &lock).await.unwrap();
+        let key = "prd-original";
+        let ctx = MutationContext::new(&ws, &lock, Some(&store));
+        let artifact = NewArtifact {
+            canonical_key: key.into(),
+            id: "PRD-001".into(),
+            kind: "prd".into(),
+            status: "draft".into(),
+            title: "Original".into(),
+            body: "Original body".into(),
+            depth: "standard".into(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: vec![],
+        };
+        let path = create_artifact_with_projection(&ctx, &artifact)
+            .await
+            .unwrap();
+        let original = tokio::fs::read(&path).await.unwrap();
+        let row_before = store.get_record(&lock, key).await.unwrap().unwrap().body;
+        for depth in [8, 9] {
+            let body = layered_update(depth, "prd-other");
+            let error = update_body_file_first(&path, &body).await.unwrap_err();
+            assert!(error.to_string().contains("prd-other"), "{error}");
+            let error = update_body_with_projection(&ctx, key, &body)
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("prd-other"), "{error}");
+            assert_eq!(tokio::fs::read(&path).await.unwrap(), original);
+            assert_eq!(
+                store.get_record(&lock, key).await.unwrap().unwrap().body,
+                row_before
+            );
+        }
+    }
+
+    #[test]
+    fn refuse_canonical_key_change_accepts_the_same_key() {
+        let content = "---\nid: PRD-001\nkind: prd\nslug: prd-auth-system\n---\n\nBody.\n";
+        refuse_canonical_key_change("prd-auth-system", content).unwrap();
+    }
+
+    #[test]
+    fn refuse_canonical_key_change_rejects_a_changed_key() {
+        let content = "---\nid: PRD-001\nkind: prd\nslug: prd-other-system\n---\n\nBody.\n";
+        let err = refuse_canonical_key_change("prd-auth-system", content)
+            .expect_err("a changed canonical key must be refused");
+        assert!(
+            err.to_string().contains("canonical key change refused"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn refuse_canonical_key_change_rejects_a_key_arriving_through_nested_frontmatter() {
+        // The outer block keeps the identity; the nested block smuggles in
+        // a different key.
+        let content = "---\nid: PRD-001\nkind: prd\nslug: prd-auth-system\n---\n\n\
+                        ---\nslug: prd-other-system\n---\n\nBody.\n";
+        let err = refuse_canonical_key_change("prd-auth-system", content)
+            .expect_err("a nested key change must be refused");
+        assert!(
+            err.to_string().contains("prd-other-system"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn refuse_canonical_key_change_rejects_a_key_that_appears_for_the_first_time() {
+        // The document has no key of its own yet — its canonical key is its
+        // display id. An update that introduces a key changes the identity.
+        let content = "---\nid: PRD-001\nkind: prd\nslug: prd-auth-system\n---\n\nBody.\n";
+        let err = refuse_canonical_key_change("PRD-001", content)
+            .expect_err("introducing a key must be refused");
+        assert!(
+            err.to_string().contains("canonical key change refused"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn legacy_projection_preserves_identity_metadata_and_unmodified_body() {
+        let body = "---\nassigned_number: 1\ncreated: 2026-10-24\npredicted_number: 1\nslug: note-compatibility-source\nupdated: 2026-10-24\nsource_hash: original-input\nstatus: draft\n---\n\n## Decision\n\nKeep NOTE-002.\n";
+        let content = format!(
+            "---\nid: NOTE-001\nkind: note\nstatus: active\ntitle: Compatibility source\n---\n\n{body}"
+        );
+        let (fm, actual_body) = parse_frontmatter_borrowed(&content).unwrap();
+
+        assert_eq!(actual_body, body);
+        assert_eq!(
+            slug_from_frontmatter(&fm),
+            Some("note-compatibility-source")
+        );
+        assert_eq!(assigned_number_from_frontmatter(&fm), Some(1));
+        assert_eq!(predicted_number_from_frontmatter(&fm), Some(1));
+        assert_eq!(fm["created"].as_str(), Some("2026-10-24"));
+        assert_eq!(fm["source_hash"].as_str(), Some("original-input"));
+        assert_eq!(fm["status"].as_str(), Some("active"));
+    }
+
+    #[test]
+    fn legacy_memory_projection_retains_its_exact_timestamp_and_category() {
+        let body = "---\nid: mem-compatibility\nkind: memory\ncategory: convention\ncreated: 2026-10-24T08:07:25.802334+00:00\n---\n\nCanonical files are authoritative.\n";
+        let content =
+            format!("---\nid: mem-compatibility\nkind: memory\nstatus: active\n---\n\n{body}");
+        let (fm, actual_body) = parse_frontmatter(&content).unwrap();
+
+        assert_eq!(actual_body, body);
+        assert_eq!(fm["category"].as_str(), Some("convention"));
+        assert_eq!(
+            fm["created"].as_str(),
+            Some("2026-10-24T08:07:25.802334+00:00")
+        );
+    }
+
+    #[test]
+    fn repeated_matching_projections_keep_outer_values_and_explicit_nulls() {
+        let content = "---\nid: NOTE-001\nkind: note\nstatus: active\nassigned_number: null\ncreated_at: null\n---\n\n---\nid: NOTE-001\nkind: note\nstatus: draft\n---\n\n---\nslug: note-original\npredicted_number: 1\nassigned_number: 1\ncreated: 2026-10-24\n---\n\nKeep this body.\n";
+        let (fm, body) = parse_frontmatter(content).unwrap();
+
+        assert_eq!(slug_from_frontmatter(&fm), Some("note-original"));
+        assert_eq!(predicted_number_from_frontmatter(&fm), Some(1));
+        assert!(fm["assigned_number"].is_null());
+        assert!(fm["created_at"].is_null());
+        assert_eq!(fm["status"].as_str(), Some("active"));
+        assert!(body.starts_with("---\nid: NOTE-001\nkind: note\nstatus: draft\n"));
+        assert!(body.ends_with("Keep this body.\n"));
+    }
+
+    #[test]
+    fn body_frontmatter_cannot_rebind_the_outer_artifact_identity() {
+        for inner in [
+            "id: NOTE-002\nkind: note\nslug: note-foreign\ncreated: 2026-10-24",
+            "id: NOTE-001\nkind: prd\nslug: prd-foreign\ncreated: 2026-10-24",
+        ] {
+            let body = format!("---\n{inner}\n---\n\nA quoted artifact.\n");
+            let content = format!("---\nid: NOTE-001\nkind: note\n---\n\n{body}");
+            let (fm, actual_body) = parse_frontmatter(&content).unwrap();
+
+            assert_eq!(actual_body, body);
+            assert_eq!(fm["id"].as_str(), Some("NOTE-001"));
+            assert_eq!(fm["kind"].as_str(), Some("note"));
+            assert_eq!(slug_from_frontmatter(&fm), None);
+            assert!(!fm.contains_key("created"));
+        }
+    }
+
+    #[test]
+    fn a_non_projection_or_malformed_body_is_not_promoted_to_metadata() {
+        let non_projection =
+            "---\nslug: note-original\n---\n\n---\nslug: note-example\ncreated: 2026-10-24\n---\n";
+        let (fm, _) = parse_frontmatter(non_projection).unwrap();
+        assert_eq!(slug_from_frontmatter(&fm), Some("note-original"));
+        assert!(!fm.contains_key("created"));
+
+        let body = "---\nThis is ordinary prose, not a YAML mapping.\n---\n";
+        let content = format!("---\nid: NOTE-001\nkind: note\n---\n\n{body}");
+        let (fm, actual_body) = parse_frontmatter(&content).unwrap();
+        assert_eq!(actual_body, body);
+        assert_eq!(fm["id"].as_str(), Some("NOTE-001"));
+        assert!(!fm.contains_key("created"));
+    }
 
     #[test]
     fn tags_from_frontmatter_sequence() {

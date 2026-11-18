@@ -27,12 +27,16 @@
 //! when wrapping the first destructive op of a session. No background
 //! daemon.
 
+use crate::workspace::lock::{WorkspaceLock, WorkspaceReadPermit};
+use anyhow::Context;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 
 pub mod restore;
+mod safe_restore;
+pub use safe_restore::CompletionDurabilityUncertain;
 
 /// Default TTL in days if `undo.ttl_days` is not configured.
 pub const DEFAULT_TTL_DAYS: u32 = 30;
@@ -99,13 +103,14 @@ pub struct ArtifactSnapshot {
     /// Absolute path where the markdown projection lived before the
     /// destructive op. Restore writes the body back to this path.
     pub projection_path: String,
-    /// Canonical slug from frontmatter (PROB-060 Phase 2.5 closure).
-    /// Captured at soft-delete time so `restore <slug>` can locate the
-    /// receipt after the artifact has been removed from the main store.
-    /// `None` for legacy pre-Phase-1.5 artifacts that never had a slug
-    /// (lookup falls back to display id form only).
+    /// Canonical slug from frontmatter, used to locate the receipt after
+    /// the artifact has been removed from the main store.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slug: Option<String>,
+    /// Canonical document identity captured before deletion. Missing only
+    /// on receipts written before canonical identity was introduced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_key: Option<String>,
 }
 
 /// A soft-delete receipt — one JSON file per destructive operation.
@@ -143,6 +148,21 @@ pub struct Receipt {
 /// Path to the trash directory inside a workspace.
 pub fn trash_dir(workspace: &Path) -> PathBuf {
     workspace.join("trash")
+}
+
+/// Resolve an artifact path by document identity, never by filename prefix or
+/// first matching display alias.
+async fn resolve_projection_path(
+    workspace: &Path,
+    selector: &str,
+) -> anyhow::Result<Option<PathBuf>> {
+    let candidates = crate::artifact::documents::workspace_candidates(workspace).await?;
+    let Some(resolved) = crate::artifact::canonical_key::resolve_artifact(selector, &candidates)
+        .map_err(anyhow::Error::new)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(workspace.join(resolved.relative_path)))
 }
 
 /// Compose a unique receipt file path inside the trash directory.
@@ -241,11 +261,39 @@ pub async fn write_receipt(workspace: &Path, receipt: &Receipt) -> anyhow::Resul
     Ok(path)
 }
 
-/// Read back a receipt from disk.
+/// Read a receipt and its digest-bound completion record.
 pub async fn read_receipt(path: &Path) -> anyhow::Result<Receipt> {
-    let bytes = tokio::fs::read(path).await?;
-    let receipt: Receipt = serde_json::from_slice(&bytes)?;
-    Ok(receipt)
+    #[cfg(any(unix, windows))]
+    {
+        let filename = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| anyhow::anyhow!("invalid receipt filename"))?;
+        let id = filename
+            .strip_prefix("receipt-")
+            .and_then(|s| s.strip_suffix(".json"))
+            .filter(|id| safe_restore::valid_id(id))
+            .ok_or_else(|| anyhow::anyhow!("invalid receipt filename"))?;
+        let workspace = path
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| anyhow::anyhow!("receipt has no workspace"))?;
+        if path.parent() != Some(trash_dir(workspace).as_path()) {
+            anyhow::bail!("receipt is not in workspace trash");
+        }
+        let context = safe_restore::Context::open(workspace, id)?;
+        let mut receipt: Receipt = serde_json::from_slice(&context.receipt_bytes)?;
+        if receipt.receipt_id != id {
+            anyhow::bail!("receipt id does not match its filename");
+        }
+        receipt.consumed |= context.consumed()?;
+        Ok(receipt)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let bytes = tokio::fs::read(path).await?;
+        Ok(serde_json::from_slice(&bytes)?)
+    }
 }
 
 /// Move markdown projection into trash alongside the receipt. Uses
@@ -338,14 +386,32 @@ pub async fn list_receipts(workspace: &Path) -> anyhow::Result<Vec<Receipt>> {
 }
 
 /// Find the most recent non-consumed receipt for a given artifact ID.
-pub async fn find_latest_for(
-    workspace: &Path,
-    artifact_id: &str,
-) -> anyhow::Result<Option<Receipt>> {
+/// Find the most recent non-consumed receipt by canonical key. A display
+/// alias is accepted only for legacy receipts that have no canonical key.
+pub async fn find_latest_for(workspace: &Path, selector: &str) -> anyhow::Result<Option<Receipt>> {
     let all = list_receipts(workspace).await?;
-    Ok(all
+    if let Some(receipt) = all.iter().find(|receipt| {
+        !receipt.consumed
+            && receipt
+                .snapshot
+                .canonical_key
+                .as_deref()
+                .is_some_and(|key| key.eq_ignore_ascii_case(selector))
+    }) {
+        return Ok(Some(receipt.clone()));
+    }
+    let matching: Vec<_> = all
         .into_iter()
-        .find(|r| r.snapshot.id == artifact_id && !r.consumed))
+        .filter(|receipt| !receipt.consumed && receipt.snapshot.id.eq_ignore_ascii_case(selector))
+        .collect();
+    let identities: std::collections::BTreeSet<_> = matching
+        .iter()
+        .map(|receipt| receipt.snapshot.canonical_key.clone())
+        .collect();
+    if identities.len() > 1 {
+        anyhow::bail!("display alias {selector:?} matches multiple receipts; use a canonical key");
+    }
+    Ok(matching.into_iter().next())
 }
 
 /// Find the most recent non-consumed receipt by canonical slug (PROB-060
@@ -366,22 +432,35 @@ pub async fn find_latest_for_slug(workspace: &Path, slug: &str) -> anyhow::Resul
     }))
 }
 
-/// Mark a receipt as consumed on disk (rewrite the file in place).
-/// Called by restore after a successful recovery so undo-last won't
-/// re-apply the same receipt.
+/// Mark the exact receipt bytes consumed without rewriting the receipt.
 pub async fn mark_consumed(workspace: &Path, receipt_id: &str) -> anyhow::Result<()> {
-    let path = receipt_path(workspace, receipt_id);
-    let mut receipt = read_receipt(&path).await?;
-    if receipt.consumed {
-        return Ok(());
+    let context = safe_restore::Context::open(workspace, receipt_id)?;
+    let receipt: Receipt = serde_json::from_slice(&context.receipt_bytes)?;
+    if receipt.receipt_id != receipt_id {
+        anyhow::bail!("receipt id does not match its filename");
     }
-    receipt.consumed = true;
-    let json = serde_json::to_vec_pretty(&receipt)?;
-    // Write to a temp file and rename to atomically replace.
-    let tmp = path.with_extension("json.tmp");
-    tokio::fs::write(&tmp, &json).await?;
-    tokio::fs::rename(&tmp, &path).await?;
+    if !receipt.consumed {
+        context.consume()?;
+    }
     Ok(())
+}
+
+/// Retry an uncertain completion only for the exact receipt bytes previously
+/// reported by [`CompletionDurabilityUncertain`].
+pub async fn retry_completion(
+    workspace: &Path,
+    receipt_id: &str,
+    receipt_digest: &str,
+) -> anyhow::Result<()> {
+    let context = safe_restore::Context::open(workspace, receipt_id)?;
+    if context.receipt_hash != receipt_digest {
+        anyhow::bail!("receipt changed; refusing to retry another receipt's completion");
+    }
+    let receipt: Receipt = serde_json::from_slice(&context.receipt_bytes)?;
+    if receipt.receipt_id != receipt_id || !context.consumed()? {
+        anyhow::bail!("no matching completed receipt to retry");
+    }
+    context.consume()
 }
 
 /// Purge receipts (and their paired projection bodies) older than
@@ -405,10 +484,16 @@ pub async fn purge_expired(workspace: &Path, ttl_days: u32) -> anyhow::Result<us
             Err(_) => continue, // unparseable → skip, don't purge
         };
         if ts < threshold {
-            let receipt_file = receipt_path(workspace, &receipt.receipt_id);
-            let body_file = trashed_projection_path(workspace, &receipt.receipt_id);
-            let _ = tokio::fs::remove_file(&receipt_file).await;
-            let _ = tokio::fs::remove_file(&body_file).await;
+            let context = safe_restore::Context::open(workspace, &receipt.receipt_id)?;
+            if context.has_journal()? {
+                continue;
+            }
+            let mut current: Receipt = serde_json::from_slice(&context.receipt_bytes)?;
+            current.consumed |= context.consumed()?;
+            if serde_json::to_value(&current)? != serde_json::to_value(&receipt)? {
+                anyhow::bail!("receipt changed before purge");
+            }
+            context.purge()?;
             removed += 1;
         }
     }
@@ -435,72 +520,109 @@ pub async fn purge_expired(workspace: &Path, ttl_days: u32) -> anyhow::Result<us
 /// the destructive op in that case.
 pub async fn soft_delete_capture(
     workspace: &std::path::Path,
+    guard: &WorkspaceLock,
     store: &crate::db::store::LanceStore,
     record: &crate::db::store::ArtifactRecord,
     op: DestructiveOp,
     reason: Option<&str>,
     replacement: Option<&str>,
 ) -> anyhow::Result<String> {
-    use crate::artifact::types::ArtifactKind;
-
-    // Gather outgoing + incoming relations so restore can replay both
-    // directions (PRD-055 ADR #6).
+    guard.matches_workspace(workspace)?;
+    // A receipt must never silently omit relationships after a read error.
     let mut relations = Vec::new();
-    if let Ok(outgoing) = store.get_relations(&record.id).await {
-        for (to, relation) in outgoing {
-            relations.push(CapturedRelation {
-                from: record.id.clone(),
-                to,
-                relation,
-                direction: RelationDirection::Outgoing,
-            });
-        }
+    for (to, relation) in store.get_relations(guard, &record.canonical_key).await? {
+        relations.push(CapturedRelation {
+            from: record.canonical_key.clone(),
+            to,
+            relation,
+            direction: RelationDirection::Outgoing,
+        });
     }
-    if let Ok(incoming) = store.get_incoming_relations(&record.id).await {
-        for (from, relation) in incoming {
-            relations.push(CapturedRelation {
-                from,
-                to: record.id.clone(),
-                relation,
-                direction: RelationDirection::Incoming,
-            });
-        }
+    for (from, relation) in store
+        .get_incoming_relations(guard, &record.canonical_key)
+        .await?
+    {
+        relations.push(CapturedRelation {
+            from,
+            to: record.canonical_key.clone(),
+            relation,
+            direction: RelationDirection::Incoming,
+        });
+    }
+    soft_delete_capture_with_relations(SoftDeleteCaptureRequest {
+        workspace,
+        guard,
+        legacy_sink: Some(store),
+        record,
+        relations,
+        op,
+        reason,
+        replacement,
+    })
+    .await
+}
+
+/// Borrowed context and operation data for [`soft_delete_capture_with_relations`].
+pub struct SoftDeleteCaptureRequest<'a> {
+    pub workspace: &'a std::path::Path,
+    pub guard: &'a WorkspaceLock,
+    pub legacy_sink: Option<&'a crate::db::store::LanceStore>,
+    pub record: &'a crate::db::store::ArtifactRecord,
+    pub relations: Vec<CapturedRelation>,
+    pub op: DestructiveOp,
+    pub reason: Option<&'a str>,
+    pub replacement: Option<&'a str>,
+}
+
+/// The store-free half of [`soft_delete_capture`].
+///
+/// Everything the receipt needs that is NOT a legacy relation lookup: the
+/// projection path resolved from the filesystem, the slug parsed out of the
+/// body, the receipt write, the trash move, the TTL purge. The caller supplies
+/// the relation set it already observed, so a caller whose edges come from the
+/// constellation read view (where `artifacts.lance` is retired and must not be
+/// opened) gets byte-identical receipts instead of no receipts at all.
+///
+/// The crash invariant is unchanged: receipt first, projection move second.
+pub async fn soft_delete_capture_with_relations(
+    request: SoftDeleteCaptureRequest<'_>,
+) -> anyhow::Result<String> {
+    let SoftDeleteCaptureRequest {
+        workspace,
+        guard,
+        legacy_sink,
+        record,
+        relations,
+        op,
+        reason,
+        replacement,
+    } = request;
+    use crate::artifact::types::ArtifactKind;
+    guard.matches_workspace(workspace)?;
+    if let Some(store) = legacy_sink {
+        store.ensure_identity_v5_writable(guard)?;
     }
 
-    // Resolve original projection path BEFORE move. Cannot trust
-    // `slugify(current_title)` because the title may have been edited
-    // after artifact creation, so the projection filename on disk may
-    // differ. Scan the kind directory for any file matching `<ID>-*.md`
-    // and take the first match. Fall back to slugify only if filesystem
-    // scan fails (e.g. missing dir).
-    let projection_path = if let Ok(kind) = record.kind.parse::<ArtifactKind>() {
-        let kind_dir = workspace.join(kind.dir_name());
-        let id_prefix = format!("{}-", record.id);
-        let mut found: Option<std::path::PathBuf> = None;
-        if let Ok(mut entries) = tokio::fs::read_dir(&kind_dir).await {
-            while let Ok(Some(entry)) = entries.next_entry().await {
-                if let Some(name) = entry.file_name().to_str()
-                    && name.starts_with(&id_prefix)
-                    && name.ends_with(".md")
-                {
-                    found = Some(entry.path());
-                    break;
-                }
-            }
+    // Resolve the canonical name rather than reconstructing it from mutable
+    // title metadata. A missing Delete source must not become a successful
+    // receipt whose file was never moved.
+    let projection_path = match resolve_projection_path(workspace, &record.canonical_key).await? {
+        Some(path) => path,
+        None if matches!(op, DestructiveOp::Delete) => {
+            anyhow::bail!(
+                "canonical projection for {} is missing; nothing was deleted",
+                record.id
+            )
         }
-        match found {
-            Some(p) => p.display().to_string(),
-            None => {
-                let slug = crate::artifact::types::slugify(&record.title);
-                kind_dir
-                    .join(format!("{}-{slug}.md", record.id))
-                    .display()
-                    .to_string()
-            }
+        None => {
+            let kind = record.kind.parse::<ArtifactKind>()?;
+            let slug = crate::projection::projection_slug(&record.title);
+            workspace
+                .join(kind.dir_name())
+                .join(format!("{}-{slug}.md", record.id))
         }
-    } else {
-        String::new()
     };
+    let projection_path = projection_path.display().to_string();
 
     let receipt_id = generate_receipt_id(&record.kind, &record.id);
     let trashed = trashed_projection_path(workspace, &receipt_id)
@@ -519,6 +641,7 @@ pub async fn soft_delete_capture(
 
     let snapshot = ArtifactSnapshot {
         id: record.id.clone(),
+        canonical_key: Some(record.canonical_key.clone()),
         kind: record.kind.clone(),
         status: record.status.clone(),
         title: record.title.clone(),
@@ -550,25 +673,28 @@ pub async fn soft_delete_capture(
     // Move projection file into trash ONLY for Delete — supersede and
     // deprecate leave the markdown in place.
     let projection_pathbuf = std::path::PathBuf::from(&projection_path);
-    if matches!(op, DestructiveOp::Delete)
-        && projection_pathbuf.exists()
-        && let Err(e) = trash_projection(workspace, &receipt_id, &projection_pathbuf).await
-    {
-        tracing::warn!(
-            "soft_delete: failed to move projection {}: {}. Receipt written, artifact \
-             will still be recoverable via store snapshot.",
-            projection_pathbuf.display(),
-            e
-        );
-    }
-
-    // Fire-and-forget TTL purge so trash stays bounded.
-    let ws_clone = workspace.to_path_buf();
-    tokio::spawn(async move {
-        if let Err(e) = purge_expired(&ws_clone, DEFAULT_TTL_DAYS).await {
-            tracing::warn!("TTL purge failed: {}", e);
+    if matches!(op, DestructiveOp::Delete) {
+        if legacy_sink.is_some() {
+            crate::db::migrate::begin_identity_delete_intent(
+                workspace,
+                guard,
+                &record.canonical_key,
+                &projection_pathbuf,
+            )
+            .await
+            .context(
+                "could not record durable identity delete intent; canonical file was not moved",
+            )?;
         }
-    });
+        trash_projection(workspace, &receipt_id, &projection_pathbuf)
+            .await
+            .with_context(|| {
+                format!(
+                    "could not move canonical projection {} to trash",
+                    projection_pathbuf.display()
+                )
+            })?;
+    }
 
     Ok(receipt_id)
 }
@@ -597,6 +723,7 @@ mod tests {
             }],
             projection_path: format!("/ws/.forgeplan/prds/{id}-sample.md"),
             slug: None,
+            canonical_key: None,
         }
     }
 
@@ -692,6 +819,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn receipts_with_shared_display_ids_resolve_by_canonical_key() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        let mut alpha = sample_receipt("PRD-001");
+        alpha.receipt_id = "alpha-1".into();
+        alpha.snapshot.canonical_key = Some("prd-alpha-k11111111111111111111111111111111".into());
+        alpha.ts = "2026-04-18T10:00:00.000Z".into();
+        let mut beta = sample_receipt("PRD-001");
+        beta.receipt_id = "beta-1".into();
+        beta.snapshot.canonical_key = Some("prd-beta-k22222222222222222222222222222222".into());
+        beta.ts = "2026-04-18T09:00:00.000Z".into();
+        write_receipt(&ws, &alpha).await.unwrap();
+        write_receipt(&ws, &beta).await.unwrap();
+
+        assert_eq!(
+            find_latest_for(&ws, "prd-alpha-k11111111111111111111111111111111")
+                .await
+                .unwrap()
+                .unwrap()
+                .receipt_id,
+            "alpha-1"
+        );
+        assert_eq!(
+            find_latest_for(&ws, "prd-beta-k22222222222222222222222222222222")
+                .await
+                .unwrap()
+                .unwrap()
+                .receipt_id,
+            "beta-1"
+        );
+        assert!(find_latest_for(&ws, "PRD-001").await.is_err());
+    }
+
+    #[tokio::test]
     async fn mark_consumed_persists() {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
@@ -783,6 +944,94 @@ mod tests {
         assert!(err.is_err(), "missing file should error");
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn soft_delete_refuses_symlink_during_source_inventory() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        std::fs::create_dir_all(ws.join("prds")).unwrap();
+        let guard = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let foreign = tmp.path().join("foreign.md");
+        let foreign_bytes = b"---\nid: PRD-901\nkind: prd\ntitle: Linked\n---\n\nForeign canonical bytes must survive.\n";
+        std::fs::write(&foreign, foreign_bytes).unwrap();
+        let source = ws.join("prds/PRD-901-linked.md");
+        std::os::unix::fs::symlink(&foreign, &source).unwrap();
+        let record = crate::db::store::ArtifactRecord {
+            canonical_key: "PRD-901".into(),
+            id: "PRD-901".into(),
+            kind: "prd".into(),
+            status: "active".into(),
+            title: "Linked".into(),
+            body: "Retained recovery snapshot".into(),
+            ..Default::default()
+        };
+        let error = soft_delete_capture_with_relations(SoftDeleteCaptureRequest {
+            workspace: &ws,
+            guard: &guard,
+            legacy_sink: None,
+            record: &record,
+            relations: Vec::new(),
+            op: DestructiveOp::Delete,
+            reason: None,
+            replacement: None,
+        })
+        .await
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("artifact source contains a symlink"),
+            "the canonical source inventory must refuse a symlink before recording deletion: {error}"
+        );
+        assert_eq!(std::fs::read(&foreign).unwrap(), foreign_bytes);
+        assert!(
+            std::fs::symlink_metadata(&source)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(
+            find_latest_for(&ws, &record.id).await.unwrap().is_none(),
+            "a rejected source inventory must not write a deletion receipt"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_canonical_delete_does_not_create_a_success_receipt() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        std::fs::create_dir_all(&ws).unwrap();
+        let guard = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let record = crate::db::store::ArtifactRecord {
+            canonical_key: "PRD-902".into(),
+            id: "PRD-902".into(),
+            kind: "prd".into(),
+            title: "Missing file".into(),
+            ..Default::default()
+        };
+        let error = soft_delete_capture_with_relations(SoftDeleteCaptureRequest {
+            workspace: &ws,
+            guard: &guard,
+            legacy_sink: None,
+            record: &record,
+            relations: Vec::new(),
+            op: DestructiveOp::Delete,
+            reason: None,
+            replacement: None,
+        })
+        .await
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("canonical projection for PRD-902")
+        );
+        assert!(
+            find_latest_for(&ws, &record.id).await.unwrap().is_none(),
+            "nothing was deleted, so no receipt may claim otherwise"
+        );
+    }
+
     #[test]
     fn destructive_op_round_trips_through_serde() {
         for op in [
@@ -861,6 +1110,213 @@ mod tests {
             err.to_string().contains("symlink"),
             "symlinked trash dir must be refused: {err}"
         );
+    }
+
+    #[cfg(unix)]
+    async fn indexed_delete_fixture() -> (
+        TempDir,
+        PathBuf,
+        WorkspaceLock,
+        crate::db::store::LanceStore,
+        crate::db::store::ArtifactRecord,
+        PathBuf,
+        String,
+    ) {
+        let tmp = TempDir::new().unwrap();
+        let ws = crate::workspace::init_workspace(tmp.path(), "delete-intent").unwrap();
+        let guard = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let initial = crate::db::store::LanceStore::init_new(&ws, &guard)
+            .await
+            .unwrap();
+        drop(initial);
+        let store = crate::db::store::LanceStore::open_for_write(&ws, &guard)
+            .await
+            .unwrap();
+        let key = "prd-intent-k0123456789abcdef0123456789abcdef";
+        let content = format!(
+            "---\nid: PRD-910\nkind: prd\nslug: {key}\nstatus: active\ntitle: Intent test\ndepth: standard\n---\n\nPreserve this preimage.\n"
+        );
+        let artifact = crate::db::store::NewArtifact {
+            canonical_key: key.into(),
+            id: "PRD-910".into(),
+            kind: "prd".into(),
+            status: "active".into(),
+            title: "Intent test".into(),
+            body: content.clone(),
+            depth: "standard".into(),
+            ..Default::default()
+        };
+        store.create_artifact(&guard, &artifact).await.unwrap();
+        let path = ws.join("prds").join(format!("{key}.md"));
+        tokio::fs::write(&path, &content).await.unwrap();
+        let record = store.get_record(&guard, key).await.unwrap().unwrap();
+        (tmp, ws, guard, store, record, path, content)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn legacy_delete_records_checked_preimage_before_move() {
+        let (_tmp, ws, guard, store, record, path, content) = indexed_delete_fixture().await;
+        let id = soft_delete_capture_with_relations(SoftDeleteCaptureRequest {
+            workspace: &ws,
+            guard: &guard,
+            legacy_sink: Some(&store),
+            record: &record,
+            relations: Vec::new(),
+            op: DestructiveOp::Delete,
+            reason: None,
+            replacement: None,
+        })
+        .await
+        .unwrap();
+        assert!(!path.exists());
+        assert_eq!(
+            tokio::fs::read(trashed_projection_path(&ws, &id))
+                .await
+                .unwrap(),
+            content.as_bytes()
+        );
+        let mut entries = tokio::fs::read_dir(ws.join("lance/identity-delete-intents"))
+            .await
+            .unwrap();
+        let entry = entries.next_entry().await.unwrap().unwrap();
+        let intent: serde_json::Value =
+            serde_json::from_slice(&tokio::fs::read(entry.path()).await.unwrap()).unwrap();
+        assert_eq!(
+            intent["canonical_key"].as_str(),
+            Some(record.canonical_key.as_str())
+        );
+        assert_eq!(intent["preimage"].as_str(), Some(content.as_str()));
+        assert!(entries.next_entry().await.unwrap().is_none());
+        assert!(
+            !read_receipt(&receipt_path(&ws, &id))
+                .await
+                .unwrap()
+                .consumed
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rejected_delete_intent_never_moves_original() {
+        use std::os::unix::fs::symlink;
+        let (tmp, ws, guard, store, record, path, content) = indexed_delete_fixture().await;
+        let outside = tmp.path().join("outside-intents");
+        tokio::fs::create_dir(&outside).await.unwrap();
+        symlink(&outside, ws.join("lance/identity-delete-intents")).unwrap();
+        let error = soft_delete_capture_with_relations(SoftDeleteCaptureRequest {
+            workspace: &ws,
+            guard: &guard,
+            legacy_sink: Some(&store),
+            record: &record,
+            relations: Vec::new(),
+            op: DestructiveOp::Delete,
+            reason: None,
+            replacement: None,
+        })
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("identity delete intent"));
+        assert_eq!(tokio::fs::read(&path).await.unwrap(), content.as_bytes());
+        assert!(
+            tokio::fs::read_dir(&outside)
+                .await
+                .unwrap()
+                .next_entry()
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let receipt = find_latest_for(&ws, &record.canonical_key)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!receipt.consumed);
+        assert!(!Path::new(&receipt.trashed_projection).exists());
+    }
+
+    #[tokio::test]
+    async fn file_first_delete_never_creates_legacy_intent() {
+        let tmp = TempDir::new().unwrap();
+        let ws = crate::workspace::init_workspace(tmp.path(), "file-first-delete").unwrap();
+        let guard = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let path = ws.join("prds/historical.md");
+        let text =
+            "---\nid: PRD-911\nkind: prd\nstatus: active\ntitle: Historical\n---\n\nOriginal.\n";
+        tokio::fs::write(&path, text).await.unwrap();
+        let record = crate::db::store::ArtifactRecord {
+            canonical_key: "PRD-911".into(),
+            id: "PRD-911".into(),
+            kind: "prd".into(),
+            status: "active".into(),
+            title: "Historical".into(),
+            body: text.into(),
+            ..Default::default()
+        };
+        let id = soft_delete_capture_with_relations(SoftDeleteCaptureRequest {
+            workspace: &ws,
+            guard: &guard,
+            legacy_sink: None,
+            record: &record,
+            relations: Vec::new(),
+            op: DestructiveOp::Delete,
+            reason: None,
+            replacement: None,
+        })
+        .await
+        .unwrap();
+        assert!(!path.exists());
+        assert_eq!(
+            tokio::fs::read(trashed_projection_path(&ws, &id))
+                .await
+                .unwrap(),
+            text.as_bytes()
+        );
+        assert!(!ws.join("lance/identity-delete-intents").exists());
+    }
+
+    #[tokio::test]
+    async fn delete_rejects_a_guard_from_another_workspace_before_writing() {
+        let tmp = TempDir::new().unwrap();
+        let other_tmp = TempDir::new().unwrap();
+        let ws = crate::workspace::init_workspace(tmp.path(), "delete-target").unwrap();
+        let other = crate::workspace::init_workspace(other_tmp.path(), "other-lock").unwrap();
+        let guard = crate::workspace::acquire_workspace_lock(&other)
+            .await
+            .unwrap();
+        let path = ws.join("prds/historical.md");
+        let text = "---\nid: PRD-912\nkind: prd\nstatus: active\n---\n\nOriginal.\n";
+        tokio::fs::write(&path, text).await.unwrap();
+        let record = crate::db::store::ArtifactRecord {
+            canonical_key: "PRD-912".into(),
+            id: "PRD-912".into(),
+            kind: "prd".into(),
+            status: "active".into(),
+            body: text.into(),
+            ..Default::default()
+        };
+        assert!(
+            soft_delete_capture_with_relations(SoftDeleteCaptureRequest {
+                workspace: &ws,
+                guard: &guard,
+                legacy_sink: None,
+                record: &record,
+                relations: Vec::new(),
+                op: DestructiveOp::Delete,
+                reason: None,
+                replacement: None,
+            })
+            .await
+            .is_err()
+        );
+        assert_eq!(tokio::fs::read(&path).await.unwrap(), text.as_bytes());
+        assert!(
+            find_latest_for(&ws, &record.canonical_key)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(!ws.join("lance/identity-delete-intents").exists());
     }
 
     #[cfg(unix)]

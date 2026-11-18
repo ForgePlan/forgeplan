@@ -124,9 +124,9 @@
     FPF - это не «ещё одна методология». Это <b class="k">операционная система мышления</b>:
     надстройка, которая превращает интеллект - человеческий или машинный - в структурное
     рассуждение, пригодное для совместной работы. Trust Calculus и ADI, которые я разбирал
-    отдельно, - это два встроенных в FPF приёма. Эта страница показывает рамку целиком: шесть
-    ключевых понятий и три режима использования через команды <code>/fpf decompose</code>,
-    <code>/fpf evaluate</code>, <code>/fpf reason</code>.
+    отдельно, — это два приёма FPF. Здесь выбраны шесть понятий, а не вся рамка,
+    и три режима плагина из четырёх: <code>/fpf decompose</code>,
+    <code>/fpf evaluate</code>, <code>/fpf reason</code>. Четвёртый режим — <code>/fpf lookup</code>.
   </p>
 
   <div class="pipeline">
@@ -150,58 +150,58 @@
   </div>
 
   <!-- CONCEPT 01 · WHAT FPF IS -->
-  <h2>01 · Что такое FPF · шесть базовых понятий</h2>
+  <h2>01 · Что такое FPF · шесть выбранных понятий</h2>
   <div class="concept">
     <div class="concept-tag">Концепция 01 · операционная система мышления</div>
-    <h3 class="concept-h">Шесть базовых понятий, на которых стоит вся остальная методология</h3>
+    <h3 class="concept-h">Шесть понятий для этого обзора, не полный состав FPF</h3>
     <p class="analogy">
-      В обычном инструменте есть «методология» (как принимать решения) и «инструменты» (CLI,
-      MCP, файлы). FPF - это <b class="k">слой ниже методологии</b>: набор понятий, на которые
-      опираются все остальные приёмы. Trust Calculus считает доверие через F-G-R - потому что
-      FPF задаёт F-G-R как оси качества утверждения. ADI требует три гипотезы - потому что в
-      FPF определён цикл Abduction → Deduction → Induction.
+      FPF даёт <b class="k">понятия для построения методологий</b>, а инструменты
+      (CLI, MCP, файлы) применяют собственные адаптации. В текущем upstream FPF
+      F — порядковая строгость выражения, G — ClaimScope, R — обоснованность конкретного утверждения.
+      ADI — Abduction → Deduction → Induction. Upstream требует серьёзную альтернативу
+      выбранному кандидату либо обоснование её отсутствия, а не универсальный минимум из трёх.
     </p>
     <p class="analogy">
-      Зная эти шесть понятий, вы понимаете, <b class="k">откуда растут ноги</b> у Trust
-      Calculus, ADI, depth-routing, decomposition. И можете применять те же приёмы в любом
-      контексте - в архитектурных обсуждениях, на ретро, при подготовке документации.
+      Эти шесть выбранных понятий помогают увидеть <b class="k">связи</b> между Trust
+      Calculus, ADI, depth-routing и декомпозицией. Три и более подхода — локальная привычка
+      против зацикливания на первом варианте и запрос продуктового промпта, не гарантия парсера.
     </p>
 
     <div class="concepts-grid">
       <div class="conc-card">
         <div class="cc-tag">01 · структура</div>
         <div class="cc-name">Bounded Context</div>
-        <div class="cc-desc">Часть системы с явными границами и собственным словарём. Внутри - одни правила и термины, снаружи - другие. Помогает не путать «авторизация» в смысле фронта с «авторизация» в смысле бэка.</div>
+        <div class="cc-desc">Часть системы с явными границами и собственным словарём. Внутри - одни правила и термины, снаружи - другие. Помогает не путать «авторизация» в смысле фронта с «авторизация» в смысле бэка. Раздел FPF: A.1.1.</div>
         <div class="cc-meta">применяется в → /fpf decompose</div>
       </div>
       <div class="conc-card">
         <div class="cc-tag">02 · качество</div>
         <div class="cc-name">Trust Calculus</div>
-        <div class="cc-desc">Способ оценить, насколько можно доверять утверждению. Три независимые оси по шкале 0-9. Trust = min(оси), не среднее.</div>
-        <div class="cc-meta">разбор → <a href="trust-calculus.html">trust-calculus.html (3D)</a></div>
+        <div class="cc-desc">Способ обсуждать обоснованность утверждения. Связанный 3D-урок использует локальные оценки 0–9 и правило min. Это учебная рубрика, не формула upstream: F — порядковая строгость выражения, G — ClaimScope (область применимости), R — обоснованность конкретного утверждения. Универсального min(F, G, R) в текущем FPF нет.</div>
+        <div class="cc-meta">FPF B.3 · разбор → <a href="trust-calculus.html">trust-calculus.html (3D)</a></div>
       </div>
       <div class="conc-card">
         <div class="cc-tag">03 · оси</div>
         <div class="cc-name">F-G-R</div>
-        <div class="cc-desc">Три независимые оси Trust Calculus: <b class="k">F</b>ormality (строгость), <b class="k">G</b>ranularity (конкретика), <b class="k">R</b>eliability (надёжность источника). Свой замер на проде - высокая R. Анекдот из чата - низкая.</div>
-        <div class="cc-meta">в действии → trust-calculus 3D-сцена</div>
+        <div class="cc-desc">В текущем upstream FPF <b class="k">F</b>ormality — строгость выражения, <b class="k">G</b> — ClaimScope (область применимости), <b class="k">R</b>eliability — обоснованность конкретного утверждения. Granularity («конкретика») — локальная адаптация G в уроке и продукте, не определение upstream. Собственный замер тоже требует оценки применимости и качества.</div>
+        <div class="cc-meta">FPF C.2 · локальная адаптация → trust-calculus 3D-сцена</div>
       </div>
       <div class="conc-card">
         <div class="cc-tag">04 · цикл</div>
         <div class="cc-name">ADI Cycle</div>
-        <div class="cc-desc">Abduction → Deduction → Induction. Выписать минимум три гипотезы → описать проверяемое следствие для каждой → проверить фактами. Спасает от «бежать в неправильную сторону».</div>
-        <div class="cc-meta">разбор → <a href="decision-cycle.html">decision-cycle.html</a></div>
+        <div class="cc-desc">Abduction → Deduction → Induction: предложить объяснения → вывести проверяемые следствия → сверить с фактами. FPF B.5.2 требует серьёзного соперника выбранному кандидату либо объяснения, почему его нет. Минимум три гипотезы — отдельное локальное упражнение и запрос продуктового промпта, не универсальное правило FPF.</div>
+        <div class="cc-meta">FPF B.5 · локальное упражнение → <a href="decision-cycle.html">decision-cycle.html</a></div>
       </div>
       <div class="conc-card">
         <div class="cc-tag">05 · ловушка</div>
         <div class="cc-name">Category Error</div>
-        <div class="cc-desc">Путаница «роль vs функция», «метод vs работа», «процесс vs результат». «Тимлид» - это роль, «провёл ревью» - это работа. Один и тот же человек может выполнять разные роли в разных контекстах.</div>
+        <div class="cc-desc">Путаница «роль vs функция», «метод vs работа», «процесс vs результат». «Тимлид» - это роль, «провёл ревью» - это работа. Один и тот же человек может выполнять разные роли в разных контекстах. Раздел FPF: A.7 (строгое различение).</div>
         <div class="cc-meta">проверка в → /fpf decompose</div>
       </div>
       <div class="conc-card">
         <div class="cc-tag">06 · сборка</div>
         <div class="cc-name">Gamma Algebra</div>
-        <div class="cc-desc">Правила того, как части складываются в целое с сохранением свойств. Если каждый bounded context работает правильно, это <b>не значит</b> автоматически, что вся система работает - нужны правила композиции.</div>
+        <div class="cc-desc">Правила того, как части складываются в целое с сохранением свойств. Если каждый bounded context работает правильно, это <b>не значит</b> автоматически, что вся система работает - нужны правила композиции. Раздел FPF: B.1 (универсальная алгебра агрегации Γ).</div>
         <div class="cc-meta">применяется в архитектурных обсуждениях</div>
       </div>
     </div>
@@ -209,26 +209,32 @@
     <div class="insight">
       <div class="insight-tag">Не методология · фреймворк</div>
       <p>
-        FPF не говорит вам «вот так принимайте решения». Он даёт <b class="k">словарь</b>, на
-        котором вы строите свои методологии. Trust Calculus и ADI - это методологии,
-        построенные на словаре FPF. Можно собрать свои собственные приёмы, опираясь на те же
-        шесть понятий.
+        FPF даёт <b class="k">словарь и правила рассуждения</b>, на основе которых можно
+        строить рабочие методологии. Этот обзор связывает Trust Calculus и ADI
+        с шестью выбранными понятиями, не объявляя их полным ядром FPF.
+        Учебные числовые рубрики и правила работы нужно отличать от определений upstream.
       </p>
     </div>
   </div>
 
   <!-- CONCEPT 02 · THREE MODES -->
-  <h2>02 · Три режима использования</h2>
+  <h2>02 · Три выбранных режима плагина</h2>
   <div class="concept">
-    <div class="concept-tag">Концепция 02 · три режима работы с FPF</div>
-    <h3 class="concept-h">Каждый режим закрывает один класс задач</h3>
+    <div class="concept-tag">Концепция 02 · три режима плагина из четырёх</div>
+    <h3 class="concept-h">Режимы помогают выбрать ракурс задачи</h3>
     <p class="analogy">
-      FPF определяет три режима рассуждения, доступных через команду <code>/fpf</code>. Они не
-      пересекаются: <span class="m-dec">decompose</span> - для понимания системы,
-      <span class="m-eva">evaluate</span> - для сравнения вариантов,
-      <span class="m-rea">reason</span> - для разбора причины. Перепутать режим - типичная
-      ошибка новичка: вы пытаетесь evaluate, когда вам нужен decompose, и получаете шаблонный
-      ответ.
+      Здесь выбраны три режима <code>/fpf</code> из плагина, не классификация upstream FPF:
+      <span class="m-dec">decompose</span> — понять структуру системы,
+      <span class="m-eva">evaluate</span> — сравнить варианты,
+      <span class="m-rea">reason</span> — разобрать причины и подходы. Эти ракурсы
+      могут дополнять друг друга. Выбор режима задаёт запрос агенту,
+      но сам по себе не гарантирует качество ответа.
+    </p>
+    <p class="analogy">
+      <code>/fpf decompose</code>, <code>/fpf evaluate</code> и <code>/fpf reason</code> —
+      команды host-сессии плагина fpf 1.7.1 из маркетплейса, не CLI. Четвёртый режим —
+      <code>/fpf lookup</code>. Его рубрика Formality/Granularity/Reliability 0–3 локальна,
+      не шкала upstream. Rust-группа <code>forgeplan fpf</code> работает с базой знаний, дашбордом, разделами и правилами.
     </p>
 
     <div class="modes-grid">
@@ -237,7 +243,7 @@
         <div class="mc-title">Разложить на части</div>
         <div class="mc-desc">Когда у вас сложная система и нужно понять её структуру. Кто за что отвечает, какие подсистемы, какие границы.</div>
         <div class="mc-out">
-<b>Возвращает:</b>
+<b>В примере запрашиваем:</b>
 • таблица контекстов
 • диаграмма с границами
 • проверка category error
@@ -249,9 +255,9 @@
         <div class="mc-title">Сравнить варианты</div>
         <div class="mc-desc">Когда нужно выбрать между альтернативами с подсчётом доказательств. React vs Vue vs Svelte. SQLite vs PostgreSQL vs LanceDB.</div>
         <div class="mc-out">
-<b>Возвращает:</b>
+<b>В примере запрашиваем:</b>
 • сильные / слабые стороны
-• оценки F-G-R на оси
+• оценки F-G-R по локальной рубрике плагина
 • матрица решения
 • рекомендация
         </div>
@@ -262,8 +268,8 @@
         <div class="mc-title">Разобрать причину</div>
         <div class="mc-desc">Когда нужно понять, почему что-то происходит или как подойти к проблеме. «Почему деградировало время ответа». «Почему упала конверсия».</div>
         <div class="mc-out">
-<b>Возвращает:</b>
-• 3+ гипотез (Abduction)
+<b>В примере запрашиваем:</b>
+• 3+ гипотезы как локальное упражнение (Abduction)
 • проверяемые следствия (Deduction)
 • сверка с фактами (Induction)
 • оценённые гипотезы
@@ -273,19 +279,19 @@
     </div>
 
     <div class="code-block">
-      <span class="cb-tag">Терминал · реальный вызов трёх режимов</span>
-<span class="cb-prompt">$</span> /fpf decompose <span class="cb-comment">our authentication system</span>
-<span class="cb-ok">→</span> Таблица: Context · Responsibility · Roles · Interfaces
+      <span class="cb-tag">Иллюстрация сессии агента с плагином · не проверенный shell-транскрипт</span>
+<span class="cb-prompt">&gt;</span> /fpf decompose <span class="cb-comment">наша система аутентификации</span>
+<span class="cb-ok">→</span> Таблица: Контекст · Ответственность · Роли · Интерфейсы
 <span class="cb-ok">→</span> Mermaid-диаграмма с границами
 <span class="cb-ok">→</span> Проверка: «токен-генерация» = роль или функция?
 
-<span class="cb-prompt">$</span> /fpf evaluate <span class="cb-comment">React vs Vue vs Svelte for our SPA</span>
+<span class="cb-prompt">&gt;</span> /fpf evaluate <span class="cb-comment">React vs Vue vs Svelte для нашего SPA</span>
 <span class="cb-ok">→</span> Сильные / слабые стороны на каждый вариант
-<span class="cb-ok">→</span> F-G-R оценки для evidence
+<span class="cb-ok">→</span> F-G-R оценки по локальной рубрике плагина
 <span class="cb-ok">→</span> Матрица + рекомендация
 
-<span class="cb-prompt">$</span> /fpf reason <span class="cb-comment">why our API response times degraded</span>
-<span class="cb-ok">→</span> Abduction: 3+ гипотез (нагрузка / индекс / N+1 / GC паузы)
+<span class="cb-prompt">&gt;</span> /fpf reason <span class="cb-comment">почему выросло время ответа нашего API</span>
+<span class="cb-ok">→</span> Abduction: 3+ гипотезы в этом примере (нагрузка / индекс / N+1 / паузы GC)
 <span class="cb-ok">→</span> Deduction: что должно наблюдаться для каждой
 <span class="cb-ok">→</span> Induction: сверка с метриками
 <span class="cb-ok">→</span> Вывод + оставшиеся неопределённости
@@ -299,8 +305,10 @@
     <h3 class="concept-h">FPF поставляется как поисковая база знаний + обогащает ADI-разбор</h3>
     <p class="analogy">
       Полная спецификация FPF может быть проиндексирована как поисковая база. Это значит, что вы
-      можете искать конкретные разделы FPF и обогащать ими ADI-разбор. Например, секция <b class="k">B.3</b>
-      описывает Trust Calculus, секция <b class="k">B.5</b> - ADI Cycle. Если в ADI на сложном
+      можете искать конкретные разделы FPF и обогащать ими ADI-разбор. Например, раздел <b class="k">B.3</b>
+      описывает Trust &amp; Assurance Calculus (F-G-R вместе с Congruence), а <b class="k">B.5</b> -
+      канонический цикл рассуждения, внутри которого живёт абдуктивный цикл <b class="k">B.5.2</b>.
+      Если в ADI на сложном
       решении вы хотите использовать понятия «bounded rationality» или «exploration-exploitation
       trade-off» - флаг <code>--fpf</code> подтягивает релевантный контекст из базы.
     </p>
@@ -308,13 +316,13 @@
     <div class="code-block">
       <span class="cb-tag">Концептуальный поток · работа с базой FPF</span>
 <span class="cb-comment"># 1. Загрузить спецификацию FPF в индекс</span>
-<span class="cb-ok">→</span> 47 секций проиндексировано
+<span class="cb-ok">→</span> разделы проиндексированы · их число зависит от редакции загруженной спецификации
 
 <span class="cb-comment"># 2. Найти конкретный раздел по ключевому слову</span>
-<span class="cb-ok">→</span> поиск "bounded context" → 3 результата · B.2 (определение) · D.4 (применение) · F.1 (антипаттерны)
+<span class="cb-ok">→</span> поиск "bounded context" → A.1.1 (определение) · A.14 (композиция) · A.7 (строгое различение)
 
 <span class="cb-comment"># 3. Открыть полный текст нужного раздела</span>
-<span class="cb-ok">→</span> раздел B.5 - полное определение ADI Cycle
+<span class="cb-ok">→</span> раздел B.5 - канонический цикл рассуждения
 
 <span class="cb-comment"># 4. Запустить ADI-разбор с обогащением из базы FPF (флаг --fpf)</span>
 <span class="cb-ok">→</span> Подтянуты разделы B.3 (Trust Calculus) + B.5 (ADI)
@@ -328,12 +336,14 @@
         видит конкретные определения и приёмы из спецификации, что часто даёт более глубокий
         разбор. Но это стоит дополнительных запросов к LLM. Используйте <code>--fpf</code> для
         Deep+ решений, где цена ошибки оправдывает накладные. Для Standard - без флага
-        достаточно.
+        достаточно. На воркспейсах, переведённых на новую схему хранения, путь с
+        <code>--fpf</code> может сообщить, что база знаний недоступна: это ожидаемый ответ,
+        а не поломка.
       </p>
     </div>
 
     <p style="margin-top: 18px;">
-      <b class="k">Три режима FPF образуют естественную цепочку</b> с результирующими артефактами.
+      <b class="k">Три выбранных режима плагина можно связать в цепочку</b> с результирующими артефактами.
       <code>/fpf decompose</code> помогает разобрать новую систему - результат становится основой
       для документа требований. <code>/fpf evaluate</code> даёт сравнение вариантов - выходом
       становится обоснование архитектурного решения. <code>/fpf reason</code> делает ADI-разбор,

@@ -112,6 +112,7 @@ useless. Enforce all of these:
 
 ---
 
-_Style derived from the `html-effectiveness` corpus by Thariq Shihipar (MIT) and
-the `effective-html` architecture example by plannotator (MIT). This skill adapts
-that visual language to whole-repository understanding maps for Forgeplan._
+_Style derived from the `html-effectiveness` corpus by Thariq Shihipar
+(Apache-2.0 in the nested corpus's LICENSE) and the `effective-html`
+architecture example by plannotator (MIT). This skill adapts that visual language
+to whole-repository understanding maps for Forgeplan; retain applicable source notices._

@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use forgeplan_core::config::types::Config;
 use forgeplan_core::db::store::{ArtifactRecord, LanceStore};
@@ -16,7 +16,22 @@ pub async fn open_store() -> anyhow::Result<(PathBuf, LanceStore)> {
     // This ensures IntegrityConfig::validate() runs for all code paths
     // (new, score, list, etc. — not just commands that explicitly load config).
     let _config = workspace::load_config(&ws)?;
-    let store = LanceStore::open(&ws).await?;
+    // Refuse BEFORE opening. A migrated workspace's legacy store is retired
+    // on purpose, so the refusal must not be produced by whatever LanceDB
+    // happens to say about a dataset that is gone — and the legacy open
+    // must never be attempted at all here, because `LanceStore::open` runs
+    // schema migrations against a live connection (its own docs call it a
+    // second writer, not a read).
+    if index_migrated(&ws) {
+        return Err(constellation_managed_read_error());
+    }
+    let store = LanceStore::open(&ws).await.map_err(|e| {
+        if index_migrated(&ws) {
+            constellation_managed_read_error()
+        } else {
+            e
+        }
+    })?;
     Ok((ws, store))
 }
 
@@ -37,6 +52,69 @@ pub fn config() -> anyhow::Result<Config> {
 pub async fn store() -> anyhow::Result<LanceStore> {
     let (_, store) = open_store().await?;
     Ok(store)
+}
+
+/// Protocol ownership includes interrupted migrations and retired-table backups.
+/// A leftover legacy table cannot reclaim a protocol-owned index.
+pub fn index_migrated(workspace: &Path) -> bool {
+    forgeplan_core::constellation::facade::workspace_is_migrated(workspace)
+}
+
+/// Read-side counterpart of [`constellation_managed_error`]: the refusal a
+/// command that only READS the legacy store gets on a migrated workspace.
+///
+/// Same reasoning as the mutation-side message, with the read-side remedies
+/// instead of the file-first writers. It exists as its own function because
+/// [`open_store`] refuses BEFORE opening — there is no underlying LanceDB
+/// error to interpolate at that point, and inventing one would imply the
+/// store was consulted when it deliberately was not.
+fn constellation_managed_read_error() -> anyhow::Error {
+    anyhow::anyhow!(
+        "this workspace's index is managed by Constellation \
+         (.forgeplan/lance/CURRENT.json is set; the legacy artifacts.lance \
+         is retired), so the legacy store is not a valid read source here.\n\
+         Fix: use `forgeplan constellation search|get`, `forgeplan index --list`, \
+         or `forgeplan get`/`forgeplan search` — they route to the pinned \
+         index on this layout."
+    )
+}
+
+/// Error message for commands that still need the legacy store on a
+/// constellation-managed workspace — replaces the raw LanceDB
+/// `Dataset ... artifacts.lance was not found` dump with an honest refusal
+/// that names the owning pipeline and the commands that DO work file-first.
+fn constellation_managed_error(e: anyhow::Error) -> anyhow::Error {
+    anyhow::anyhow!(
+        "this workspace's index is managed by Constellation \
+         (.forgeplan/lance/CURRENT.json is set; the legacy artifacts.lance \
+         is retired). This command needs the legacy store and cannot run \
+         file-first.\n\
+         Fix: `forgeplan index` reconciles the derived index from markdown; \
+         `forgeplan link|unlink|new|update` already work on this layout, and \
+         `forgeplan get`/`forgeplan search`/`forgeplan constellation ...` \
+         read the pinned index. Underlying error: {e}"
+    )
+}
+
+/// Open the legacy store if it still owns the index; `None` when the
+/// constellation protocol has claimed `.forgeplan/lance/`. Other open
+/// failures propagate unchanged.
+pub async fn open_store_tolerating_constellation() -> anyhow::Result<(PathBuf, Option<LanceStore>)>
+{
+    match open_store().await {
+        Ok((ws, store)) => Ok((ws, Some(store))),
+        Err(e) => {
+            let cwd = std::env::current_dir()?;
+            let Some(ws) = workspace::find_workspace(&cwd) else {
+                return Err(e);
+            };
+            if index_migrated(&ws) {
+                Ok((ws, None))
+            } else {
+                Err(e)
+            }
+        }
+    }
 }
 
 /// Open workspace store AND acquire the exclusive workspace lock.
@@ -80,12 +158,494 @@ pub async fn open_store_locked() -> anyhow::Result<(PathBuf, WorkspaceLock, Lanc
     let cwd = std::env::current_dir()?;
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
-    // Acquire the lock BEFORE opening LanceStore so each process snapshots
-    // the table state under exclusive access (avoids stale-view reads).
+    let lock = forgeplan_core::workspace::lock::acquire_workspace_lock(&ws).await?;
+    // Refuse BEFORE opening: same reasoning as `open_store`. The legacy
+    // store is retired on this layout, so there is nothing legitimate for
+    // `LanceStore::open` to connect to.
+    if index_migrated(&ws) {
+        return Err(constellation_managed_error(anyhow::anyhow!(
+            "the legacy store was not opened"
+        )));
+    }
+    let _config = workspace::load_config(&ws)?;
+    let store = LanceStore::open(&ws).await.map_err(|e| {
+        if index_migrated(&ws) {
+            constellation_managed_error(e)
+        } else {
+            e
+        }
+    })?;
+    Ok((ws, lock, store))
+}
+
+/// Mutation-side counterpart of [`open_store_tolerating_constellation`]:
+/// identical ordering and locking discipline to [`open_store_locked`]
+/// (lock BEFORE open — same stale-snapshot rule documented there), but
+/// returns `None` for the store when the constellation protocol has claimed
+/// `.forgeplan/lance/` instead of surfacing the retired-dataset error.
+///
+/// Commands that can mutate file-first (`link`, `unlink`, `new`, `update`)
+/// use this; on `store == None` they edit the markdown under the same
+/// workspace lock and let reconcile own the derived index (ADR-003). Other
+/// open failures propagate unchanged.
+pub async fn open_store_locked_tolerating_constellation()
+-> anyhow::Result<(PathBuf, WorkspaceLock, Option<LanceStore>)> {
+    let cwd = std::env::current_dir()?;
+    let ws = workspace::find_workspace(&cwd)
+        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+    // Decide the index owner BEFORE opening. `LanceStore::open` runs schema
+    // migrations against a live connection, so "try to open, notice it is
+    // retired afterwards" is not a safe way to ask whether this workspace
+    // still has a legacy store — the question has to be answered from the
+    // filesystem, which is also the only source that cannot be half-true.
+    let lock = forgeplan_core::workspace::lock::acquire_workspace_lock(&ws).await?;
+    let migrated = index_migrated(&ws);
+    let _config = workspace::load_config(&ws)?;
+    if migrated {
+        return Ok((ws, lock, None));
+    }
+    match LanceStore::open(&ws).await {
+        Ok(store) => Ok((ws, lock, Some(store))),
+        // Ownership evidence still takes precedence over a legacy-open failure.
+        Err(_) if index_migrated(&ws) => Ok((ws, lock, None)),
+        Err(e) => Err(e),
+    }
+}
+
+/// Resolve every selector before a legacy migration or other write, then
+/// verify the same identities after reopening the index under the same lock.
+pub async fn prepare_store_locked_checked(
+    ws: &Path,
+    lock: &WorkspaceLock,
+    selectors: &[(&str, bool)],
+) -> anyhow::Result<Option<LanceStore>> {
+    let before = preflight_selectors(ws, selectors).await?;
+    ensure_ordinary_mutation_allowed(ws)?;
+    let store = if index_migrated(ws) {
+        None
+    } else {
+        Some(
+            LanceStore::open_for_write(ws, lock)
+                .await
+                .map_err(|error| {
+                    error.context("index preparation failed; legacy migration may be partial")
+                })?,
+        )
+    };
+    if before != preflight_selectors(ws, selectors).await? {
+        anyhow::bail!("artifact identity changed during write preparation");
+    }
+    if let Some(store) = &store {
+        for ((selector, required), expected) in selectors.iter().zip(&before) {
+            if selector.contains('@') && !*required {
+                continue;
+            }
+            if &store.resolve_canonical_key(lock, selector).await? != expected {
+                anyhow::bail!("reopened index does not match the selected artifact identity");
+            }
+        }
+    }
+    Ok(store)
+}
+
+pub async fn open_store_locked_checked(
+    selectors: &[(&str, bool)],
+) -> anyhow::Result<(PathBuf, WorkspaceLock, Option<LanceStore>)> {
+    let ws = find_workspace_path()?;
+    let lock = workspace::lock::acquire_workspace_lock(&ws).await?;
+    let store = prepare_store_locked_checked(&ws, &lock, selectors).await?;
+    Ok((ws, lock, store))
+}
+
+pub(crate) async fn preflight_selectors(
+    workspace: &Path,
+    selectors: &[(&str, bool)],
+) -> anyhow::Result<Vec<Option<String>>> {
+    let candidates = forgeplan_core::artifact::documents::workspace_candidates(workspace).await?;
+    let mut keys = Vec::with_capacity(selectors.len());
+    for (selector, required) in selectors {
+        if selector.contains('@') && !*required {
+            keys.push(Some((*selector).to_string()));
+            continue;
+        }
+        match resolve_in_document_set(selector, &candidates) {
+            Resolution::Found(found) => keys.push(Some(found.identity.canonical_key)),
+            Resolution::NotFound if !*required => keys.push(None),
+            outcome => return Err(refuse_resolution(selector, &outcome, &candidates)),
+        }
+    }
+    Ok(keys)
+}
+
+/// One-time stderr note for the file-first path: explains why the
+/// store-backed extras (changelog, R_eff recompute, auto-activate,
+/// projection re-render) did not run, and who owns the derived index now.
+/// Printed once per command — never faked as a result.
+pub fn note_constellation_owns_index() {
+    eprintln!(
+        "note: legacy index not present — reconciliation owns the derived index (forgeplan index)"
+    );
+}
+
+/// The read source a constellation-migrated workspace answers from: one
+/// captured/pinned [`WorkspaceRead`] over `.forgeplan/`, never a
+/// `LanceStore`.
+///
+/// This is the read-after-write answer too. A mutation that then re-opens the
+/// legacy store to recount what it just wrote is reading a snapshot that
+/// predates the write, and on a migrated workspace it also resurrects a
+/// retired table. One capture per question is the whole point, so callers
+/// build a fresh view rather than caching one across a mutation.
+///
+/// No owner, no `WorkspaceLock`, no index writes, no model download.
+pub async fn workspace_read(
+    ws: &Path,
+) -> anyhow::Result<forgeplan_core::constellation::workspace_read::WorkspaceRead> {
+    forgeplan_core::constellation::facade::open_workspace_read(
+        ws,
+        None,
+        forgeplan_core::constellation::capture::CaptureLimits::default(),
+    )
+    .await
+    .map_err(anyhow::Error::new)
+}
+
+/// The read source one report command answers from, chosen ONCE from the
+/// filesystem before any index is opened.
+///
+/// Two variants, no third:
+/// - [`ReadSource::Legacy`] — the workspace still has a legacy `artifacts.lance`
+///   that owns `.forgeplan/lance/`. The report is computed from it exactly as
+///   before the cutover.
+/// - [`ReadSource::Captured`] — the Constellation protocol owns the index, so
+///   one fresh [`WorkspaceRead`] capture answers the question. No `LanceStore`
+///   is opened, no retired table is recreated, no schema migration runs.
+///
+/// The decision is deliberately NOT `try open, then fall back`: `LanceStore::open`
+/// runs migrations against a live connection, so asking the question by opening
+/// is what recreates the tables a migrated workspace must never grow again.
+pub enum ReadSource {
+    Legacy(LanceStore),
+    Captured(forgeplan_core::constellation::workspace_read::WorkspaceRead),
+}
+
+/// Open the read source for a reporting command: legacy store or one fresh
+/// capture, decided from the index owner before anything is opened.
+///
+/// A shared permit is returned separately and must outlive the whole report.
+pub async fn open_read_source() -> anyhow::Result<(
+    PathBuf,
+    ReadSource,
+    forgeplan_core::workspace::lock::WorkspaceReadLock,
+)> {
+    let cwd = std::env::current_dir()?;
+    let ws = workspace::find_workspace(&cwd)
+        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+    let guard = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&ws).await?;
+    let source = read_source_for(&ws, &guard).await?;
+    Ok((ws, source, guard))
+}
+async fn selected_capture(
+    ws: &Path,
+    permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit,
+    input: &str,
+) -> anyhow::Result<forgeplan_core::constellation::workspace_read::SelectedWorkspaceRead> {
+    let outcome = forgeplan_core::constellation::facade::open_workspace_selector_with_permit(
+        ws, permit, input,
+    )
+    .await;
+    let resolution = match outcome {
+        Ok(Some(selected)) => return Ok(selected),
+        Ok(None) => Resolution::NotFound,
+        Err(forgeplan_core::constellation::ConstellationError::Resolve(error)) => Err(error).into(),
+        Err(error) => return Err(error.into()),
+    };
+    let candidates = match &resolution {
+        Resolution::Ambiguous { candidates, .. }
+        | Resolution::ConflictingCanonicalKey { candidates, .. } => candidates.as_slice(),
+        _ => &[],
+    };
+    let failure = resolution_failure(&resolution, input, candidates);
+    print_resolution_failure(&failure);
+    Err(resolution_failure_error(&failure))
+}
+
+pub enum SelectedReadSource {
+    Legacy(LanceStore),
+    Captured(forgeplan_core::constellation::workspace_read::SelectedWorkspaceRead),
+}
+
+/// Open a single-artifact read without exposing a diagnostic corpus as a list.
+pub async fn open_selected_source(
+    input: &str,
+) -> anyhow::Result<(
+    PathBuf,
+    SelectedReadSource,
+    String,
+    String,
+    forgeplan_core::workspace::lock::WorkspaceReadLock,
+)> {
+    let cwd = std::env::current_dir()?;
+    let ws = workspace::find_workspace(&cwd)
+        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+    let guard = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&ws).await?;
+    let _config = workspace::load_config(&ws)?;
+    if index_migrated(&ws) {
+        let selected = selected_capture(&ws, &guard, input).await?;
+        let key = selected.canonical_key().to_string();
+        let display = selected.record().id.clone();
+        Ok((
+            ws,
+            SelectedReadSource::Captured(selected),
+            key,
+            display,
+            guard,
+        ))
+    } else {
+        let source = read_source_for(&ws, &guard).await?;
+        let (key, display) = resolve_required_identity(&source, &ws, input).await?;
+        let ReadSource::Legacy(store) = source else {
+            unreachable!("legacy workspace source")
+        };
+        Ok((ws, SelectedReadSource::Legacy(store), key, display, guard))
+    }
+}
+
+/// Open a source under an existing read permit, including a writer's exclusive guard.
+pub async fn read_source_for(
+    ws: &Path,
+    permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit,
+) -> anyhow::Result<ReadSource> {
+    let _config = workspace::load_config(ws)?;
+    if index_migrated(ws) {
+        Ok(ReadSource::Captured(
+            forgeplan_core::constellation::facade::open_workspace_read_with_permit(ws, permit)
+                .await?,
+        ))
+    } else {
+        Ok(ReadSource::Legacy(LanceStore::open(ws).await?))
+    }
+}
+
+/// The `.forgeplan/` directory for commands that only need workspace state
+/// (session files, config, locks) and must NOT open an artifact index at all.
+///
+/// Used by the discovery/session surfaces: their entire state lives in
+/// `.forgeplan/discover/*.json`, so opening the index would be a second writer
+/// on the read path for nothing.
+pub fn find_workspace_path() -> anyhow::Result<PathBuf> {
+    let cwd = std::env::current_dir()?;
+    workspace::find_workspace(&cwd)
+        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))
+}
+
+/// Workspace path + the exclusive workspace lock, WITHOUT opening an artifact
+/// index.
+///
+/// Same lock discipline as [`open_store_locked`] (lock acquired before anything
+/// else could be opened) for commands that write workspace-owned files —
+/// session state — where there is no store to guard at all. Opens no
+/// `LanceStore`, so it is the correct path on a constellation-managed
+/// workspace instead of a refusal.
+pub async fn open_workspace_locked() -> anyhow::Result<(PathBuf, WorkspaceLock)> {
+    let ws = find_workspace_path()?;
     let lock = forgeplan_core::workspace::lock::acquire_workspace_lock(&ws).await?;
     let _config = workspace::load_config(&ws)?;
-    let store = LanceStore::open(&ws).await?;
-    Ok((ws, lock, store))
+    Ok((ws, lock))
+}
+
+/// Outcome of reconciling canonical file mutations with the derived index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReconcileOutcome {
+    Published,
+    PendingIndexBusy,
+    Failed(String),
+}
+
+impl ReconcileOutcome {
+    pub fn is_published(&self) -> bool {
+        matches!(self, Self::Published)
+    }
+}
+
+/// Run one constellation `maintain_index` pass after a file-first mutation
+/// so the change lands in the `constellation_*_v1` tables immediately — the
+/// same generation pipeline a `forgeplan watch` file edit triggers.
+///
+/// Best-effort: the markdown write already stands. Contention is a pending
+/// publication; other errors remain distinguishable to callers that must
+/// surface them. Every non-published outcome prints the established warning
+/// and `index_pending` diagnostic.
+///
+/// CALLERS MUST have released the [`WorkspaceLock`] before invoking — the
+/// pass re-acquires it per storage commit via `capture_under_workspace_lock`,
+/// and a still-held guard turns the capture into a 30 s timeout.
+pub async fn reconcile_after_file_mutation(ws: &Path) -> ReconcileOutcome {
+    let canonical = ws.canonicalize().unwrap_or_else(|_| ws.to_path_buf());
+    let capability =
+        forgeplan_core::constellation::facade::MaintainCapability::for_strict_maintenance(
+            canonical,
+        );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    match forgeplan_core::constellation::facade::maintain_index(
+        &capability,
+        forgeplan_core::constellation::capture::CaptureLimits::default(),
+        deadline,
+    )
+    .await
+    {
+        Ok((view, outcome)) => {
+            eprintln!(
+                "  reconciled: generation {} ({} commit(s)); index_pending: false",
+                view.manifest.generation_id,
+                outcome.commits.len()
+            );
+            ReconcileOutcome::Published
+        }
+        Err(error) => {
+            eprintln!(
+                "  warning: constellation reconcile failed ({error}) — the file change stands; \
+                 run `forgeplan index` to publish it"
+            );
+            eprintln!("  index_pending: true — derived index not yet updated");
+            match error {
+                forgeplan_core::constellation::ConstellationError::IndexBusy { .. } => {
+                    ReconcileOutcome::PendingIndexBusy
+                }
+                other => ReconcileOutcome::Failed(other.to_string()),
+            }
+        }
+    }
+}
+
+/// Refuse ordinary writes against a diagnostic or colliding canonical corpus.
+/// The caller holds the workspace lock and has completed selector resolution.
+pub fn ensure_ordinary_mutation_allowed(ws: &Path) -> anyhow::Result<()> {
+    forgeplan_core::constellation::facade::ensure_ordinary_mutation_allowed(ws)?;
+    Ok(())
+}
+
+/// Drain the legacy semantic backlog after releasing the workspace lock.
+pub async fn drain_legacy_semantic_after_mutation(ws: &Path) -> anyhow::Result<()> {
+    LanceStore::drain_identity_semantic_backlog(ws)
+        .await
+        .map_err(|e| e.context("canonical committed, semantic backlog pending"))
+}
+
+pub fn describe_possible_legacy_partial_commit(
+    legacy: bool,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    if legacy {
+        error.context("canonical files may be partially committed, semantic backlog may be pending")
+    } else {
+        error
+    }
+}
+
+/// Run the canonical `maintain_index` pass this workspace's `lance/` root
+/// belongs to, then give the embedding queue a best-effort cached-model
+/// drain. Shared by every surface that needs "the derived index is
+/// constellation work now": `git-sync` after applying its diff, `reindex`
+/// on a workspace where CURRENT.json already names the owner.
+///
+/// Two transitions are made loud rather than silent, because each is a
+/// one-way door an operator should never have to discover after the fact:
+/// a first migration (legacy tables present, no CURRENT.json) renames the
+/// retired tables to `*.legacy-backup.lance` and is announced; a legacy
+/// table still sitting *beside* CURRENT.json afterwards means the layout
+/// is split — reads would misdetect the owner — and is warned about.
+///
+/// Serialize managed CLI maintenance through its audit append. This lock lives
+/// below the ignored index tree, separately from the real workspace lock,
+/// which is always released before `maintain_index`.
+pub async fn acquire_managed_maintenance_audit_lock(ws: &Path) -> anyhow::Result<WorkspaceLock> {
+    let index_root = ws.join("lance");
+    let index_metadata = tokio::fs::symlink_metadata(&index_root).await?;
+    if index_metadata.file_type().is_symlink() || !index_metadata.is_dir() {
+        anyhow::bail!("managed index root is not a non-symlink directory");
+    }
+    let lock_workspace = index_root.join(".cli-maintenance-audit");
+    match tokio::fs::symlink_metadata(&lock_workspace).await {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            anyhow::bail!("managed CLI audit lock path is not a non-symlink directory");
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            match tokio::fs::create_dir(&lock_workspace).await {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err(error) => return Err(error.into()),
+    }
+    let metadata = tokio::fs::symlink_metadata(&lock_workspace).await?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        anyhow::bail!("managed CLI audit lock path is not a non-symlink directory");
+    }
+    forgeplan_core::workspace::acquire_workspace_lock(&lock_workspace).await
+}
+
+pub async fn reconcile_and_drain(ws: &Path, label: &str) -> anyhow::Result<()> {
+    use forgeplan_core::constellation::manifest::LEGACY_TABLES;
+    use forgeplan_core::constellation::storage::CURRENT_FILE_NAME;
+
+    let canonical = ws.canonicalize().unwrap_or_else(|_| ws.to_path_buf());
+    let index_root = canonical.join("lance");
+    let migrating = !index_root.join(CURRENT_FILE_NAME).exists()
+        && LEGACY_TABLES
+            .iter()
+            .any(|t| index_root.join(format!("{t}.lance")).exists());
+    let capability =
+        forgeplan_core::constellation::facade::MaintainCapability::for_strict_maintenance(
+            canonical,
+        );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    match forgeplan_core::constellation::facade::maintain_index(
+        &capability,
+        forgeplan_core::constellation::capture::CaptureLimits::default(),
+        deadline,
+    )
+    .await
+    {
+        Ok((view, outcome)) => {
+            if migrating {
+                println!(
+                    "  index migrated to constellation protocol: legacy tables backed up to *.legacy-backup.lance"
+                );
+            }
+            println!(
+                "  reconciled into generation {} ({} commit(s))",
+                view.manifest.generation_id,
+                outcome.commits.len()
+            );
+            for legacy in LEGACY_TABLES {
+                let table = index_root.join(format!("{legacy}.lance"));
+                if table.exists() {
+                    eprintln!(
+                        "  warning: retired legacy table {} still present beside {CURRENT_FILE_NAME} — \
+                         reads may misdetect the index owner until it is removed",
+                        table.display()
+                    );
+                }
+            }
+            forgeplan_core::constellation::runtime::drain_queue_if_configured(
+                &capability,
+                std::time::Instant::now() + std::time::Duration::from_secs(60),
+                label,
+                // A one-shot CLI drain has no host loop to serve, so nothing can
+                // interrupt it early; `deadline` is the whole bound.
+                &forgeplan_core::constellation::runtime::DrainControl::never(),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("{label}: embedding drain failed: {e}"))?;
+        }
+        Err(e) => {
+            anyhow::bail!("{label}: Constellation reconcile failed: {e}");
+        }
+    }
+    Ok(())
 }
 
 /// Load session state from workspace.
@@ -132,6 +692,38 @@ pub fn advance_session(to: Phase, artifact: Option<&str>) {
 
 /// Build set of "resolved" artifact IDs: active + deprecated + superseded.
 /// Only "draft" (and "stale") artifacts are considered unresolved and can block.
+/// The relations with their endpoints named by the display id.
+///
+/// The relations are stored under the canonical key, and a report names the
+/// documents the way a reader knows them. The mapping is by the key, so it
+/// stays unambiguous even when two documents share a display id — the
+/// relation keeps naming the right document, and the reader sees the number.
+pub fn relations_by_display_id(
+    relations: &[(String, String, String)],
+    records: &[ArtifactRecord],
+) -> Vec<(String, String, String)> {
+    let display: std::collections::HashMap<&str, &str> = records
+        .iter()
+        .map(|record| (record.canonical_key.as_str(), record.id.as_str()))
+        .collect();
+    relations
+        .iter()
+        .map(|(source, target, relation)| {
+            let source = display
+                .get(source.as_str())
+                .copied()
+                .unwrap_or(source.as_str())
+                .to_string();
+            let target = display
+                .get(target.as_str())
+                .copied()
+                .unwrap_or(target.as_str())
+                .to_string();
+            (source, target, relation.clone())
+        })
+        .collect()
+}
+
 pub fn resolved_ids(records: &[ArtifactRecord]) -> HashSet<String> {
     records
         .iter()
@@ -326,11 +918,23 @@ pub fn require_llm_config() -> anyhow::Result<forgeplan_core::config::types::Llm
     Ok(llm)
 }
 
-/// Log a change to the change_log table (best-effort, never fails the command).
-/// May reference deleted artifacts by design (audit trail).
-pub async fn log_change(store: &LanceStore, artifact_id: &str, action: &str, source: &str) {
-    let entry = forgeplan_core::changelog::ChangeLogEntry::new(artifact_id, action, source);
-    if let Err(e) = store.log_change(&entry).await {
+/// Log one change (best-effort, never fails the primary command).
+///
+/// The caller holds the workspace lock and supplies its resolved `.forgeplan`
+/// directory. A legacy handle selects that sink exclusively; otherwise only
+/// auxiliary history is opened. Deleted artifact IDs remain valid audit IDs.
+pub async fn log_change(
+    workspace: &Path,
+    guard: &WorkspaceLock,
+    store: Option<&LanceStore>,
+    canonical_key: &str,
+    artifact_id: &str,
+    action: &str,
+    source: &str,
+) {
+    let entry = forgeplan_core::changelog::ChangeLogEntry::new(artifact_id, action, source)
+        .with_canonical_key(canonical_key);
+    if let Err(e) = append_change_log(workspace, guard, store, &entry).await {
         eprintln!(
             "  Warning: changelog write failed for {}: {}",
             artifact_id, e
@@ -338,24 +942,44 @@ pub async fn log_change(store: &LanceStore, artifact_id: &str, action: &str, sou
     }
 }
 
-/// Log a change with field + values (best-effort).
+/// Log one field change under the caller's workspace lock (best-effort).
+///
+/// Borrowed tuples carry `(canonical_key, artifact_id)` and the field transition.
 pub async fn log_change_field(
-    store: &LanceStore,
-    artifact_id: &str,
+    workspace: &Path,
+    guard: &WorkspaceLock,
+    store: Option<&LanceStore>,
+    (canonical_key, artifact_id): (&str, &str),
     action: &str,
-    field: &str,
-    old_value: Option<&str>,
-    new_value: Option<&str>,
+    (field, old_value, new_value): (&str, Option<&str>, Option<&str>),
     source: &str,
 ) {
     let entry = forgeplan_core::changelog::ChangeLogEntry::new(artifact_id, action, source)
+        .with_canonical_key(canonical_key)
         .with_field(field)
         .with_values(old_value, new_value);
-    if let Err(e) = store.log_change(&entry).await {
+    if let Err(e) = append_change_log(workspace, guard, store, &entry).await {
         eprintln!(
             "  Warning: changelog write failed for {}: {}",
             artifact_id, e
         );
+    }
+}
+
+async fn append_change_log(
+    workspace: &Path,
+    guard: &WorkspaceLock,
+    store: Option<&LanceStore>,
+    entry: &forgeplan_core::changelog::ChangeLogEntry,
+) -> anyhow::Result<()> {
+    match store {
+        Some(store) => store.log_change(guard, entry).await,
+        None => {
+            let history =
+                forgeplan_core::db::auxiliary::AuxiliaryStore::open_history_or_create(workspace)
+                    .await?;
+            history.log_change(entry).await
+        }
     }
 }
 
@@ -379,16 +1003,615 @@ pub async fn open_driver()
 /// mutation, so we degrade gracefully by warning + suggesting the
 /// `forgeplan score-all` recovery path. This wraps Round 8 audit HIGH-3 (DRY)
 /// and HIGH-3 security (actionable Fix: marker) into a single contract.
-pub async fn sync_score_target_or_warn(store: &LanceStore, id: &str) {
-    if let Err(e) = forgeplan_core::scoring::sync_score_target(store, id).await {
+pub async fn sync_score_target_or_warn(
+    store: &LanceStore,
+    guard: &forgeplan_core::workspace::lock::WorkspaceLock,
+    id: &str,
+) {
+    if let Err(e) = forgeplan_core::scoring::sync_score_target(store, guard, id).await {
         eprintln!("  Warning: could not auto-recompute R_eff for {id}: {e}");
         eprintln!("Fix: forgeplan score --all");
     }
 }
 
+// ── Shared artifact resolution (CLI side) ─────────────────────────────
+//
+// The CLI resolves a selector through the SAME resolver the MCP server
+// uses: `forgeplan_mcp::convert`. The decision, the outcome taxonomy and
+// the candidate list are one implementation, so the two surfaces cannot
+// disagree about which document a name means.
+//
+// The document set itself lives in core —
+// `forgeplan_core::artifact::documents` — because it is a workspace
+// capability, not an MCP one: the ONE scan, the ONE candidate list, and
+// the CLI and the MCP server read the very same documents.
+//
+// What lives here is the CLI's half of that contract: handing a document
+// set to the shared resolver, and rendering a refusal as a command that
+// exits non-zero.
+
+use forgeplan_core::artifact::canonical_key::ArtifactCandidate;
+
+/// The outcome of resolving one artifact reference.
+///
+/// The very type the MCP server answers with — one taxonomy, one shape.
+/// The refusals stay apart: `not_found`, `ambiguous`,
+/// `conflicting_canonical_key`, `invalid_selector` and `incomplete_capture`
+/// are five different facts, and none of them is "not found".
+pub use forgeplan_mcp::convert::Resolution;
+
+/// Resolve one artifact reference over a document set.
+///
+/// The one resolver: `forgeplan_mcp::convert::resolve_reference` — the
+/// shared algorithm the MCP server calls too.
+pub fn resolve_in_document_set(input: &str, documents: &[ArtifactCandidate]) -> Resolution {
+    forgeplan_mcp::convert::resolve_reference(input, documents)
+}
+
+/// A resolution against a workspace: the outcome plus the documents a
+/// refusal names.
+#[derive(Debug, Clone)]
+pub struct WorkspaceResolution {
+    /// The shared outcome of the resolution.
+    pub outcome: Resolution,
+    /// The documents the refusal names: every claimant of an ambiguity, and
+    /// every claimant of a contested canonical key.
+    pub candidates: Vec<ArtifactCandidate>,
+}
+
+/// Resolve a selector when a caller treats absence as an optional result.
+///
+/// This is retained for commands whose behavior explicitly supports
+/// unresolved selectors. Commands that require one existing artifact use
+/// [`resolve_required_identity`] instead.
+pub async fn resolve_identity(
+    source: &ReadSource,
+    workspace: &Path,
+    input: &str,
+) -> anyhow::Result<Option<(String, String)>> {
+    let candidates = match source {
+        ReadSource::Legacy(_) => {
+            forgeplan_core::artifact::documents::workspace_candidates(workspace).await?
+        }
+        ReadSource::Captured(read) => forgeplan_core::artifact::documents::capture_candidates(read),
+    };
+    Ok(
+        match forgeplan_core::artifact::canonical_key::resolve_artifact(input, &candidates) {
+            Ok(Some(resolved)) => Some((
+                resolved.identity.canonical_key,
+                resolved.identity.display_id,
+            )),
+            Ok(None) => None,
+            Err(forgeplan_core::artifact::canonical_key::ResolveError::InvalidSelector {
+                ..
+            }) => None,
+            Err(problem) => {
+                anyhow::bail!("the document set could not be read in full: {problem}");
+            }
+        },
+    )
+}
+
+/// Resolve a selector that must name exactly one existing document.
+pub async fn resolve_required_identity(
+    source: &ReadSource,
+    workspace: &Path,
+    input: &str,
+) -> anyhow::Result<(String, String)> {
+    let resolution = match source {
+        ReadSource::Legacy(_) => resolve_against_workspace(workspace, input).await?,
+        ReadSource::Captured(read) => resolve_against_capture(read, input),
+    };
+    require_found_identity(input, &resolution)
+}
+
+pub(crate) fn require_found_identity(
+    input: &str,
+    resolution: &WorkspaceResolution,
+) -> anyhow::Result<(String, String)> {
+    match &resolution.outcome {
+        Resolution::Found(found) => Ok((
+            found.identity.canonical_key.clone(),
+            found.identity.display_id.clone(),
+        )),
+        other => Err(refuse_resolution(input, other, &resolution.candidates)),
+    }
+}
+
+/// Resolve a reference for the ADVISORY layer — phase tracking.
+///
+/// PROB-056: `phase` works on a raw id and never fails because the document is
+/// missing; the marker is advisory and may exist before the document does.
+/// Ambiguity and a key collision are a different matter — attaching a phase to
+/// whichever of two documents came first is exactly the bug this work removes —
+/// so those still refuse.
+pub async fn resolve_advisory_identity(
+    source: &ReadSource,
+    workspace: &Path,
+    input: &str,
+) -> anyhow::Result<(String, String)> {
+    let resolution = match source {
+        ReadSource::Legacy(_) => resolve_against_workspace(workspace, input).await?,
+        ReadSource::Captured(read) => resolve_against_capture(read, input),
+    };
+    match &resolution.outcome {
+        Resolution::Found(found) => Ok((
+            found.identity.canonical_key.clone(),
+            found.identity.display_id.clone(),
+        )),
+        Resolution::NotFound | Resolution::InvalidSelector { .. } => {
+            Ok((input.to_string(), input.to_string()))
+        }
+        other => Err(refuse_resolution(input, other, &resolution.candidates)),
+    }
+}
+
+/// Resolve one artifact reference against a workspace's own documents.
+///
+/// The document set is the workspace's markdown, read by the ONE workspace
+/// scan — `forgeplan_core::artifact::documents::workspace_candidates` — so
+/// the answer is about the documents themselves and carries their
+/// workspace-relative paths. The decision is made by the shared resolver.
+pub async fn resolve_against_workspace(
+    workspace: &Path,
+    input: &str,
+) -> anyhow::Result<WorkspaceResolution> {
+    let documents = match forgeplan_core::artifact::documents::workspace_candidates(workspace).await
+    {
+        Ok(documents) => documents,
+        Err(error) => {
+            // The document set could not be read in full. That is its own
+            // outcome, not a miss: the CLI and the MCP server report the
+            // same code for the same workspace.
+            return Ok(WorkspaceResolution {
+                outcome: forgeplan_mcp::convert::Resolution::IncompleteCapture {
+                    message: error.to_string(),
+                },
+                candidates: Vec::new(),
+            });
+        }
+    };
+    Ok(resolve_over(
+        input,
+        &documents,
+        resolve_in_document_set(input, &documents),
+    ))
+}
+
+/// Resolve one artifact reference against a captured workspace view.
+///
+/// The capture is the document set on a migrated workspace: it knows each
+/// document's canonical key, display id, title and relative path, and it
+/// knows whether it read the whole source — a partial capture is an
+/// `incomplete_capture` refusal, never a "not found".
+pub fn resolve_against_capture(
+    read: &forgeplan_core::constellation::workspace_read::WorkspaceRead,
+    input: &str,
+) -> WorkspaceResolution {
+    let documents = forgeplan_core::artifact::documents::capture_candidates(read);
+    let outcome = forgeplan_mcp::convert::resolve_in_capture(read, input);
+    resolve_over(input, &documents, outcome)
+}
+
+/// Resolve one artifact reference against a legacy index.
+///
+/// The index rows are the document set on this layout, and the shared
+/// resolver decides over them — so a name two rows answer to names
+/// neither, and the refusal names both.
+///
+/// The workspace is passed along because a refusal has to point at a file
+/// the operator can open: the index records no path, so the paths come
+/// from the workspace's own markdown.
+pub async fn resolve_against_legacy_index(
+    store: &LanceStore,
+    permit: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit,
+    workspace: &Path,
+    input: &str,
+) -> anyhow::Result<WorkspaceResolution> {
+    let outcome =
+        forgeplan_mcp::convert::resolve_in_legacy_index(store, permit, workspace, input).await?;
+    let candidates = match &outcome {
+        Resolution::Ambiguous { candidates, .. } => candidates.clone(),
+        _ if forgeplan_mcp::convert::resolution_code(&outcome) == "conflicting_canonical_key" => {
+            // A contested canonical key names its claimants: the rows that
+            // claim that key, with the path each row's markdown has. The
+            // paths come from the ONE workspace scan, so they are the same
+            // paths the file route would report.
+            let paths =
+                forgeplan_core::artifact::documents::workspace_document_paths(workspace).await?;
+            let summaries = store.list_artifacts(permit, None).await?;
+            forgeplan_core::artifact::documents::candidates_from_summaries(&summaries)
+                .into_iter()
+                .filter(|row| row.canonical_key == input.trim())
+                .map(|mut row| {
+                    if let Some(path) = paths.get(&row.canonical_key) {
+                        row.relative_path = path.clone();
+                    }
+                    row
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    };
+    Ok(WorkspaceResolution {
+        outcome,
+        candidates,
+    })
+}
+
+/// Pair an outcome with the documents a refusal names.
+///
+/// An ambiguity names its candidates through the outcome itself. Every
+/// other refusal names no candidate of its own, except a contested
+/// canonical key — whose claimants are the documents that claim that key,
+/// which the document set answers whether or not the outcome carries them.
+fn resolve_over(
+    input: &str,
+    documents: &[ArtifactCandidate],
+    outcome: Resolution,
+) -> WorkspaceResolution {
+    let candidates = match &outcome {
+        Resolution::Ambiguous { candidates, .. } => candidates.clone(),
+        _ => documents
+            .iter()
+            .filter(|document| document.canonical_key == input.trim())
+            .cloned()
+            .collect(),
+    };
+    WorkspaceResolution {
+        outcome,
+        candidates,
+    }
+}
+
+/// A resolution that named no single document, rendered for the terminal.
+#[derive(Debug, Clone)]
+pub struct ResolutionFailure {
+    /// The machine-readable code: `not_found`, `ambiguous`,
+    /// `conflicting_canonical_key`, `invalid_selector` or
+    /// `incomplete_capture`.
+    pub code: &'static str,
+    /// The selector as the caller wrote it.
+    pub input: String,
+    /// The documents the refusal names.
+    pub candidates: Vec<ArtifactCandidate>,
+    /// The human-readable message.
+    pub message: String,
+}
+
+impl ResolutionFailure {
+    /// The candidates as the terminal shows them: canonical key, title and
+    /// workspace-relative path.
+    ///
+    /// No absolute path and no other source's data ever reaches the
+    /// output.
+    pub fn candidate_lines(&self) -> Vec<String> {
+        forgeplan_mcp::convert::describe_candidates(&self.candidates)
+    }
+}
+
+/// Describe a refusal of the shared resolver.
+///
+/// The code comes from the shared taxonomy, so the CLI and the MCP server
+/// report the same code for the same refusal.
+pub fn resolution_failure(
+    outcome: &Resolution,
+    input: &str,
+    candidates: &[ArtifactCandidate],
+) -> ResolutionFailure {
+    let code = forgeplan_mcp::convert::resolution_code(outcome);
+    let (named, message) = match outcome {
+        Resolution::Ambiguous { candidates, .. } => (
+            candidates.clone(),
+            format!(
+                "selector '{input}' matches {} documents — address one of them by its canonical key",
+                candidates.len()
+            ),
+        ),
+        Resolution::ConflictingCanonicalKey { key, candidates } => (
+            candidates.clone(),
+            format!(
+                "canonical key '{key}' is claimed by {} documents",
+                candidates.len()
+            ),
+        ),
+        Resolution::InvalidSelector { input: given } => (
+            Vec::new(),
+            format!("selector '{given}' is not a valid artifact reference"),
+        ),
+        Resolution::IncompleteCapture { message } => (
+            Vec::new(),
+            format!("the document set is incomplete: {message}"),
+        ),
+        _ => {
+            let claimants = candidates
+                .iter()
+                .filter(|document| document.canonical_key == input.trim())
+                .cloned()
+                .collect::<Vec<_>>();
+            let message = if claimants.is_empty() {
+                // The CLI's wording for a miss, unchanged: the code says
+                // `not_found`, the text says what the operator sees.
+                format!("Artifact '{input}' not found\nFix: forgeplan list")
+            } else {
+                format!(
+                    "canonical key '{input}' is claimed by {} documents",
+                    claimants.len()
+                )
+            };
+            (claimants, message)
+        }
+    };
+    ResolutionFailure {
+        code,
+        input: input.to_string(),
+        candidates: named,
+        message,
+    }
+}
+
+/// Print a refusal: the candidates first, then the message.
+///
+/// The candidates are what makes a refusal actionable — they are named by
+/// their canonical key, their title and their workspace-relative path, so
+/// the operator can open the file and address the document by its key.
+pub fn print_resolution_failure(failure: &ResolutionFailure) {
+    // The message is NOT printed here: `resolution_failure_error` returns it
+    // as the command's error, and the top level already prints it as
+    // `Error:` with its single `Fix:` line (PROB-071 pins exactly one).
+    // Printing it here too produced two `Fix:` markers on stderr, one from
+    // the resolver and one from the handler. What the error cannot carry —
+    // the candidate lines — is what this prints.
+    for candidate in failure.candidate_lines() {
+        eprintln!("  {candidate}");
+    }
+    if failure.code == "ambiguous"
+        && let Some(candidate) = failure.candidates.first()
+    {
+        eprintln!("Fix: forgeplan get {}", candidate.canonical_key);
+    }
+}
+
+/// The error a command returns for a resolution that named no single
+/// document.
+///
+/// Returning it ends the command with a non-zero exit status: an
+/// ambiguity, a contested key, an unusable selector and an incomplete
+/// document set are refusals, and none of them is "not found".
+pub fn resolution_failure_error(failure: &ResolutionFailure) -> anyhow::Error {
+    let exit_code = match failure.code {
+        "not_found" => 3,
+        "conflicting_canonical_key" => 4,
+        "ambiguous" => 5,
+        _ => 1,
+    };
+    anyhow::Error::new(ResolutionFailureError {
+        exit_code,
+        message: failure.message.clone(),
+    })
+}
+
+#[derive(Debug)]
+struct ResolutionFailureError {
+    exit_code: u8,
+    message: String,
+}
+
+impl std::fmt::Display for ResolutionFailureError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ResolutionFailureError {}
+
+pub fn resolution_exit_code(error: &anyhow::Error) -> Option<u8> {
+    error
+        .downcast_ref::<ResolutionFailureError>()
+        .map(|failure| failure.exit_code)
+}
+
+/// Refuse a reference the shared resolver did not accept.
+///
+/// The refusal is rendered the way every refusal is rendered — the
+/// candidates first, each named by its canonical key, its title and its
+/// workspace-relative path, then the message — and the error ends the
+/// command with a non-zero exit status.
+///
+/// The code comes from the shared taxonomy, so the CLI and the MCP server
+/// report the SAME refusal for the same reference: an ambiguity is an
+/// ambiguity on both surfaces, and neither of them calls it "not found".
+pub fn refuse_resolution(
+    input: &str,
+    outcome: &Resolution,
+    documents: &[ArtifactCandidate],
+) -> anyhow::Error {
+    let failure = resolution_failure(outcome, input, documents);
+    print_resolution_failure(&failure);
+    resolution_failure_error(&failure)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn log_change_appends_once_to_the_selected_history_sink() {
+        use forgeplan_core::db::auxiliary::AuxiliaryStore;
+
+        for legacy_layout in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let ws = temp.path().join(".forgeplan");
+            let lock = workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+            let store = if legacy_layout {
+                Some(LanceStore::init_new(&ws, &lock).await.unwrap())
+            } else {
+                None
+            };
+
+            log_change(
+                &ws,
+                &lock,
+                store.as_ref(),
+                "note-001",
+                "NOTE-001",
+                "delete",
+                "reindex",
+            )
+            .await;
+            let history = AuxiliaryStore::open_history_existing(&ws).await.unwrap();
+            let entries = history
+                .get_change_log(Some("NOTE-001"), Some("reindex"), 10)
+                .await
+                .unwrap();
+            assert_eq!(entries.len(), 1, "one established event must append once");
+            let entry = &entries[0];
+            assert_eq!(entry.artifact_id, "NOTE-001");
+            assert_eq!(entry.action, "delete");
+            assert_eq!(entry.source, "reindex");
+            assert!(entry.field.is_none());
+            assert!(entry.old_value.is_none());
+            assert!(entry.new_value.is_none());
+            assert!(entry.commit_hash.is_none());
+            chrono::DateTime::parse_from_rfc3339(&entry.timestamp).unwrap();
+            if !legacy_layout {
+                for name in ["artifacts", "evidence", "relations", "fpf_spec"] {
+                    assert!(!ws.join("lance").join(format!("{name}.lance")).exists());
+                }
+            }
+            drop(history);
+            drop(store);
+            drop(lock);
+        }
+    }
+
+    #[tokio::test]
+    async fn log_change_field_preserves_nullable_values_in_both_sinks() {
+        use forgeplan_core::db::auxiliary::AuxiliaryStore;
+
+        for legacy_layout in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let ws = temp.path().join(".forgeplan");
+            let lock = workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+            let store = if legacy_layout {
+                Some(LanceStore::init_new(&ws, &lock).await.unwrap())
+            } else {
+                None
+            };
+
+            log_change_field(
+                &ws,
+                &lock,
+                store.as_ref(),
+                ("prd-001", "PRD-001"),
+                "update",
+                ("title", None, Some("")),
+                "cli",
+            )
+            .await;
+            let history = AuxiliaryStore::open_history_existing(&ws).await.unwrap();
+            let entries = history.get_change_log(None, None, 10).await.unwrap();
+            assert_eq!(entries.len(), 1);
+            let entry = &entries[0];
+            assert_eq!(entry.artifact_id, "PRD-001");
+            assert_eq!(entry.action, "update");
+            assert_eq!(entry.source, "cli");
+            assert_eq!(entry.field.as_deref(), Some("title"));
+            assert_eq!(entry.old_value, None);
+            assert_eq!(entry.new_value.as_deref(), Some(""));
+            assert_eq!(entry.commit_hash, None);
+            drop(history);
+            drop(store);
+            drop(lock);
+        }
+    }
+
+    #[test]
+    fn changelog_open_and_append_failures_warn_without_failing_primary_write() {
+        const CHILD_WORKSPACE: &str = "FORGEPLAN_COMMON_HISTORY_FAILURE_CHILD";
+        const CHILD_MODE: &str = "FORGEPLAN_COMMON_HISTORY_FAILURE_MODE";
+        if let Some(ws) = std::env::var_os(CHILD_WORKSPACE) {
+            let ws = PathBuf::from(ws);
+            let mode = std::env::var(CHILD_MODE).unwrap();
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                let lock = workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+                let store = if mode == "append" {
+                    let store = LanceStore::init_new(&ws, &lock).await.unwrap();
+                    let dataset = ws.join("lance/change_log.lance");
+                    std::fs::remove_dir_all(&dataset).unwrap();
+                    std::fs::write(dataset, b"unwritable dataset path").unwrap();
+                    Some(store)
+                } else {
+                    std::fs::write(ws.join("lance"), b"unwritable database path").unwrap();
+                    None
+                };
+                let primary = ws.join("PRD-001.md");
+                let result: anyhow::Result<()> = async {
+                    tokio::fs::write(&primary, b"canonical mutation succeeded\n").await?;
+                    log_change(
+                        &ws,
+                        &lock,
+                        store.as_ref(),
+                        "prd-001",
+                        "PRD-001",
+                        "create",
+                        "cli",
+                    )
+                    .await;
+                    log_change_field(
+                        &ws,
+                        &lock,
+                        store.as_ref(),
+                        ("prd-001", "PRD-001"),
+                        "update",
+                        ("status", Some("draft"), Some("active")),
+                        "cli",
+                    )
+                    .await;
+                    Ok(())
+                }
+                .await;
+                result.unwrap();
+                assert_eq!(
+                    std::fs::read(primary).unwrap(),
+                    b"canonical mutation succeeded\n"
+                );
+                drop(store);
+                drop(lock);
+            });
+            return;
+        }
+
+        for mode in ["open", "append"] {
+            let temp = tempfile::tempdir().unwrap();
+            let ws = temp.path().join(".forgeplan");
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("changelog_open_and_append_failures_warn_without_failing_primary_write")
+                .args(["--nocapture", "--test-threads=1"])
+                .env(CHILD_WORKSPACE, &ws)
+                .env(CHILD_MODE, mode)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{mode}: stdout={}, stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(
+                stderr
+                    .matches("  Warning: changelog write failed for PRD-001: ")
+                    .count(),
+                2,
+                "{mode}: each failed event retains the existing warning"
+            );
+            assert_eq!(
+                std::fs::read(ws.join("PRD-001.md")).unwrap(),
+                b"canonical mutation succeeded\n"
+            );
+        }
+    }
 
     #[test]
     fn extract_frontmatter_field_basic() {
@@ -483,5 +1706,29 @@ mod tests {
     fn extract_plain_text_no_frontmatter() {
         let body = "Just plain text here.";
         assert_eq!(extract_plain_text(body), "Just plain text here.");
+    }
+    #[test]
+    fn resolution_failures_keep_their_process_exit_codes() {
+        for (code, expected) in [
+            ("not_found", 3),
+            ("conflicting_canonical_key", 4),
+            ("ambiguous", 5),
+            ("invalid_selector", 1),
+            ("incomplete_capture", 1),
+        ] {
+            let failure = ResolutionFailure {
+                code,
+                input: "selector".to_string(),
+                candidates: Vec::new(),
+                message: "resolution refused".to_string(),
+            };
+            let error = resolution_failure_error(&failure);
+            assert_eq!(
+                resolution_exit_code(&error),
+                Some(expected),
+                "resolution code {code} must map to process exit {expected}"
+            );
+            assert_eq!(error.to_string(), "resolution refused");
+        }
     }
 }

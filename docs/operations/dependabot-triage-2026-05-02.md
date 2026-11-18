@@ -1,5 +1,17 @@
 # Dependabot Triage — 2026-05-02 (Round 2)
 
+> Historical triage snapshot; pins, accepted risks and test outcomes below are
+> retained, not renewed for the current release. Its 17-versus-16 alert-count
+> discrepancy is unresolved; no live query was run to replace either value.
+> Passing the named/excluded suites is not proof of no regression elsewhere.
+> For `lru`, “Miri-only”/“no production impact” below was an acceptance rationale,
+> not a demonstrated guarantee. [GHSA-rhfx-m35p-ff5j](https://github.com/advisories/GHSA-rhfx-m35p-ff5j)
+> describes `IterMut` pointer-invalidation soundness in `>=0.9.0,<0.16.3`
+> (fixed `0.16.3`; advisory currently CVSS 2.7). Detection by Miri does not
+> establish safety of optimized builds. Website tooling is separate from the
+> Rust binary, but still exposes its build machine/deployment supply chain.
+> Forecast auto-closures and “all green” statements remain dated, not current proof.
+
 **Sprint:** PRD-073 Phase 3c — Track 5 (CLAUDE.md red line #10)
 **Triage author:** chore/dependabot-triage-round-2
 **Branch base:** `dev` @ `ab28bf2` (Merge PR #231)

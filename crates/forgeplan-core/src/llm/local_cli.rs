@@ -15,7 +15,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
 
 use crate::config::LlmConfig;
-use crate::config::types::LocalCliProvider;
+use crate::config::types::{LocalCliProvider, ReasoningEffort};
 use crate::playbook::dispatch::helpers::{
     MAX_OUTPUT_BYTES, SubprocessSpec, build_env_allowlist, current_workspace_root,
     filtered_path_outside, run_subprocess, which_in_path_outside,
@@ -176,7 +176,7 @@ pub(super) async fn generate(
         })?;
     }
 
-    let args = build_args(provider, model, &prompt_path, &output_path);
+    let args = build_args(provider, model, config.effort, &prompt_path, &output_path);
     let env = build_environment(provider, workspace.path(), &caller_workspace);
     let stdin_data = match provider {
         LocalCliProvider::Codex | LocalCliProvider::Gemini | LocalCliProvider::Cursor => {
@@ -329,6 +329,7 @@ pub(super) fn combine_prompt<'a>(prompt: &'a str, system: Option<&str>) -> Cow<'
 fn build_args(
     provider: LocalCliProvider,
     model: Option<&str>,
+    effort: Option<ReasoningEffort>,
     prompt_path: &Path,
     output_path: &Path,
 ) -> Vec<String> {
@@ -379,6 +380,10 @@ fn build_args(
         LocalCliProvider::Codex => {
             args.push("--output-last-message".into());
             args.push(output_path.to_string_lossy().into_owned());
+            if let Some(effort) = effort {
+                args.push("-c".into());
+                args.push(format!("model_reasoning_effort=\"{}\"", effort.as_str()));
+            }
             args.push("-".into());
         }
         LocalCliProvider::Devin => args.push("--print".into()),
@@ -545,6 +550,93 @@ mod tests {
     use super::*;
 
     #[test]
+    fn codex_effort_preserves_sandbox_model_output_and_stdin_arguments() {
+        let args = build_args(
+            LocalCliProvider::Codex,
+            Some("gpt-6.1-sol"),
+            Some(ReasoningEffort::High),
+            Path::new("/tmp/prompt"),
+            Path::new("/tmp/output"),
+        );
+        assert_eq!(
+            args,
+            [
+                "exec",
+                "--ephemeral",
+                "--sandbox",
+                "read-only",
+                "--skip-git-repo-check",
+                "--ignore-user-config",
+                "--ignore-rules",
+                "--model",
+                "gpt-6.1-sol",
+                "--output-last-message",
+                "/tmp/output",
+                "-c",
+                "model_reasoning_effort=\"high\"",
+                "-",
+            ]
+        );
+    }
+
+    #[test]
+    fn codex_effort_is_independent_of_explicit_model_selection() {
+        for (effort, value) in [
+            (ReasoningEffort::None, "none"),
+            (ReasoningEffort::Minimal, "minimal"),
+            (ReasoningEffort::Low, "low"),
+            (ReasoningEffort::Medium, "medium"),
+            (ReasoningEffort::High, "high"),
+            (ReasoningEffort::Xhigh, "xhigh"),
+        ] {
+            let args = build_args(
+                LocalCliProvider::Codex,
+                None,
+                Some(effort),
+                Path::new("/tmp/prompt"),
+                Path::new("/tmp/output"),
+            );
+            assert_eq!(
+                args,
+                [
+                    "exec",
+                    "--ephemeral",
+                    "--sandbox",
+                    "read-only",
+                    "--skip-git-repo-check",
+                    "--ignore-user-config",
+                    "--ignore-rules",
+                    "--output-last-message",
+                    "/tmp/output",
+                    "-c",
+                    &format!("model_reasoning_effort=\"{value}\""),
+                    "-",
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn effort_is_not_forwarded_to_other_local_providers() {
+        for provider in [
+            LocalCliProvider::Devin,
+            LocalCliProvider::Gemini,
+            LocalCliProvider::Cursor,
+        ] {
+            let args = |effort| {
+                build_args(
+                    provider,
+                    Some("model-1"),
+                    effort,
+                    Path::new("/tmp/prompt"),
+                    Path::new("/tmp/output"),
+                )
+            };
+            assert_eq!(args(Some(ReasoningEffort::High)), args(None));
+        }
+    }
+
+    #[test]
     fn model_validation_and_exact_profile_argv_are_closed() {
         for bad in [
             "--dangerously-bypass-approvals-and-sandbox",
@@ -635,7 +727,7 @@ mod tests {
         ];
         for (provider, expected) in expected {
             assert_eq!(
-                build_args(provider, Some("model-1"), prompt_path, output_path),
+                build_args(provider, Some("model-1"), None, prompt_path, output_path),
                 expected
             );
         }

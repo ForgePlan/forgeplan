@@ -1,5 +1,7 @@
 # Target Architecture
 
+> Целевая архитектура vNext, не инвентарь выпущенных компонентов. Инварианты ниже — требования к будущей реализации; импорт пакета не доказывает их enforcement. См. [статус пакета](../README.md).
+
 ## Слои
 
 ```text
@@ -95,7 +97,7 @@ PRD + Spec + RFC + ADR + Policy + RepositoryState
              Verification Engine
                          │
                          ▼
- accepted / rejected / incomplete / human-review
+ accepted / rejected / incomplete / blocked / requires_human_review / stale
 ```
 
 ## Неизменяемые инварианты

@@ -26,7 +26,7 @@ const langPrefix = lang === 'ru' ? '/ru/blog' : '/blog';
 const stripLang = (id: string) => id.replace(new RegExp(`^${lang}/`), '');
 ---
 {(prev || next) && (
-  <nav class="blog-series-nav" aria-label="Series navigation">
+  <nav class="blog-series-nav" aria-label={lang === 'ru' ? 'Навигация по серии' : 'Series navigation'}>
     <div class="blog-series-nav-tag">{currentSeries}</div>
     <div class="blog-series-nav-row">
       <div class="blog-series-nav-prev">

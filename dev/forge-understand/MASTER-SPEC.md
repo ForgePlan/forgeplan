@@ -5,6 +5,22 @@
 > выполняй по фазам из раздела **§12 MVP**. Агенту НЕ нужен исходный чат — здесь есть всё: видение,
 > схема данных, шаблоны, агент, план рендерера на реальных файлах, фазы, уже принятые решения.
 > Технические детали (схема, пути, типы) — на английском, чтобы исполняющий агент читал их однозначно.
+>
+> **Reading boundary, 2026-10-23:** this is the June–July 2026 design handoff,
+> not a shipped Forgeplan interface or an implementation-ready acceptance receipt.
+> Cross-repository paths/line numbers describe the study snapshot, whose revision
+> is not pinned here. `forgeplan map …`, `forgeplan_map_get`, `/onboard` and
+> the map-pack pipeline below are proposed surfaces, not capabilities established
+> by the selected CLI/MCP catalog. Later §23 overrides the earlier thin-MVP sketches;
+> its phased order retains the local append daemon at P5, not the initial render step.
+>
+> **Unresolved design contradictions:** §23 calls map-emitter the sole writer,
+> but also says the guardian writes `confirmed`; its dirty-only-map check must
+> account for the prescribed scanner scratch files. Neither contradiction is
+> permission to bypass single-writer or the existing gates. Resolve ownership
+> and pre/post-run baselines explicitly before implementing. Structural validation
+> cannot guarantee correct discovery, classification or narration; the JSON
+> examples below are abbreviated illustrations, not validated complete fixtures.
 
 ---
 
@@ -515,9 +531,9 @@ Three nested grid levels:
      reading order) — like CSS regions/columns overflow.
    - `collapse` — extra nodes fold into a **mega-node "+N more"** that expands on click.
 
-**Idempotency:** pure fn + content-hash IDs + stable sort `(zone, layer, found_at→id)` + no
-measurement → appending a node is a minimal delta; everything else keeps its position (the
-determinism bet, §1).
+**Idempotency:** the same complete JSON and deterministic layout rules should give
+the same geometry. Appending a node can still grow tracks and move other zones
+(§9); stable IDs alone do not guarantee unchanged absolute positions.
 
 **Why not real CSS Grid in the DOM:** we compute positions ourselves so we control determinism, edge
 routing, zoom, FLIP animation, and SVG export. We take CSS Grid's *model*, not its runtime. Lives in
@@ -637,7 +653,7 @@ Supersedes the §7/§17 sketches.
 > cannot spawn `claude` — verified `READ_ONLY_SUBCOMMANDS`); 5) the guardian gate is the deterministic
 > script, LLM-guardian advisory on top. Everything else: build it full.
 
-### Process (marketplace `forgeplan-map-pack`) — THIN MVP, not 8 agents
+### Process (marketplace `forgeplan-map-pack`) — earlier thin sketch; full roster below overrides it
 Flow: `precondition(.forgeplan/ exists) → SCAN → type(inline) → select(inline) → EXTRACT → VERIFY →
 EMIT → VALIDATE`. **Each LLM stage is a SEPARATE Task dispatch** = fresh isolated context (BMAD
 generator≠verifier). Orchestrator carries only scratch-file paths + content-hashes, never a worker
@@ -716,10 +732,11 @@ Filters/InsightsRail) wrapping the same `ComposedMap` widget that is ALSO the da
 - **Drill to the 7 views:** a node with `artifact_id` → `/?selected=<id>&view=force` (HomePage's
   existing mechanism); a pure code-dep node has no such affordance (nothing in the artifact graph).
 
-### Headless bridge — CUT from MVP (verified impossible as a web route)
-`forgeplan-web/shared/server/forgeplan.ts` refuses every subcommand outside `READ_ONLY_SUBCOMMANDS`
-and only spawns the `forgeplan` binary — **a SvelteKit route CANNOT spawn `claude`.** The bridge is a
-**LOCAL co-process the user starts** (`forgeplan map serve` / `onboard-bridge.mjs`) that watches
+### Headless bridge — proposed local process, not the existing read-only web helper
+The study found `forgeplan-web/shared/server/forgeplan.ts` restricted to
+`READ_ONLY_SUBCOMMANDS` and the `forgeplan` binary. That helper cannot launch
+`claude`; this is a project boundary, not a general SvelteKit platform limitation.
+The proposed bridge is a **local co-process the user starts** (`forgeplan map serve` / `onboard-bridge.mjs`) that watches
 `.forgeplan/map/.jobs/`; the web route only does narrow file I/O (writes a UUID-validated
 `.req.json`), the daemon runs the scoped `claude -p '/map-build --refresh --scope <zone>'` (EMITTER,
 append-only, FIFO-serialized, localhost-bind, explicit-click-gated), guardian re-validates,

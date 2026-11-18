@@ -157,4 +157,4 @@ TOTAL                               0/0  (  0%)
 | RFC-<id> | RFC | based_on |
 | PROB-<id> | ProblemCard | based_on |
 | SOL-<id> | SolutionPortfolio | based_on |
-| SPEC-<id> | Spec | implements |
+| SPEC-<id> | Spec | based_on |

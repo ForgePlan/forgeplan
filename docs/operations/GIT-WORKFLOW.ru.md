@@ -140,8 +140,8 @@ git checkout main && git pull
 git tag -a v0.x.0 -m "Release v0.x.0: описание"
 git push origin v0.x.0
 
-# 7. Sync dev from main (возвращаем tag в dev)
-git checkout dev && git merge main && git push origin dev
+# 7. Sync main → dev отдельным PR (без прямого push в dev)
+# Продолжение — RELEASE-PROTOCOL.md, раздел sync; исходную release-ветку сохраняем.
 ```
 
 ---
@@ -181,7 +181,7 @@ Code → Audit → Fix → Test → Fmt → Lint → Verify → PR
 
 ### Merge стратегия
 
-- **`feat/* → dev`**: merge commit (НЕ squash!) — squash теряет поздние коммиты
+- **`feat/* → dev`**: merge commit (НЕ squash!) — правило проекта сохраняет общую историю; поздние коммиты после merge требуют нового PR при любой стратегии
 - **`release/* → main`**: merge commit (сохраняет историю RC)
 - **Не удалять ветки после merge** — feature/release branches сохраняются как история
 
@@ -192,7 +192,7 @@ git checkout dev && git pull     # сразу sync
 # проверить что изменения на месте
 ```
 
-**Никогда не пушить в ветку после merge PR** — коммиты будут потеряны.
+**Не пушить в ветку после merge PR**: такие коммиты остаются в ветке, но уже закрытый PR не включает их автоматически в dev. Для интеграции нужен новый PR.
 
 ---
 
@@ -209,10 +209,10 @@ git checkout dev && git pull     # сразу sync
 3. PR в main → merge commit
 4. `git tag -a v0.x.0 -m "Release v0.x.0: описание"` на main
 5. `git push origin v0.x.0`
-6. Sync: `git checkout dev && git merge main && git push origin dev`
+6. Sync main → dev отдельным PR по [RELEASE-PROTOCOL.md](RELEASE-PROTOCOL.md), без прямого push в dev.
 
-**Release notes**: автогенерация из conventional commits (`gh release create`).
-**Binary**: `cargo build --release`.
+**Release notes**: следовать release workflow и проверять фактически опубликованный текст; `gh release create` — публикация, не доказательство корректности notes.
+**Binary**: релизная сборка обязана включать `semantic-search`; точные команды и проверки — в release protocol. Обычное `cargo build --release` не заменяет их.
 
 ---
 
@@ -234,7 +234,7 @@ git worktree remove ../forgeplan-fix
 
 ## Запрещённые действия
 
-Эти команды блокируются hook'ом `.claude/hooks/forge-safety-hook.sh` даже в yolo mode:
+Действуют запреты ниже. Настроенный `.claude/hooks/forge-safety-hook.sh` проверяет лишь буквальные шаблоны `Bash`, не все эквивалентные команды и не другие tools; наличие списка — не гарантия технической блокировки:
 
 - `git push --force` / `git push -f`
 - `git reset --hard`
@@ -245,21 +245,17 @@ git worktree remove ../forgeplan-fix
 
 ### Перед любым reinit workspace
 
-```bash
-# 1. Export (сохраняет артефакты)
-forgeplan export --output backup.json
+Не удаляйте `.forgeplan` для исправления индекса. Сначала сохраните проверенный
+backup каталога и, где операция поддерживается layout, export. Backup должен
+включать Markdown, настройки, связи и нужные metadata, а не только ответ export.
 
-# 2. Backup copy
-cp -r .forgeplan .forgeplan-backup-$(date +%Y%m%d)
-
-# 3. Только теперь можно reinit
-rm -rf .forgeplan && forgeplan init -y
-
-# 4. Restore
-forgeplan import backup.json
-```
-
-**Никогда `rm -rf .forgeplan` без export + backup** — потеря всех артефактов, evidence, links.
+Для производных данных используйте соответствующую layout операцию:
+`reindex` обновляет legacy-проекцию, `index` — поколение Constellation,
+`embed` — векторы при наличии feature и полного model cache.
+`scan-import` импортирует внешние Markdown, а не ремонтирует graph-orphans.
+Отказ одной команды не разрешает сброс workspace. Разрушительный reinit —
+отдельная явно разрешённая операция с проверенным восстановлением, не шаг
+обычной диагностики и не автоматическое следствие наличия backup.
 
 ---
 

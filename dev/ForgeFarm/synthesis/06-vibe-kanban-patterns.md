@@ -12,6 +12,18 @@
 > продуктовый урок. Репо изучен локально: v0.1.44,
 > `dev/vibe-kanban/`. Этот документ: что берём кодом, что дизайном, что
 > уроком, что отвергаем — и какие дыры в нашей KB вскрыл разбор.
+>
+> **Provenance и статус (2026-10-23).** Это prior-art исследование для
+> pre-code ForgeFarm. Локальные README/Cargo.toml подтверждают sunset-banner,
+> workspace и executors v0.1.44; они не подтверждают MAU, цитаты основателя,
+> срок объявления или причины бизнеса. Эти исторические сообщения ниже
+> сохранены, но без первичного источника здесь остаются непроверенными.
+> LOC и 20:1 — приблизительные оценки разного объёма (marginal vs shared),
+> не benchmark стоимости, времени, качества или обслуживания.
+> Предложения invalid+clean в §3.1/VK-D-10/G-2 конфликтуют с прежним
+> never-auto-repair-invalid; они не отменяют его без отдельного решения.
+> Phase 3 для web ниже также не отменяет Phase 4 в `ui-observability.md`
+> и D-001. Это открытые дизайн-дельты, не молчаливое изменение политики.
 
 ---
 
@@ -44,9 +56,9 @@ evidence, policy state) не аккумулирует durable-ценность �
 заменяемым UX.** База VK записывает *что произошло* (процессы, коммиты,
 логи), но никогда — *хорошо ли это было*. Это ровно тот слой, который
 ForgeFarm делает продуктом: contracts, gates, evidence-first close, audit
-trail, tiered autonomy. Sunset VK — эмпирическая валидация тезиса, с одной
-оговоркой: валидация работает, только если FF реально продаёт governance
-(enterprise-история), а не «кокпит получше».
+trail, tiered autonomy. Sunset VK — повод проверить эту продуктовую гипотезу,
+а не причинное доказательство её верности. Даже продажа governance
+(enterprise-история), а не «кокпита получше», требует самостоятельной проверки.
 
 Финальные коммиты говорят сами за себя: `97123d526` «Sunset project routes
 to export-only page» (облачный канбан выпилен в export-only страницу) и
@@ -104,13 +116,13 @@ Linear/GitHub; часть-«кокпит исполнения агентов» �
   парсеров (codex 2.9k, claude 3.2k, opencode 1.6k…), full-auto default
   профили, дыры Noop-approvals и process-global mutable profile singleton —
   ровно тот субстрат, который дизайн FF отвергает.
-- **Что VK обесценил**: риск protocol discovery. Четыре стиля интеграции
-  теперь замерены реальной стоимостью: bespoke stdio control protocol
-  ~4.5–5k LOC каждый (Claude, Codex); local HTTP+SSE ~4.8k (OpenCode);
-  **ACP ~1.9k общих на 3 агента при ~230 marginal LOC на агента**
-  (Gemini/Qwen/Copilot через один harness); dumb pipes ~200–1.5k, но без
-  approvals и структурных логов. Соотношение bespoke:ACP ≈ 20:1 —
-  **эмпирическое подтверждение D-002 (ACP-first)**.
+- **Что VK даёт исследованию**: примеры четырёх стилей интеграции.
+  Оценки bespoke stdio control protocol ~4.5–5k LOC каждый (Claude, Codex),
+  local HTTP+SSE ~4.8k (OpenCode), ACP ~1.9k общих на 3 агента и ~230
+  marginal LOC на агента (Gemini/Qwen/Copilot), dumb pipes ~200–1.5k —
+  не сопоставимый cost benchmark. Приблизительное bespoke:ACP ≈ 20:1
+  сравнивает разные границы кода и мотивирует D-002 (ACP-first),
+  но не доказывает двадцатикратной экономии.
 - **Что FF всё равно пишет сам**: сам trait ExecutorDriver — потому что у
   VK-trait нет ровно того, ради чего FF существует: structured **RunOutcome**
   (контракт VK кончается на process Success/Failure), typed error taxonomy

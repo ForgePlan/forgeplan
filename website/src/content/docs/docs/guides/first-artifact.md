@@ -4,16 +4,22 @@ description: "A 20-minute hands-on walkthrough: create, validate, reason, prove,
 ---
 
 This is the long version of the [Quick Start](/docs/getting-started/quick-start/).
-It covers the same seven steps but with more explanation, realistic file
-contents, and **the errors you will hit at each step with how to fix them**.
+It covers the same workflow with more explanation and recovery examples.
+Commands, IDs, confidence values, test counts, timings and output below are
+illustrative, not a captured run.
 
-Plan for 20 minutes. You will end up with a real activated decision that
-trains you on the full Forgeplan cycle.
+Reading the example can take about 20 minutes; implementing and verifying
+the feature is separate work. Without that work, leave the exercise draft
+and do not publish the sample evidence or activate a fictional result.
 
 ## What you will build
 
 A PRD for a small, real feature: **"Add a `--dry-run` flag to `forgeplan
 new` so users can preview what would be created without writing files."**
+
+This is a proposed feature for the exercise. The selected local build's
+`new` command does **not** implement `--dry-run`; later smoke commands are
+acceptance examples for an implementation, not commands that work today.
 
 It is intentionally small - routing will probably say `Standard`, which
 means we hit every step except the Epic/Spec tiers. Perfect training load.
@@ -31,7 +37,12 @@ flowchart LR
 
 - Forgeplan installed (`forgeplan --version`)
 - A directory where you can create a workspace (throwaway is fine)
-- Optional: a `GEMINI_API_KEY` or other LLM provider for ADI reasoning
+- A configured LLM provider to execute `reason`; HTTP providers use an environment
+  key, while supported local CLI providers reuse their own login.
+
+For recorded compatibility coverage and remaining limits, see
+[Constellation](/docs/reference/constellation/). This tutorial is not proof
+that every lifecycle command works on every workspace layout.
 
 ## Step 1 - Initialize the workspace
 
@@ -66,10 +77,10 @@ Project Health
 
 ### Error you might hit
 
-**`Error: .forgeplan/ already exists`** - you ran `init` in an existing
-workspace. Either `cd` elsewhere or `rm -rf .forgeplan` (only on a
-throwaway tutorial directory - never on a real project without exporting
-first: `forgeplan export --output backup.json`).
+`init -y` returns without changing a workspace it finds, including in an
+ancestor directory. Check the reported root. Use a different empty directory
+for an isolated exercise; do not delete `.forgeplan/` to restart a tutorial.
+If a clone needs config repair, follow [Configuration](/docs/getting-started/configuration/).
 
 ## Step 2 - Route the task
 
@@ -108,8 +119,8 @@ forgeplan new prd "CLI dry-run flag"
 Created: PRD-001 at .forgeplan/prds/PRD-001-cli-dry-run-flag.md
 ```
 
-Open the file in your editor. You will see a template with section
-headers. Fill the MUST sections:
+Read the created template, then prepare the completed body in `prd-body.md`
+outside `.forgeplan/`. Keep the template's required headings:
 
 ```markdown
 # PRD-001: CLI dry-run flag
@@ -145,7 +156,13 @@ agents that want to preview their output before committing.
 - FR3: User can see the templated file content on stdout
 - FR4: User can rely on exit code 0 when `--dry-run` would succeed
   and non-zero when validation would fail
+
+## Related Artifacts
+
+This standalone exercise has no parent artifact yet.
 ```
+
+Apply it with `forgeplan update PRD-001 --body @prd-body.md`.
 
 Notice: no mention of "use clap" or "emit JSON" or any specific
 implementation. That is rule 3 - FRs describe capabilities, not
@@ -171,28 +188,27 @@ PRD-001: PASS ✓
 Aliases work: `## Motivation`, `## Background`, `## Problem Statement` all
 count as Problem. Add one.
 
-**`MUST error: implementation leakage in FR2`** - you wrote something like
-"Use JSON output with serde". Rewrite as "User can see the exact file path
-and content". The validator flags library names and technology choices in
-requirements.
+**Implementation-leakage finding** - technology choices in FR/NFR sections
+are SHOULD at Standard and MUST at Deep. For example, "Use Redis" describes
+implementation; replace it with the capability the user needs.
 
-**`MUST error: no functional requirements`** - the `## Functional
-Requirements` section exists but has no bullets. Add at least one FR with
-the `[Actor] can [capability]` pattern.
+**Missing Functional Requirements** - the required heading is absent.
+Add the section and meaningful `[Actor] can [capability]` requirements;
+the heading-existence check alone does not certify the bullets' quality.
 
-**`MUST error: vague goal "system should be fast"`** - validator caught an
-unmeasurable claim. Rewrite with numbers or remove.
+**Unmeasurable language** - measurability/adversarial checks may warn about
+vague prose. Replace it with testable outcomes; not every such warning is MUST.
 
 Re-run `forgeplan validate PRD-001` after each fix.
 
 ## Step 5 - Reason (ADI)
 
 ```bash
-forgeplan reason PRD-001
+forgeplan reason PRD-001 --save
 ```
 
-If you have an LLM configured (`.forgeplan/config.yaml` has a provider
-and key), you will see something like:
+With a configured provider (and the provider's required credentials), the
+LLM is prompted to compare alternatives. An illustrative analysis is:
 
 ```
 ADI cycle for PRD-001
@@ -225,23 +241,27 @@ Recommendation: H1
 Confidence: 0.87
 ```
 
-No LLM configured? You will get a template asking you to fill in the
-hypotheses manually. That still counts - the value is in thinking through
-alternatives, not in LLM output.
+Without a configured provider, the CLI returns an error, not a blank
+reasoning template. You may write a manual analysis into `prd-body.md`
+and apply it with `update`; that is your reasoning, not a successful CLI run.
+`--save` stores successful CLI output in a linked Note; without it, output
+is printed only. Three alternatives are a prompting heuristic, not proof
+of confidence or a parser-enforced minimum.
 
 See [ADI Reasoning](/docs/methodology/adi/) for why this step exists.
 
 ### Error
 
-**`Error: no LLM provider configured`** - open `.forgeplan/config.yaml`
-and add a provider block. For the tutorial you can skip this and write
-the 3 hypotheses directly into the PRD body under a `## Reasoning`
-section.
+**Missing LLM configuration** - configure a supported provider and its
+authentication. HTTP API keys belong in the environment/secrets file named
+by `llm.api_key_env`, not inline in `config.yaml`. Or record manual ADI as
+described above without claiming that the command ran.
 
 ## Step 6 - Build
 
-Write the code. For this tutorial, pretend you implemented H1 and
-wrote tests. In real Forgeplan work you would:
+Implement the chosen approach and write its tests before recording a
+successful result. If you only want to practise shaping, stop at draft here.
+For a real implementation, run the project's checks, for example:
 
 ```bash
 cargo test      # or npm test, pytest, go test, ...
@@ -263,8 +283,9 @@ forgeplan new evidence "CLI dry-run - 8 unit tests pass, flag works end-to-end"
 Created: EVID-001 at .forgeplan/evidence/EVID-001-cli-dry-run....md
 ```
 
-Open the file and add the **structured fields** block to the body. This
-is the single most important part of the tutorial:
+Prepare `evidence-body.md` outside `.forgeplan/` with actual results.
+The following is a sample shape, **not evidence of a run**. Use CL3 only
+for matching context; code claims also need real provenance required by the gate:
 
 ```markdown
 ## Structured Fields
@@ -281,19 +302,19 @@ evidence_type: test
 - Verified exit code 0 on success and 1 on template error
 ```
 
-Link it to the PRD:
+Only after replacing the sample claims with verified results, apply and link:
 
 ```bash
+forgeplan update EVID-001 --body @evidence-body.md
 forgeplan link EVID-001 PRD-001 --relation informs
 ```
 
 ### The #1 mistake
 
-**Forgetting the structured fields.** If you just write prose in the
-evidence body and skip the `verdict: supports / congruence_level: 3 /
-evidence_type: test` lines, the R_eff parser falls back to CL0 with a 0.9
-penalty. Your score will be near zero even though the evidence is strong.
-Always include the three fields.
+**Forgetting structured claims.** Missing or unrecognised verdict/CL
+declarations fail closed to CL0 with a 0.9 penalty. `evidence_type` has a
+separate scoring role; declare all three fields. Correct fields describe
+evidence — they do not turn an unrun test into evidence.
 
 ## Step 8 - Check the score
 
@@ -312,10 +333,12 @@ PRD-001: CLI dry-run flag
 
 ### What if R_eff = 0.0?
 
-1. `forgeplan list evidence` - is EVID-001 in the workspace?
+1. `forgeplan list --type evidence` - is EVID-001 in the workspace?
 2. `cat .forgeplan/evidence/EVID-001-*.md | grep -E "verdict|congruence_level|evidence_type"`
    - all three fields present?
 3. `forgeplan link EVID-001 PRD-001 --relation informs` - was the link created?
+4. Read the score breakdown for refutation, CL/type penalties and dependency
+   contributions. Missing structured claims commonly give 0.1, not zero.
 
 See [Evidence & R_eff](/docs/methodology/evidence/) for the full formula.
 
@@ -354,16 +377,17 @@ forgeplan health
 
 ```
 Project Health
-  Total artifacts: 2 (PRD-001, EVID-001)
+  Total artifacts: 3 (PRD-001, EVID-001, saved ADI Note)
   Active: 1
-  Draft: 1 (EVID-001 - evidence packs stay draft)
+  Draft: 2 (Evidence and Note in this example; evidence need not always stay draft)
   Blind spots: 0
   Orphans: 0
   Stale: 0
   Status: HEALTHY
 ```
 
-Congratulations - you have a fully traced decision with measurable trust.
+With actual implementation and verified evidence, this closes a traced
+decision. Merely reading or copying the worked example does not.
 
 ## What you learned
 
@@ -377,8 +401,9 @@ Congratulations - you have a fully traced decision with measurable trust.
   one, which is how you avoid "I wish we had thought of that" moments.
 - **Prove with evidence.** R_eff is not a decoration - it is the number
   that tells you whether you should trust your own decision.
-- **Activate only when ready.** The gate prevents "active PRDs with no
-  code" - a false promise to future readers.
+- **Activate only when ready.** Gates check declared content, links and
+  provenance where configured; they do not establish that code really works.
+  Real verification remains necessary before activation.
 
 ## Next steps
 
@@ -396,8 +421,8 @@ Congratulations - you have a fully traced decision with measurable trust.
 |---------|-------|-----|
 | `MUST error: Problem missing` | No `## Problem` / `## Motivation` section | Add one of the aliases |
 | `implementation leakage in FR` | Named a library/tech in a requirement | Rewrite as `[Actor] can [capability]` |
-| `R_eff = 0.0` on scored artifact | Evidence missing `verdict` / `congruence_level` / `evidence_type` | Add the three fields to the evidence body |
+| `R_eff = 0.0` on scored artifact | No eligible evidence, refutation, penalties or dependency contribution | Inspect the score breakdown and record actual supporting evidence; do not relabel contrary evidence |
 | `activate` rejected | Validation gate fails after edits | Re-run `validate`, fix MUST errors |
-| `Error: no LLM provider` on `reason` | No key in `.forgeplan/config.yaml` | Add provider block or write hypotheses manually |
+| Missing LLM configuration on `reason` | Provider/authentication unavailable | Configure provider and its environment/login, or record manual reasoning without claiming a CLI run |
 | `health` shows blind spot | Active artifact with no linked evidence | Create evidence and `forgeplan link` |
 | `stale` warning on fresh artifact | `valid_until` too short | Set realistic 90-180 day expiry |

@@ -214,6 +214,26 @@ pub enum MutationError {
         #[source]
         last_error: anyhow::Error,
     },
+
+    /// The operation is a derived-index-only step (prune an orphan row,
+    /// drop a row after the file already moved) and the workspace's index
+    /// is owned by the constellation protocol, so there is no legacy sink
+    /// to write to. Always fatal.
+    ///
+    /// ONLY for helpers whose entire job is a legacy-index write with no
+    /// canonical-Markdown counterpart. A helper that also mutates the
+    /// markdown MUST NOT produce this variant: with no sink it performs
+    /// the file mutation and skips the derived step, because markdown is
+    /// the source of truth (ADR-003) and a named refusal would leave a
+    /// real canonical mutation unperformed.
+    ///
+    /// `operation` names the derived step for triage ("prune orphan row",
+    /// "drop row after soft delete"). It is a static internal label, not
+    /// user input, so it carries no injection surface.
+    #[error(
+        "no legacy index on this workspace — constellation owns the derived index ({operation})"
+    )]
+    NoLegacySink { operation: String },
 }
 
 /// Convenience alias mirroring `anyhow::Result` for helpers.
@@ -268,6 +288,10 @@ impl MutationError {
             MutationError::FileNotFound { .. } => false,
             MutationError::ProjectionMismatch { .. } => false,
             MutationError::RowNotFound { .. } => false,
+            // Constellation owns the derived index — there is no legacy
+            // table to retry against. The caller reconciles with
+            // `forgeplan index` instead of re-invoking.
+            MutationError::NoLegacySink { .. } => false,
             // Store-side: split per PROB-049 H-1.
             MutationError::StoreTransient(_) => true,
             MutationError::StoreFatal(_) => false,

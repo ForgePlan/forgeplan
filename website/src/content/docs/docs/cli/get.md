@@ -3,10 +3,7 @@ title: forgeplan get
 description: "Read full artifact content by ID - AI-friendly markdown fetch"
 ---
 
-Read the full markdown content of an artifact by ID. This is how AI agents
-and humans pull a single decision document into context. The command reads
-from the LanceDB-projected view, which stays in sync with the source markdown
-in `.forgeplan/`.
+Read a full artifact by ID or resolvable slug. On a migrated workspace, the selected build uses a captured canonical-Markdown view and reports whether it is persisted. On a legacy workspace it reads the projected store. Canonical Markdown, its derived index, and federation snapshots are distinct sources.
 
 ## When to use
 
@@ -55,32 +52,19 @@ Read an RFC and pipe through a pager:
 forgeplan get RFC-002 | less
 ```
 
-JSON output - body plus all frontmatter, ready for `jq`:
+Retrieve the complete `body` field without assuming a `frontmatter` JSON object:
 
 ```bash
-forgeplan get EVID-012 --json | jq '.frontmatter.verdict, .frontmatter.congruence_level'
+forgeplan get EVID-012 --json | jq -r '.body'
 ```
 
 ## Output interpretation
 
-Default output is the raw markdown file: YAML frontmatter fenced by `---`,
-followed by the body sections (Problem, Goals, FR, etc.). This is the same
-text a human would see opening the file in an editor.
+Human-readable output includes a metadata header, links, the body, and hints; it is not a raw-file-only stream. On the migrated CLI path, JSON `body` contains the entire captured Markdown, including frontmatter. The full-profile `forgeplan_constellation_get` has a different, parsed-body contract.
 
-With `--json`, the envelope is:
+With `--json`, metadata such as `title`, `depth`, `author`, `tags`, timestamps and `r_eff` is flattened at the top level, alongside `body`, `links.outbound`, `links.inbound`, and `_next_action`. There is no nested `frontmatter` object. The migrated branch also adds `index`, `generation_id`, `snapshot_id`, `source_set_digest`, and `persisted`. `persisted: false` means the fresh captured view is not the published generation; reading it does not publish a new generation.
 
-```json
-{
-  "id": "PRD-001",
-  "kind": "prd",
-  "status": "active",
-  "frontmatter": { "title": "...", "tags": [...], "created": "...", ... },
-  "body": "## Problem\n..."
-}
-```
-
-If the ID does not exist, the command exits with status 1 and prints
-`Error: artifact not found: <ID>`.
+An unresolved ID fails with an `Artifact '<ID>' not found` error and a `forgeplan list` hint.
 
 ## How it fits
 
@@ -90,7 +74,7 @@ If the ID does not exist, the command exits with status 1 and prints
 list (find it) → get (read it) → validate / reason / link / score (act on it)
 ```
 
-For AI agents using MCP, `get` maps 1:1 to the `read_artifact` tool.
+The artifact-reading MCP tool is [`forgeplan_get`](/docs/mcp/forgeplan_get/). It is not named `read_artifact`; profile-specific pinned retrieval is a separate interface.
 
 ## See also
 
@@ -99,3 +83,23 @@ For AI agents using MCP, `get` maps 1:1 to the `read_artifact` tool.
 - [`forgeplan validate`](/docs/cli/validate/) - quality check
 - [`forgeplan score`](/docs/cli/score/) - R_eff + F-G-R metrics
 - [Methodology guide](/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan get --help`.
+
+```text
+Read a full artifact by ID
+
+Usage: forgeplan get [OPTIONS] <ID>
+
+Arguments:
+  <ID>  Artifact ID
+
+Options:
+      --json     Output as JSON for machine consumption
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

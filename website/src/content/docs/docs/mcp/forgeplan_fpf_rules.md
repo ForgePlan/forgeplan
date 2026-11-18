@@ -1,9 +1,9 @@
 ---
 title: forgeplan_fpf_rules
-description: "List active FPF rules grouped by action bucket (EXPLORE / INVESTIGATE / EXPLOIT). Rules encode the framework's decision logic as condition trees that match against artifact state and evidence. Use this to understand what the engine will do - and why - before running forgeplan_fpf_check on a specific artifact."
+description: "List active declarative FPF rules in priority order, with optional action and source filters. Inspect their conditions before running forgeplan_fpf_check on an artifact."
 ---
 
-Returns the active **FPF rule set** - the condition trees that drive Forgeplan's action recommendations. Each rule has a name, a priority, an action bucket (`EXPLORE` / `INVESTIGATE` / `EXPLOIT`), a condition that evaluates against an artifact's state, and a message explaining the resulting action. Rules are loaded from `.forgeplan/config.yaml` (`fpf.rules`) if present, otherwise from the built-in defaults (PRD-041).
+Returns active declarative **FPF rules**, sorted by ascending numeric priority. A nonempty `.forgeplan/config.yaml` `fpf.rules` list replaces the built-in rule list; absent or empty rules use defaults. Each rule has predicates, an action (`EXPLORE` / `INVESTIGATE` / `EXPLOIT`), priority, and message.
 
 **Category**: FPF Knowledge Base
 
@@ -16,15 +16,17 @@ Returns the active **FPF rule set** - the condition trees that drive Forgeplan's
 
 ## Action buckets
 
-Forgeplan's engine recommends actions based on `R_eff` thresholds (configurable via `fpf.thresholds` in config). The three buckets are:
+The five built-in declarative rules are not three exhaustive R_eff intervals:
 
-| Bucket | Default R_eff range | Meaning | Typical rule effects |
-|--------|---------------------|---------|----------------------|
-| **EXPLORE** | `R_eff < explore_reff` (default 0.33) | Trust too low - treat as hypothesis | Add evidence, widen hypotheses, reduce scope |
-| **INVESTIGATE** | `explore_reff ≤ R_eff < investigate_reff` (default 0.66) | Trust partial - test, measure | Run benchmarks, adversarial review, narrow hypotheses |
-| **EXPLOIT** | `R_eff ≥ exploit_reff` (default 0.66) | Trust high - act | Ship, activate, supersede, enforce |
+| Rule | Predicates | Action |
+|------|------------|--------|
+| `blind-spot` | draft and `R_eff < 0.01` | EXPLORE |
+| `weak-evidence` | active/stale and `R_eff < 0.5` | INVESTIGATE |
+| `orphan-active` | active and no links | EXPLORE |
+| `medium-quality` | `0.5 ≤ R_eff < 0.7` | INVESTIGATE |
+| `ready-to-build` | `R_eff ≥ 0.7` and overall F-G-R `≥ 0.6` | EXPLOIT |
 
-Depth influences thresholds: higher depth (Deep / Critical) raises the bar for EXPLOIT, so a Critical artifact needs stronger evidence than a Tactical one to earn the same bucket.
+The first matching rule in priority order wins. Custom predicates can include depth, but defaults do not automatically raise thresholds for Deep/Critical. `fpf.thresholds` configures a separate hardcoded action path; do not assume it rewrites this declarative list or grants activation approval.
 
 ## Input parameters
 
@@ -39,39 +41,16 @@ _Schema source: `crates/forgeplan-mcp/src/server.rs::FpfRulesParams`_
 
 ## Returns
 
-Full mode (default):
+Full mode returns `source` (`config` or `default`), `count`, and `rules`, plus a hint. Each rule has `name`, `priority`, `action`, `condition`, `condition_summary`, and `message`. Conditions are named predicates, not an `all` array of field/operator objects; numeric expressions serialize as strings such as `"< 0.01"`.
+
+Summary mode omits conditions and messages. An illustrative filtered response:
 
 ```json
 {
-  "source_in_use": "config",
-  "count": 14,
+  "source": "default",
+  "count": 1,
   "rules": [
-    {
-      "name": "low_trust_explore",
-      "priority": 10,
-      "action": "EXPLORE",
-      "condition": {
-        "all": [
-          { "field": "r_eff", "op": "lt", "value": 0.33 },
-          { "field": "status", "op": "eq", "value": "draft" }
-        ]
-      },
-      "message": "R_eff below explore threshold; add evidence before deciding.",
-      "source": "config"
-    }
-  ]
-}
-```
-
-Summary mode (`summary: true`):
-
-```json
-{
-  "count": 14,
-  "rules": [
-    { "name": "low_trust_explore",   "priority": 10, "action": "EXPLORE" },
-    { "name": "stale_investigate",   "priority": 20, "action": "INVESTIGATE" },
-    { "name": "high_trust_exploit",  "priority": 30, "action": "EXPLOIT" }
+    { "name": "ready-to-build", "priority": 5, "action": "EXPLOIT" }
   ]
 }
 ```
@@ -93,7 +72,7 @@ Only EXPLORE rules, summary form:
 Fetch a specific named rule:
 
 ```json
-{ "name": "high_trust_exploit" }
+{ "name": "ready-to-build" }
 ```
 
 Debug: are my config overrides actually loaded?
@@ -106,8 +85,8 @@ Debug: are my config overrides actually loaded?
 
 ```
 forgeplan_fpf_rules                  ← inventory
-forgeplan_fpf_check { id: "PRD-19" } ← which rule wins for this artifact
-forgeplan_fpf_section { id: "B.3" }  ← why the engine thinks that way
+forgeplan_fpf_check { id: "PRD-019" } ← which rule wins for this artifact
+forgeplan_fpf_section { id: "<returned-section-id>" } ← read the matching source section
 ```
 
 ## CLI equivalent
@@ -120,3 +99,76 @@ forgeplan_fpf_section { id: "B.3" }  ← why the engine thinks that way
 - [`forgeplan_fpf_check`](/docs/mcp/forgeplan_fpf_check/) - evaluate rules against a specific artifact
 - [`forgeplan_fpf_list`](/docs/mcp/forgeplan_fpf_list/) - knowledge base catalogue
 - [`forgeplan_score`](/docs/mcp/forgeplan_score/) - compute the R_eff that rules match against
+
+<!-- forgeplan-runtime:start -->
+## Captured tools/list
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, profile `full`.
+
+List active FPF rules from the workspace. By default returns all rules with full condition trees and messages. Parameters allow filtering: `action` (EXPLORE/INVESTIGATE/EXPLOIT) to show only rules for that action category; `name` to fetch a single rule by name; `summary: true` to return only name/priority/action without condition details (useful for quick overviews); `source` (config/default) for debugging which rule source is active. If workspace has user-defined rules in .forgeplan/config.yaml under fpf.rules, those take precedence; otherwise built-in defaults are returned.
+
+### Input parameters
+
+| Name | Required | Type | Description |
+|---|---|---|---|
+| `action` | no | string \| null | Filter by action: "EXPLORE", "INVESTIGATE", or "EXPLOIT". Omit for all. |
+| `name` | no | string \| null | Fetch single rule by name. Returns 1 rule or error if not found. |
+| `source` | no | string \| null | Filter by source: "config" or "default". For debugging workspace state. |
+| `summary` | no | boolean \| null | If true, return only {name, priority, action} without condition details. |
+| `workspace` | no | string \| null | Optional explicit workspace directory for this call. When set, the MCP<br>server resolves the `.forgeplan/` projection from this path instead of<br>the server's startup CWD. Use this when the calling agent is running<br>in a git worktree separate from the MCP server's launch directory.<br>PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "action": {
+      "default": null,
+      "description": "Filter by action: \"EXPLORE\", \"INVESTIGATE\", or \"EXPLOIT\". Omit for all.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "name": {
+      "default": null,
+      "description": "Fetch single rule by name. Returns 1 rule or error if not found.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "source": {
+      "default": null,
+      "description": "Filter by source: \"config\" or \"default\". For debugging workspace state.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "summary": {
+      "default": null,
+      "description": "If true, return only {name, priority, action} without condition details.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "workspace": {
+      "default": null,
+      "description": "Optional explicit workspace directory for this call. When set, the MCP\nserver resolves the `.forgeplan/` projection from this path instead of\nthe server's startup CWD. Use this when the calling agent is running\nin a git worktree separate from the MCP server's launch directory.\nPRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "FpfRulesParams",
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

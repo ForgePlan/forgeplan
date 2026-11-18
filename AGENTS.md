@@ -14,7 +14,7 @@ This file is the **entry point**. For full details, read the files it points to.
 
 **Forgeplan** — Rust-based methodology engine (CLI + MCP server + future Desktop app) for managing engineering artifacts (PRD, RFC, ADR, Epic, Spec, Evidence) with quality scoring, semantic search, and decision tracking.
 
-- **Language:** Rust 1.75+ (crates workspace)
+- **Language:** Rust 2024 edition; local toolchain pinned to 1.95 (`rust-toolchain.toml`)
 - **Storage:** Markdown files in `.forgeplan/` as source of truth (ADR-003), LanceDB as derived index
 - **Distribution:** cargo-dist binaries, brew formula, install script
 - **Website:** Astro + Starlight at `website/` (see `website/README.md`)
@@ -39,7 +39,11 @@ This file is the **entry point**. For full details, read the files it points to.
 
 6. **Write tests for every new `pub fn` immediately** — do not move to the next function without a test.
 
-7. **Markdown files in `.forgeplan/` are the source of truth** (per ADR-003). The LanceDB index in `.forgeplan/lance/` is derived — rebuild via `forgeplan scan-import` if needed.
+7. **Markdown files in `.forgeplan/` are the source of truth** (per ADR-003).
+   Индекс в `.forgeplan/lance/` — производный: для Constellation использовать
+   `forgeplan index`, для старого формата — соответствующий `forgeplan reindex`.
+   `forgeplan scan-import` импортирует внешние документы, а не восстанавливает
+   Constellation. Не воссоздавать удалённые legacy-таблицы ради совместимости.
 
 ## Parallel agents and the build directory
 
@@ -53,6 +57,24 @@ with `ld: write() failed, errno=28`, and the harness around it reports
 a check that passed are indistinguishable in every summary format we use. On
 one occasion this produced 26 phantom clippy warnings that did not exist. Twice
 the result was reported as green before anyone noticed.
+
+### Волны по зависимостям
+
+- Сначала подготовить и согласовать общие контракты, схемы и границы владения.
+  Не запускать зависящую от них реализацию до готовности этих входов.
+- Готовые независимые участки запускать параллельно одной волной, до **10
+  субагентов или подзадач** одновременно. Не выполнять их последовательно без
+  причины и не дробить работу искусственно ради десяти исполнителей.
+- Зависимая задача ждёт именно свой вход. После его готовности включать её
+  в следующую доступную волну; независимые задачи не должны ждать чужих входов.
+- У каждого изменяемого файла — **один владелец записи**. Заранее назначить
+  точные файлы и интерфейсы; пересекающиеся изменения выполнять последовательно.
+  Для пишущих агентов использовать отдельные рабочие деревья, а перенос
+  результатов в общее дерево поручать одному владельцу.
+- У каждой сборки — **один владелец**. Параллельные агенты не запускают сборки
+  и проверки самостоятельно; после фиксации входов назначенный владелец
+  выполняет согласованный набор проверок. Ограничение на единственную
+  одновременную компиляцию ниже остаётся обязательным.
 
 Rules for anyone dispatching sub-agents in this repo:
 
@@ -92,6 +114,11 @@ Two related traps, same family:
   for anything that writes. A concurrent commit from a second session has
   already cost a lost commit-message file and half an hour of misdiagnosis in
   this repo.
+- **Назначенное дерево не меняет cwd инструментов.** Пишущий агент обязан
+  указывать полный абсолютный путь своего дерева в файловых операциях и в
+  заголовке `Edit`, а для Bash — явно задавать `cwd`. Относительный `Edit`
+  уже изменил исходный репозиторий вместо выделенного дерева; эту правку
+  пришлось восстанавливать по сохранённому снимку.
 - **The exit code you print through a pipe is the wrong one.** `cmd | tail` and
   `echo $?` reports `tail`. `${PIPESTATUS[0]}` is a bashism and expands to the
   empty string in this repo's zsh, so the guard prints `exit=` and reads as
@@ -99,6 +126,246 @@ Two related traps, same family:
   `cargo clippy ... > /tmp/x.log 2>&1; echo "exit=$?"`. Same family as the
   disk-full trap above — the number is real, it is just measuring something
   else.
+
+## Быстрый цикл Rust: поиск, символы, адресные проверки
+
+Эти правила дополняют, а не заменяют полные проверки и ограничения диска выше.
+
+### Найти код без полной загрузки файлов
+
+1. Сначала ограничить область задачи файлами или модулем. Для известного текста
+   использовать Grep; для конструкции Rust — `ast-grep`:
+
+   ```sh
+   ast-grep outline crates/forgeplan-core/src/constellation/owner.rs --view signatures
+   ast-grep outline crates/forgeplan-core/src/constellation/owner.rs --view expanded
+   ast-grep run --lang rust --pattern '$EXPR.unwrap()' crates/forgeplan-core/src/constellation/owner.rs
+   ```
+
+   `outline --view signatures` показывает верхний уровень; для методов и членов
+   использовать `--view expanded`. Карта экспериментальная и не разрешает типы.
+   Совпадение `.unwrap()` само по себе не дефект: различать production, tests
+   и инварианты. Не выгружать AST или весь workspace в контекст.
+2. Определения, реализации и использования проверять через Serena/rust-analyzer
+   или LSP. Перед изменением публичной сигнатуры получить references и мигрировать
+   callers. AST-поиск не разрешает типы и не заменяет проверку символов.
+   Перед работой в отдельном worktree проверить, что Serena видит файл именно
+   этого дерева. `FileNotFound` при существующем файле — не повод искать или
+   редактировать одноимённый файл в другом checkout: проверить привязку сервера,
+   а до её исправления использовать LSP с абсолютным путём целевого worktree.
+3. Прочитать найденные реализации и соседний существующий образец. Отсутствие
+   LSP-диагностики не считать успешным `cargo check`: сервер может ещё индексировать
+   проект или не запускать Cargo-проверку.
+
+### Serena и Git worktrees
+
+- Запускать MCP из корня нужного checkout с `serena start-mcp-server --context ide
+  --project-from-cwd --transport stdio --enable-web-dashboard false`. Не закреплять
+  в общей настройке абсолютный `--project` основного checkout.
+- Корень Git worktree — отдельный проект Serena: свой процесс/активный root и
+  `.serena/cache`. Общий `.git` не означает общий индекс исходников. Не объединять
+  кэши ссылкой и не переключать один активный root между параллельными агентами.
+- Для первого полного прогрева выполнить `serena project index .` из нужного
+  checkout; затем символы запрашивать штатными tools. Кэш проверяется при обращении,
+  а не является обещанием постоянно обновляемого полного снимка всех файлов.
+  Не запускать полное индексирование после каждой правки, через Git hooks или
+  рекурсивно через `activation_command`.
+- `.mcp.json` и `.serena/` здесь gitignored: новый worktree не получает их через
+  Git автоматически. При подготовке проверить локальную конфигурацию и smoke
+  `get_symbols_overview` на файле именно этого дерева; не копировать чужие
+  credentials или registry целиком. Для одинакового `project_name` задать уникальное
+  имя через `.serena/project.local.yml`; активировать проект по пути, не по имени.
+- Навигационный rust-analyzer Serena работает с `checkOnSave: false` и
+  `cargo.buildScripts.enable: false`; проверку компилятора выполняет build-owner.
+  Это уменьшает фоновую диагностику и может ограничить сведения о generated code
+  и proc macros. Отсутствие ошибок Serena не заменяет проверку сборки.
+- Изменение MCP-конфига действует при новом подключении. Уже запущенный сервер
+  остаётся на прежнем root; переподключить его и повторить smoke, не заявлять
+  переключение только по факту изменения JSON.
+
+### Проверять связную правку, а не пересобирать весь workspace после каждой строки
+
+Только назначенный build-owner, после завершения правок и проверки диска:
+
+```sh
+# Типы и тестовые targets затронутого пакета, без финальной линковки приложения.
+cargo check -p forgeplan-core --all-targets
+
+# Небольшая выборка: обычный cargo test, без накладных расходов nextest.
+cargo test -p forgeplan-core --lib -- --test-threads=1
+cargo test -p forgeplan-core --features test-helpers --test constellation_embedding_preservation -- --test-threads=1
+
+# Nextest — ради возможностей runner или измеренного выигрыша на выбранном наборе.
+cargo nextest run -p forgeplan-core --lib --test-threads=1
+```
+
+Для CLI пакет называется `forgeplan`, для MCP — `forgeplan-mcp`.
+Использовать требуемые задачей features; группировать проверки с одинаковыми
+features последовательно в одном `target`, не переключать их без необходимости.
+`--test-threads=1` сохраняет изоляцию нынешних model/environment fixtures;
+параллельное исполнение тестов включать лишь для проверенно изолированного набора.
+Doctests запускать отдельно через `cargo test --workspace --doc`.
+Ни `cargo test --lib`, ни `nextest --lib` не запускают integration targets
+или doctests. Выбирать `--test <name>` для соответствующего сценария; запуск
+только unit-тестов не закрывает проверку CLI/MCP.
+
+Не обещать ускорение nextest по факту установки: на коротких тестах его
+накладные расходы могут быть выше. Изолированный опыт подтверждает рабочий
+подход, но не является benchmark ForgePlan и не обосновывает смену runner в CI.
+
+`cargo check` не доказывает codegen, линковку или поведение. После законченного
+изменения нужны соответствующие тесты и настоящий CLI/MCP smoke; при изменении
+FFI/native dependencies/linker — ранняя сборка. Перед сдачей выполнить всю
+обязательную матрицу задачи, включая no-feature/semantic и E2E, без её сокращения.
+
+### Не терять кэш и не дублировать работу
+
+- Не делать `cargo clean` после обычной ошибки. Очистка — отдельное согласованное
+  действие при нехватке места; чужие target/model caches не трогать.
+- Не менять toolchain, `RUSTFLAGS`, Cargo profiles или `CARGO_TARGET_DIR` ради
+  предполагаемого ускорения: это может инвалидировать кэш. `line-tables-only`
+  уже настроен. Не включать глобально sccache и не отключать incremental без
+  сравнения cold/warm времени; sccache не устраняет финальную линковку.
+- IDE/rust-analyzer check-on-save, Bacon и агенты не должны параллельно запускать
+  Cargo. Перед передачей build-owner согласовать фоновые проверки; не отключать
+  диагностику редактора молча.
+- Для подагента задавать ограниченный набор файлов, один контракт и формат
+  находки `file:line → условие → последствие`. Независимые срезы читать параллельно;
+  повторное ревью направлять на diff исправления и его callers, а не заново на
+  весь репозиторий. Неизменённые файлы подтверждать прежним отчётом и fingerprint.
+- Новые семантические индексы (CocoIndex/SCIP) и cargo-hakari вводить только после
+  замера конкретной задержки; их наличие не является условием обычной работы.
+
+## Working mode: /smith first, then role-matched subagents
+
+Standing owner rule (2026-10): every **non-trivial** task goes through two
+steps, in order:
+
+1. **`/smith`** — routing. Reads state (`forgeplan health`, git, memory),
+   classifies the context against the routing matrix, and returns a Plan that
+   names which specialist subagents to dispatch and in what order. Smith picks
+   the route; it never writes code itself.
+2. **Role-matched dispatch** — `scout` для чтения и исследования, `coder` для
+   реализации, `code-reviewer` для независимого ревью, `tester` для проверок,
+   `guardian` для предметного gate, `task-runner` для Orchestra. Независимые срезы
+   могут идти параллельно в отдельных worktree; **единственной build lease
+   на машине владеет назначенный tester**. Cargo выполняет tester; исключение
+   только для обязательного commit hook координатора описано ниже.
+   Ограничения Rust/Serena/диска выше сохраняются.
+
+Exempt: single-line tactical fixes, conversational answers, and **stateful
+runs** (live processes, DB observation, interactive sessions) — a subagent has
+no long-lived process and no session memory, so those stay in the main thread.
+
+### Constellation: от плана до независимого gate
+
+Для программы ROOT `fdXN7kQgRQDqUnJRBRYu` утверждённый corrective plan и эти
+правила имеют приоритет над общими советами продолжать работу с отложенной
+синхронизацией в TODO.md. Контракт трекера —
+[`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md), pin file —
+[`docs/agents/orchestra.json`](docs/agents/orchestra.json); канонический общий
+процесс — [`UNIFIED-WORKFLOW.ru.md`](docs/methodology/UNIFIED-WORKFLOW.ru.md).
+
+1. **План → задача Orchestra.** До source dispatch `task-runner` находит
+   существующий рабочий срез в ROOT и сохраняет его UID, зависимости и чек-листы;
+   создаёт только недостающий самостоятельный срез. Он — единственный писатель
+   задач, статусов, полей, чек-листов и разрешённых task-local отчётов.
+   Перед первой записью читать `task-cycle` и `orchestra-mcp`, выполнить verifier
+   и handshake по tracker-контракту; поля/options разрешать через `list_fields`
+   каждый запуск, не закреплять их UID. Недоступный трекер, identity mismatch
+   или access error блокируют новые source-задачи; допустимы только чтение
+   и диагностика, не запасной трекер и не выдуманная синхронизация.
+2. **Один владелец файлов → отдельная worktree.** В задании перечислить exact
+   owned/forbidden paths, ветку и проверенный integration base SHA. Существующую
+   ветку/копию сначала проверить, не перезаписывать. Автор пишет только свой срез,
+   не интеграционную копию. Координатор — единственный интегратор.
+   Автор готовит код и новые поведенческие проверки, но не запускает Cargo,
+   форматтеры, сборки или тесты и не коммитит.
+3. **Передача → независимое ревью.** Handoff обязательно содержит task UID,
+   base revision, exact owned paths, отдельный patch/diff с SHA-256, список новых
+   поведенческих проверок, явно НЕ выполненные проверки с NOT_RUN и все открытые
+   замечания. Координатор применяет только owned paths. Заморозить source/test/
+   harness fingerprints, Cargo.lock, base SHA и patch digest; `code-reviewer`
+   проверяет эту дельту и callers без Cargo. Изменение fingerprint отменяет PASS
+   прежнего дерева. По одному отчёту автора принимать работу запрещено.
+4. **Единственный tester → проверка координатором → guardian gate.** После
+   завершения правок tester получает единственную build lease на машине и
+   выполняет матрицу в интеграционной копии с её единственным `target`.
+   Координатор отдельно упражняет полученные бинарники через CLI и настоящий
+   MCP stdio без пересборки; `guardian` сверяет contract → review → test →
+   runtime → fingerprint. До PASS gate следующий предметный этап не стартует.
+   `task-runner` ставит Rust checks=PASSED только по актуальному отчёту tester,
+   Done — только после gate и доказательства всех acceptance lines; до прогона
+   сохраняет NOT_RUN. EVIDENCE записывает Profile B, не автор кода.
+
+`constellation-minimax-coder` — закреплённая в плане быстрая реализация роли
+Rust writer, а не отдельная роль и не глобальная модель для всех агентов.
+Указывать её в конкретном dispatch; не менять global model overrides.
+
+`chatWriting=true` разрешает только `task-runner` короткие отчёты при передаче
+и после независимой проверки в чатах соответствующих задач ROOT-дерева.
+Это не разрешение сообщений в каналах, группах, личных чатах, упоминаний людей
+или рассылки одинаковых отчётов родителям. Admin endpoint `orch` не используется
+для записей этой программы.
+
+Запрещены сборки в нескольких `target`/worktree, изменение source во время
+build lease, коммиты с отключёнными hooks, ослабление/подмена oracle ради
+зелёного результата и чтение одноимённого файла другого checkout через неверно
+привязанный LSP. Стандартные commit hooks остаются включены.
+Единственное исключение к tester-only Cargo: после завершённой проверки tester
+координатор может вызвать Cargo только через обязательный pre-commit hook
+своего checkpoint-коммита, последовательно под той же build lease tester,
+в той же интеграционной копии и с тем же `target`. Владельцем lease остаётся
+tester; параллельные Cargo-запуски и самостоятельные сборки/пересборки
+координатора запрещены. Нельзя отключать hooks ради обхода их Cargo-проверки.
+Не собирать чужие изменения через `git add -A`; до принятого checkpoint авторы
+передают только owned patch.
+
+## Searching the tree: tgrep, not rg
+
+This repo has a **tgrep** server (`microsoft/tgrep`, trigram index + watcher).
+Prefer it over `rg`/`grep` for content search — it answers in milliseconds and
+its exit codes/flags follow ripgrep.
+
+```bash
+tgrep -- "fn parse_config" "$PWD"          # regex
+tgrep -F -- "Vec<Option<T>>" "$PWD"        # literal string — prefer for symbols
+tgrep -t rust -l -- "plan_reconcile" "$PWD"  # files only, narrow first
+tgrep -g "src/**" -C 2 -- "TODO|FIXME" "$PWD"
+tgrep --vimgrep -- "pattern" "$PWD"        # file:line:col, jump-ready
+tgrep status "$PWD"                        # server + index health
+```
+
+Rules that bite if ignored:
+
+- **`--` before the pattern, absolute path as root.** Bare `index`, `serve`,
+  `status`, `search` are parsed as subcommands; everything after `--` is the
+  pattern and paths. All flags go before `--`.
+- **Pass `$PWD`, not `.`** — this checkout is a *worktree*; `tgrep status .`
+  resolves through the gitdir to the main worktree and reports a missing
+  index. Absolute path is correct everywhere.
+- **Freshness**: the watcher updates the index asynchronously. A search issued
+  immediately after an edit can run before the index caught up — use
+  `--no-index` when the search must read the exact bytes on disk right now
+  (e.g., verifying an edit you just made, or the "another agent touched the
+  file" races described above).
+- **`.tgrep/` is generated state** — index + `serve.json` (PID/port). It is
+  gitignored; never commit it. If the server dies: `tgrep serve .` rebuilds.
+- **Flags that force a slow full scan**: `--no-index`, `-u`, `-a`, `--binary`,
+  `-L`, naming a single file. Fine on small trees; avoid on the whole repo.
+- **Fallback**: if `tgrep` is absent or the server is down, `rg` is still the
+  fallback — the server isn't a hard dependency.
+
+## Documentation interface ownership
+
+User-facing docs are in `website/src/content/docs/`; root `docs/` is for contributors.
+CLI/MCP reference metadata comes from a matching built binary, not a guessed
+signature or an automatic Cargo build. Follow `website/README.md`.
+Generators own only `forgeplan-runtime:start/end` blocks on detail pages and
+the whole CLI/MCP overview pages. Preserve manual prose and EN/RU examples;
+never hand-edit managed blocks. Regenerate both locales and check the selected
+binary's nested CLI help and both MCP profiles. Metadata coverage is not a
+semantic review of all prose, and translation mtime is not proof of equivalence.
 
 ## Findings have a home, and it is not the chat
 
@@ -161,23 +428,131 @@ left alone without discussion.
 ForgePlan/
 ├── CLAUDE.md, AGENTS.md, README.md
 ├── crates/                ← Rust workspace (core + cli + mcp)
-├── .forgeplan/            ← artifact workspace (markdown tracked, lance/cache/config local)
+├── .forgeplan/            ← artifact workspace (markdown/config tracked, index/cache local)
 │   ├── adrs/, rfcs/, prds/, epics/, specs/
 │   ├── evidence/, problems/, solutions/, notes/
 │   ├── lance/             ← gitignored (derived)
-│   └── config.yaml        ← gitignored (local)
-├── docs/                  ← production documentation
+│   └── config.yaml        ← tracked (env-var references, never secrets)
+├── docs/                  ← contributor documentation — not the website
 │   ├── README.md          ← documentation index
 │   ├── methodology/       ← how to use Forgeplan
 │   ├── operations/        ← agent hooks, enforcement, repo protection
 │   └── schemas/           ← formal artifact schemas
 ├── templates/             ← markdown templates for each artifact kind
-├── website/               ← official website (Astro + Starlight)
+├── website/               ← forgeplan.dev — landing + docs + blog + guides (one Astro app)
 ├── marketplace/           ← plugin marketplace (plugins + skills)
 ├── scripts/               ← build + release + helper scripts
 ├── Formula/               ← Homebrew formula
 └── .local/                ← gitignored — local notes, research, sessions
 ```
+
+## The site: four surfaces in one Astro app
+
+`website/` is **one** Astro 6 app at `https://forgeplan.dev` — no separate repo,
+no subdomain, no second deploy. Four surfaces share it, and each one has a
+different content source. Confusing them is the most common mistake here:
+"update the docs" has four different answers depending on which one is meant.
+
+| Surface | Routes | Source of truth | Rendered by |
+|---|---|---|---|
+| **Landing** | `/` only — **EN, no RU twin** | `src/pages/index.astro` → `Hero.astro` (wraps the `HeroSection.tsx` island) + React islands (`TrustSection`, `PipelineSection`, `ArtifactsSection`, `GraphSection`, `AISection`) + `Install.astro` | Astro + Tailwind 4 + GSAP ScrollTrigger |
+| **Docs** | `/docs/*`, `/ru/docs/*` | `website/src/content/docs/docs/**` (225) + `ru/docs/**` (224) | Starlight — sidebar is hand-written in `astro.config.mjs` |
+| **Blog** | `/blog`, `/blog/<slug>`, `/blog/series/<name>`, `/blog/rss.xml` + `/ru/blog/*` | `website/src/content/blog/{en,ru}/*.mdx` (22 + 22) | Astro content collection `blog` |
+| **Guides** | `/guides`, `/guides/<slug>` + `/ru/guides/*` | `website/public/guides-raw/*.html` (21 files = 20 lessons + the standalone `index.html`) + catalog `src/data/guides.ts` (20 entries) | inlined at build via `src/lib/embed-html.ts` |
+
+**There is no RU landing page.** `src/pages/ru/` holds `blog/`, `docs/`,
+`guides/` and nothing else; `public/_redirects` sends `/ru` and `/ru/` to `/`
+with a 302. Three surfaces are bilingual, the landing is not.
+
+The docs EN/RU gap of exactly one is `changelog.md` — generated EN-only by the
+`prebuild` step, never translated. Any other gap is real drift.
+
+Counts drift; re-measure before quoting them:
+
+```bash
+cd website && echo "blog $(ls src/content/blog/en | wc -l)/$(ls src/content/blog/ru | wc -l)" \
+  "docs $(find src/content/docs/docs -type f | wc -l)/$(find src/content/docs/ru/docs -type f | wc -l)" \
+  "guides $(ls public/guides-raw | wc -l)/$(grep -c "^    slug: '" src/data/guides.ts)"
+```
+
+**Repo-root `docs/` is not the site.** It holds 178 contributor markdown files
+(198 files in total — methodology, operations, schemas) that never reach the
+browser. The site's docs live in `website/src/content/docs/`. Two different
+things, two different audiences.
+
+### Invariants that break silently
+
+- **Integration order in `astro.config.mjs` is load-bearing**: `sitemap()` →
+  `starlight()` → `mdx()` → `react()`. Starlight bundles `astro-expressive-code`,
+  which throws a hard error if `mdx()` is registered first. The generic Astro
+  docs say the opposite; the ECE constraint wins.
+- **Blog entry IDs are `{lang}/{slug}`**, forced by the `generateId` override in
+  `src/content.config.ts`, so EN and RU posts sharing a `slug` field don't
+  collide. Nine call-sites consume that format — the config comment lists all of
+  them. Change the format and every one must move in the same commit.
+- **Blog frontmatter fails the build, not the page.** `title`, `description`,
+  `slug`, `lang`, `publishedAt`, `kind`, `topic` are required; `cover` must
+  match `/^\/[\w\-/.]+\.(png|jpg|jpeg|webp|svg)$/` — a local path only, so
+  `javascript:`, `data:` and `//evil.tld` never reach `<img src>` or `og:image`.
+- **Editing `src/data/guides.ts` requires a dev-server restart.** `getStaticPaths`
+  reads it once at startup and HMR does not reload it — new slugs 404 in the
+  browser while `npm run build` passes. HTML/CSS/MDX changes do hot-reload.
+- **Guides are inlined, never iframed** (the owner rejected iframes twice).
+  `extractEmbed` pulls body + styles + scripts out of the standalone HTML,
+  scopes CSS under `.guide-embedded`, wraps inline scripts in an IIFE, and
+  strips the lesson's own footer so `BlogFooter` is the only one on the page.
+- **Three stylesheets, three scopes.** `global.css` (Tailwind tokens, used by
+  `Header.astro`), `blog-theme.css` (shared by blog *and* guides),
+  `forge-theme.css` (Starlight override). `blog-theme.css` carries `!important`
+  rules that beat lesson inline CSS inside `.guide-embedded` — read
+  `website/CLAUDE.md` before touching guide layout.
+- **Two font stacks, deliberately.** Landing/blog/docs use Space Grotesk +
+  Geist Mono (`@fontsource`, self-hosted). `public/guides-raw/*.html` still use
+  Inter + JetBrains Mono. Don't unify without asking.
+- **i18n is mirror routes, no middleware.** `/docs/...` = EN, `/ru/docs/...` =
+  RU; same for blog, guides. Bare `/docs` and `/ru/docs` 302 to the installation
+  page; `public/_redirects` sends `/ru` → `/`.
+
+### Generated docs — never hand-edit
+
+- `npm run build` runs a `prebuild` step: `scripts/copy-changelog.mjs` copies
+  the root `CHANGELOG.md` into `src/content/docs/docs/changelog.md`. Edit the
+  root file, not the copy.
+- `scripts/generate-cli-docs.mjs` writes `docs/cli/*.md` from
+  `forgeplan help <cmd>` against a real binary (`--binary <path>`).
+- `scripts/generate-mcp-docs.mjs` writes `docs/mcp/*.md` by parsing
+  `#[tool(...)]` attributes in `crates/forgeplan-mcp/src/server.rs`.
+- `scripts/generate-marketplace-docs.mjs` writes `docs/marketplace/*.md` from
+  the **separate marketplace repo** — `<MARKETPLACE_DIR>/.claude-plugin/
+  marketplace.json` plus per-plugin files. `MARKETPLACE_DIR` defaults to a local
+  absolute path, so set it explicitly or the run aborts on a clean machine.
+- All three emit **EN only**. RU comes from `scripts/translate-batch.mjs` /
+  `translate-page.mjs` (Gemini, term glossary `src/i18n/glossary-ru.yaml`).
+- Health checks: `check-dead-links.mjs` (needs a built `dist/`),
+  `check-translation-drift.mjs` (stale RU), `check-content-completeness.mjs`.
+- Only `copy-changelog` is wired into npm scripts (as `prebuild`). The rest are
+  run by hand — nothing regenerates the CLI/MCP/marketplace reference
+  automatically when the surface changes.
+
+### Build verify
+
+`npm run build` in `website/` must close green before commit — baseline
+**544 pages / ~15 s** (measured 2026-09-17: `build` 11.6 s + Pagefind index
+2.4 s). Two warnings are expected and not regressions:
+
+- `[vite] Some chunks are larger than 500 kB after minification` — the GSAP +
+  React island bundle.
+- `Entry docs → 404 was not found.` while generating `/404.html`.
+
+Anything beyond those two is new. `build` PASS does **not** validate layout:
+complex layout changes get checked in a browser (see the Playwright recipe in
+`website/CLAUDE.md`).
+
+### Design artifacts behind these surfaces
+
+`PRD-024` (site + docs portal), `PRD-046` (docs catch-up + Cloudflare Pages),
+`PRD-047` (RU locale), `PRD-079` (bilingual blog), `PRD-080` (blog nav / visual
+/ SEO), `RFC-011` (blog scaffold), `RFC-012` (blog foundation).
 
 ## Language
 
@@ -222,13 +597,20 @@ Forgeplan is a single-author project. When generating ANY author-attributed cont
 - **Name:** `Eli Rum`
 - **URL:** `https://elirum.me`
 
-This applies to:
+Five places in `website/src/` carry the name today — all five move together:
 
-- Blog post `AuthorBlock` (`website/src/components/blog/AuthorBlock.astro`)
-- Blog footer author line (`website/src/components/blog/BlogFooter.astro`)
-- JSON-LD `author.name` + `Person.url` (`website/src/components/blog/SeoMeta.astro`)
-- Schema.org `Organization.founder` (`website/src/components/SiteJsonLd.astro`)
-- OpenGraph `article:author` meta tags
+- Blog footer author line (`components/blog/BlogFooter.astro`)
+- Blog sidebar About card (`components/blog/BlogSidebar.astro`)
+- Blog aside byline in the TOC (`components/blog/TOC.astro`)
+- JSON-LD `author.name` + `Person.url` + OpenGraph `article:author`
+  (`components/blog/SeoMeta.astro`)
+- Schema.org `Organization.founder` (`components/SiteJsonLd.astro`)
+
+Guide pages (`src/pages/guides/[slug].astro`) emit `LearningResource` JSON-LD
+with **no author field at all** — an open gap, not a place to keep in sync.
+
+It also applies to:
+
 - `package.json` `author` field (if updated)
 - Any author byline in `docs/`, `.forgeplan/notes/`, blog `.mdx` frontmatter
 - Conventional commit `Co-Authored-By` lines for solo work (do not add — Eli Rum is sole author)

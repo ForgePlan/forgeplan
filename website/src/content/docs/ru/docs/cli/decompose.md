@@ -1,11 +1,13 @@
 ---
 title: forgeplan decompose
-description: "Разбивает утвержденный PRD на RFC с фазами реализации и подзадачами с помощью ИИ"
+description: "Вывести предложения RFC-задач от LLM без создания артефактов."
 ---
 
-`forgeplan decompose` принимает утвержденный PRD и просит LLM создать соответствующий RFC: фазы реализации, подзадачи для каждой фазы и порядок зависимостей. Это устраняет разрыв между "мы знаем, что хотим" (PRD) и "вот план спринта" (RFC), не заставляя автора вручную перестраивать требования.
-
-Результатом является артефакт RFC в статусе черновик с заполненными чекбоксами **Implementation Phases**, связанный с исходным PRD через отношение `implements`. Вы по-прежнему просматриваете и редактируете его - decompose это первый черновик, а не окончательное решение.
+`forgeplan decompose` читает заголовок и тело PRD и передаёт их настроенной LLM.
+Команда печатает предложения задач и зависимостей, но **не создаёт RFC**,
+чекбоксы или связи. После ревью создайте RFC через `forgeplan new rfc` и свяжите
+их с PRD отношением `refines`. Валидация и согласование - отдельные шаги процесса,
+а не встроенные проверки этой команды.
 
 ## Когда использовать
 
@@ -17,7 +19,7 @@ description: "Разбивает утвержденный PRD на RFC с фаз
 ## Когда НЕ использовать
 
 - Глубина **Tactical** - переходите сразу к коду
-- PRD все еще является заглушкой (отсутствуют Problem, Goals, FR) - decompose будет галлюцинировать фазы
+- PRD ещё заглушка - неполные требования могут привести к необоснованным предложениям
 - RFC для этого PRD уже существует - используйте `forgeplan update` или процесс замещения вместо этого
 - Вы не согласны с целями PRD - сначала исправьте PRD, не пытайтесь замаскировать это с помощью RFC
 
@@ -49,7 +51,7 @@ forgeplan validate PRD-019
 forgeplan decompose PRD-019
 ```
 
-Читает `PRD-019`, отправляет его Problem/Goals/FR/Non-Goals в LLM и создает `RFC-0XX`, связанный с `implements: PRD-019`. Сгенерированный RFC содержит раздел **Implementation Phases** с неотмеченными чекбоксами, готовыми для отслеживания прогресса.
+Читает `PRD-019` и печатает предложения LLM. Создайте и заполните RFC отдельно; используйте фактически выданные ID.
 
 ### Пример 2: Полный конвейер от идеи до плана спринта
 
@@ -59,18 +61,19 @@ forgeplan new prd "OAuth2 login flow"             # -> PRD-042
 # ... fill MUST sections ...
 forgeplan validate PRD-042                        # PASS
 forgeplan reason PRD-042 --fpf                    # ADI cycle
-forgeplan decompose PRD-042                       # -> RFC-018 draft
-forgeplan validate RFC-018                        # sanity check
+forgeplan decompose PRD-042                       # только печатает предложения
+forgeplan new rfc "OAuth2 implementation"         # запишите выданный ID
+# Заполните RFC, свяжите с PRD-042 через --relation refines, затем валидируйте.
 ```
 
-После декомпозиции откройте `RFC-018` в вашем редакторе, уточните описания фаз и начните отмечать чекбоксы по мере завершения фаз.
+После ревью предложений создайте и заполните RFC перед реализацией. Отмечайте пункты фаз только по факту завершения работы.
 
 ## Интерпретация вывода
 
-Decompose выводит ID созданного RFC и сводку сгенерированных фаз:
+Ответ модели зависит от входа. Ниже иллюстрация плана, не квитанция создания:
 
 ```
-Created RFC-018 (draft) linked to PRD-042
+Suggested tasks for PRD-042:
   Phase 1: Authentication provider abstraction (3 tasks)
   Phase 2: OAuth2 flow implementation (5 tasks)
   Phase 3: Session persistence + refresh (4 tasks)
@@ -102,3 +105,22 @@ Shape → Validate → Reason → [decompose] → Code → Evidence → Activate
 - [`forgeplan validate`](/docs/cli/validate/) - гейт качества для входных данных декомпозиции
 - [`forgeplan generate`](/docs/cli/generate/) - генерирует контент для любого типа артефакта
 - [Методология: процесс PRD → RFC](/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan decompose --help`.
+
+```text
+Decompose a PRD into RFC tasks using AI
+
+Usage: forgeplan decompose <ID>
+
+Arguments:
+  <ID>  PRD artifact ID to decompose
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

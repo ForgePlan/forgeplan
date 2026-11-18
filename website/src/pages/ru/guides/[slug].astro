@@ -14,10 +14,10 @@ export async function getStaticPaths() {
 
 const { slug } = Astro.params;
 const guide = getGuide(slug as string);
-if (!guide) throw new Error(`Guide not found: ${slug}`);
+if (!guide) throw new Error(`Гайд не найден: ${slug}`);
 
 const filepath = path.resolve(`public/guides-raw/${slug}.html`);
-const embed = extractEmbed(filepath);
+const embed = extractEmbed(filepath, { locale: 'ru' });
 
 const site = Astro.site ?? new URL('https://forgeplan.dev');
 const canonical = new URL(Astro.url.pathname, site).href;
@@ -94,7 +94,7 @@ const next = idx >= 0 && idx < ordered.length - 1 ? ordered[idx + 1] : null;
 
   <aside class="guide-resources" aria-label="Ресурсы">
     <a href="/ru/docs/methodology/overview" class="guide-resource">
-      <span class="guide-resource-tag">DOCS</span>
+      <span class="guide-resource-tag">ДОКУМЕНТАЦИЯ</span>
       <span class="guide-resource-name">Обзор методологии и справочник</span>
     </a>
     <a href="https://github.com/ForgePlan/forgeplan" class="guide-resource" target="_blank" rel="noopener">
@@ -102,7 +102,7 @@ const next = idx >= 0 && idx < ordered.length - 1 ? ordered[idx + 1] : null;
       <span class="guide-resource-name">Исходный код и релизы</span>
     </a>
     <a href="https://github.com/ForgePlan/forgeplan/discussions" class="guide-resource" target="_blank" rel="noopener">
-      <span class="guide-resource-tag">DISCUSSIONS</span>
+      <span class="guide-resource-tag">ОБСУЖДЕНИЯ</span>
       <span class="guide-resource-name">Вопросы и обратная связь</span>
     </a>
   </aside>

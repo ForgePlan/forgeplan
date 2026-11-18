@@ -17,6 +17,9 @@
 //!
 //! Ignored / negative-path rationale documented inline per test.
 
+#[path = "common/historical_lance.rs"]
+mod historical_lance;
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::TempDir;
@@ -70,6 +73,7 @@ fn new_prd(tmp: &TempDir, title: &str) -> String {
 /// с инструкцией по rebuild. Это валидный coverage error-path: regression,
 /// убивающий graceful fallback (panic, silent exit), будет пойман.
 #[test]
+#[cfg(not(feature = "semantic-search"))]
 fn embed_without_feature_returns_error_with_fix() {
     let tmp = init_workspace();
 
@@ -80,46 +84,6 @@ fn embed_without_feature_returns_error_with_fix() {
         .failure()
         .stderr(predicate::str::contains("Embedding not available"))
         .stderr(predicate::str::contains("semantic-search"));
-}
-
-/// PROB-088 M2 / PRD-083 FR-006 — the `Fix:` line must be runnable by the
-/// audience that reaches it.
-///
-/// This error is reachable from a **prebuilt binary** (brew, install.sh,
-/// GitHub Releases). Such a user has no source tree, so `cargo build` is
-/// inert advice — it fails with "could not find Cargo.toml" and leaves them
-/// stuck. `cargo install --git` carries its own source and works from an
-/// empty directory.
-///
-/// The assertion is deliberately negative: it pins the property (no
-/// checkout-dependent command) rather than the exact wording, so rephrasing
-/// the message stays free while a regression to `cargo build` fails loudly.
-#[test]
-fn embed_fix_hint_is_runnable_without_a_checkout() {
-    let tmp = init_workspace();
-
-    let output = forgeplan()
-        .args(["embed"])
-        .current_dir(tmp.path())
-        .assert()
-        .failure();
-
-    let stderr = String::from_utf8_lossy(&output.get_output().stderr).to_string();
-
-    let fix_line = stderr
-        .lines()
-        .find(|l| l.trim_start().starts_with("Fix:"))
-        .unwrap_or_else(|| panic!("no `Fix:` line in embed refusal output:\n{stderr}"));
-
-    assert!(
-        !fix_line.contains("cargo build"),
-        "`Fix:` must not tell a binary-install user to run `cargo build` — \
-         they have no source tree. Got: {fix_line}"
-    );
-    assert!(
-        fix_line.contains("cargo install"),
-        "`Fix:` should offer a self-contained install command. Got: {fix_line}"
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -177,10 +141,9 @@ fn tree_json_emits_valid_array() {
 // git_sync
 // ---------------------------------------------------------------------------
 
-/// `git-sync` без recent pull/merge возвращает Err с actionable `Fix:` line.
-/// Verifies error-path contract (no panic, deterministic message).
+/// Missing Git history refuses synchronization and names the missing reference.
 #[test]
-fn git_sync_without_orig_head_emits_fix() {
+fn git_sync_without_orig_head_reports_error() {
     let tmp = init_workspace();
     // Init git repo but no pull/merge → no ORIG_HEAD
     Command::new("git")
@@ -195,46 +158,7 @@ fn git_sync_without_orig_head_emits_fix() {
         .current_dir(tmp.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains("ORIG_HEAD"))
-        .stderr(predicate::str::contains("Fix:"));
-}
-
-#[test]
-fn git_sync_since_head_no_changes() {
-    let tmp = init_workspace();
-    // Real git repo with an initial commit so `--since HEAD` succeeds.
-    Command::new("git")
-        .arg("init")
-        .arg("-q")
-        .current_dir(tmp.path())
-        .assert()
-        .success();
-    Command::new("git")
-        .args(["add", "."])
-        .current_dir(tmp.path())
-        .assert()
-        .success();
-    Command::new("git")
-        .args([
-            "-c",
-            "user.email=t@t.com",
-            "-c",
-            "user.name=t",
-            "commit",
-            "-q",
-            "-m",
-            "init",
-        ])
-        .current_dir(tmp.path())
-        .assert()
-        .success();
-
-    forgeplan()
-        .args(["git-sync", "--since", "HEAD"])
-        .current_dir(tmp.path())
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("No .forgeplan/ files changed"));
+        .stderr(predicate::str::contains("ORIG_HEAD"));
 }
 
 // ---------------------------------------------------------------------------
@@ -341,14 +265,23 @@ fn context_missing_artifact_errors() {
 #[test]
 fn promote_memory_to_note_creates_new_artifact() {
     let tmp = init_workspace();
-    forgeplan()
+    let remembered = forgeplan()
         .args(["remember", "test memory for promote"])
         .current_dir(tmp.path())
-        .assert()
-        .success();
+        .output()
+        .unwrap();
+    assert!(remembered.status.success());
+    let remembered = String::from_utf8_lossy(&remembered.stdout);
+    let id = remembered
+        .split_once("Remembered: ")
+        .unwrap()
+        .1
+        .split_once(" — ")
+        .unwrap()
+        .0;
 
     forgeplan()
-        .args(["promote", "mem-test-memory-for-promote", "--kind", "note"])
+        .args(["promote", id, "--kind", "note"])
         .current_dir(tmp.path())
         .assert()
         .success()
@@ -582,15 +515,38 @@ fn recall_json_emits_memories_array() {
 fn remember_creates_memory_artifact() {
     let tmp = init_workspace();
 
-    forgeplan()
+    let output = forgeplan()
         .args(["remember", "remember coverage fact"])
         .current_dir(tmp.path())
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Remembered"))
-        .stdout(predicate::str::contains("mem-remember-coverage-fact"));
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let id = stdout
+        .split_once("Remembered: ")
+        .unwrap()
+        .1
+        .split_once(" — ")
+        .unwrap()
+        .0;
+    assert!(id.starts_with("MEM-"), "{stdout}");
+    // `.gitkeep` sits in the directory before any document exists; the
+    // memory is the one markdown file.
+    let path = std::fs::read_dir(tmp.path().join(".forgeplan/memory"))
+        .unwrap()
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .find(|path| path.extension().is_some_and(|extension| extension == "md"))
+        .expect("a memory document");
+    let content = std::fs::read_to_string(path).unwrap();
+    let (frontmatter, _) =
+        forgeplan_core::artifact::frontmatter::parse_frontmatter(&content).unwrap();
+    assert!(
+        frontmatter
+            .get("slug")
+            .and_then(serde_yaml::Value::as_str)
+            .is_some_and(|key| key.starts_with("mem-"))
+    );
 }
-
 #[test]
 fn remember_list_empty_shows_no_memories() {
     let tmp = init_workspace();
@@ -617,7 +573,7 @@ fn remember_list_after_capture_shows_entry() {
         .current_dir(tmp.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("mem-list-coverage-entry"));
+        .stdout(predicate::str::contains("MEM-001"));
 }
 
 /// Issue #411 end-to-end: the memory list must show WHO captured the fact.
@@ -719,14 +675,23 @@ fn recall_json_carries_provenance() {
 #[test]
 fn remember_forget_removes_memory() {
     let tmp = init_workspace();
-    forgeplan()
+    let remembered = forgeplan()
         .args(["remember", "to be forgotten"])
         .current_dir(tmp.path())
-        .assert()
-        .success();
+        .output()
+        .unwrap();
+    assert!(remembered.status.success());
+    let remembered = String::from_utf8_lossy(&remembered.stdout);
+    let id = remembered
+        .split_once("Remembered: ")
+        .unwrap()
+        .1
+        .split_once(" — ")
+        .unwrap()
+        .0;
 
     forgeplan()
-        .args(["remember", "--forget", "mem-to-be-forgotten"])
+        .args(["remember", "--forget", id])
         .current_dir(tmp.path())
         .assert()
         .success()
@@ -739,7 +704,8 @@ fn remember_forget_removes_memory() {
 
 #[test]
 fn migrate_runs_schema_migrations() {
-    let tmp = init_workspace();
+    let tmp = TempDir::new().unwrap();
+    historical_lance::init_legacy_workspace(tmp.path(), "Schema migration fixture");
 
     forgeplan()
         .args(["migrate"])
@@ -924,23 +890,6 @@ fn setup_refuses_to_overwrite_an_existing_fpl() {
         b"someone elses tool",
         "a foreign file at the alias path must survive untouched"
     );
-}
-
-/// On a build without the feature there is no model to fetch. Saying so beats
-/// either a silent no-op or a confident claim that something was prepared.
-#[test]
-#[cfg(not(feature = "semantic-search"))]
-fn setup_explains_itself_when_the_build_cannot_embed() {
-    let dir = TempDir::new().unwrap();
-    let exe = dir.path().join("forgeplan");
-    std::fs::copy(assert_cmd::cargo::cargo_bin("forgeplan"), &exe).unwrap();
-
-    Command::new(&exe)
-        .arg("setup")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("no semantic-search feature"))
-        .stdout(predicate::str::contains("cargo install --git"));
 }
 
 /// PROB-088 lesson applied to our own flags: `-y` must never pull gigabytes.

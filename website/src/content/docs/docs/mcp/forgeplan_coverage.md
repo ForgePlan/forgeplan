@@ -3,18 +3,18 @@ title: forgeplan_coverage
 description: "Show decision coverage per code module - which modules have architectural decisions and which are blind spots."
 ---
 
-Show architectural-decision coverage across the codebase. For each code module (crate / directory / top-level package), it reports how many ADR / RFC / PRD artifacts reference it via `affected_files`, and highlights modules with **zero** decisions - the "decision blind spots" where the code is un-documented architecturally.
+Reports associations between detected source directories and **active** ADR/RFC/PRD records. Paths are extracted from Markdown sections named `Affected Files`, `Affected Scope`, or `affected_files`, not from YAML frontmatter alone. Modules with empty `decisions` arrays lack a counted association; that does not prove no architectural documentation exists elsewhere.
 
 **Category**: Quality
 
 ## When an agent calls it
 
-- **Architecture audit** - find modules nobody ever wrote an ADR for.
+- **Architecture audit** - find detected modules with no counted active decision association.
 - **Onboarding** - new engineers can find the documented parts of the system quickly.
 - **Before a refactor** - confirm the module you're about to change has (or needs) an ADR.
 - **Release readiness** - no high-traffic module should have zero decisions.
 
-Coverage is the complement of `forgeplan_drift`: drift says "decisions exist but code moved on," coverage says "code exists but no decision was ever recorded."
+Use this alongside `forgeplan_drift`: drift examines declared decisions against file changes, while coverage reports declared associations for detected modules. Neither result establishes that no other decision was ever recorded.
 
 ## Input parameters
 
@@ -22,26 +22,14 @@ _No input parameters. Call this tool with an empty object `{}`._
 
 ## Returns
 
-```json
-{
-  "modules": [
-    {
-      "path": "crates/forgeplan-core/src/scoring",
-      "decisions": ["ADR-002", "RFC-004"],
-      "count": 2
-    },
-    {
-      "path": "crates/forgeplan-core/src/projection",
-      "decisions": [],
-      "count": 0,
-      "blind_spot": true
-    }
-  ],
-  "total_modules": 18,
-  "covered": 12,
-  "blind_spots": 6
-}
-```
+The payload contains `total_modules`, `covered_modules`, `uncovered_modules`,
+`coverage_percent`, `modules`, and `_next_action`. Each module has `path`,
+`file_count`, `line_count`, and `decisions` (artifact IDs). An empty
+`decisions` array identifies a coverage gap; there are no per-module
+`count`/`blind_spot` fields or top-level `covered`/`blind_spots` fields.
+
+This measures declared decision-to-module associations, not test coverage
+or a semantic review of the documentation or code.
 
 ## Example invocation
 
@@ -54,8 +42,8 @@ _No input parameters. Call this tool with an empty object `{}`._
 1. `forgeplan_coverage` - list blind-spot modules.
 2. For each: determine if it deserves an ADR (non-trivial design choices).
 3. `forgeplan_new adr` → document the decision.
-4. `forgeplan_link` → attach to affected files.
-5. `forgeplan_coverage` again - confirm the blind spot closed.
+4. Use `forgeplan_update` to record matching paths in an `## Affected Files` body section and satisfy the decision's activation prerequisites; only active records count. `forgeplan_link` links artifacts, not files.
+5. Call `forgeplan_coverage` again and inspect whether the declared association is now counted.
 
 ## CLI equivalent
 
@@ -69,3 +57,29 @@ forgeplan coverage
 - [`forgeplan_blindspots`](/docs/mcp/forgeplan_blindspots/) - artifact-level blind spots (no evidence).
 - [`forgeplan_new`](/docs/mcp/forgeplan_new/) - create a new ADR.
 - [Methodology guide](/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Captured tools/list
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, profile `full`.
+
+Show decision coverage per code module — which modules have architectural decisions and which are blind spots.
+
+### Input parameters
+
+| Name | Required | Type | Description |
+|---|---|---|---|
+| — | — | — | No parameters. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "properties": {},
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

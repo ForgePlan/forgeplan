@@ -11,7 +11,7 @@ Estimate effort (in hours) for an artifact by parsing its Functional Requirement
 
 - **Sprint planning** - get hours for each PRD / RFC before committing scope.
 - **Grade matching** - see how many hours the task takes for your own grade via `my_grade`.
-- **AI-assisted plans** - `grade: "ai"` applies AI multipliers (typically 0.03–0.4× of senior) for tasks that can be delegated.
+- **AI-assisted plans** - `grade: "ai"` highlights the AI grade; it does not switch the engine to a different calculation. Default AI grade and task-type multipliers are configurable model assumptions, not a measured productivity guarantee.
 - **Calibration feedback loop** - compare actual vs estimated after the sprint to tune the profile.
 
 ## Input parameters
@@ -19,7 +19,7 @@ Estimate effort (in hours) for an artifact by parsing its Functional Requirement
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `id` | `string` | yes | Artifact ID to estimate. |
-| `grade` | `string` | no | Override grade for all items: `junior`, `middle`, `senior`, `principal`, `ai`. |
+| `grade` | `string` | no | Highlight one grade in the result: `junior`, `middle`, `senior`, `principal`, `ai`. All grade totals are still calculated. |
 | `my_grade` | `bool` | no | Auto-detect grade from config `grade_profile` + artifact domain inference. |
 | `llm_score` | `bool` | no | Use LLM-based complexity scoring instead of rule-based heuristics. |
 | `complexity` | `string` | no | Manual complexity overrides, e.g. `"FR-001=5,FR-002=3"`. |
@@ -28,20 +28,17 @@ _Schema source: `crates/forgeplan-mcp/src/server.rs::EstimateParams`_
 
 ## Returns
 
+Illustrative empty-items response excerpt, not a measured estimate. Nonempty results use `items`, `totals`, `total_score`, `confidence`, and `confidence_reasons`; confidence is report-wide, not per-grade. `llm_score: true` falls back to heuristic scoring when no LLM is configured. The handler caps the `complexity` string at 4096 bytes, although that cap is absent from the schema.
+
 ```json
 {
-  "id": "PRD-039",
-  "total_items": 12,
-  "by_grade": {
-    "junior": { "hours": 96, "confidence": 0.6 },
-    "middle": { "hours": 52, "confidence": 0.75 },
-    "senior": { "hours": 28, "confidence": 0.85 },
-    "principal": { "hours": 18, "confidence": 0.8 },
-    "ai": { "hours": 4.2, "confidence": 0.5 }
-  },
-  "breakdown": [
-    { "item": "FR-001", "complexity": 3, "senior_hours": 4 }
-  ]
+  "artifact_id": "PRD-039",
+  "artifact_title": "Authentication system",
+  "items": [],
+  "totals": {},
+  "total_score": 0.0,
+  "confidence": 0.0,
+  "confidence_reasons": []
 }
 ```
 
@@ -69,3 +66,99 @@ forgeplan estimate PRD-039 --grade ai
 - [`forgeplan_calibrate`](/docs/mcp/forgeplan_calibrate/) - depth suggestion (feeds into estimation).
 - [`forgeplan_progress`](/docs/mcp/forgeplan_progress/) - actual completion % vs estimate.
 - [Methodology guide](/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Captured tools/list
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, profile `full`.
+
+Estimate effort for an artifact based on FR and Phase items. Returns multi-grade breakdown (Junior/Middle/Senior/Principal/AI) with confidence scoring.
+
+### Input parameters
+
+| Name | Required | Type | Description |
+|---|---|---|---|
+| `complexity` | no | string \| null | Manual complexity overrides: "FR-001=5,FR-002=3" |
+| `grade` | no | GradeKind \| null | Override grade for all items |
+| `id` | yes | string | Artifact ID to estimate |
+| `llm_score` | no | boolean \| null | Use LLM-based complexity scoring instead of rule-based heuristics |
+| `my_grade` | no | boolean \| null | Auto-detect grade from config grade_profile + artifact domain inference |
+| `workspace` | no | string \| null | Optional explicit workspace directory for this call. When set, the MCP<br>server resolves the `.forgeplan/` projection from this path instead of<br>the server's startup CWD. Use this when the calling agent is running<br>in a git worktree separate from the MCP server's launch directory.<br>PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "$defs": {
+    "GradeKind": {
+      "enum": [
+        "junior",
+        "middle",
+        "senior",
+        "principal",
+        "ai"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "complexity": {
+      "default": null,
+      "description": "Manual complexity overrides: \"FR-001=5,FR-002=3\"",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "grade": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GradeKind"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Override grade for all items"
+    },
+    "id": {
+      "description": "Artifact ID to estimate",
+      "type": "string"
+    },
+    "llm_score": {
+      "default": null,
+      "description": "Use LLM-based complexity scoring instead of rule-based heuristics",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "my_grade": {
+      "default": null,
+      "description": "Auto-detect grade from config grade_profile + artifact domain inference",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "workspace": {
+      "default": null,
+      "description": "Optional explicit workspace directory for this call. When set, the MCP\nserver resolves the `.forgeplan/` projection from this path instead of\nthe server's startup CWD. Use this when the calling agent is running\nin a git worktree separate from the MCP server's launch directory.\nPRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "title": "EstimateParams",
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

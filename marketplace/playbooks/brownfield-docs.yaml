@@ -2,16 +2,19 @@
 # brownfield-docs.yaml — REFERENCE playbook: docs-rich repo onboarding
 # =====================================================================
 #
+# Target applicability: ForgeplanCore steps require the legacy artifacts/
+# evidence/relations tables. A Constellation pointer alone is insufficient;
+# this example is not verified on the migrated target workspace.
+#
 # **Status: REFERENCE EXAMPLE, requires `forge-docs-miner` skill +
 # `marketplace/mappings/docs-to-forge.yaml` (BOTH TBD — tracked in
 # PROB-050).**
 #
-# This playbook is provided as a runnable template for the
-# documentation-onboarding pattern. Without the
-# `brownfield-docs-pack` skill installed AND the canonical
-# `docs-to-forge` mapping shipped under `marketplace/mappings/`,
-# this playbook fails with `DispatchError::DelegateMissing` (step 1)
-# or "mapping file not found" (step 2) at runtime.
+# This is a reference contract, not working end-to-end onboarding.
+# The canonical docs-to-forge mapping is not shipped. Current SkillDispatcher
+# only emits a trace and returns the declared path; it does not check for an
+# installed skill, invoke claude, or create the manifest. A declared output
+# path is not evidence that its file exists.
 #
 # Why ship as REFERENCE: same pattern as `audit.yaml`, which shipped
 # on main since v0.27.0. v0.28.0 + ADR-011 replaces the never-shipped
@@ -21,7 +24,7 @@
 # spec for what the skill + mapping must produce — landing it now lets
 # future skill/mapping authors target a fixed contract.
 #
-# To run end-to-end today:
+# Prerequisites for a future end-to-end implementation:
 #   1. Author `marketplace/skills/brownfield-docs-pack/forge-docs-miner.skill.md`
 #      that scans `docs/` and writes a YAML manifest to
 #      `.forgeplan/scan/docs-import.yaml` matching the
@@ -29,11 +32,13 @@
 #   2. Author `marketplace/mappings/docs-to-forge.yaml` mirroring
 #      `c4-to-forge.yaml`'s shape but mapping doc kinds → Forgeplan
 #      kinds (architecture/* → adr, specs/* → spec, runbooks/* → note).
-#   3. Install the pack: `forgeplan skill install brownfield-docs-pack`.
-#   4. Run: `forgeplan playbook run brownfield-docs --yes`.
+#   3. Integrate an actual skill loader/harness and confirm the manifest exists.
+#      This target has no `forgeplan skill install` CLI command; the step-level
+#      fallback_hint below is a historical reference, not a working installer.
+#   4. Only then exercise `forgeplan playbook run brownfield-docs --yes`.
 #
-# Both prereqs are tracked in PROB-050 acceptance criteria; until
-# then this playbook fails at runtime as the reference contract.
+# Merely installing a skill file does not make the current trace-only
+# dispatcher execute it; the missing mapping is a separate prerequisite.
 #
 # Purpose:
 #   Bring a documentation-rich brownfield repository (existing `docs/`
@@ -70,18 +75,14 @@ schema_version: "1.0"
 name: brownfield-docs
 title: "Brownfield docs-first onboarding"
 description: |
-  Three-step orchestration that converts a documentation-rich
-  brownfield repo into a Forgeplan-managed knowledge graph: scan
-  existing `docs/` → ingest as Forgeplan artifacts via canonical
-  mapping → write summary Note. Each ingest step adheres to the
-  ADR-009 hallucination-proof invariant (every artifact carries a
-  `## Sources` block pointing back to the originating doc file).
+  Reference flow for a documentation-rich brownfield repo: scan docs →
+  ingest via a canonical mapping → author a linked summary Note. Generated
+  ingest drafts must retain the ADR-009 `## Sources` block.
 
-  Prerequisite: `forge-docs-miner` skill (in `brownfield-docs-pack`)
-  must be installed. When missing, the corresponding step prints the
-  actionable `fallback_hint:` and aborts. The skill itself runs
-  through the `claude --print` dispatcher (ADR-011) and produces a
-  YAML manifest at `.forgeplan/scan/docs-import.yaml`.
+  Current limitations: the docs-to-forge mapping is not shipped and
+  SkillDispatcher does not run a miner or create docs-import.yaml.
+  The final `new` op creates a Note template from kind/title only;
+  it does not populate a summary, apply input.tags or create parent links.
 
 # ---------------------------------------------------------------------
 # Recommendation engine signals (PRD-067 FR-5)
@@ -135,8 +136,8 @@ steps:
   #    requires `step.input.mapping_path` + `step.input.source_path` —
   #    NOT a top-level `mapping:` field. (The top-level `mapping:` is
   #    a SOFT WARNING in loader.rs, never read by the dispatcher.) The
-  #    canonical sibling `brownfield-code.yaml` has the same defect on
-  #    main; tracked in PROB-050 as a separate cleanup.
+  #    sibling brownfield-code.yaml now supplies both required input fields;
+  #    the comment above describes the historical defect, not its current shape.
   - id: ingest-docs
     delegate_to:
       type: forgeplan_core
@@ -147,8 +148,8 @@ steps:
     requires: [scan-docs]
     on_error: abort
 
-  # 3. Summary Note linking everything imported by this run.
-  #    Lives entirely in forgeplan_core, no external deps.
+  # 3. Create a summary Note template. Populate and link it separately;
+  #    current `new` does not consume input.tags or earlier step reports.
   - id: summary-note
     delegate_to:
       type: forgeplan_core

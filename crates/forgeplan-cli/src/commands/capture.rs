@@ -4,12 +4,11 @@ use forgeplan_core::artifact::types::ArtifactKind;
 use forgeplan_core::db::store::NewArtifact;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::llm::capture;
-use forgeplan_core::projection;
 
 use crate::commands::common;
 
 pub async fn run(decision: &str, context: Option<&str>) -> anyhow::Result<()> {
-    let (workspace, _lock, store) = common::open_store_locked().await?;
+    let (workspace, lock, store) = common::open_store_locked_checked(&[]).await?;
 
     // PRD-071 contract: emit `Fix:` when LLM unavailable.
     let llm_config = match common::require_llm_config() {
@@ -41,8 +40,6 @@ pub async fn run(decision: &str, context: Option<&str>) -> anyhow::Result<()> {
 
     let kind: ArtifactKind = kind_str.parse().unwrap_or(ArtifactKind::Note);
     let template_key = kind.template_key();
-    let prefix = kind.prefix().trim_end_matches('-').to_uppercase();
-    let id = store.next_id(&prefix).await?;
 
     // Title from first line of decision (truncated)
     let title = decision
@@ -53,28 +50,64 @@ pub async fn run(decision: &str, context: Option<&str>) -> anyhow::Result<()> {
         .take(80)
         .collect::<String>();
 
-    let artifact = NewArtifact {
-        id: id.clone(),
-        kind: template_key.to_string(),
-        status: "draft".to_string(),
-        title: title.clone(),
-        body: body.clone(),
-        depth: "tactical".to_string(),
-        author: None,
-        parent_epic: None,
-        valid_until: None,
-        // C1: fresh capture has no tags yet — user adds via `forgeplan tag` later.
-        tags: Vec::new(),
-    };
-
     // PROB-049 H-6: helpers now take `&MutationContext` instead of
     // `(workspace, store)` separately so the persistent dependencies
     // funnel through one shape.
-    let ctx = projection::MutationContext::new(&workspace, &store);
-    let filepath = projection::create_artifact_with_projection(&ctx, &artifact).await?;
+    //
+    // The shared creator mints the key before reserving the display number,
+    // then publishes the key-named document. The optional legacy sink only
+    // controls whether the derived row is written alongside the file.
+    let captured_body = body.clone();
+    let captured_title = title.clone();
+    let captured_template_key = template_key.to_string();
+    let build = move |id: &str, _number: u32, canonical_key: &str| -> anyhow::Result<NewArtifact> {
+        Ok(NewArtifact {
+            canonical_key: canonical_key.to_string(),
+            id: id.to_string(),
+            kind: captured_template_key.clone(),
+            status: "draft".to_string(),
+            title: captured_title.clone(),
+            body: captured_body.clone(),
+            depth: "tactical".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            // C1: fresh capture has no tags yet — user adds via `forgeplan tag` later.
+            tags: Vec::new(),
+        })
+    };
+
+    common::ensure_ordinary_mutation_allowed(&workspace)?;
+    let created = forgeplan_core::artifact::id_alloc::create_artifact_with_minted_key(
+        &workspace,
+        &lock,
+        store.as_ref(),
+        &kind,
+        3,
+        &title,
+        &build,
+    )
+    .await
+    .map_err(|e| common::describe_possible_legacy_partial_commit(store.is_some(), e))?;
+    let id = created.id;
+    let canonical_key = created.canonical_key;
+    let filepath = created.filepath;
+
+    if store.is_none() {
+        common::note_constellation_owns_index();
+        // Lock must drop before reconcile — it re-acquires the same lock per
+        // storage commit, and a held guard would time the capture out.
+        drop(lock);
+        common::reconcile_after_file_mutation(&workspace).await;
+    } else {
+        drop(store);
+        drop(lock);
+        common::drain_legacy_semantic_after_mutation(&workspace).await?;
+    }
 
     println!("  Captured: {}", filepath.display());
     println!("  ID:       {}", id);
+    println!("  Key:      {}", canonical_key);
     println!("  Kind:     {} (auto-detected)", template_key);
     println!("  Title:    {}", title);
 

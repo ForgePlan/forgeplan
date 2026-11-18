@@ -4,24 +4,49 @@ use chrono::{NaiveDate, Utc};
 
 use forgeplan_core::artifact::frontmatter::Frontmatter;
 use forgeplan_core::artifact::types::{ArtifactKind, Mode};
-use forgeplan_core::db::store::ArtifactFilter;
 use forgeplan_core::hints;
-use forgeplan_core::scoring::evidence::parse_evidence_from_record;
 use forgeplan_core::scoring::fgr;
 use forgeplan_core::scoring::reff::{self, EvidenceItem};
 
 use crate::commands::common;
 use crate::ui;
 
-/// Score all active decision artifacts and update cached R_eff.
+/// Score all active decision artifacts; persist R_eff when a legacy store exists.
 pub async fn run_all(json: bool) -> anyhow::Result<()> {
     use forgeplan_core::artifact::types::DECISION_KINDS_EVIDENCE;
 
     // PROB-058 AC-2: acquire workspace lock so concurrent CLI invocations
     // (operator running `score-all` while a multi-agent dispatch runs `link`
     // в parallel — PRD-057) cannot race on `update_r_eff_score` writes.
-    let (_ws, _lock, store) = common::open_store_locked().await?;
-    let records = store.list_records(None).await?;
+    //
+    // On a constellation-migrated workspace there is no `r_eff_score` column
+    // to race over — the derived index publishes R_eff from the captured
+    // graph — so the command answers from a fresh capture instead and writes
+    // no cache. It takes no lock for that reason: it performs no mutation.
+    let (ws, lock, store) = common::open_store_locked_tolerating_constellation().await?;
+    let store = if store.is_some() {
+        drop(store);
+        common::prepare_store_locked_checked(&ws, &lock, &[]).await?
+    } else {
+        store
+    };
+
+    if store.is_none() {
+        common::note_constellation_owns_index();
+    }
+    let read = if store.is_none() {
+        Some(
+            forgeplan_core::constellation::facade::open_workspace_read_with_permit(&ws, &lock)
+                .await?,
+        )
+    } else {
+        None
+    };
+    let records: Vec<forgeplan_core::db::store::ArtifactRecord> = match (&store, &read) {
+        (Some(store), _) => store.list_records(&lock, None).await?,
+        (None, Some(read)) => read.list_records(None),
+        (None, None) => unreachable!("a migrated workspace has a captured read"),
+    };
 
     let decision_records: Vec<_> = records
         .iter()
@@ -30,7 +55,19 @@ pub async fn run_all(json: bool) -> anyhow::Result<()> {
 
     if decision_records.is_empty() {
         if json {
-            println!("[]");
+            // The SAME envelope as the populated path below, with empty
+            // arrays. Printing a bare `[]` here made `results` and `errors`
+            // disappear exactly when a consumer had nothing to score, so
+            // `"results" in payload` was false for an empty workspace and
+            // true for a populated one — the schema was stable only when
+            // there was work to report.
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "results": Vec::<serde_json::Value>::new(),
+                    "errors": Vec::<serde_json::Value>::new(),
+                }))?
+            );
         } else {
             println!("  No active decision artifacts found.");
         }
@@ -44,22 +81,46 @@ pub async fn run_all(json: bool) -> anyhow::Result<()> {
         );
         println!();
     }
-
     let mut results = Vec::new();
     let mut errors: Vec<serde_json::Value> = Vec::new();
     for record in &decision_records {
-        // PRD-075 FR-004: route batch reconciliation through the same shared
-        // helper that mutators (link/unlink/activate) use.
-        let r_eff = match forgeplan_core::scoring::sync_score_target(&store, &record.id).await {
-            Ok(report) => report.r_eff,
-            Err(e) => {
-                // Round 8 audit MED-4: surface failed artifacts in JSON instead
-                // of silently dropping them, so scripted consumers cannot
-                // mistake partial success for full success.
-                let msg = e.to_string();
-                eprintln!("  Warning: could not score {}: {msg}", record.id);
-                errors.push(serde_json::json!({"id": record.id, "error": msg}));
-                continue;
+        // PRD-075 FR-004: score-all uses the same recursive report as
+        // `score <id>` on the captured canonical workspace. Unlike the legacy
+        // path, it does not persist a score column that this layout does not have.
+        let r_eff = match &store {
+            Some(store) => {
+                match forgeplan_core::scoring::sync_score_target(
+                    store,
+                    &lock,
+                    &record.canonical_key,
+                )
+                .await
+                {
+                    Ok(report) => report.r_eff,
+                    Err(e) => {
+                        // Round 8 audit MED-4: surface failed artifacts in JSON instead
+                        // of silently dropping them, so scripted consumers cannot
+                        // mistake partial success for full success.
+                        let msg = e.to_string();
+                        eprintln!("  Warning: could not score {}: {msg}", record.id);
+                        errors.push(serde_json::json!({"id": record.id, "error": msg}));
+                        continue;
+                    }
+                }
+            }
+            None => {
+                let read = read
+                    .as_ref()
+                    .expect("a migrated workspace has a captured read");
+                match reff::assurance_report_captured(&record.canonical_key, read).await {
+                    Ok(report) => report.r_eff,
+                    Err(e) => {
+                        let msg = e.to_string();
+                        eprintln!("  Warning: could not score {}: {msg}", record.id);
+                        errors.push(serde_json::json!({"id": record.id, "error": msg}));
+                        continue;
+                    }
+                }
             }
         };
 
@@ -107,22 +168,71 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
     // PROB-058 AC-2: acquire workspace lock — `score` writes `r_eff_score` and
     // must serialize against concurrent `link` / `activate` to avoid
     // latest-writer-wins data loss.
-    let (_ws, _lock, store) = common::open_store_locked().await?;
+    //
+    // On a constellation-migrated workspace there is no `r_eff_score` column
+    // to race over: the canonical Markdown is the artifact and the derived
+    // index owns the projection, so this command performs no mutation there.
+    // It releases the lock before capturing, answers from ONE capture, and
+    // never opens the retired store.
+    let (ws, lock, store) = common::open_store_locked_tolerating_constellation().await?;
 
+    let view = match store {
+        Some(store) => {
+            let resolution = common::resolve_against_workspace(&ws, target_id_input).await?;
+            let (key, _) = common::require_found_identity(target_id_input, &resolution)?;
+            drop(store);
+            let prepared = common::prepare_store_locked_checked(&ws, &lock, &[(&key, true)])
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("legacy index ownership changed during scoring"))?;
+            score_from_store(&key, &prepared, &lock).await?
+        }
+        None => {
+            common::note_constellation_owns_index();
+            let read =
+                forgeplan_core::constellation::facade::open_workspace_read_with_permit(&ws, &lock)
+                    .await?;
+            score_from_read(target_id_input, &read).await?
+        }
+    };
+
+    render_score(view, json)
+}
+
+/// Everything `score <id>` prints, from whichever projection answered.
+///
+/// One struct rather than two renderers: a migrated answer that formatted its
+/// own numbers is exactly how `weakest_link` starts reading `null` while the
+/// same artifact prints a real one on a legacy workspace.
+struct ScoreView {
+    target: forgeplan_core::db::store::ArtifactRecord,
+    target_ref: String,
+    report: reff::AssuranceReport,
+    evidence_items: Vec<EvidenceItem>,
+    fgr_score: fgr::FgrScore,
+}
+
+fn not_found(input: &str) -> anyhow::Error {
+    anyhow::anyhow!("Artifact '{input}' not found\nFix: forgeplan list")
+}
+
+/// Legacy workspace: the score is computed **and persisted** to the store's
+/// cached column, byte-for-byte as before.
+async fn score_from_store(
+    input: &str,
+    store: &forgeplan_core::db::store::LanceStore,
+    lock: &forgeplan_core::workspace::lock::WorkspaceLock,
+) -> anyhow::Result<ScoreView> {
     // PROB-060 / SPEC-005 Phase 1.5b — slug-aware lookup.
-    let target_id_owned = store.resolve_id(target_id_input).await?.ok_or_else(|| {
-        anyhow::anyhow!("Artifact '{target_id_input}' not found\nFix: forgeplan list")
-    })?;
+    let target_id_owned = input.to_string();
     let target_id = target_id_owned.as_str();
-
-    // Get the target artifact
-    let target = store.get_record(target_id).await?.ok_or_else(|| {
-        anyhow::anyhow!("Artifact '{}' not found\nFix: forgeplan list", target_id)
-    })?;
+    let target = store
+        .get_record(lock, target_id)
+        .await?
+        .ok_or_else(|| not_found(target_id))?;
 
     // PROB-060 / SPEC-005 / ADR-012 (W1.B, CD-5) — pick the canonical
     // reference form for hint emission: slug pre-merge, display id
-    // post-merge. Body comes from LanceStore; refs_form_from_body is
+    // post-merge. Body comes from the store; refs_form_from_body is
     // non-fatal on legacy / malformed frontmatter.
     let target_ref =
         forgeplan_core::artifact::frontmatter::refs_form_from_body(&target.body, &target.id);
@@ -133,52 +243,75 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
     // display. On persist failure we fall back to a fresh recursive walk so
     // the user still sees a breakdown — but we annotate it with a warning so
     // the displayed value cannot silently disagree with stored cache.
-    let report = match forgeplan_core::scoring::sync_score_target(&store, target_id).await {
+    let report = match forgeplan_core::scoring::sync_score_target(store, lock, target_id).await {
         Ok(r) => r,
         Err(e) => {
             eprintln!("  Warning: could not persist R_eff score: {e}");
             eprintln!("Fix: forgeplan score --all");
             let mut visited = HashSet::new();
-            reff::r_eff_recursive(target_id, &store, &mut visited).await?
+            reff::r_eff_recursive(target_id, store, lock, &mut visited).await?
         }
     };
 
-    // --- Flat evidence list for display (backward-compat) ---
-    let outgoing = store.get_relations(target_id).await?;
-    let evidence_targets: Vec<String> = outgoing
-        .iter()
-        .filter(|(_, rel)| rel == "informs" || rel == "based_on" || rel == "refines")
-        .map(|(t, _)| t.clone())
-        .collect();
+    let graph = reff::AssuranceSource::Store(store, lock);
+    let evidence_items = reff::linked_evidence_items(&graph, target_id).await?;
+    let link_count = reff::relation_link_count(&graph, target_id).await?;
+    let fgr_score = compute_fgr(&target, report.r_eff, link_count)?;
 
-    let filter = ArtifactFilter {
-        kind: Some("evidence".to_string()),
-        status: None,
-    };
-    let evidence_records = store.list_records(Some(&filter)).await?;
+    Ok(ScoreView {
+        target,
+        target_ref,
+        report,
+        evidence_items,
+        fgr_score,
+    })
+}
 
-    let mut evidence_items: Vec<EvidenceItem> = Vec::new();
+/// Migrated workspace: the same report, computed by the same recursive
+/// engine over one captured read view.
+///
+/// No `LanceStore` is opened and no score column exists to write — the
+/// derived index is the projection of record here — but every field of the
+/// report means what it means on a legacy workspace, because it is the same
+/// algorithm over the same records and edges.
+async fn score_from_read(
+    input: &str,
+    read: &forgeplan_core::constellation::workspace_read::WorkspaceRead,
+) -> anyhow::Result<ScoreView> {
+    let resolution = common::resolve_against_capture(read, input);
+    let (target_id, _) = common::require_found_identity(input, &resolution)?;
+    let target = read
+        .get_record(&target_id)
+        .cloned()
+        .ok_or_else(|| not_found(&target_id))?;
+    let target_ref =
+        forgeplan_core::artifact::frontmatter::refs_form_from_body(&target.body, &target.id);
 
-    for ev_record in &evidence_records {
-        let is_linked = evidence_targets
-            .iter()
-            .any(|eid| eid.eq_ignore_ascii_case(&ev_record.id));
+    let report = reff::assurance_report_captured(&target_id, read).await?;
 
-        if !is_linked {
-            let ev_relations = store.get_relations(&ev_record.id).await?;
-            let links_to_target = ev_relations
-                .iter()
-                .any(|(t, _)| t.eq_ignore_ascii_case(target_id));
-            if !links_to_target {
-                continue;
-            }
-        }
+    let graph = reff::AssuranceSource::Read(read);
+    let evidence_items = reff::linked_evidence_items(&graph, &target_id).await?;
+    let link_count = reff::relation_link_count(&graph, &target_id).await?;
+    let fgr_score = compute_fgr(&target, report.r_eff, link_count)?;
 
-        let item = parse_evidence_from_record(ev_record);
-        evidence_items.push(item);
-    }
+    Ok(ScoreView {
+        target,
+        target_ref,
+        report,
+        evidence_items,
+        fgr_score,
+    })
+}
 
-    // --- F-G-R computation ---
+/// F-G-R over one record. Same inputs on both projections: the body and an
+/// EMPTY frontmatter, exactly as the legacy path always passed — the CLI has
+/// never scored the frontmatter fields here, and a migrated workspace must not
+/// start doing so behind the cutover.
+fn compute_fgr(
+    target: &forgeplan_core::db::store::ArtifactRecord,
+    r_eff: f64,
+    link_count: usize,
+) -> anyhow::Result<fgr::FgrScore> {
     let kind: ArtifactKind = target.kind.parse().unwrap_or_else(|_| {
         eprintln!(
             "  Warning: unknown kind '{}', defaulting to Note",
@@ -209,42 +342,56 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
         .map(|d| Utc::now().date_naive() > d)
         .unwrap_or(false);
 
-    // Link count for reliability
-    let all_relations = store.get_all_relations().await?;
-    let link_count = all_relations
-        .iter()
-        .filter(|(src, tgt, _)| src == target_id || tgt == target_id)
-        .count();
-
     let fpf_weights = common::config().ok().and_then(|c| c.fpf.map(|f| f.weights));
-    let fgr_score = fgr::compute(
-        target_id,
+    Ok(fgr::compute(
+        &target.id,
         &target.body,
         &frontmatter,
         &kind,
         &depth,
-        report.r_eff,
+        r_eff,
         link_count,
         is_stale,
         fpf_weights.as_ref(),
-    );
+    ))
+}
 
+fn render_score(view: ScoreView, json: bool) -> anyhow::Result<()> {
+    let ScoreView {
+        target,
+        target_ref,
+        report,
+        evidence_items,
+        fgr_score,
+    } = view;
     // --- R_eff Confidence Interval (PRD-040 FR-002) ---
-    let ci = reff::r_eff_with_ci(&evidence_items);
+    // Centre the band on the score this command actually reports (the recursive
+    // walk), not on the flat self-score. `r_eff_with_ci` derives its own point
+    // from `r_eff()`, which ignores dependencies and the evidence-type
+    // modifier — using it here printed a band that did not contain the R_eff
+    // shown two lines below it.
+    let ci = reff::r_eff_ci_around(report.r_eff, &evidence_items);
 
     // --- JSON output ---
     if json {
         let evidence_json: Vec<_> = evidence_items
             .iter()
             .map(|item| {
-                // ADR-020: show the pack's own raw score plus its exclusion
-                // flag — terminal-status packs stay visible but marked.
-                let item_score = reff::raw_evidence_score(item);
+                // ADR-020: terminal-status packs stay visible but marked.
+                // `score` is the EFFECTIVE value the weakest-link min consumes;
+                // `score_raw` and `type_modifier` expose the own-merit value and
+                // the evidence-type deduction, so the R_eff arithmetic is
+                // reconstructible from this payload alone.
+                let item_score = reff::full_evidence_score(item);
+                let item_score_raw = reff::raw_evidence_score(item);
+                let type_modifier = reff::evidence_type_to_cl_modifier(&item.evidence_type);
                 serde_json::json!({
                     "id": item.id,
                     "verdict": format!("{:?}", item.verdict),
                     "congruence_level": item.congruence_level,
                     "score": item_score,
+                    "score_raw": item_score_raw,
+                    "type_modifier": type_modifier,
                     "expired": item.valid_until.map(|dt| Utc::now().naive_utc() > dt).unwrap_or(false),
                     "status": item.status,
                     "excluded": !item.is_scoring_eligible(),
@@ -347,10 +494,28 @@ pub async fn run(id: Option<&str>, json: bool) -> anyhow::Result<()> {
                 .valid_until
                 .map(|dt| Utc::now().naive_utc() > dt)
                 .unwrap_or(false);
-            let item_score = reff::raw_evidence_score(item);
+            // Show the EFFECTIVE score — the number that actually reaches the
+            // min. When the evidence-type modifier moved it, name the deduction
+            // inline, so the gap between this line and the R_eff printed below
+            // is explainable without reading the source.
+            let item_score = reff::full_evidence_score(item);
+            // Annotate the deduction that was ACTUALLY applied, not the nominal
+            // one. The score is clamped at 0 and an expired pack decays to 0.1
+            // before type is consulted, so the nominal modifier can be larger
+            // than the distance between the two numbers — printing it there
+            // would recreate, in the explanation, the very mismatch this line
+            // exists to explain.
+            let applied_deduction = (reff::raw_evidence_score(item) - item_score).max(0.0);
             // ADR-020: terminal packs stay listed, marked as excluded —
             // the history is visible, it just no longer speaks for NOW.
             let mut marks = String::new();
+            if applied_deduction > 0.0 {
+                marks.push_str(&format!(
+                    " ({} −{:.1})",
+                    format!("{:?}", item.evidence_type).to_lowercase(),
+                    applied_deduction
+                ));
+            }
             if expired {
                 marks.push_str(" (EXPIRED)");
             }
@@ -510,5 +675,8 @@ fn score_grade(v: f64) -> &'static str {
 // via self-signed T1 evidence. The CLI local parser did not implement this,
 // opening the same attack surface on the display path.
 //
-// Fix: import the core parser and delete the local duplicate. Both paths
-// now agree on CL and on formula.
+// Fix: use the core parser and delete the local duplicate. Both paths now
+// agree on CL and on formula — and since the capture cutover the CLI does not
+// even name the parser: `reff::linked_evidence_items` produces the breakdown
+// for both projections, so a migrated workspace cannot grow its own reading of
+// a pack.

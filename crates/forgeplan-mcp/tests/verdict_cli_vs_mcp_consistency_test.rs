@@ -52,75 +52,106 @@ const ACTIVE_ARTIFACTS: &[(&str, &str, &str, Phase)] = &[
 /// phase mismatches across 6 kinds, both paths agree byte-for-byte.
 #[tokio::test]
 async fn cli_and_mcp_agree_on_verdict_with_six_phase_mismatches() {
-    let fixture = McpFixture::new_with_seed(|store| async move {
+    let fixture = McpFixture::new_with_seed(|store, seed_guard| async move {
         // Seed 6 active artifacts via the test-helpers create path so the
         // server-side reader sees them on first scan.
+        let mut artifact_keys = Vec::new();
         for (id, kind, title, _phase) in ACTIVE_ARTIFACTS {
+            let parsed_kind = kind
+                .parse::<forgeplan_core::artifact::types::ArtifactKind>()
+                .expect("valid fixture kind");
+            let canonical_key =
+                forgeplan_core::artifact::canonical_key::mint_artifact_key(&parsed_kind, title)
+                    .expect("mint artifact key");
+            let body = format!(
+                "---\nid: {id}\nkind: {kind}\nstatus: active\ntitle: {title}\nslug: {canonical_key}\n---\n\n\
+                 ## Problem\nReal text describing the {kind} problem.\n\n\
+                 ## Goals\nReal goals for {title}.\n"
+            );
             store
-                .create_artifact_for_test(&NewArtifact {
-                    id: (*id).to_string(),
-                    kind: (*kind).to_string(),
-                    status: "active".to_string(),
-                    title: (*title).to_string(),
-                    // Filled body so active_stub detector does not fire
-                    // (otherwise stubs > 3 critical would shift verdict).
-                    body: format!(
-                        "## Problem\nReal text describing the {kind} problem.\n\
-                         \n\
-                         ## Goals\nReal goals for {title}.\n"
-                    ),
-                    depth: "standard".to_string(),
-                    author: None,
-                    parent_epic: None,
-                    valid_until: None,
-                    tags: Vec::new(),
-                })
+                .create_artifact_for_test(
+                    &seed_guard,
+                    &NewArtifact {
+                        canonical_key: canonical_key.clone(),
+                        id: (*id).to_string(),
+                        kind: (*kind).to_string(),
+                        status: "active".to_string(),
+                        title: (*title).to_string(),
+                        body,
+                        depth: "standard".to_string(),
+                        author: None,
+                        parent_epic: None,
+                        valid_until: None,
+                        tags: Vec::new(),
+                    },
+                )
                 .await
                 .expect("seed artifact");
+            artifact_keys.push(((*id).to_string(), canonical_key));
         }
-        // Seed one healthy evidence per artifact so neither the
-        // blind-spot detector (kinds in DECISION_KINDS_EVIDENCE need
-        // evidence) nor the orphan detector (no in-/out-edges) fires.
-        // Evidence body carries explicit `verdict: supports` +
-        // `congruence_level: 3` + `evidence_type: measurement` so the
-        // R_eff parser does not fail-closed to CL0 and at_risk stays
-        // empty too. Result: phase mismatches are the ONLY signal.
         for (i, (id, _kind, _title, _phase)) in ACTIVE_ARTIFACTS.iter().enumerate() {
-            let evid = format!("EVID-L-H3-{i:03}");
+            let evid_id = format!("EVID-{:03}", i + 1);
+            let evid_title = format!("Evidence for {id}");
+            let evidence_kind = "evidence"
+                .parse::<forgeplan_core::artifact::types::ArtifactKind>()
+                .expect("valid evidence kind");
+            let evid_key =
+                forgeplan_core::artifact::canonical_key::mint_artifact_key(&evidence_kind, &evid_title)
+                    .expect("mint evidence key");
+            let body = format!(
+                "---\nid: {evid_id}\nkind: evidence\nstatus: active\ntitle: {evid_title}\nslug: {evid_key}\n---\n\n\
+                 ## Structured Fields\n\
+                 verdict: supports\n\
+                 congruence_level: 3\n\
+                 evidence_type: measurement\n"
+            );
             store
-                .create_artifact_for_test(&NewArtifact {
-                    id: evid.clone(),
-                    kind: "evidence".to_string(),
-                    status: "active".to_string(),
-                    title: format!("Evidence for {id}"),
-                    body: "## Structured Fields\n\
-                           verdict: supports\n\
-                           congruence_level: 3\n\
-                           evidence_type: measurement\n"
-                        .to_string(),
-                    depth: "standard".to_string(),
-                    author: None,
-                    parent_epic: None,
-                    valid_until: None,
-                    tags: Vec::new(),
-                })
+                .create_artifact_for_test(
+                    &seed_guard,
+                    &NewArtifact {
+                        canonical_key: evid_key.clone(),
+                        id: evid_id,
+                        kind: "evidence".to_string(),
+                        status: "active".to_string(),
+                        title: evid_title,
+                        body,
+                        depth: "standard".to_string(),
+                        author: None,
+                        parent_epic: None,
+                        valid_until: None,
+                        tags: Vec::new(),
+                    },
+                )
                 .await
                 .expect("seed evidence");
             store
-                .add_relation_for_test(&evid, id, "informs")
+                .add_relation_for_test(&seed_guard, &evid_key, &artifact_keys[i].1, "informs")
                 .await
                 .expect("seed informs relation");
         }
     })
     .await;
 
-    // Write phase state files for each artifact AT an early-cycle phase
-    // (Shape / Validate / Adi). `health_report_with_phase` reads these
-    // and emits a `PhaseMismatch` for each active artifact stuck early.
+    let listed = fixture
+        .call_tool_json("forgeplan_list", serde_json::json!({}))
+        .await
+        .assert_ok()
+        .clone();
+    let records = listed["artifacts"].as_array().expect("artifact list");
+    let key_for_id = |id: &str| {
+        records
+            .iter()
+            .find(|record| record["id"] == id)
+            .unwrap_or_else(|| panic!("missing seeded artifact {id}"))["canonical_key"]
+            .as_str()
+            .expect("canonical key")
+            .to_string()
+    };
     for (id, _kind, _title, phase) in ACTIVE_ARTIFACTS {
+        let key = key_for_id(id);
         phase_store::initialize_phase(
             &fixture.workspace_path,
-            id,
+            &key,
             Some(format!("seed L-H3 test {phase:?}")),
         )
         .await
@@ -128,7 +159,7 @@ async fn cli_and_mcp_agree_on_verdict_with_six_phase_mismatches() {
         if *phase != Phase::Shape {
             phase_store::advance_phase(
                 &fixture.workspace_path,
-                id,
+                &key,
                 *phase,
                 Some("seed L-H3 test advance".to_string()),
             )
@@ -143,10 +174,15 @@ async fn cli_and_mcp_agree_on_verdict_with_six_phase_mismatches() {
     let cli_store = forgeplan_core::db::store::LanceStore::open(&fixture.workspace_path)
         .await
         .expect("open store");
-    let (cli_report, cli_mismatches) =
-        health_report_with_phase(&cli_store, &fixture.workspace_path)
+    let (cli_report, cli_mismatches) = {
+        let permit =
+            forgeplan_core::workspace::lock::acquire_workspace_read_lock(&fixture.workspace_path)
+                .await
+                .expect("workspace read lock");
+        health_report_with_phase(&cli_store, &permit, &fixture.workspace_path)
             .await
-            .expect("health_report_with_phase");
+            .expect("health_report_with_phase")
+    };
     let cli_verdict = cli_report.verdict;
     let cli_summary = cli_verdict.human_summary();
     let cli_mismatch_count = cli_mismatches.len();

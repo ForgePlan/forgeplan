@@ -8,6 +8,12 @@ steps** — most past release incidents traced to one omitted step (see
 Companion read for the daily git flow:
 [`GIT-WORKFLOW.ru.md`](GIT-WORKFLOW.ru.md).
 
+Execution ownership: the admitted tester/build owner runs these checks under
+the shared lease; parallel documentation/source writers do not each run Cargo.
+This procedure preserves release prerequisites and user approval. It is not a
+receipt that they passed for the scoped documentation build; G1/G2/G3 remain
+deferred, not waived, and PRD-089/RFC-017 deliberately remain draft.
+
 ---
 
 ## Why this document exists
@@ -134,8 +140,9 @@ Then regenerate the lockfile:
 cargo check --workspace
 ```
 
-This produces a deterministic `Cargo.lock` diff alongside the manifest
-diffs.
+Review the actual lockfile delta alongside manifests. Resolution depends on the
+existing lock, toolchain and available registry; an unchanged or unexpected diff
+needs inspection, not an assumption of a particular deterministic update.
 
 ### 6. Update human-readable docs
 
@@ -198,13 +205,16 @@ off; if it doesn't, check that the tag actually landed on the remote
 Successful publication does not prove correct composition — PROB-088 sat
 undetected for months precisely because the binaries built and shipped
 fine, just without `semantic-search`. Download one published artifact and
-check the linkage marker rather than trusting the build:
+test the downloaded binary in a prepared, isolated workspace with an explicitly
+selected layout and complete cache. Follow [CONSTELLATION-PILOT.ru.md](CONSTELLATION-PILOT.ru.md)
+for the prerequisites and actual embed/search checks. Capture the full output
+and real exit status; do not truncate it through `head`.
 
-```bash
-# Ask the binary. Refusing means the feature is absent; anything else
-# (a progress bar, an embedding run) means it is present.
-/path/to/downloaded/forgeplan embed 2>&1 | head -3
-```
+Only the feature-specific “Embedding not available — this build was compiled
+without the semantic-search feature” diagnostic establishes that absence.
+Missing workspace/model/config, permission failures and empty or
+ineligible vectors do not. A progress message alone does not prove embedding
+completion or usable semantic search.
 
 **The old linkage check no longer works and must not be revived.** Until
 RFC-013 the marker was `libc++` in `otool -L`, present because the C++
@@ -258,10 +268,9 @@ sequence ends at step 10 for a reason — don't treat it as optional.
 
 ### Pushing to release branch *after* PR merged
 
-Symptom: late commit lands on the release branch after `git merge`
-already landed; `git push` succeeds but the commit is dangling. Worse,
-if a squash merge was used, the entire late commit is silently
-discarded.
+Symptom: a late commit is pushed to the release branch after its PR merged.
+It remains reachable on that branch, but is not automatically included in
+`main`. Squash does not silently delete that later commit.
 
 Fix: never push to a branch after its PR merged. If you need to
 "amend the release", open a fresh `fix/vX.Y.Z-hotfix` branch and treat
@@ -295,11 +304,10 @@ the artifacts you committed; hand-writing diverges from ground truth.
 Symptom: tag landed, binaries don't publish, users report 404 on the
 brew bottle.
 
-Fix: never tag before CI on `main` is fully green. Step 9 reads `git
-checkout main && git pull --ff-only` first; the only way that succeeds
-after merging the release PR is if the merge commit is on `main`'s tip,
-and the only way *that* tip is safe to tag is if its CI passed. Check
-`gh run list --branch main --limit 3` before `git tag`.
+Fix: never tag before CI for the exact intended `main` commit is fully green.
+`git pull --ff-only` proves neither CI success nor that no newer commit landed.
+Match `MERGE_SHA` to the release PR and inspect the required workflow outcomes
+for that exact SHA before tagging; a short branch run listing alone is not proof.
 
 ### Dependabot alerts at release time (RED LINE #10)
 
@@ -323,8 +331,9 @@ means contributors who upgraded `forgeplan` between releases do NOT
 automatically receive newly-shipped workspace files (e.g. `.gitkeep`
 placeholders from PRD-077 FR-001, `secrets.env` template from FR-002).
 
-`forgeplan init --force` is the migration entry point. It is **strictly
-additive** (PROB-068 contract):
+`forgeplan init --force` refreshes workspace skeleton/config; it is **not**
+the normal derived-index recovery command. Its additive artifact-body contract
+does not mean active custom configuration is preserved:
 
 - Existing artifact `.md` bodies are NEVER overwritten.
 - `config.yaml` is regenerated (the previous version is moved aside as
@@ -346,9 +355,19 @@ For existing workspaces created before vX.Y.Z, run:
     git pull
     forgeplan init --force
 
-This is idempotent and additive — your artifact bodies, custom
-config.yaml edits, and existing secrets.env keys are preserved.
+Artifact bodies and existing secrets.env keys are preserved, but config.yaml
+is replaced with defaults. Custom config edits survive only in the backup;
+diff and restore the required settings before resuming work.
 ```
+
+Before this operation, stop writers and back up the entire `.forgeplan/` and
+MCP client config outside the workspace. `init` discovers parents, so check the
+target path. New defaults set `llm` and `embedding` to none: automatic Constellation
+embedding stops until the explicit model configuration is restored. Existing
+model cache or a previous manual `embed` does not restore that configuration.
+For index recovery use `reindex` (or explicit `index` on Constellation), keeping
+canonical Markdown/config intact; see the [portable pilot and rollback runbook](CONSTELLATION-PILOT.ru.md).
+Rollback needs a compatible workspace/index/binary set, not just the old executable.
 
 ---
 

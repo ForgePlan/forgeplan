@@ -1,9 +1,9 @@
 ---
 title: forgeplan_import
-description: "Импортирует артефакты и связи из пакета экспорта JSON. Восстанавливает полный снимок рабочего пространства, созданный с помощью forgeplan_export. Установите force=true, чтобы перезаписать артефакты, которые уже существуют по ID."
+description: "Импортирует записи артефактов и связи из JSON-экспорта. force=true разрешает перезапись существующих ID."
 ---
 
-Загружает пакет JSON, созданный с помощью `forgeplan_export`, в текущее рабочее пространство. Каждый артефакт в пакете вставляется в LanceDB, его тело в формате Markdown перепроецируется в `.forgeplan/{kind}s/`, и каждая связь восстанавливается. Основные варианты использования - **восстановление после повторной инициализации**, **миграция между машинами**, **заполнение конвейеров CI** эталонным рабочим пространством и **восстановление после случайного удаления**, если существует предыдущий экспорт.
+Загружает записи артефактов и связи из JSON-пакета `forgeplan_export` в выбранное рабочее пространство через file-first-проекции. Первичен канонический Markdown, не строка LanceDB. Это перенос артефактов и связей, а не полная резервная копия workspace: операция не восстанавливает конфигурацию, реестр федерации, runtime-состояние и все исходные метаданные.
 
 **Категория**: Рабочее пространство и данные
 
@@ -17,15 +17,15 @@ description: "Импортирует артефакты и связи из па�
 ## Идемпотентность и поведение при коллизиях
 
 - **По умолчанию (`force=false`)**: существующие артефакты с тем же ID **пропускаются**. Импортёр логирует количество пропущенных элементов, чтобы агент мог сообщить об изменениях.
-- **`force=true`**: существующие артефакты с тем же ID **перезаписываются** (метаданные и тело). Связи применяются повторно; дубликаты удаляются по `(from, to, type)`.
-- ID в пакете сохраняются. Если рабочее пространство пусто, импорт фактически является чистым восстановлением.
+- **`force=true`**: пытается заменить существующие ID через delete/create, затем применяет связи пакета. Проверяйте результат и канонические файлы: это не атомарное восстановление workspace.
+- ID сохраняются, но импортёр восстанавливает только выбранный набор метаданных, не все экспортированные поля. Например, теги артефакта инициализируются пустым списком.
 - Операция **не является транзакционной для всего пакета** в классическом смысле - она записывает артефакты по одному. Если что-то не удаётся на полпути, уже записанные артефакты остаются. Всегда выполняйте `forgeplan_export` свежей резервной копии перед импортом с `force=true`.
 
 ## Примечания по безопасности
 
 - `forgeplan_import` изменяет рабочее пространство. Всегда сначала делайте экспорт для безопасности.
-- Пакет **не** содержит ключи API - после импорта вам всё равно потребуется перенастроить `.forgeplan/config.yaml` (провайдер LLM, Hindsight, Orchestra).
-- Производные индексы (`.forgeplan/lance/`) перестраиваются на лету по мере записи артефактов; вам не нужно запускать `forgeplan scan-import` после этого.
+- Конфигурация workspace в пакет не входит, но текст артефактов сам может содержать секреты. Проверяйте и защищайте экспорт, не считайте его гарантированно свободным от API-ключей.
+- В migrated workspace каноническая запись и согласование индекса — разные результаты. Проверяйте `index_pending`; при необходимости используйте `forgeplan index` для Constellation. `scan-import` ищет новые внешние Markdown-документы, а не ремонтирует индекс.
 
 ## Входные параметры
 
@@ -38,45 +38,39 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::ImportParams`
 
 ## Возвращает
 
-Количество плюс любые предупреждения, выданные импортёром:
+Учебные фрагменты ответа. Обработчик сообщает `imported`, `skipped`, `relations_imported`, а также поля согласования индекса и трассировки workspace. Вставки и перезаписи отдельно не подсчитываются.
 
 ```json
 {
-  "status": "ok",
-  "artifacts_imported": 187,
-  "artifacts_skipped": 0,
-  "relations_imported": 312,
-  "relations_skipped": 4,
-  "force": false,
-  "warnings": []
+  "imported": 2,
+  "skipped": 0,
+  "relations_imported": 1
 }
 ```
 
-При `force=true` ответ различает вставки и перезаписи:
+При `force=true` перезаписанные артефакты входят в `imported`; отдельного счётчика перезаписей нет:
 
 ```json
 {
-  "status": "ok",
-  "artifacts_inserted": 14,
-  "artifacts_overwritten": 173,
-  "relations_imported": 312,
-  "force": true
+  "imported": 2,
+  "skipped": 0,
+  "relations_imported": 1
 }
 ```
 
 ## Пример вызова
 
-Чистое восстановление в пустое рабочее пространство:
+Импорт в пустое рабочее пространство. Ниже корректный учебный пустой пакет; для восстановления нужны настоящие байты экспорта:
 
 ```json
-{ "data": "{\"version\":1,\"artifacts\":[…],\"relations\":[…]}" }
+{ "data": "{\"version\":1,\"artifacts\":[],\"relations\":[]}" }
 ```
 
 Принудительная перезапись во время миграции:
 
 ```json
 {
-  "data": "{\"version\":1,\"artifacts\":[…],\"relations\":[…]}",
+  "data": "{\"version\":1,\"artifacts\":[],\"relations\":[]}",
   "force": true
 }
 ```
@@ -92,12 +86,9 @@ forgeplan_health                  ← подтверждает форму раб
 
 Восстановление после несчастного случая:
 
-```
-forgeplan_export → safety.json     (всегда держите одну копию)
-…что-то идёт не так…
-rm -rf .forgeplan && forgeplan init -y
-forgeplan_import (data=safety.json)
-```
+1. Храните экспорт вне `.forgeplan/` и сохраните повреждённое workspace перед восстановлением.
+2. Инициализируйте отдельный пустой каталог восстановления вместо удаления оригинала.
+3. Импортируйте сохранённый пакет в это явно выбранное workspace, затем проверьте тела и связи. Эта процедура не подтверждает восстановление неэкспортируемого состояния.
 
 ## Эквивалент CLI
 
@@ -109,3 +100,57 @@ forgeplan_import (data=safety.json)
 - [`forgeplan_export`](/ru/docs/mcp/forgeplan_export/) - создание пакета
 - [`forgeplan_init`](/ru/docs/mcp/forgeplan_init/) - создание рабочего пространства перед импортом
 - [`forgeplan_list`](/ru/docs/mcp/forgeplan_list/) - проверка импорта
+
+<!-- forgeplan-runtime:start -->
+## Снимок tools/list
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, профиль `full`.
+
+Import artifacts and relations from a JSON export bundle. Set force=true to overwrite existing artifacts.
+
+### Входные параметры
+
+| Имя | Обязателен | Тип | Описание |
+|---|---|---|---|
+| `data` | да | string | JSON export data as a string |
+| `force` | нет | boolean \| null | Overwrite existing artifacts (default: false) |
+| `workspace` | нет | string \| null | Optional explicit workspace directory for this call. When set, the MCP<br>server resolves the `.forgeplan/` projection from this path instead of<br>the server's startup CWD. Use this when the calling agent is running<br>in a git worktree separate from the MCP server's launch directory.<br>PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "data": {
+      "description": "JSON export data as a string",
+      "type": "string"
+    },
+    "force": {
+      "default": null,
+      "description": "Overwrite existing artifacts (default: false)",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "workspace": {
+      "default": null,
+      "description": "Optional explicit workspace directory for this call. When set, the MCP\nserver resolves the `.forgeplan/` projection from this path instead of\nthe server's startup CWD. Use this when the calling agent is running\nin a git worktree separate from the MCP server's launch directory.\nPRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "data"
+  ],
+  "title": "ImportParams",
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

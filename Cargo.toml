@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.38.0"
+version = "0.39.0+constellation.s1.1"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/ForgePlan/forgeplan"
@@ -49,6 +49,11 @@ globset = "0.4"
 # Without this, Phase 5/6 PRs intermittently fail Tests job with
 # `collect2: fatal error: ld terminated with signal 7 [Bus error]`.
 debug = "line-tables-only"
+
+# Full cached-model checksums must fit the maintenance scan window in dev too.
+# Keep every content check; optimize the hashing crate rather than the host's deadlines.
+[profile.dev.package."sha2:0.11"]
+opt-level = 3
 
 [profile.release]
 strip = true          # strip debug symbols (-16%)

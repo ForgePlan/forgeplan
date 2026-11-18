@@ -9,10 +9,11 @@ Deep / Critical), a **pipeline** (which artifacts to create, e.g. `PRD → RFC`
 or `Epic → PRD[] → Spec[] → RFC[] → ADR[]`), a **confidence** score, and a
 short list of **alternatives** in case the primary suggestion feels off.
 
-Routing is rule-based by default (Level 0 - fast, deterministic, no LLM
-required). Pass `--level 1` to get LLM-classified routing with explanations.
-The goal is the same: stop you from over-engineering a one-hour fix, and
-stop you from skipping the PRD on a week-long refactor.
+Omitting `--level` tries configured LLM routing and falls back to keyword rules.
+An automatic Deep result can escalate to Level 2 reasoning. Use `--level 0`
+without `--explain` for rule-only routing; adding `--explain` can invoke a configured LLM.
+Captured help's “0 = keywords (default)” text
+does not fully describe this handler. Routing also updates methodology session state.
 
 ## When to use
 
@@ -26,8 +27,8 @@ stop you from skipping the PRD on a week-long refactor.
 
 - The task already has an artifact - use `forgeplan calibrate <ID>` to re-route instead
 - You are mid-implementation - route is a planning tool, not an in-flight check
-- For pure hotfix on `main` - you skip methodology anyway
-- For housekeeping commits (dependency bump, lint fix) - just commit, no routing
+- For an approved emergency procedure - follow it; routing does not authorize bypassing project gates or committing directly to `main`.
+- For housekeeping already covered by a project workflow - follow that workflow.
 
 ## Usage
 
@@ -52,13 +53,13 @@ forgeplan route [OPTIONS] <DESCRIPTION>
 
 ## Examples
 
-### Example 1: Quick rule-based routing (default)
+### Example 1: Explicit rule-based routing
 
 ```bash
-forgeplan route "add rate limiting to API"
+forgeplan route --level 0 "add rate limiting to API"
 ```
 
-Output:
+Illustrative explanation, not a measured accuracy or runtime transcript:
 
 ```
 Depth:      Standard
@@ -76,9 +77,8 @@ Alternatives:
 forgeplan route --level 1 "refactor embedding pipeline to support BGE-M3"
 ```
 
-Level 1 invokes the configured LLM (Gemini, GPT, Claude) to classify the
-task against FPF heuristics. Slower (~2s) but handles ambiguous phrasing
-and cross-cutting concerns better than the keyword matcher.
+Level 1 tries the configured LLM with rule-based fallback. Latency and quality
+depend on the provider; no fixed duration or accuracy improvement is guaranteed.
 
 ### Example 3: Trivial task - no artifact needed
 
@@ -86,7 +86,7 @@ and cross-cutting concerns better than the keyword matcher.
 forgeplan route "fix typo in README"
 ```
 
-Output:
+Illustrative outcome; actual routing depends on matched signals:
 
 ```
 Depth:      Tactical
@@ -94,7 +94,7 @@ Pipeline:   (none - commit directly)
 Confidence: 99%
 ```
 
-You are allowed to skip the artifact. Just commit.
+The recommendation does not override the project's artifact, review or commit requirements.
 
 ### Example 4: Critical task - full pipeline
 
@@ -102,7 +102,7 @@ You are allowed to skip the artifact. Just commit.
 forgeplan route "redesign artifact storage to use content-addressable hashing"
 ```
 
-Output:
+Illustrative planning scenario, not guaranteed command output:
 
 ```
 Depth:      Critical
@@ -115,8 +115,8 @@ Do **not** shortcut this. Create the Epic first.
 
 ## Output interpretation
 
-- **Depth** - one of four levels. Drives quality gates: Tactical = no gates,
-  Standard = Verification Gate, Deep = Adversarial Review, Critical = review + ADR
+- **Depth** - a recommendation. Core modes are Note, Tactical, Standard and Deep;
+  `critical` is a Deep alias. Project gate requirements remain separate authority.
 - **Pipeline** - ordered list of artifacts to create. Guideline, not contract -
   you may collapse steps if the project phase allows
 - **Confidence** - 0-100%. Below 70% means the description is ambiguous; rerun
@@ -132,42 +132,14 @@ Red flags:
 
 ## Routing Skills Memory (v0.17+, PRD-040)
 
-As of v0.17.0 (PRD-040, Scoring Intelligence) the router keeps a **routing
-skills memory** - a rolling log of past depth predictions plus their
-subsequently-observed accuracy. This memory decays on a **90-day exponential
-window with a 30-day half-life**: a correct prediction you made yesterday
-carries almost its full weight, a correct prediction from two months ago
-carries roughly a quarter of its weight, and anything older than 90 days is
-effectively forgotten.
+The core supports `RoutingSkill` values explicitly supplied by a caller.
+Confidence combines success rate, usage weight and exponential age decay,
+with a 90-day half-life and a 0.1 floor; it does not forget entries at 90 days.
 
-The router uses this memory in two ways:
-
-1. **Self-calibration.** Each time you route a task and later activate the
-   resulting artifact, the router learns how accurate the predicted depth
-   turned out to be for your workspace. Over time the rule engine biases
-   toward depths that have been correct historically.
-2. **Automatic Level 1 escalation.** If Level 0 (keyword rules) produces a
-   depth where historical confidence has dropped **below 60%** for similar
-   task shapes, the router automatically escalates to Level 1 (LLM
-   classifier) instead of returning a low-confidence guess. You get a better
-   answer without having to remember `--level 1` yourself.
-
-### Why it matters
-
-Routing is opinionated, and the opinions are wrong for some workspaces. A
-team doing mostly infra work will get different depth distributions than a
-team doing mostly product features. Routing Skills Memory lets the router
-**adapt to your team's actual decision patterns** instead of shipping a
-fixed ruleset that is right on average and wrong for you.
-
-No configuration is required - the memory starts empty on a fresh
-workspace and builds up automatically every time you `forgeplan activate`
-an artifact that was previously routed. As of v0.18.0 there is no dedicated
-`route --stats` flag yet; the memory is consulted internally by `route` and
-only surfaces through the confidence score and alternatives list. If you
-want to see whether the memory is influencing a decision, run
-`forgeplan route --level 1` and read the LLM rationale - it references the
-historical signal when relevant.
+The selected CLI's rule-only path calls `route(description)` with an empty
+skill list. This handler does not load persistent routing history, learn it
+on activation, or escalate at a historical-confidence threshold.
+Do not rely on automatic personalization from ordinary `route`/`activate` calls.
 
 ## How it fits the workflow
 
@@ -188,3 +160,24 @@ you are here
 - [`forgeplan calibrate`](/docs/cli/calibrate/) - re-route an existing artifact
 - [`forgeplan health`](/docs/cli/health/) - session start check
 - [Methodology: depth calibration](/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan route --help`.
+
+```text
+Suggest depth level and artifact pipeline for a task description
+
+Usage: forgeplan route [OPTIONS] <DESCRIPTION>
+
+Arguments:
+  <DESCRIPTION>  Task description in natural language
+
+Options:
+      --explain        Optional: use LLM to explain the routing decision (deprecated, use --level 1)
+      --level <LEVEL>  Routing level: 0 = keywords (default), 1 = LLM-classified
+  -h, --help           Print help
+  -V, --version        Print version
+```
+<!-- forgeplan-runtime:end -->

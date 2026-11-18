@@ -2,6 +2,11 @@
 
 > Назначение: по вопросу/задаче найти МИНИМАЛЬНЫЙ набор файлов для чтения.
 > Не читать всё подряд — база спроектирована под точечную загрузку контекста.
+>
+> Это навигация по датированному дизайну отдельного ForgeFarm, не справочник
+> выпущенного ForgePlan. Границы источников — в [README.md](README.md).
+> Упоминания `graph/health/order --span` ниже относятся к июльскому предложению:
+> у выбранного ForgePlan 0.39.0+constellation.s1.1 эти команды не имеют `--span`.
 
 ## Правила чтения для агента
 
@@ -21,12 +26,12 @@
 | Что такое ForgeFarm? С чего начинать? | `synthesis/00-master-synthesis.md` | определение, решённое, развилки, фазированный план, анти-паттерны — самодостаточен |
 | Что уже решено и не обсуждается? | `synthesis/01-consensus.md` | 31 инвариант (архитектура/ForgePlan/фордж/процесс) + 15 анти-паттернов с attribution |
 | Какие решения ещё открыты? Какую сторону брать? | `synthesis/02-open-decisions.md` | 9 развилок: позиции → trade-off → рекомендация → flip-сигнал |
-| Что зафиксировано окончательно? | `decisions/` | pre-ADR записи (пока пусто; правила в README) |
+| Что зафиксировано окончательно? | `decisions/` | pre-ADR записи D-001 и D-002 от 2026-07-03; правила в README |
 | Vision владельца: как формулировка маппится на KB? Автономный режим? Self-development? Методологии по типу задач? Комплектация скиллов/агентов? | `synthesis/04-vision-alignment.md` | маппинг-таблица + 4 требования: autonomy profile, self-hosting milestone, Methodology Router (routing-map → машинные playbooks), Agent Bundle Composer + дельта к Phase 0 |
 | Идеи из Herdr (agent-aware мультиплексер)? Терминальный cockpit? Детекция зависших агентов? wait/status примитивы для агентов? | `synthesis/05-herdr-patterns.md` | 5 идей (эвристический fallback-канал состояния, HAQ-visibility, `ff top`, `ff wait/status` через control plane, persistent sessions) + что отвергнуто (peer-to-peer output-координация) + Herdr в prior-art |
-| vibe-kanban: что брать (код/дизайн/уроки)? Почему он умер? Вердикт по executors-крейту? ACP-эмпирика? Merge-механика? Review→prompt? | `synthesis/06-vibe-kanban-patterns.md` | карта 14 подсистем → наши компоненты; брать-код (git/worktree, ACP-клиент, stdout_dup, лог-кластеризация — Apache-2.0); 14 дизайн-механик VK-D-1..14; 11 продуктовых уроков (умер без монетизации при 30k MAU — «координация без хранимого суждения не аккумулирует ценность»); 12 пробелов KB G-1..G-12 с адресами дописок |
+| vibe-kanban: что брать (код/дизайн/уроки)? Какие причины закрытия предполагались? Executors? ACP? Merge? | `synthesis/06-vibe-kanban-patterns.md` | карта 14 подсистем, 14 дизайн-механик, 11 продуктовых гипотез и 12 пробелов KB; MAU, цитаты и LOC-оценки имеют ограничения provenance, указанные в начале документа |
 | Какие Rust-либы используем? Чем отличаемся от стека VK? | `architecture/rust-stack.md` | tokio/axum/serde/tracing/git2 + command_group/os_pipe/json_patch/jsonc-parser; Postgres вместо SQLite; не наследовать форк ts-rs; не тащить relay-* |
-| Решения владельца (Rust+Tauri, ACP-first)? | `decisions/D-001`, `decisions/D-002` | зафиксированные решения с VK-эмпирикой (bespoke:ACP ≈ 20:1) и flip-условиями |
+| Решения владельца (Rust+Tauri, ACP-first)? | `decisions/D-001`, `decisions/D-002` | решения от 2026-07-03 с приблизительной LOC-оценкой bespoke:ACP ≈ 20:1 (не бенчмарк стоимости) и flip-условиями |
 | Каков план работ по фазам? Что делать первым? | `synthesis/00-master-synthesis.md` §5 | Phase 0–5 с DoD каждой фазы |
 | Чего НЕ делать? | `synthesis/00-master-synthesis.md` §6, полнее `synthesis/01-consensus.md` §E | анти-паттерны |
 | Какие артефакты ForgePlan авторить первыми? | `synthesis/00-master-synthesis.md` §5 Phase 0 | EPIC + PRD + ADR-001…005 + 2 RFC + prior-art EVID |

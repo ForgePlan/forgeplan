@@ -13,6 +13,10 @@ Getting the depth right saves real time. Over-engineering a simple fix with a fu
 
 Before writing any code, Forgeplan determines the **depth** -- how much structure your decision needs.
 
+The output values below are illustrative, not captured measurements.
+Router confidence is a heuristic/model assessment, not a measured probability
+of correctness. Time ranges are planning heuristics, not effort guarantees.
+
 ```bash
 forgeplan route "add payment system"
 # -> Depth: Deep
@@ -29,11 +33,17 @@ forgeplan route "add payment system"
 | **Deep** | New module, 1-2 weeks, irreversible | PRD -> Spec -> RFC -> ADR | Days |
 | **Critical** | Cross-team, strategic initiative | Epic -> PRD[] -> Spec[] -> RFC[] -> ADR[] | Weeks |
 
+Critical is a methodology-level strategic category. The current core parses
+`critical` as `Deep` and displays Deep/Critical; its generated pipeline is
+PRD → Spec → RFC → ADR, not an automatically expanded Epic hierarchy.
+
 ### Real-World Examples
 
 **Tactical**: Fixing a parsing bug where a closing `---` in YAML frontmatter is not detected. One file, one test, ship it. No artifact needed.
 
-**Standard**: Adding OAuth2 login to your app. There are two approaches (JWT vs sessions), it takes 2-3 days, and the choice affects API design. Create a PRD for requirements and an RFC for the architecture.
+**Standard**: Adding a JSON export format with moderate impact and several
+approaches. Create a PRD for requirements and an RFC for the design.
+Authentication changes may instead trigger Deep because of their security impact.
 
 **Deep**: Building a new payment processing module. It touches user financial data, involves third-party integrations, and a wrong choice in payment provider is expensive to reverse. Full pipeline: PRD, Spec for API contracts, RFC for architecture, ADR for the Stripe-vs-PayPal decision.
 
@@ -54,11 +64,13 @@ flowchart TD
     D -->|Strategic| CR["CRITICAL\nEpic → PRDs → Specs → RFCs → ADRs"]
 ```
 
-The first question ("Is this trivial?") filters out 60-70% of daily work. Most things you do are Tactical. The routing system is designed to let you skip structure for the majority of tasks and invest in it only when the stakes justify it.
+Use the triviality question to avoid unnecessary paperwork. No measured
+60–70% task distribution is established here; choose rigor by actual risk.
 
 ## Auto-Escalation Triggers
 
-Regardless of initial assessment, depth escalates when:
+These are methodology escalation guidelines, not a guarantee that every
+natural-language description triggers the corresponding runtime rule:
 
 | Trigger | Minimum Level |
 |---------|---------------|
@@ -71,10 +83,14 @@ Regardless of initial assessment, depth escalates when:
 | Roadmap-level decision | Critical |
 
 :::tip
-**Escalation is safe, de-escalation is risky.** When in doubt, choose the higher level. You can always skip optional artifacts in a Deep pipeline, but you cannot retroactively add rigor to a Tactical decision that went wrong.
+**When uncertain, investigate the higher-risk interpretation.** Escalating
+adds review cost; it does not itself make a decision safe. Do not skip
+required Deep artifacts or gates merely because the router is advisory.
 :::
 
-For example, you might start routing "add a caching layer" as Standard (just an optimization). But if the cache affects user-facing data consistency, that is a Deep concern. The auto-escalation trigger "touches user data" bumps it up automatically.
+For example, a caching change that affects user-visible consistency needs
+a deeper assessment. Describe that context explicitly; the keyword router
+cannot infer every consequence from "add a caching layer".
 
 ## The Route Command
 
@@ -83,7 +99,7 @@ For example, you might start routing "add a caching layer" as Standard (just an 
 forgeplan route "add OAuth2 authentication"
 ```
 
-Example output:
+Illustrative output sketch, not a captured CLI transcript:
 
 ```
 Task: add OAuth2 authentication
@@ -111,14 +127,15 @@ gracefully if later layers are unavailable:
 
 | Level | Engine | When it runs | Cost |
 |-------|--------|-------------|------|
-| **L0** | Rule-based (keywords, regex, scope detection) | Always | Free, ~1ms |
-| **L1** | LLM classifier (Gemini / Claude / local) | `.forgeplan/config.yaml` has LLM | ~1 API call |
-| **L2** | FPF-enriched reasoning (KB context + ADI) | `--fpf` flag, Deep+ only | ~1-2 API calls |
+| **L0** | Keyword/scope rules | Forced with `--level 0`; fallback when LLM routing is unavailable | No LLM call |
+| **L1** | LLM classifier | Configured LLM in auto mode, or `--level 1` | Provider call |
+| **L2** | Additional ADI reasoning | Handler accepts `--level 2`; auto mode can escalate a Deep L1 result | Additional provider call |
 
-L0 handles 70% of obvious cases (bug fix, typo, feature). L1 kicks in for
-ambiguous tasks where keywords do not decide. L2 brings the FPF knowledge
-base (trust calculus, bounded rationality) into play for high-stakes
-decisions. Each level can run alone -- no LLM configured means pure L0.
+Captured help describes levels 0/1 and a keyword default, while the current
+handler auto-selects LLM when available and accepts level 2. It passes no
+ingested KB context to that routing call. `route` has no `--fpf` option;
+`--fpf` belongs to `reason`. Without usable LLM configuration, routing falls
+back to L0. No 70% coverage or millisecond latency guarantee is established.
 
 ### What the Router Looks For
 
@@ -126,11 +143,12 @@ The router checks for specific signals that indicate complexity:
 
 - **Security keywords** (auth, encryption, credentials) push toward Deep+
 - **Data keywords** (migration, schema, user data) push toward Deep+
-- **Scope indicators** (multiple teams, public API, cross-service) push toward Critical
+- **Scope indicators** differ: cross-team signals can require Standard, while public API or irreversibility can require Deep. Critical is not a separate core enum value.
 - **Simplicity indicators** (fix, typo, rename, bump) keep it Tactical
 
-If the router says Tactical but your gut says Standard, trust your gut and
-go higher. Escalation is always safe; de-escalation carries risk.
+If the router says Tactical but the consequences justify Standard or Deep,
+record the reason and choose more rigor. The suggestion does not know all
+project context.
 
 ## Gotchas
 

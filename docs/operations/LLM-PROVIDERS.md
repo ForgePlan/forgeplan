@@ -80,6 +80,65 @@ on the verified macOS build). Expose that binary as `devin` in a trusted PATH
 directory, then run `devin auth login`; the Desktop login and CLI login are
 separate.
 
+### Reasoning effort в Codex
+
+Необязательное поле `llm.effort` передаётся только провайдеру `codex-cli`:
+
+```yaml
+llm:
+  provider: codex-cli
+  model: gpt-6.1-sol
+  effort: high
+  timeout_seconds: 120
+  reason_timeout_seconds: 600
+```
+
+Допустимы `none`, `minimal`, `low`, `medium`, `high`, `xhigh`.
+Отсутствующее поле или YAML `null` сохраняет прежний список аргументов:
+ForgePlan не задаёт effort. Строка `none` отличается от отсутствующего поля
+и явно запрашивает у Codex `model_reasoning_effort="none"`.
+Неизвестные значения отклоняются при чтении конфигурации.
+Конкретная модель может поддерживать не все значения; адаптер не подменяет
+модель или effort при отказе CLI.
+
+Для `high` адаптер добавляет два аргумента: `-c` и
+`model_reasoning_effort="high"`. Сохраняются `--sandbox read-only`,
+`--ephemeral`, `--ignore-user-config` и `--ignore-rules`.
+Другие провайдеры это поле не используют. Отдельного environment override
+для effort нет; существующие `FORGEPLAN_LLM_PROVIDER` и
+`FORGEPLAN_LLM_MODEL` по-прежнему имеют приоритет над YAML.
+
+Успешный ответ `forgeplan_reason` и наблюдаемый argv подтверждают выполнение
+запроса с переданными настройками, но не effective effort на стороне
+провайдера. Поля `provider` и `model` в MCP-ответе отражают конфигурацию.
+Без отдельного подтверждения провайдера effective effort нельзя отмечать
+как PASS. В адаптере нет автоматического перехода на другую модель или
+провайдера; серверная маршрутизация Codex этим утверждением не покрывается.
+
+### Подключение проверенного бинарника в другом проекте
+
+Установка не выполняется автоматически. После проверки коммита и SHA-256
+бинарника укажите его абсолютный путь в существующей регистрации MCP
+`forgeplan` целевого проекта, сохранив остальные параметры:
+
+```json
+{
+  "mcpServers": {
+    "forgeplan": {
+      "command": "/absolute/path/to/verified/forgeplan",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+В `.forgeplan/config.yaml` целевого проекта измените только блок `llm`
+по примеру выше. Нужны доступный в `PATH` stock Codex CLI и существующий
+`codex login`; переносить credentials не требуется. Уберите конфликтующие
+`FORGEPLAN_LLM_PROVIDER` и `FORGEPLAN_LLM_MODEL` из окружения запуска сервера,
+если они заданы. Перезапустите MCP-сервер и вызовите `forgeplan_reason`
+для существующего артефакта с явным `workspace` целевого проекта.
+Для отката верните прежний `command` и прежний блок `llm`.
 Shared guardrails (RFC-014):
 
 - prompts go through stdin, or a private file for Devin; prompt text never

@@ -136,8 +136,19 @@ fn cli_claim_accepts_hyphenated_agent() {
         .current_dir(dir.path())
         .assert()
         .success();
-    let claim_path = dir.path().join(format!(".forgeplan/claims/{id}.yaml"));
-    assert!(claim_path.exists(), "expected claim file at {claim_path:?}");
+    // Keyed sidecar: the file is named after the canonical key, so the
+    // hyphenated agent slug cannot be confused with a path.
+    let entries: Vec<_> = std::fs::read_dir(dir.path().join(".forgeplan/claims"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(entries.len(), 1, "one claim, one sidecar: {entries:?}");
+    let claim_path = entries[0].clone();
+    let claim_body = std::fs::read_to_string(&claim_path).unwrap();
+    assert!(
+        claim_body.contains("smoke-test-v1"),
+        "the hyphenated agent is recorded verbatim: {claim_body}"
+    );
     // And cleanup with release using the same agent.
     forgeplan()
         .args(["release", &id, "--agent", "smoke-test-v1"])

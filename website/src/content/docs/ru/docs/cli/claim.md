@@ -5,12 +5,12 @@ description: "Claim an artifact for exclusive work - TTL-based advisory lock for
 
 `forgeplan claim` резервирует артефакт за конкретным агентом, чтобы другие агенты знали - туда не лезть. Команда пишет небольшой файл `.forgeplan/claims/<id>.yaml` с идентичностью агента и временем истечения (TTL - time-to-live, после этого клейм считается заброшенным и другой агент может взять артефакт). По умолчанию TTL - 30 минут, максимум - 24 часа.
 
-Это **рекомендательный лок**, не жёсткий - никакая другая команда Forgeplan не откажет в работе из-за того, что что-то заклеймено. Соглашение такое: агенты сами проверяют [`forgeplan claims`](/ru/docs/cli/claims/) перед началом работы и уважают увиденное. Планировщик ([`forgeplan dispatch`](/ru/docs/cli/dispatch/)) клеймы учитывает и исключает заклейменные артефакты из своих планов.
+Это **рекомендательная блокировка** работы: она не запрещает изменения артефактов. Сами `claim` и `release` проверяют владельца. Перед работой агенты проверяют [`forgeplan claims`](/ru/docs/cli/claims/); [`forgeplan dispatch`](/ru/docs/cli/dispatch/) исключает живые клеймы.
 
 Две гарантии безопасности:
 
 - **Двойного клейма не будет** - если живой клейм уже держит другой агент, вызов завершится понятной ошибкой.
-- **Продление идемпотентно** - тот же агент, повторно вызывающий `claim` на свой же артефакт, обновит срок истечения, никого не выгнав. Используйте для долгой работы, чтобы клейм не истёк.
+- **Продление тем же владельцем** - повторный `claim` сохраняет владельца, но перезаписывает `claimed_at`, срок и заметку. Передайте `--note` повторно, чтобы сохранить её.
 
 Аналог [`forgeplan_claim`](/ru/docs/mcp/forgeplan_claim/) на MCP-стороне.
 
@@ -41,7 +41,7 @@ forgeplan claim [OPTIONS] <ID>
 ## Опции
 
 ```text
-      --agent <AGENT>              Agent identity ("name/version"). Defaults to `cli/<version>`
+      --agent <AGENT>              Явное печатное имя без символов пути, например worker-1; default cli-<version>
       --ttl-minutes <TTL_MINUTES>  Time-to-live in minutes (default 30, max 1440 = 24h, min 1) [default: 30]
       --note <NOTE>                Optional free-form note surfaced by `forgeplan claims`
       --json                       Output as JSON for machine consumption
@@ -57,7 +57,7 @@ forgeplan claim [OPTIONS] <ID>
 forgeplan claim PRD-057 --note "implementing FR-003"
 ```
 
-Резервирует `PRD-057` на 30 минут под дефолтной идентичностью `cli/<version>`. Заметка появляется в [`forgeplan claims`](/ru/docs/cli/claims/), чтобы оркестратор видел, чем занят каждый агент.
+Резервирует `PRD-057` на 30 минут за `cli-<version>`. Сохранённый help ниже ошибочно указывает `cli/<version>`; явное CLI-имя не может содержать `/`. У `release` в этой сборке другой default: смотрите владельца в `claims` и передавайте точное имя через `release --agent`, а не `--force`.
 
 ### Пример 2: Оркестратор клеймит от имени агента
 
@@ -73,7 +73,7 @@ forgeplan claim RFC-012 --agent worker-2 --ttl-minutes 60
 forgeplan claim PRD-057 --ttl-minutes 30
 ```
 
-Тот же агент, повторно вызывающий `claim` на свой артефакт, продлевает срок истечения, ничего другого не меняя. Используйте на долгих рефакторингах, прежде чем TTL истечёт.
+Тот же владелец может обновить клейм. Помимо срока перезаписываются время захвата и заметка, поэтому при необходимости повторите `--note`.
 
 ## Место в рабочем процессе
 
@@ -85,3 +85,26 @@ forgeplan claim PRD-057 --ttl-minutes 30
 - [`forgeplan release`](/ru/docs/cli/release/) - снять активный клейм
 - [`forgeplan claims`](/ru/docs/cli/claims/) - список активных клеймов
 - [`forgeplan dispatch`](/ru/docs/cli/dispatch/) - продуцирует план работы, который защищают клеймы
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan claim --help`.
+
+```text
+Claim an artifact (PRD-057 multi-agent coordination — soft signal "I'm working on this")
+
+Usage: forgeplan claim [OPTIONS] <ID>
+
+Arguments:
+  <ID>  Artifact ID to claim (e.g. PRD-057)
+
+Options:
+      --agent <AGENT>              Agent identity ("name/version"). Defaults to `cli/<version>`
+      --ttl-minutes <TTL_MINUTES>  Time-to-live in minutes (default 30, max 1440 = 24h, min 1) [default: 30]
+      --note <NOTE>                Optional free-form note surfaced by `forgeplan claims`
+      --json                       Output as JSON for machine consumption
+  -h, --help                       Print help
+  -V, --version                    Print version
+```
+<!-- forgeplan-runtime:end -->

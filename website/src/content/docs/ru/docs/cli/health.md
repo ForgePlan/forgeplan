@@ -3,7 +3,7 @@ title: forgeplan health
 description: "Панель мониторинга состояния проекта - слепые пятна, сироты, просроченные и рискованные артефакты"
 ---
 
-`forgeplan health` - это команда для начала сессии. Она сканирует каждый артефакт в рабочем пространстве и сообщает о четырёх категориях проблем: **слепые пятна** (активные артефакты без доказательств), **сироты** (артефакты без входящих или исходящих связей), **просроченные** (с истёкшим `valid_until`) и **рискованные** (с низким R_eff или не прошедшие валидацию). Если проблем нет, выводится сообщение "Project looks healthy!"
+`forgeplan health` показывает задолженность workspace: **слепые пятна**, **сироты**, просроченные даты, **рискованные** доказательства, активные заглушки, возможные дубликаты и рекомендательные сигналы фаз. Для migrated используется канонический снимок, для legacy - старый индекс. Эти сигналы не заменяют структурную валидацию или приёмку реализации.
 
 **Единый протокол рабочего процесса** делает `forgeplan health` обязательной командой в начале каждой сессии - прежде чем вы напишете код, выполните роутинг задачи или откроете новый PR. Если проверка состояния показывает наличие задолженности, вы устраняете её, прежде чем приступать к новой работе. Не накапливайте задолженность.
 
@@ -33,8 +33,9 @@ forgeplan health [OPTIONS]
 ```text
       --compact            Сокращённый однострочный вывод для хуков/скриптов
       --json               Вывод в формате JSON для машинной обработки
-      --ci                 Режим CI: код выхода 1, если найдены проблемы (для гейтов конвейера)
+      --ci                 Текстовый гейт: ошибка при превышении настроенных порогов
       --fail-on <FAIL_ON>  Пороги сбоя для --ci (например, "orphans=5,blind_spots=3,stale=2")
+      --strict             Ошибка при критических сигналах; действует и с --json
   -h, --help               Вывести справку
   -V, --version            Вывести версию
 ```
@@ -47,7 +48,7 @@ forgeplan health [OPTIONS]
 forgeplan health
 ```
 
-Типичный здоровый вывод:
+Иллюстрация здоровой сводки, не записанный transcript и не полная схема вывода:
 
 ```
 Project Health
@@ -67,6 +68,8 @@ Project looks healthy!
 ```bash
 forgeplan health
 ```
+
+Иллюстрация сводки задолженности, не записанный runtime transcript:
 
 ```
 Project Health
@@ -94,7 +97,7 @@ Next actions:
 forgeplan health --ci --fail-on "orphans=0,blind_spots=0,stale=5"
 ```
 
-Выходит с кодом 1, если в рабочем пространстве есть какие-либо сироты, слепые пятна или более 5 просроченных артефактов. Добавьте это в GitHub Actions после `forgeplan scan-import`, чтобы предотвратить попадание задолженности по состоянию в `dev`.
+Код 1 означает наличие сирот, слепых пятен или больше пяти просроченных записей. Запускайте после предусмотренного импорта или обслуживания канонического индекса. `scan-import` импортирует документы, не восстанавливает Constellation штатным образом.
 
 ### Пример 4: Машиночитаемый вывод
 
@@ -102,13 +105,13 @@ forgeplan health --ci --fail-on "orphans=0,blind_spots=0,stale=5"
 forgeplan health --json
 ```
 
-Выводит `{ "artifacts": 147, "blind_spots": [...], "orphans": [...], "stale": [...], "at_risk": [...] }` для дашбордов, ботов или для импорта в память Hindsight.
+JSON содержит `total`, `verdict`, `by_kind`, `by_status`, `blind_spots`, `orphans`, `stale_count`, `at_risk`, `active_stubs`, возможные дубликаты и рекомендательные поля. Просроченность представлена счётчиком `stale_count`, не массивом `stale`. `--strict --json` также добавляет `exit_code`.
 
 ### Пример 5: Компактный режим для командных строк
 
 ```bash
 forgeplan health --compact
-# -> Forgeplan: 147 artifacts, 0 issues
+# Вывод включает проект, число артефактов, слепые пятна, просроченность и at-risk.
 ```
 
 Используйте в командной строке zsh/bash или в строке состояния tmux, чтобы состояние было всегда видно.
@@ -119,8 +122,9 @@ forgeplan health --compact
 
 ### Поведение
 
-- `forgeplan health --ci` → выход с кодом 1, если найдены **любые** сироты, слепые пятна, просроченные или рискованные артефакты.
-- `forgeplan health --ci --fail-on <spec>` → пороги для каждой метрики, в форме `метрика=N`, разделённые запятыми. Поддерживаемые метрики: `orphans`, `blind_spots`, `stale` и `at_risk`. Выход с кодом 1, если **любая** метрика превышает свой порог.
+- Обычный `health --ci` отказывает при любых `orphans` или `blind_spots`. Неуказанные пороги `stale` и `at_risk` не ограничены.
+- `--fail-on` принимает `метрика=N` через запятую для `orphans`, `blind_spots`, `stale` и `at_risk`; ошибка означает превышение порога.
+- В выбранной реализации `--json` и `--compact` завершают обработку до ветки `--ci`. Не полагайтесь на `--ci` в этих режимах. Для JSON есть отдельный `--strict`; это другая политика гейта.
 
 ### Фрагмент GitHub Actions
 
@@ -129,26 +133,26 @@ forgeplan health --compact
 ```yaml
 - name: Forgeplan health gate
   run: |
-    forgeplan scan-import
+    # После обслуживания владеющего индекса для нужных источников.
     forgeplan health --ci --fail-on "blind_spots=0,orphans=0"
 ```
 
-Самая строгая конфигурация - `blind_spots=0,orphans=0` - означает, что **ни один** активный PRD/RFC/ADR без доказательств и **ни один** несвязанный артефакт не может попасть в `dev`. Ослабьте пороги, если вам нужен льготный период при миграции существующего рабочего пространства.
+Эти пороги отвергают учтённые слепые пятна и сирот; stale и at-risk не ограничены без явного порога. Это не самая строгая возможная политика. Выбирайте нужный гейт осознанно; не ослабляйте уже установленный гейт только ради зелёного CI.
 
-Совместите это с [`forgeplan validate --ci`](/docs/cli/validate/#ci-mode---ci), чтобы охватить как методологическую задолженность (health), так и структурную полноту (validate) в одном конвейере.
+Совместите это с [`forgeplan validate --ci`](/ru/docs/cli/validate/), чтобы отдельно проверять методологическую задолженность и структурную полноту.
 
 ## Интерпретация вывода
 
-- **Слепые пятна** - `status=active`, но R_eff=0 (нет связанных доказательств). Это означает, что вы активировали артефакт, полагаясь только на доверие. Исправление: создайте EvidencePack с полями `verdict`, `congruence_level`, `evidence_type` и свяжите его.
+- **Слепые пятна** - нечерновые и нетерминальные решения без связанных доказательств. Нулевая оценка при связанном refutes-доказательстве - другое условие. Добавляйте реальные EvidencePack с `verdict`, `congruence_level` и `evidence_type`.
 - **Сироты** - нет входящих или исходящих связей. Либо незавершённые, либо забытые. Исправление: свяжите с родительским/дочерним артефактом или отмените.
-- **Просроченные** - истёк срок `valid_until`. Исправление: `forgeplan renew <ID>` для продления или `forgeplan reopen <ID>` для замещения новым черновиком.
-- **Рискованные** - низкий R_eff (<0.3), не прошедшие валидацию или с несоответствием глубины. Исправление: запустите `forgeplan context <ID>` и устраните конкретную проблему.
+- **Просроченные** - дата действия прошла; обнаружение само не меняет сохранённый статус. Проверьте статус и применимый переход `renew --reason --until` или `reopen --reason`, который создаёт новый draft и помечает исходный deprecated.
+- **Рискованные** - живой артефакт со связанными доказательствами и плоским R_eff ниже 0.3. Структурная валидация и калибровка глубины проверяются отдельно.
 
 Пороги для беспокойства:
 
 - Любые слепые пятна = немедленное исправление (вы заявляете об активных решениях без доказательств).
 - Сироты > 3 = утечка в рабочем процессе, найдите, где артефакты остаются без внимания.
-- Просроченные > 5 = проблема устаревания, запустите `forgeplan refresh` для очистки.
+- Просроченные > 5 - изучите записи через `forgeplan stale`; команды `forgeplan refresh` нет.
 
 ## Как это вписывается в рабочий процесс
 
@@ -164,9 +168,30 @@ forgeplan health --compact
 
 ## См. также
 
-- [`forgeplan status`](/docs/cli/status/) - необработанные счётчики без анализа состояния
-- [`forgeplan blindspots`](/docs/cli/blindspots/) - только вид слепых пятен
-- [`forgeplan gaps`](/docs/cli/gaps/) - обнаружение отсутствующих артефактов
-- [`forgeplan refresh`](/docs/cli/stale/) - массовый обзор просроченных артефактов
-- [`forgeplan context`](/docs/cli/context/) - глубокий анализ каждого артефакта
-- [Методология: гейты качества](/docs/methodology/overview/)
+- [`forgeplan status`](/ru/docs/cli/status/) - счётчики
+- [`forgeplan blindspots`](/ru/docs/cli/blindspots/) - слепые пятна
+- [`forgeplan gaps`](/ru/docs/cli/gaps/) - этапы конвейера
+- [`forgeplan stale`](/ru/docs/cli/stale/) - просроченные даты
+- [`forgeplan context`](/ru/docs/cli/context/) - контекст артефакта
+- [Гейты качества](/ru/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan health --help`.
+
+```text
+Show project health dashboard — gaps, risks, blind spots, next actions
+
+Usage: forgeplan health [OPTIONS]
+
+Options:
+      --compact            Compact one-line output for hooks/scripts
+      --json               Output as JSON for machine consumption
+      --ci                 CI mode: exit code 1 if issues found (for pipeline gates)
+      --fail-on <FAIL_ON>  Fail thresholds for --ci (e.g., "orphans=5,blind_spots=3,stale=2")
+      --strict             Strict mode: exit 1 if verdict is NeedsAttention/Unhealthy or any of {orphans, blind_spots, active_stubs, at_risk} > 0. Designed for CI gates that want a single boolean signal. Empty workspaces and advisory-only signals (e.g. phase mismatches) keep exit 0
+  -h, --help               Print help
+  -V, --version            Print version
+```
+<!-- forgeplan-runtime:end -->

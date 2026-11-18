@@ -2,13 +2,31 @@
 
 > What needs to change in forgeplan itself to support the extraction methodology.
 
+## Current implementation versus this proposal
+
+At target revision `c852f40c` (`0.39.0+constellation.s1.1`), the six kinds are registered, but the sections below retain the **original proposed contracts**, not the shipped schemas.
+
+The core kind registry is broader than the captured creation interface: `forgeplan_new`/`forgeplan_generate` MCP enums and CLI `new` help still list ten older kinds. This document does not claim end-to-end acceptance of new kinds by every surface.
+
+| Surface | Current target boundary |
+|---|---|
+| Kind validation | Native required body headings and kind-derived tiers in `crates/forgeplan-core/src/validation/rules.rs`; package frontmatter sketches do not replace them. |
+| Hypotheses | `hypothesis_state`: `parked → inferred → strong-inferred → verified`; no skip-forward promotion. `lifecycle_state: drafted/triangulated` below is proposal vocabulary. Promotion reports dependent artifacts; it does not automatically rewrite them. |
+| Business coverage | `forgeplan_coverage_business` takes `domain_model_id`, reads `## Composition`, counts workspace artifacts, and reports canonical readiness as false/zero. |
+| Contradictions | Title-token Jaccard duplicate heuristic (threshold 0.6), not semantic invariant/glossary/scenario adjudication. |
+| Interviews | Both advertised interview tools return `status: not_implemented` in this core target. Plugin installation hints do not prove that a plugin is installed or usable. |
+| Canonical rendering / RAG / reproducibility | The proposed `forgeplan_render_canonical`, `forgeplan_export_rag`, and `forgeplan_reproducibility_check` tools are absent from the captured full catalog. |
+| CLI | `forgeplan discover start` creates a session and prints a seven-phase protocol for an agent. It does not execute C1–C12. The command groups in section 5 are proposals, not supported invocations. |
+
+Authorities: the target full MCP catalog, CLI help, `crates/forgeplan-core/src/{artifact/types.rs,hypothesis.rs,brownfield.rs}`, and `crates/forgeplan-mcp/src/server.rs`. See also [package status](README.md#implementation-status-2026-10-23).
+
 ## Scope of changes
 
-Six new artifact kinds + new relations + confidence scoring per-assertion + MCP tools additions. **No breaking changes** — existing artifacts continue to work.
+The original design proposes six artifact kinds + new relations + confidence scoring per assertion + MCP additions. **Backward compatibility is a design goal**, not a verified guarantee that all proposed additions ship or leave every workspace unchanged.
 
 ## 1. New artifact kinds (6)
 
-> **Source of truth**: the full canonical schemas, body structure, validation rules, lifecycle, and link types for each kind are in `artifact-kinds/<kind>.md`. The sketches below are just a taste — if they disagree with `artifact-kinds/`, `artifact-kinds/` wins.
+> **Design precedence**: `artifact-kinds/<kind>.md` defines the intended package schemas. It wins over sketches here, but not over the actual target implementation or native validation policy.
 
 ### 1.1 `glossary` — see `artifact-kinds/glossary.md`
 A single business term with definition, aliases, code usage, related terms, and confidence. Foundation layer — everything else depends on the glossary.
@@ -134,7 +152,7 @@ forgeplan orphans [--domain <x>]
 - Refuted hypotheses keep their body for historical reference; never deleted.
 
 ### domain-model
-- `canonical_ddl` passes `psql --check` (enforced via C11).
+- `canonical_ddl` executes successfully in an explicitly selected disposable PostgreSQL database via C11; `psql` has no `--check` option.
 - `canonical_sdl` parses with a GraphQL parser (enforced via C11).
 - Every `use_cases_ref`, `invariants_ref`, `scenarios_ref`, `glossary_ref` resolves.
 - Every state-machine transition has a trigger + guard.

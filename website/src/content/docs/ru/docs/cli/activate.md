@@ -3,7 +3,7 @@ title: forgeplan activate
 description: "Переводит черновик артефакта в активное состояние через гейт валидации - момент, когда решение становится действующим."
 ---
 
-`forgeplan activate` переводит артефакт из состояния `draft` в `active`. Это наиболее частый переход в жизненном цикле: он отмечает момент, когда PRD, RFC, ADR, Epic или Spec считается действующим, готовым для ссылок из других артефактов, и ожидается, что он будет подкреплен доказательствами. Для структурированных артефактов активация запускает гейт валидации - все правила MUST должны быть пройдены. Для легковесных артефактов (`Note`, `Problem`) активация происходит без проверки и немедленно.
+`forgeplan activate` переводит черновик в `active`. Для PRD, RFC, ADR, Epic и Spec проверяются правила MUST и методологические условия: длина тела, связь с доказательством и незаполненные части шаблона. `Note` и `Problem` пропускают эти методологические проверки, но подчиняются правилам переходов статуса. Положительный R_eff остаётся требованием рабочего процесса; сама проверка связи не доказывает качество EvidencePack.
 
 ## Когда использовать
 
@@ -55,7 +55,7 @@ forgeplan review ADR-005
 forgeplan activate ADR-005
 ```
 
-`review` выполняет те же проверки, что и `activate`, но без изменения состояния - полезно в качестве пробного запуска перед переключением.
+`review` выполняет общие проверки валидации и методологических условий без изменения состояния. Активация дополнительно проверяет переход статуса, а в legacy-пути CLI — настроенную Git-delta provenance. Успешное ревью не гарантирует успешную активацию.
 
 ### Пример 3: Принудительная активация, несмотря на ошибки валидации
 
@@ -67,23 +67,43 @@ forgeplan activate RFC-012 --force
 
 ## Как это вписывается в рабочий процесс
 
-Эта команда является частью [полного жизненного цикла артефакта](/docs/guides/first-artifact/) - см. руководство для сквозного процесса. Активация - это то, как Forgeplan отличает работу "в процессе" от "действующих" решений, от которых могут зависеть другие артефакты.
+Эта команда входит в [полный жизненный цикл артефакта](/ru/docs/guides/first-artifact/). Она отличает черновую работу от действующих решений.
 
 ## Распространенные ошибки
 
 | Ошибка | Причина | Исправление |
 |---|---|---|
-| `MUST rule failed: Problem section missing` | Обязательный фронтматтер или раздел пуст | Отредактируйте файл артефакта, затем повторно запустите `forgeplan validate <id>` |
-| `Artifact already in state: active` | Уже активирован в предыдущей сессии | Действий не требуется; проверьте с помощью `forgeplan show <id>` |
-| `R_eff = 0 after activation` | EvidencePack не связан | Создайте доказательство с помощью `forgeplan new evidence`, затем `forgeplan link` + `forgeplan score` |
-| `Cannot activate from terminal state` | Артефакт `superseded` или `deprecated` | Конечные состояния никогда не активируются повторно - вместо этого создайте новый черновик |
+| Нарушение MUST | Обязательное поле или раздел пуст | Обновите тело через `forgeplan update <id> --body @body.md`, затем повторите валидацию |
+| Недопустимый переход из `active` | Артефакт уже активирован | Проверьте `forgeplan get <id>`; повторная активация не является успешным no-op |
+| `R_eff = 0 after activation` | Доказательства могут отсутствовать или опровергать решение | Изучите пакеты и поля перед добавлением доказательств или пересчётом |
+| `Cannot activate from terminal state` | Артефакт `superseded` или `deprecated` | Прямая активация отклоняется. Создайте новый черновик либо используйте recovery через receipt: `restore`/`undo-last`. |
 
 ## См. также
 
-- [`forgeplan validate`](/docs/cli/validate/) - запускает гейт валидации без изменения состояния
-- [`forgeplan score`](/docs/cli/score/) - проверяет R_eff до и после активации
-- [`forgeplan review`](/docs/cli/review/) - пробный запуск готовности
-- [`forgeplan supersede`](/docs/cli/supersede/) - замещает один активный артефакт другим
-- [`forgeplan deprecate`](/docs/cli/deprecate/) - отменяет активный артефакт без замены
-- [Руководство по жизненному циклу v2](/docs/guides/lifecycle-v2/)
-- [Методология: Жизненный цикл артефакта](/docs/methodology/lifecycle/)
+- [`forgeplan validate`](/ru/docs/cli/validate/) - валидация без изменения состояния
+- [`forgeplan score`](/ru/docs/cli/score/) - проверка R_eff
+- [`forgeplan review`](/ru/docs/cli/review/) - ревью перед активацией
+- [`forgeplan supersede`](/ru/docs/cli/supersede/) - замещение решения
+- [`forgeplan deprecate`](/ru/docs/cli/deprecate/) - вывод из эксплуатации без замены
+- [Жизненный цикл v2](/ru/docs/guides/lifecycle-v2/)
+- [Методология: жизненный цикл](/ru/docs/methodology/lifecycle/)
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan activate --help`.
+
+```text
+Activate an artifact (draft → active) with validation gate
+
+Usage: forgeplan activate [OPTIONS] <ID>
+
+Arguments:
+  <ID>  Artifact ID
+
+Options:
+      --force    Force activation even if validation has MUST errors
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

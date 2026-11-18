@@ -5,6 +5,18 @@
 > Три системы как единый организм. Каждая делает то, что умеет лучше всех.
 > Данные живут в одном месте, ссылки — везде.
 
+> **Область (2026-10-23):** локальный workflow design, впервые записанный в
+> апреле 2026, не доказательство установленной интеграции трёх систем.
+> Status/Phase mapping, шесть fields, размеры команд, ёмкость и время setup/
+> overhead — конвенции или оценки планирования, не product limits/измерения.
+> Slash-командам и automation нужна реальная host implementation.
+> PASS, test counts и R_eff в примерах иллюстративны, не receipts.
+> Перед записью выясняйте workspace field/option UID и проверяйте `failedFields`;
+> completion задачи ставьте только по фактическому завершению её scope.
+> Native authorization, memory/privacy и G1/G2/G3 policies не меняются.
+> CLI `validate` работает на legacy и migrated Constellation layout; full MCP
+> validation также проверен. Границы проверки см. в [оговорках пилота](../operations/CONSTELLATION-PILOT.ru.md).
+
 ---
 
 ## Оглавление
@@ -57,11 +69,11 @@
 
 ### Почему именно так (research)
 
-**FPF A.1.1 U.BoundedContext**: "Make meaning local; make translation explicit." Каждая система — это semantic locale с собственным словарём. "Status" в Orchestra и "lifecycle" в Forgeplan — это РАЗНЫЕ понятия, даже если маппятся друг на друга. Нельзя смешивать.
+**Локальное применение FPF A.1.1**: локализовать смысл и явно переводить понятия. Execution status Orchestra и lifecycle Forgeplan — разные понятия; mapping ниже — конвенция этого workflow, не их тождество и не дословное upstream-правило.
 
-**FPF A.7 Strict Distinction**: method ≠ work ≠ role. Forgeplan = method (КАК думать о работе). Orchestra = work (ЧТО делается КЕМ). Claude Code = role (КТО исполняет). Смешивание этих категорий — главный источник хаоса.
+**Локальное применение различений FPF A.7**: method, work и role нельзя смешивать. Forgeplan, Orchestra и Claude Code — программные системы, поддерживающие эти аспекты; они не являются буквально method, work и role соответственно.
 
-**FPF B.3 Trust Calculus**: Custom fields в Orchestra = low-trust proxy. Они показывают *ссылку* на артефакт, но за quality scoring отвечает Forgeplan. Не дублируем данные — доверяем каждой системе своё.
+**Локальная граница доверия по мотивам FPF B.3**: custom fields Orchestra содержат ссылки, не authoritative scoring evidence. Артефакт и его реальный score проверяются в Forgeplan; это архитектурная конвенция, не upstream permission standard.
 
 **FPF A.14 Mereology**: У Forge есть ДВЕ ортогональные оси — artifact hierarchy (Epic→PRD→RFC) и execution flow (Sprint→Wave→Task). Orchestra отражает *execution*, не дублирует artifact hierarchy.
 
@@ -152,7 +164,7 @@
 
 ### Правило синхронизации
 
-Если один обновлён — второй должен быть обновлён тоже. AI agent при обновлении Status автоматически обновляет Phase, и наоборот. При конфликте — Status побеждает (Orchestra = source of truth для execution state).
+Поддерживайте оба fields в соответствии с реальной работой при принятии этой конвенции. Агент явно выполняет и проверяет нужные field updates; автоматический bidirectional sync здесь не доказан. Реальное расхождение нельзя затирать ради соответствия таблице.
 
 ---
 
@@ -378,7 +390,7 @@ Workspace: ForgePlan
 | Views | Per-role views |
 | Daily overhead | ~15 минут (standup + status + triage) |
 | Setup time | 1-2 часа |
-| Max nesting | 3 уровня (workspace → project → sub-project) — это ЛИМИТ Orchestra |
+| Max nesting | Дизайн использует workspace → project → sub-project; platform-wide maximum здесь не установлен |
 
 #### Когда использовать
 
@@ -397,7 +409,7 @@ Workspace: ForgePlan
 | Communication | Task messages | + Channels |
 | Shared documents | N/A | Orchestra Documents |
 | QA workflow | Review status | Review = QA queue |
-| Nesting | Workspace → Project | Workspace → Project → Sub-project (MAX!) |
+| Nesting | Workspace → Project | Workspace → Project → Sub-project (выбранный дизайн) |
 
 #### Роли и Views
 
@@ -424,8 +436,8 @@ Workspace: ForgePlan
 
 #### Ограничения
 
-- **3 уровня nesting — МАКСИМУМ Orchestra**. Нельзя добавить ещё один уровень. Если нужно больше — использовать parent-child tasks внутри sub-project
-- **Sprint sub-projects множатся** — за год 24+ sub-projects на area. Митигация: архивировать завершённые (showArchived=false по умолчанию)
+- **Выбранная глубина — три уровня**. Это ограничение данного дизайна, не проверенный максимум платформы Orchestra.
+- **Sprint sub-projects множатся** — двухнедельный cadence даёт около 26 в год на area; архивируйте лишь доступной разрешённой операцией и проверяйте visibility settings.
 - **Cross-area task** — живёт в одном sub-project, subtask-ссылка в другом. Relations для видимости
 
 ---
@@ -549,9 +561,9 @@ create_entity: Channel "Standup"
 forgeplan list --status active    # → список active артефактов
 forgeplan list --status draft     # → список draft артефактов
 
-# Для каждого active артефакта:
-→ Orch: create task "[ID] Title"
-  Fields: Artifact=ID, Type=kind, Phase=Done, Status=Done
+# Для каждого артефакта проверьте фактическое завершение перед выбором status:
+→ Orch: create task "[ID] Title", только если existing task нет
+  Fields: Artifact=ID, Type=kind, Phase=actual, Status=actual
 
 # Для каждого draft артефакта:
 → Orch: create task "[ID] Title"
@@ -624,7 +636,7 @@ forgeplan health → сравнить с Orchestra
 6. Sprint field → опционально (sub-project = sprint)
 ```
 
-**Effort**: 1-2 часа. **Risk**: Medium — нужно перемещать задачи, может потеряться history.
+**Оценка планирования**: 1-2 часа. **Risk**: проверяйте fields, доступ и parent scope; само перемещение entity не доказывает потерю message history.
 
 ### C → B: Downsize (команда уменьшилась)
 
@@ -633,7 +645,7 @@ forgeplan health → сравнить с Orchestra
 **Что делать**:
 ```
 1. Объединить sub-projects в project root
-2. Удалить пустые sub-projects
+2. Только при явном разрешении удаления убрать подтверждённо пустые sub-projects; иначе сохранить
 3. Вернуться к Sprint field вместо sub-projects
 4. Channels можно оставить или архивировать
 ```
@@ -644,7 +656,7 @@ forgeplan health → сравнить с Orchestra
 
 ```
 1. Объединить все area projects в один "Development"
-2. Удалить пустые projects
+2. Только при явном разрешении удаления убрать подтверждённо пустые projects; иначе сохранить
 3. Убрать Assignee (всё = я)
 ```
 
@@ -871,7 +883,7 @@ forgeplan route "fix typo" → Tactical
 **Митигация**: AI agent проверяет "есть ли Artifact?" при Status → Doing. Tactical tasks допустимы без артефакта.
 
 ### R8: Nesting Limit (Config C only)
-**Описание**: Orchestra поддерживает max 3 уровня. Нельзя добавить ещё один.
+**Описание**: Дизайн выбирает три уровня; максимум платформы здесь не проверен.
 **Вероятность**: Низкая (нужно только при Config C)
 **Импакт**: Высокий (структурное ограничение)
 **Митигация**: Использовать parent-child tasks внутри sub-project. Не пытаться добавить 4-й уровень проектов.
@@ -903,7 +915,7 @@ forgeplan route "fix typo" → Tactical
 | Игнорировать Session Start Protocol | Потеря контекста, дубли | ВСЕГДА выполнять |
 | Проект на каждую задачу | Overhead, потеря обзора | Проект = area, не задача |
 | Sprint field + Sprint sub-project одновременно | Confusion: где правда? | Выбрать одно по конфигурации |
-| Перемещать задачи между projects без причины | Теряется history | Move только при migration |
+| Перемещать задачи между projects без причины | Нужно проверить доступ/scope/fields | Перемещать осознанно и проверять результат |
 | Архивировать вместо Done | Задача исчезает из views | Done = видна, Archived = скрыта |
 
 ---
@@ -953,7 +965,7 @@ forgeplan blocked             # граф зависимостей
 mcp__orch__get_workspace_overview()     — обзор workspace
 mcp__orch__query_entities()             — поиск с фильтрами
 mcp__orch__create_entity()              — создать задачу/проект
-mcp__orch__set_fields()                 — обновить fields
+mcp__orch__update_entity(fields=[...])   — field values после list_fields UID discovery
 mcp__orch__manage_field()               — создать/изменить field definition
 mcp__orch__search_entities()            — поиск по имени
 mcp__orch__get_entity()                 — детали entity
@@ -1075,7 +1087,9 @@ AI: 1. Проверяет незакрытые задачи Sprint 9:
     5. Предлагает приоритизацию по Priority field
 ```
 
-### Закончил задачу (полный цикл)
+### Закончил задачу (иллюстративный полный цикл)
+
+Числа и scores ниже — сконструированные примеры, не наблюдённые receipts.
 
 ```
 AI: код написан, тесты проходят
@@ -1104,7 +1118,7 @@ AI: "PRD-XXX завершён. R_eff=1.00, activated, PR создан."
 ```
 Ты: "Не могу делать PRD-025 пока RFC-005 не готов"
 
-AI: forgeplan link PRD-025 RFC-005 --relation blocked-by
+AI: forgeplan link PRD-025 RFC-005 --relation based_on
     Orch: добавляет relation между задачами
     PRD-025 Status → Backlog (blocked)
 
@@ -1140,8 +1154,8 @@ AI: mcp__orch__send_message(chatUid=задача, message="Начата рабо
     ← ТОЛЬКО по явному запросу!
 
 Ты: "Что писали в чате PROB-021?"
-AI: mcp__orch__read_messages(entityUid=задача)
-    → Показывает историю
+AI: mcp__orch__read_messages(chatUid=задача)
+    → Одна страница; для whole-history ответа следовать nextPage до complete
 ```
 
 ### Конец дня
@@ -1247,7 +1261,7 @@ Chat Orch │   Git    │  Звонки  │  AI фоновый
 STEP 1: СБОР (read-only, безопасно)
 ├── mcp__orch__get_unread_chats()     → новые сообщения
 ├── mcp__orch__get_mentions()         → @упоминания
-├── git log --since="last session"    → новые коммиты
+├── git log --since="<actual timestamp>" → commits после записанной границы сессии
 ├── forgeplan health                  → stale, blind spots
 └── memory_recall                     → контекст прошлой сессии
 
@@ -1303,7 +1317,7 @@ STEP 4: AI ВЫПОЛНЯЕТ решения
 | **Meeting notes документ** | Среднее | Document в Orchestra "Meeting 2026-04-03" → AI парсит |
 | **Транскрипция** | Высокое | Otter.ai / Fireflies → скормить AI для экстракции решений |
 
-**Рекомендация**: "Сказать AI" — самый быстрый и надёжный. AI знает контекст, создаёт правильные артефакты.
+**Рекомендация**: передайте агенту решения и причины, затем проверьте предложенные артефакты. Контекст и корректность всё равно проверяются; измеренное превосходство по скорости/надёжности здесь не заявлено.
 
 ### Что может работать в фоне (safety matrix)
 
@@ -1313,7 +1327,7 @@ STEP 4: AI ВЫПОЛНЯЕТ решения
 | Читать git log | ✅ Да | Read-only |
 | forgeplan health | ✅ Да | Read-only |
 | Классифицировать сигналы | ✅ Да | Подготовка для triage |
-| Сохранить в Memory/Hindsight | ✅ Да | Non-destructive |
+| Сохранить в Memory/Hindsight | Только при разрешении для реального bank и privacy rules | Это persistent write, не read-only сбор |
 | **Создать артефакт** | ❌ Нет | Нужно подтверждение |
 | **Создать задачу** | ❌ Нет | Нужно подтверждение |
 | **Отправить сообщение** | ❌ Нет | Safety rule |
@@ -1380,7 +1394,7 @@ STEP 4: AI ВЫПОЛНЯЕТ решения
 
 **Проблема**: В чате вчера обсуждали подход, утром уже решили по-другому.
 
-**Решение**: AI при сборе inbox смотрит на весь тред, не на отдельные сообщения. Показывает последнее состояние обсуждения, не каждое промежуточное сообщение.
+**Решение**: прочитать достаточно реального треда, чтобы установить последнее состояние, учитывая pagination и отдельную thread history. Одной страницы newest messages недостаточно для выводов о всей истории или отсутствии прежних решений.
 
 ### Inbox в Session Start Protocol (обновлённый)
 

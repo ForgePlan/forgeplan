@@ -36,7 +36,7 @@ deprecate: отменить
 renew: продлить
 reopen: переоткрыть
 
-# Quality & scoring
+# Product quality/scoring terms — not universal upstream FPF definitions or scales
 R_eff: R_eff  # [keep formula name]
 F-G-R: F-G-R  # [keep]
 Formality: формальность
@@ -57,7 +57,7 @@ Critical: критическая
 routing: роутинг
 pipeline: конвейер
 quality gate: гейт качества
-adversarial review: состязательная ревью
+adversarial review: состязательное ревью
 
 # FPF
 ADI cycle: цикл ADI  # [keep acronym]

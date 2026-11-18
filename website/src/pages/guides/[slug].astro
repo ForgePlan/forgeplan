@@ -16,8 +16,8 @@ const { slug } = Astro.params;
 const guide = getGuide(slug as string);
 if (!guide) throw new Error(`Guide not found: ${slug}`);
 
-const filepath = path.resolve(`public/guides-raw/${slug}.html`);
-const embed = extractEmbed(filepath);
+const filepath = path.resolve(`public/guides-raw/en/${slug}.html`);
+const embed = extractEmbed(filepath, { locale: 'en' });
 
 const site = Astro.site ?? new URL('https://forgeplan.dev');
 const canonical = new URL(Astro.url.pathname, site).href;

@@ -2,6 +2,8 @@
 
 > Packages verified canonical documentation for ingestion into a RAG (Retrieval-Augmented Generation) system. Produces chunks, metadata, and retrieval-friendly structure.
 
+> Proposed packager, not a current core exporter or Constellation index format. Examples and metric targets are illustrative; embedding/provider integration requires separate implementation. See [implementation status](../README.md#implementation-status-2026-10-23).
+
 ## Why this skill exists
 
 Canonical docs (from C10) are human-readable markdown. RAG systems need:
@@ -77,12 +79,14 @@ artifacts = forgeplan.query(confidence ≥ inferred, kind in extraction_kinds)
 for a in artifacts:
   sections = split_by_headings(a.body)
   for s in sections:
-    chunk = {
-      id: stable_id(a.id, s.heading),
-      text: s.body[:max_chunk_size],
-      metadata: derive_metadata(a, s)
-    }
-    emit(chunk)
+    # Split losslessly on logical/token boundaries; never slice away a tail.
+    for part in split_preserving_all_text(s, max_tokens=max_chunk_size):
+      chunk = {
+        id: stable_id(a.id, s.heading, part.stable_subsection_key),
+        text: part.text,
+        metadata: derive_metadata(a, s)
+      }
+      emit(chunk)
 
 build_cross_references()
 build_index_md()
@@ -93,7 +97,7 @@ build_manifest()
 
 `{domain}.{kind}.{artifact_id}.{section_slug}`
 
-- Stable across re-packaging (so embeddings cache stays valid).
+- Stable identity across unchanged sections; embedding cache reuse also requires unchanged text and matching model/configuration. An unchanged ID alone does not validate a cached embedding.
 - Domain-prefixed for scoping.
 - Kind-aware for filtering.
 
@@ -102,7 +106,7 @@ build_manifest()
 For each `[X](../Y.md#anchor)` link in canonical docs, emit:
 
 ```json
-{ "from": "orders.use-case.UC-003.confirm.flow", "to": "orders.invariant.INV-003", "type": "referenced_in" }
+{ "from": "orders.use-case.UC-003.confirm.main-flow", "to": "orders.invariant.INV-003.statement", "type": "references" }
 ```
 
 Enables graph-RAG strategies.
@@ -122,7 +126,7 @@ If two chunks contain overlapping facts (detected by shingle hashing or semantic
 ## Metric
 
 - `chunks_per_domain`: healthy 50-500 depending on domain size.
-- `avg_chunk_token_count`: target 800-1200 tokens.
+- `avg_chunk_token_count`: illustrative target 800-1024 tokens for the default medium budget (not a measured retrieval optimum).
 - `duplicate_rate`: target ≤ 5%.
 - `cross_reference_density`: edges per chunk; target 2-5.
 
@@ -157,7 +161,7 @@ None — this skill is deterministic, not LLM-based (except optional embedding c
 |---|---|---|
 | Chunks too large for embedding model | Token count > limit | Split further on sub-headings |
 | Lost cross-references | Graph-RAG retrieval misses related | Validate edge list non-empty per artifact |
-| Unstable IDs across re-packaging | Embedding cache invalidated | Use content hash + artifact_id, not position |
+| Unstable IDs across re-packaging | Identity churn | Keep stable artifact/section/subsection IDs; use a separate content digest plus model/configuration for embedding cache validity |
 | Outdated chunks packaged | `last_updated` old | Honor freshness decay; strip stale chunks |
 | PII leak in exported chunks | Grep for PII patterns before shipping | Integrate with pii-detector agent |
 
@@ -182,7 +186,7 @@ Chunks: {total}
 ## Retrieval tips
 
 - Filter by `domain` to scope answers.
-- Filter by `confidence: verified` for high-stakes answers.
+- Filter by `metadata.confidence: verified` to prioritize reviewed claims, but inspect the supporting evidence for high-stakes answers; the label alone is not a correctness guarantee.
 - Expand via cross-references for full context.
 
 ## Freshness

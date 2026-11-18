@@ -414,7 +414,10 @@
       <p>
         В PRD эту секцию часто пропускают, в spec - никогда. Одна спека отвечает за одну границу
         поведения, всё остальное - соседние спеки. Вместо одного монолита у вас набор маленьких
-        независимых файлов, каждый проверяется и меняется отдельно.
+        независимых файлов, каждый проверяется и меняется отдельно. Скелет ниже - учебный
+        минимум этого урока; шаблон Forgeplan-спеки держит свои секции (Summary, Scope,
+        API Contracts, Data Models, Relationships, Validation Rules, Events / Side Effects,
+        Versioning, Related), и границу ответственности там задаёт Scope.
       </p>
     </div>
   </div>
@@ -475,7 +478,7 @@ AFTER:  GET /notes принимает опциональный ?tag=&lt;name&gt;
     <!-- Impact chart (replaces SVG DAG) -->
     <div class="impact-chart">
       <div class="ic-head">
-        <div class="ic-tag">Каскад правок · что ещё придётся открыть, когда меняется notes-spec</div>
+        <div class="ic-tag">Учебный каскад правок · иллюстративные проценты усилий ревью</div>
         <div class="ic-source">
           <span class="src-lbl">source</span>
           <span class="src-name">notes-spec</span>
@@ -522,18 +525,20 @@ AFTER:  GET /notes принимает опциональный ?tag=&lt;name&gt;
     </div>
 
     <p style="margin-top: 16px; font-size: 14px; color: var(--text-3);">
-      Каскад явно записывается в секции <i>Триггеры</i> или в отдельном файле зависимостей.
-      Когда вы готовите delta, чарт показывает, что ещё нужно проверить - это уберегает от
-      ситуации «поменяли одну спеку, через месяц всплыло в трёх соседних». Длина бара -
-      грубая оценка усилий ревью, не точное число.
+      Каскад команда явно записывает в секции <i>Триггеры</i> или в отдельном файле зависимостей.
+      Этот статический учебный чарт не вычислен по проекту и не устанавливает мониторинг.
+      85%, 80%, 60% и 25% — иллюстративные оценки усилий ревью, не замеры, вероятности
+      или обещание обнаружить все последствия. Назначение графика — подсказать соседние спеки для проверки.
     </p>
 
     <div class="insight">
       <div class="insight-tag">Delta - контракт между прошлым и будущим</div>
       <p>
         Без delta каждая правка спеки стирает историю. С ним вы можете через 6 месяцев открыть
-        <code>git log openspec/changes/</code> и пройти по каждой ADDED / MODIFIED / REMOVED
-        Requirement в обратном порядке - как <code>git blame</code> для требований. Это не
+        <code>git log .forgeplan/specs/</code> и пройти по каждой ADDED / MODIFIED / REMOVED
+        Requirement в обратном порядке - как <code>git blame</code> для требований. Формат
+        секций ADDED / MODIFIED / REMOVED - тот же, что разбирает delta-парсер Forgeplan
+        (<code>crates/forgeplan-core/src/artifact/delta.rs</code>). Это не
         формальность, это страховка от «почему у нас в <code>GET /notes</code> появился
         параметр <code>?tag</code>».
       </p>
@@ -549,40 +554,47 @@ AFTER:  GET /notes принимает опциональный ?tag=&lt;name&gt;
       Аналогия - техосмотр автомобиля. Инспектор не ставит одну общую оценку «машина хорошая».
       Он проверяет несколько независимых систем: тормоза, подвеска, движок, электрика, кузов.
       Общий вердикт «годен / не годен» - это не среднее, а способность ответить: «есть ли хоть
-      одна система, которая сделает поездку опасной». Если тормоза 2 из 9 - какие бы хорошие
-      ни были подвеска и движок, машина на дорогу не идёт. Через 6 месяцев - повторный техосмотр,
-      старый результат недействителен.
+      одна система, которая сделает поездку опасной». Условные тормоза 2 из 9 показывают,
+      почему среднее может скрыть риск. Повторный техосмотр через 6 месяцев здесь —
+      часть учебной аналогии, не универсальный срок evidence в Forgeplan.
     </p>
     <p class="analogy">
-      <b class="k">R_eff</b> работает ровно так же. Каждое evidence (доказательство, которое
-      поддерживает или опровергает решение) имеет два измерения - Verdict и CL - и итоговый
-      score, по которому считается общий R_eff = <code>min(scores)</code>.
+      <b class="k">R_eff</b> использует похожую идею минимума, не правила техосмотра.
+      Для пригодного evidence важны verdict, CL, тип и собственная необязательная дата истечения;
+      рекурсивный итог учитывает также зависимости. Это продуктовая шкала, не вероятность истинности.
     </p>
 
     <ul class="deflist">
       <li>
-        <span class="term">Verdict</span> · отношение evidence к решению.
-        <b>supports</b> = 1.0 / <b>weakens</b> = 0.5 / <b>refutes</b> = 0.0.
+        <span class="term">Verdict</span> · базовый вклад <b>непросроченного</b> evidence:
+        <b>supports</b> = 1.0 / <b>weakens</b> = 0.5 / <b>refutes</b> = 0.0. При истечении сначала действует override 0.1, в том числе для refutes.
       </li>
       <li>
         <span class="term">CL · Congruence Level</span> · откуда взято.
-        <b>CL3</b> ваш замер на этом же проекте (penalty 0.0) ·
-        <b>CL2</b> похожий проект или коллега (penalty 0.1) ·
-        <b>CL1</b> документация / Stack Overflow / блог (penalty 0.4) ·
-        <b>CL0</b> статья про противоположный контекст (penalty 0.9).
+        <b>CL3</b> свой замер в этом же проекте (penalty 0.0) ·
+        <b>CL2</b> PoC в связанном модуле или тест в соседнем проекте (penalty 0.1) ·
+        <b>CL1</b> внешняя документация, чужой блог, выступление (penalty 0.4) ·
+        <b>CL0</b> ответ со Stack Overflow из другого контекста, противоположная область (penalty 0.9).
       </li>
       <li>
-        <span class="term">Оценка</span> · <code>max(0, verdict − CL_penalty)</code> для одного evidence.
+        <span class="term">Оценка</span> · только для <b>непросроченного</b> evidence: плоский helper — <code>max(0, verdict − CL_penalty)</code>; рекурсивный движок — <code>max(0, verdict − CL_penalty − type_modifier)</code> (measurement/test = 0, benchmark = 0.1, audit = 0.2). Просроченный пригодный элемент сразу даёт 0.1 <b>до</b> verdict/CL/type, без этих вычитаний. Без valid_until этот scorer не применяет истечение; универсального TTL нет.
       </li>
       <li>
-        <span class="term">R_eff</span> · <code>min(scores)</code> по всем evidence решения. Не среднее.
+        <span class="term">R_eff</span> · рекурсивный минимум по пригодным собственным evidence и вкладам зависимостей. based_on/informs вычитают 0.1 из вклада зависимости с нижней границей 0; refines/depends_on — 0. Terminal evidence исключаются, draft остаются пригодными; пустая обычная совокупность даёт 0. Плоский helper не учитывает типы и зависимости, поэтому поля разных отчётов могут расходиться. Даже при просроченном элементе с вкладом 0.1 итог может быть ниже.
       </li>
     </ul>
 
     <!-- R_eff worked example -->
+    <p>Таблица и карточки ниже — синтетические учебные данные, не протокол замеров и не ссылки
+      на подтверждённые рекомендации SQLite или рассылку. Полные допущения расчёта DEC-018:
+      ровно E1/E2/E3 — пригодные, не terminal, непросроченные; у всех явно
+      <code>evidence_type: measurement</code>, verdict и CL как в таблице, без более низкого
+      source_tier. Других evidence и зависимостей нет. Поэтому здесь рекурсивные вклады
+      совпадают с плоскими: 1.0, 0.6, 0.1; R_eff = 0.1, среднее ≈ 0.57.
+      «at risk» — учебная интерпретация, не результат проверок или разрешение на активацию.</p>
     <div class="reff-wrap">
       <div class="reff-head">
-        <span class="reff-id">DEC-018 · junction table note_tags vs JSON-колонка notes.tags</span>
+        <span class="reff-id">Учебный DEC-018 · junction table note_tags vs JSON-колонка notes.tags</span>
         <span class="reff-status">at risk</span>
       </div>
       <table class="reff">
@@ -599,7 +611,7 @@ AFTER:  GET /notes принимает опциональный ?tag=&lt;name&gt;
         <tbody>
           <tr>
             <td class="id">E1</td>
-            <td class="evidence">Свой замер на 1000 заметок: JOIN по <code>note_tags(tag_id)</code> p95 &lt; 5 ms; <code>LIKE '%ddd%'</code> p95 ~50 ms</td>
+            <td class="evidence">Иллюстративный замер, не выполненный здесь: 1000 заметок, JOIN по <code>note_tags(tag_id)</code> p95 &lt; 5 ms; <code>LIKE '%ddd%'</code> p95 ~50 ms</td>
             <td><span class="verdict-pill supports">supports</span></td>
             <td><span class="cl-pill cl3">CL3</span></td>
             <td class="num score">1.0</td>
@@ -607,7 +619,7 @@ AFTER:  GET /notes принимает опциональный ?tag=&lt;name&gt;
           </tr>
           <tr>
             <td class="id">E2</td>
-            <td class="evidence">SQLite docs: junction table рекомендован для many-to-many</td>
+            <td class="evidence">Вымышленная рекомендация, условно приписанная SQLite docs: junction table для many-to-many; не цитата документации</td>
             <td><span class="verdict-pill supports">supports</span></td>
             <td><span class="cl-pill cl1">CL1</span></td>
             <td class="num score">0.6</td>
@@ -615,7 +627,7 @@ AFTER:  GET /notes принимает опциональный ?tag=&lt;name&gt;
           </tr>
           <tr>
             <td class="id">E3</td>
-            <td class="evidence">Рассылка: деградация JSON1 на 100k записей</td>
+            <td class="evidence">Вымышленное сообщение рассылки: деградация JSON1 на 100k записей; не установленный результат</td>
             <td><span class="verdict-pill weakens">weakens</span></td>
             <td><span class="cl-pill cl1">CL1</span></td>
             <td class="num score low">0.1</td>
@@ -647,36 +659,41 @@ AFTER:  GET /notes принимает опциональный ?tag=&lt;name&gt;
     </div>
 
     <p style="margin-top: 16px; font-size: 14px; color: var(--text-3);">
-      Среднее обманывает, минимум - нет. Одно опровергающее evidence (даже слабое, <span class="cl-pill cl1" style="font-size: 9.5px; padding: 1px 5px; border-radius: 0;">CL1</span>) утаскивает доверие вниз. Это и есть смысл формулы «<b class="k">trust = weakest link</b>».
+      В этом непросроченном наборе E3 — <b class="k">weakens</b>, не refutes: 0.5 − 0.4 = 0.1. Непросроченный refutes дал бы 0; после собственного истечения — 0.1 до остальных операций. Минимум отражает выбранные входы шкалы, но не гарантирует истинность решения.
     </p>
 
     <!-- Decay timeline -->
     <div class="decay-wrap">
-      <div class="dw-tag">Evidence Decay · срок годности доказательства</div>
+      <div class="dw-tag">Evidence Decay · необязательная дата E1 · схема, не плавное падение</div>
       <div class="decay-timeline">
         <div class="decay-track"></div>
-        <div class="decay-marker now"><div class="m-dot"></div><div class="m-lbl">сейчас · fresh</div></div>
-        <div class="decay-marker valid"><div class="m-dot"></div><div class="m-lbl">valid_until · 2026-10-01</div></div>
-        <div class="decay-marker stale"><div class="m-dot"></div><div class="m-lbl">истекло · stale · оценка → 0.1</div></div>
+        <div class="decay-marker now"><div class="m-dot"></div><div class="m-lbl">до даты E1 · 1.0</div></div>
+        <div class="decay-marker valid"><div class="m-dot"></div><div class="m-lbl">дата E1 · 2026-10-01</div></div>
+        <div class="decay-marker stale"><div class="m-dot"></div><div class="m-lbl">вклад E1 = 0.1</div></div>
       </div>
       <div class="decay-text">
-        Любое evidence имеет срок годности. Бенчмарк 2023 года для Redis 6.x не валиден для
-        Redis 7.4. Наблюдение на продакшене при 50 RPS не применимо к 500 RPS. Хороший артефакт
-        это признаёт заранее через frontmatter <code>valid_until: 2026-10-01</code> и
-        <code>refresh_trigger: notes_count &gt; 100_000</code>. Когда <code>valid_until</code>
-        истекает - оценка evidence падает до <b>0.1 (stale)</b>, не absent. Решение было,
-        контекст мог измениться, требуется reaffirm или supersede.
+        Дата <code>valid_until</code> у evidence необязательна: без неё в этом scorer нет
+        истечения и нет срока по умолчанию. В учебной схеме E1 имеет собственную дату
+        <code>2026-10-01</code>; до её истечения вклад остаётся 1.0, после — <b>0.1 до
+        verdict/CL/type</b>, не плавно убывает по цветному градиенту. Для refutes это может
+        повысить вклад с 0 до 0.1. Итог по evidence и зависимостям может быть ниже 0.1;
+        схема не меняет status и не показывает итоговый R_eff. Дата ревью Spec — отдельное поле.
+        Бенчмарк 2023 года для Redis 6.x не доказывает применимость к Redis 7.4;
+        условные 50 RPS не доказывают результат при 500 RPS. Это примеры контекстных границ,
+        не замеры. <code>refresh_trigger: notes_count &gt; 100_000</code> — иллюстративная
+        рекомендация для человека или внешнего монитора, не встроенный триггер.
+        Смена даты не заменяет новый замер.
       </div>
     </div>
 
     <div class="insight">
       <div class="insight-tag">R_eff не приговор · это датчик</div>
       <p>
-        R_eff = 0.1 не значит «всё плохо, разваливай». Это сигнал «решение держится на одном
-        слабом звене - обратите внимание». Стратегия: либо <b class="k">собрать ещё evidence</b>
-        (CL3-замер, который опровергнет E3 или подтвердит, что ситуация из рассылки не наша),
-        либо <b class="k">принять риск явно</b> с пометкой в DDR «опираемся на E1, E3 слабее,
-        пересмотр через 30 дней или после 100k заметок».
+        В учебном наборе R_eff = 0.1 указывает на слабый вклад E3, не доказывает ошибку решения.
+        Можно <b class="k">получить настоящий CL3-замер</b> и проверить применимость E3.
+        Добавление сильного evidence само по себе не повысит минимум, пока E3 остаётся пригодным:
+        пересмотр его применимости нужно обосновать отдельно. Можно <b class="k">принять риск явно</b>.
+        «Пересмотр через 30 дней или после 100k заметок» — иллюстративное правило команды, не продуктовый таймер.
       </p>
     </div>
 
@@ -692,7 +709,7 @@ AFTER:  GET /notes принимает опциональный ?tag=&lt;name&gt;
 
   <!-- ============ WORKED EXAMPLE ============ -->
   <h2>Цикл на одной спеке · Vault · добавление тегов</h2>
-  <p>Как все три концепции складываются в один проход - от пустого файла до решения с честным R_eff.</p>
+  <p>Учебный, не выполненный проход: все наблюдения, рекомендации, числа и исходы ниже иллюстративны. Контракты поведения — примеры требований, не результаты тестов.</p>
   <div class="worked">
     <div class="worked-step">
       <div class="step-num">01 · Spec</div>
@@ -712,14 +729,14 @@ AFTER:  GET /notes принимает опциональный ?tag=&lt;name&gt;
       <div class="step-num">03 · R_eff</div>
       <div class="step-content">
         <h4>Считаете для решения «junction table vs JSON»</h4>
-        <p>Три evidence: свой бенчмарк (CL3, supports, 1.0), SQLite docs (CL1, supports, 0.6), рассылка про деградацию JSON1 (CL1, weakens, 0.1). R_eff = min = 0.1. Среднее 0.57 обмануло бы - решение at risk.</p>
+        <p>Берём синтетические E1/E2/E3 из таблицы с теми же полными допущениями: только эти три пригодных непросроченных не-terminal элемента, явный measurement у всех, без понижающего source_tier, без зависимостей. E1 — иллюстративный свой замер (CL3, supports, 1.0), E2 — вымышленная рекомендация SQLite docs (CL1, supports, 0.6), E3 — вымышленная рассылка (CL1, weakens, 0.1). Рекурсивный R_eff = min(1.0, 0.6, 0.1) = 0.1 совпадает здесь с плоским; среднее ≈ 0.57. Это не выполненный benchmark: явный тип benchmark уменьшил бы рекурсивный вклад E1 до 0.9. «at risk» — учебная оценка.</p>
       </div>
     </div>
     <div class="worked-step">
       <div class="step-num">04 · Decay</div>
       <div class="step-content">
-        <h4>Frontmatter с <code>valid_until</code> и <code>refresh_trigger</code></h4>
-        <p>В спеку добавляется <code>valid_until: 2026-10-01</code> и <code>refresh_trigger: notes_count &gt; 100_000</code>. Решение либо подкрепляется новым evidence (CL3-замер на 100k), либо пересматривается. Через 6 месяцев цикл стартует с шага 02 - delta с MODIFIED.</p>
+        <h4>Отдельные даты ревью Spec и evidence</h4>
+        <p>В учебном Spec <code>valid_until: 2026-10-01</code> в frontmatter — дата его ревью, не дата всех evidence. Для E1 собственный необязательный scoring-параметр <code>valid_until: 2026-10-01</code> задаётся в frontmatter самой записи evidence, откуда попадает в <code>record.valid_until</code>; совпадение дат здесь выбрано для примера. <code>refresh_trigger: notes_count &gt; 100_000</code> — пометка человеку, не встроенный монитор. Реальный новый замер на 100k потребовал бы своего отчёта и пересчёта, а не только смены даты. Возврат через 6 месяцев к delta с MODIFIED — иллюстративный график команды, не универсальный TTL.</p>
       </div>
     </div>
   </div>

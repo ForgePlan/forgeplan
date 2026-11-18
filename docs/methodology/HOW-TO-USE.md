@@ -4,6 +4,15 @@
 
 > Practical guide. No fluff. Only rules and examples.
 
+> Scope: adopted writing conventions and illustrative agent scenarios, not
+> universal enforcement or measured outcomes. The `docs/<kind>/` layout below
+> is a standalone manual-documentation example. Forgeplan-managed artifacts live
+> in `.forgeplan/<kind>/`; create/update/link them through CLI/MCP, not by copying
+> template files into that directory. Use actual returned IDs. Slash commands
+> require their host installation. Native policies are not changed by this guide.
+> CLI `validate` works on legacy and migrated Constellation layouts; full MCP
+> validation was also exercised. See the [pilot compatibility notes (RU)](../operations/CONSTELLATION-PILOT.ru.md).
+
 ---
 
 ## Rule #1: Don't Create Artifacts for the Sake of Artifacts
@@ -52,7 +61,7 @@ That's the entire routing. Don't overcomplicate it.
 ### Tactical -- "just do it"
 ```
 Situation: bug fix, small edit, obvious decision
-Create: nothing. At most -- a Note (3-5 sentences, auto-expires in 90 days)
+Create: nothing. At most -- a Note (3-5 sentences; 90 days is a suggested review interval, not automatic expiry)
 Example: "Change button color to #3B82F6"
 ```
 
@@ -140,7 +149,7 @@ Remember 5 questions -- each maps to its own artifact:
 FR-001: Implement caching
 
 # Good: [Actor] can [capability]
-FR-001: User can receive API responses within 200ms due to Redis caching
+FR-001: User can receive API responses within 200ms
 ```
 
 ```markdown
@@ -164,12 +173,14 @@ FR-003: User can persist and query structured data with ACID guarantees
 ## Rule #6: Links Between Artifacts
 
 ### How to link:
-In the "Related Artifacts" section of each document:
+The table is prose for readers. For managed artifacts, also create the typed
+edge with `forgeplan link SOURCE TARGET --relation based_on` as appropriate;
+writing a table alone does not guarantee a synchronized graph.
 
 ```markdown
 | Artifact | Relation |
 |----------|----------|
-| EPIC-001 | parent |
+| EPIC-001 | Epic membership (`parent_epic` metadata, not a typed relation) |
 | PRD-001  | based_on |
 | ADR-001  | informs |
 ```
@@ -177,7 +188,7 @@ In the "Related Artifacts" section of each document:
 ### Link types:
 | Relation | Meaning | Example |
 |----------|---------|---------|
-| `parent` | Belongs to | PRD-001 -> EPIC-001 |
+| `parent_epic` metadata | Belongs to Epic (not a `--relation` value) | PRD-001 -> EPIC-001 |
 | `based_on` | Based on | RFC-001 -> PRD-001 |
 | `informs` | Influences | ADR-001 -> PRD-001 |
 | `supersedes` | Replaces | ADR-005 -> ADR-002 |
@@ -185,7 +196,7 @@ In the "Related Artifacts" section of each document:
 
 ### Direction Rule:
 **The child references the parent**, not the other way around:
-- PRD points to Epic (parent)
+- PRD records Epic membership (`parent_epic`, not `parent` relation)
 - RFC points to PRD (based_on)
 - ADR points to RFC (informs)
 
@@ -198,7 +209,7 @@ In the "Related Artifacts" section of each document:
 Ask yourself:
 1. What must be true if this decision is correct?
 2. What is the strongest argument AGAINST?
-3. Is all evidence from this session? (-> CL1, penalty 0.4)
+3. Is all evidence from this session? Review independence; CL1/0.4 here is a local rubric, not automatic assignment.
 4. What could go wrong with less than 10% probability?
 5. Where is the weakest link?
 
@@ -206,7 +217,7 @@ Ask yourself:
 
 ### Adversarial Review -- for important PRDs and ADRs:
 
-Rule: the reviewer MUST find problems. 0 problems = review not counted.
+Native `/forge-cycle` prescribes finding issues and re-review if none are found; that policy remains unchanged. It is not proof that defects exist. Report confirmed findings and scope; never invent a defect to meet the quota.
 
 **When**: Deep+ artifacts. Not needed for tactical/standard.
 
@@ -214,37 +225,42 @@ Rule: the reviewer MUST find problems. 0 problems = review not counted.
 
 R_eff = min(evidence_scores). Trust = weakest link. The min ranges over current evidence only — terminal-status packs (`superseded`/`deprecated`) are excluded (ADR-020).
 
+Explicit recursive scoring also includes evidence-type modifiers and dependency
+contributions; flat captured scores can differ. Expired items return 0.1 before
+verdict arithmetic. See [QUALITY-GATES.md](QUALITY-GATES.md).
+
 **When**: there are EvidencePack artifacts with verdict and CL. Not needed if there is no formal evidence.
 
 ---
 
 ## Rule #8: Lifecycle -- What to Do with Artifacts After Creation
 
-### Updating:
-- Change status as you progress (Draft -> Review -> Approved -> ...)
-- Update the `updated` date in frontmatter
-- Fill in progress bars in RFC (checkboxes -> percentage)
+### Updating and completion
 
-### Closing:
-- PRD: Implemented -> Closed (when the feature is in production)
-- RFC: all phases checked -> status: Implemented
-- ADR: never "closes" -- lives until valid_until expires
+- Core lifecycle kinds persist `draft`, `active`, `superseded`, `deprecated`,
+  and `stale`. Other kinds may have different or no stored lifecycle.
+  Review/Approved/Implemented/Closed describe process, not stored status values.
+- Use `forgeplan update ID --body @file` for full prose-body updates and progress
+  checkboxes; do not edit canonical artifacts directly.
+- Completed code/checklists do not automatically activate an artifact.
+  `activate` has separate validation, length, evidence and stub gates.
 
-### Superseding (replacement):
-```markdown
-# In the new ADR:
-| Artifact | Relation |
-|----------|----------|
-| ADR-002 | supersedes |
+### Superseding
 
-# In the old ADR -- change status:
-status: Superseded
+```bash
+forgeplan supersede ADR-002 --by ADR-003
 ```
 
-### Stale (valid_until expired):
-1. Create a RefreshReport: `docs/refresh/REF-001-review-adr-002.md`
-2. Evaluate: is it still relevant?
-3. Either reaffirm (update valid_until), or supersede with a new ADR
+This performs the lifecycle transition and replacement link; do not merely write
+`status: Superseded` or a prose table.
+
+### Expiry and review
+
+`valid_until` is an optional date. Detection reports overdue records without
+rewriting status. Review the decision and its evidence, then use the applicable
+lifecycle command. `renew ID --reason TEXT --until YYYY-MM-DD` checks the stored
+status; an expired `active` record is not automatically `stale`. `reopen` creates
+a new draft and deprecates the old active/stale record; it is not an in-place reset.
 
 ---
 
@@ -315,7 +331,7 @@ SOMETHING BROKE / BECAME STALE
 
 ---
 
-## Example: Full Cycle on a Real Task
+## Example: Illustrative PDF Export Task
 
 **Task**: "Add report export to PDF"
 
@@ -340,14 +356,14 @@ docs/rfcs/RFC-001-pdf-export-design.md
 **Step 4**: Need an ADR? -> There's a choice (wkhtmltopdf vs weasyprint vs browser-based) -> Yes
 ```
 docs/adrs/ADR-001-pdf-library.md
-- Decision: weasyprint (pure Python, CSS-based)
+- Decision: weasyprint (Python-based, CSS layout; native dependencies still need evaluation)
 - Alternative: wkhtmltopdf (binary dependency, deprecated)
-- Alternative: Headless Chrome (heavy, 200MB)
+- Alternative: Headless Chrome (browser runtime; footprint depends on packaging)
 ```
 
-**Step 5**: Work through phases from the RFC. Close the RFC when all phases are checked.
-
-Done. Three documents, full audit trail, less than 1 hour on documentation.
+**Step 5**: Work through RFC phases and record completion as process progress,
+not a fabricated lifecycle status. These library choices and durations are
+illustrative; no implemented PDF feature or measured documentation time is claimed.
 
 ---
 
@@ -355,7 +371,7 @@ Done. Three documents, full audit trail, less than 1 hour on documentation.
 
 ### What It Is
 
-`/forge-cycle` is a command for AI agents (Claude Code) that launches a **full FPF-aligned development cycle** from idea to PR. One command replaces 8 manual steps.
+`/forge-cycle` is a local Claude Code prompt guiding a development cycle, not a Rust executor or a guarantee of automatic completion.
 
 ### When to Use
 
@@ -365,7 +381,7 @@ Done. Three documents, full audit trail, less than 1 hour on documentation.
 | New task without PRD | `/forge-cycle "add PDF export"` |
 | Next task from backlog | `/forge-cycle` (picks up P0 from TODO.md) |
 
-### How It Works (8 phases)
+### How It Works (nine numbered phases, 0–8)
 
 ```
 /forge-cycle "Add report export to PDF"
@@ -376,7 +392,7 @@ Done. Three documents, full audit trail, less than 1 hour on documentation.
 ```bash
 forgeplan health       # blind spots, orphans
 forgeplan stale        # expired evidence
-forgeplan fpf          # explore/investigate/exploit suggestions
+forgeplan fpf dashboard # explore/investigate/exploit suggestions
 ```
 
 The agent records observations:
@@ -425,7 +441,7 @@ Skills: rust-expert, m01-ownership, m06-error-handling
 3. **Induction**: WLNK (weakest failure mode) + Reversibility (what's easier to revert)
 4. **Choice**: max(reversibility) + max(WLNK strength)
 
-Asks the user **only** if the decision is irreversible (DB schema, public API).
+Native Build stop conditions also include equally weak choices and cross-cutting/other-PRD impact. This local rubric does not override authorization or establish a universal FPF selection algorithm.
 
 #### Phase 4: AUDIT -- adversarial review
 
@@ -434,7 +450,7 @@ Asks the user **only** if the decision is irreversible (DB schema, public API).
 Skills: rust-expert, m06-error-handling (minimum 2)
 ```
 
-The reviewer **must** find problems. 0 findings -> re-review with deeper focus.
+The native prompt retains its issue quota and re-review instruction. That is a policy prescription, not evidence that problems exist; this guide does not change it or satisfy the outstanding native gate.
 
 #### Phase 5: FIXES
 
@@ -548,6 +564,10 @@ In yolo mode, automatically:
 - Conflicts -> FPF auto-resolve (reversible + WLNK)
 - Audit < 5 findings -> auto-fix
 - Evidence + activate -> auto if R_eff > 0
+
+These describe native prompt intent, not sufficient runtime conditions:
+activation still checks all applicable gates and authority. The LOC/findings
+thresholds are local conventions, not measured safety boundaries.
 
 Asks the user **only**:
 - Irreversible decision (DB schema, public API)

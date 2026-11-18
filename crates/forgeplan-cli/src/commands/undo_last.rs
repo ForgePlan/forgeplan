@@ -15,7 +15,7 @@ use crate::commands::common;
 /// Run undo-last across the workspace. Mirrors `UndoLastParams`:
 /// - `within_hours` clamped 1..=720 (default 24).
 pub async fn run(within_hours: u32, json: bool) -> anyhow::Result<()> {
-    let (ws, _lock, store) = common::open_store_locked().await?;
+    let (ws, lock, store) = common::open_store_locked_tolerating_constellation().await?;
 
     let within = within_hours.clamp(1, 720);
     let receipts = undo::list_receipts(&ws).await?;
@@ -65,8 +65,20 @@ pub async fn run(within_hours: u32, json: bool) -> anyhow::Result<()> {
             std::process::exit(1);
         }
     };
+    undo::restore::preflight_restore_with_target(&ws, &lock, &receipt, None).await?;
+    drop(store);
+    let store = common::prepare_store_locked_checked(&ws, &lock, &[]).await?;
+    undo::restore::preflight_restore_with_target(&ws, &lock, &receipt, None).await?;
 
-    let report = undo::restore::apply_restore(&ws, &store, &receipt).await?;
+    // Store-free sibling on a migrated workspace — same reasoning as
+    // `restore`: receipts exist on both layouts, so the reverse path must too.
+    common::ensure_ordinary_mutation_allowed(&ws)?;
+    let report = match &store {
+        Some(store) => undo::restore::apply_restore(&ws, &lock, store, &receipt)
+            .await
+            .map_err(|e| common::describe_possible_legacy_partial_commit(true, e))?,
+        None => undo::restore::apply_restore_file_first(&ws, &lock, &receipt).await?,
+    };
     let op_str = match report.op {
         undo::DestructiveOp::Delete => "delete",
         undo::DestructiveOp::Supersede => "supersede",
@@ -79,7 +91,24 @@ pub async fn run(within_hours: u32, json: bool) -> anyhow::Result<()> {
             .with_action(format!("forgeplan get {}", report.artifact_id)),
     ];
 
+    let migrated = store.is_none();
+    drop(store);
+    drop(lock);
+    let published = if migrated {
+        common::note_constellation_owns_index();
+        common::reconcile_after_file_mutation(&ws).await
+    } else {
+        common::drain_legacy_semantic_after_mutation(&ws).await?;
+        common::ReconcileOutcome::Published
+    };
+
     if json {
+        // Match restore: reconcile normally, expose its outcome in JSON,
+        // and leave all status diagnostics on stderr.
+        let index_pending = !published.is_published();
+        let index_pending_reason =
+            index_pending.then(|| "derived index not yet updated".to_string());
+
         let payload = serde_json::json!({
             "ok": true,
             "restored": report.artifact_id,
@@ -89,6 +118,8 @@ pub async fn run(within_hours: u32, json: bool) -> anyhow::Result<()> {
             "relations_skipped": report.relations_skipped,
             "projection_restored": report.projection_restored,
             "warnings": report.warnings,
+            "index_pending": index_pending,
+            "index_pending_reason": index_pending_reason,
             "_next_action": hints::primary_action(&next_hints),
         });
         println!("{}", serde_json::to_string_pretty(&payload)?);
@@ -119,6 +150,7 @@ pub async fn run(within_hours: u32, json: bool) -> anyhow::Result<()> {
             println!("  - {w}");
         }
     }
+
     print!("{}", hints::render_next_action_line(&next_hints));
 
     Ok(())

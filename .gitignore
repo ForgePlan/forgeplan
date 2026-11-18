@@ -49,6 +49,8 @@ plan-dist-manifest.json
 .forgeplan-backup/
 .forgeplan-backup-*/
 .forgeplan-export-*.json
+# Constellation/architecture docx exports — regenerable, canon lives in .forgeplan/
+/*.docx
 
 # Playwright MCP cache
 .playwright-mcp/
@@ -154,3 +156,15 @@ design/
 ref/
 log_*.md
 *.jpg
+
+# tgrep trigram index + server state — generated locally, never committed.
+.tgrep/
+
+# Python bytecode from the eval harness.
+__pycache__/
+*.pyc
+
+# Local git worktrees used by identity consolidation
+.worktrees/
+# Live constellation owner advisory locks (auto-expire)
+.forgeplan/.constellation-owner-*.lock

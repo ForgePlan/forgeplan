@@ -192,12 +192,23 @@ fn scan_import_preserves_links_section() {
 
     // Locate the projection file.
     let prds_dir = tmp.path().join(".forgeplan/prds");
+    // The file is named after the document's canonical key (ADR-030), so the
+    // document is found by the display id it declares in its frontmatter.
     let mut projection: Option<std::path::PathBuf> = None;
     for entry in fs::read_dir(&prds_dir).unwrap() {
-        let entry = entry.unwrap();
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with("PRD-150-") {
-            projection = Some(entry.path());
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+            continue;
+        }
+        let text = fs::read_to_string(&path).unwrap_or_default();
+        if text
+            .lines()
+            .take(12)
+            .filter_map(|line| line.strip_prefix("id: "))
+            .map(|value| value.trim().trim_matches('"').trim_matches('\''))
+            .any(|declared| declared == "PRD-150")
+        {
+            projection = Some(path);
             break;
         }
     }

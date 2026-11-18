@@ -5,21 +5,21 @@ description: "Show F-G-R quality scores - Formality, Granularity, Reliability - 
 
 `forgeplan fgr` prints the **F-G-R** quality triple for an artifact:
 
-- **F - Formality**: how structured is it? Filled MUST sections, linked parents, explicit acceptance criteria.
-- **G - Granularity**: how decomposed is it? FR count, phase checkboxes, leaf-level detail.
-- **R - Reliability**: how trusted is it? Linked evidence, R_eff, adversarial review status.
+- **F — Formality**: fraction of validation checks passed.
+- **G — Granularity**: completeness across five content checks — substantive problem/goals/related sections, requirement checkboxes and body length.
+- **R — Reliability**: weighted R_eff, relation-count contribution and freshness.
 
-Each axis is scored 0–3. F-G-R is **orthogonal to lifecycle** - a `draft` artifact can
-already be F=3/G=3/R=2, and an `active` one can be F=1/G=1/R=0 (a blind spot). The FPF
-Trust Calculus uses `exploit_fgr ≥ 0.6` as the threshold to reuse a decision without
-re-deriving it.
+Each axis is in **0–1**. Overall is the **geometric mean** `(F × G × R)^(1/3)`,
+not the arithmetic mean. These are ForgePlan heuristics, not current upstream FPF
+scales or calibrated probabilities. F-G-R is orthogonal to lifecycle, not permission
+to activate.
 
 ## When to use
 
-- Quick visual check of maturity without running the full 30+ validator rules.
+- Quick visual maturity check alongside the detailed validator findings.
 - Session start, after `health`, to sort artifacts by "cheapest to level up".
 - Comparing two candidate PRDs before committing scope.
-- Feeding the Trust Calculus: `exploit_fgr` gating explore-vs-exploit decisions in FPF rule engine.
+- Inspecting the F-G-R inputs before evaluating applicable FPF rules.
 
 ## When NOT to use
 
@@ -54,22 +54,17 @@ forgeplan fgr [OPTIONS] [ID]
 forgeplan fgr PRD-001
 ```
 
-Output:
+The text view has columns `ID`, `Title`, `F`, `G`, `R`, `Grade`.
+For illustration, axes `1.0`, `0.8`, `0.7` have an overall of about `0.824`
+and grade `A`; this is arithmetic illustration, not a measured artifact.
 
-```text
-PRD-001 - Auth System
-  F = 3/3   Formality     (all MUST sections filled, parents linked)
-  G = 2/3   Granularity   (7 FR, 2 phases - phases missing acceptance criteria)
-  R = 1/3   Reliability   (1 evidence linked, R_eff = 0.40)
-  overall = 2.0/3   exploit_fgr = 0.67
-```
-
-`exploit_fgr` ≥ 0.6 → FPF rule engine will trust this decision for reuse.
+Grades use strict boundaries: A above 0.8, B above 0.6, C above 0.4,
+D above 0.2, otherwise F. No `exploit_fgr` field is emitted by this command.
 
 ### Rank all artifacts by maturity
 
 ```bash
-forgeplan fgr --json | jq 'sort_by(.overall) | reverse | .[0:10]'
+forgeplan fgr --json | jq '.results | sort_by(.overall) | reverse | .[0:10]'
 ```
 
 Top 10 most mature artifacts - useful when deciding what to promote or cite.
@@ -77,21 +72,22 @@ Top 10 most mature artifacts - useful when deciding what to promote or cite.
 ### Find the cheapest wins
 
 ```bash
-forgeplan fgr --json | jq '.[] | select(.F == 3 and .G == 3 and .R < 2)'
+forgeplan fgr --json | jq '.results[] | select(.formality == 1 and .granularity == 1 and .reliability < 0.6)'
 ```
 
-Artifacts that only need evidence to reach full maturity - add evidence, score, done.
+Candidates for reliability review; inspect evidence, links and freshness rather than assuming one added pack will complete the artifact.
 
 ## Output interpretation
 
-| Axis | 0 | 1 | 2 | 3 |
-|------|---|---|---|---|
-| **F** - Formality    | stub, MUST missing | some MUSTs filled | all MUSTs + aliases | all MUSTs + links + ACs |
-| **G** - Granularity  | no FR/phases | 1–3 FR | 4–7 FR + phases | 8+ FR + phased + measurable |
-| **R** - Reliability  | no evidence, R_eff=0 | 1 evidence, CL ≤ 1 | 2+ evidence, R_eff ≥ 0.4 | strong evidence, R_eff ≥ 0.8 |
+| Field | Meaning |
+|---|---|
+| `formality` | Validation-check pass fraction |
+| `granularity` | Fraction of the five completeness checks satisfied |
+| `reliability` | Weighted R_eff, links and freshness, clamped to 0–1 |
+| `overall` | Geometric mean of the three axes |
+| `grade` | A/B/C/D/F from the boundaries above |
 
-**Overall** = average of F/G/R. **exploit_fgr** = overall / 3.0, used as gate in
-`forgeplan fpf trust`.
+FPF rule thresholds are separate policy settings; there is no `forgeplan fpf trust` command.
 
 ## How it fits the workflow
 
@@ -106,6 +102,26 @@ F and G are paid for during Shape (`new → validate`). R is paid for during Evi
 
 - [`forgeplan validate`](/docs/cli/validate/) - rule-level detail for the F axis
 - [`forgeplan score`](/docs/cli/score/) - R_eff that feeds the R axis
-- [`forgeplan health`](/docs/cli/health/) - project-wide F-G-R aggregate
+- [`forgeplan health`](/docs/cli/health/) - separate project-health diagnostics
 - [Quality Gates](/docs/methodology/evidence/) - FGR and Trust Calculus
 - [CLI overview](/docs/cli/)
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan fgr --help`.
+
+```text
+Show F-G-R quality scores (Formality, Granularity, Reliability)
+
+Usage: forgeplan fgr [OPTIONS] [ID]
+
+Arguments:
+  [ID]  Artifact ID (scores all if omitted)
+
+Options:
+      --json     Output as JSON for machine consumption
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

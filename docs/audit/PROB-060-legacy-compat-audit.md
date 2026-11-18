@@ -1,5 +1,15 @@
 # PROB-060 Legacy Compatibility Audit (Phase 2.3 — T1)
 
+> **Historical audit — 2026-05-08.** The findings below describe the named
+> PROB-060 branch and legacy identity schema, not perpetual compatibility of
+> every storage layout. The companion suite uses synthetic fixtures; it is not
+> a retrospective test of every artifact in the real corpus.
+> **Compatibility notice — 2026-10-24.** CLI `validate` now works on legacy and
+> migrated Constellation layouts; full MCP validation was also exercised.
+> This supersedes the former refusal caveat, not the historical findings.
+> See the [current pilot compatibility notes (RU)](../operations/CONSTELLATION-PILOT.ru.md).
+> Original scope, conclusions and recorded outcomes are preserved below.
+
 **Scope.** Verify that artifacts created **before** the PROB-060 / SPEC-005 /
 ADR-012 schema enforcement (Phase 1.5) work as **first-class citizens** through
 every CLI / MCP / resolver / hint / validation / lifecycle code path.

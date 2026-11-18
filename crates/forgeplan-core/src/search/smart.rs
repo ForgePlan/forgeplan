@@ -24,7 +24,10 @@ pub const GRAPH_EXPANSION_MAX_PER_RESULT: usize = 3;
 /// A search result with combined score and signal breakdown.
 #[derive(Debug, Clone)]
 pub struct SmartSearchResult {
+    /// Display alias kept for user-facing output.
     pub id: String,
+    /// Stable identity used for joins, deduplication and follow-up selection.
+    pub canonical_key: String,
     pub title: String,
     pub kind: String,
     pub status: String,
@@ -52,9 +55,15 @@ pub struct SmartSearchResult {
 ///
 /// Case-insensitive matching.
 pub fn keyword_score(record: &ArtifactRecord, query: &str) -> f64 {
-    let q = query.to_lowercase();
-    if q.trim().is_empty() {
+    let trimmed_query = query.trim();
+    let q = trimmed_query.to_lowercase();
+    if q.is_empty() {
         return 0.0;
+    }
+    if trimmed_query.eq_ignore_ascii_case(&record.canonical_key)
+        || trimmed_query.eq_ignore_ascii_case(&record.id)
+    {
+        return 1.0;
     }
     let title_lower = record.title.to_lowercase();
 
@@ -142,7 +151,10 @@ pub fn smart_search(
         .iter()
         .filter(|r| filter.map(|f| f.matches(r)).unwrap_or(true))
         .filter_map(|record| {
-            let raw_bm25 = bm25_scores.get(&record.id).copied().unwrap_or(0.0);
+            let raw_bm25 = bm25_scores
+                .get(&record.canonical_key)
+                .copied()
+                .unwrap_or(0.0);
             let bm25_norm = Bm25Index::normalize(raw_bm25);
             // PROB-030 fix: BM25 is token-based — queries like "auth" don't
             // match the "authentication" token. Users expect grep-like prefix
@@ -152,11 +164,12 @@ pub fn smart_search(
             let kw = keyword_score(record, query);
             let keyword_channel = bm25_norm.max(kw);
             let sem = semantic_scores
-                .and_then(|m| m.get(&record.id))
+                // The semantic index is keyed by the canonical key (ADR-030).
+                .and_then(|m| m.get(&record.canonical_key))
                 .copied()
                 .unwrap_or(0.0);
             let centrality = graph
-                .map(|g| g.degree_centrality(&record.id))
+                .map(|g| g.degree_centrality(&record.canonical_key))
                 .unwrap_or(0.0);
             let is_active = record.status.eq_ignore_ascii_case("active");
             let score = combined_score(
@@ -170,6 +183,7 @@ pub fn smart_search(
             if score > 0.0 {
                 Some(SmartSearchResult {
                     id: record.id.clone(),
+                    canonical_key: record.canonical_key.clone(),
                     title: record.title.clone(),
                     kind: record.kind.clone(),
                     status: record.status.clone(),
@@ -191,7 +205,7 @@ pub fn smart_search(
         b.score
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.id.cmp(&b.id))
+            .then(a.canonical_key.cmp(&b.canonical_key))
     });
     results.truncate(limit);
 
@@ -212,9 +226,8 @@ pub fn smart_search(
 
 /// Expand top results with 1-hop graph neighbors.
 ///
-/// For each top result we look up its neighbors in `graph`, attach decayed
-/// scores, dedupe against direct hits, and merge. Direct hits always win
-/// over expansion hits with the same ID.
+/// For each top result, look up its neighbors, attach decayed scores, and
+/// deduplicate by canonical key. Direct hits always win for the same document.
 pub fn expand_with_graph_neighbors(
     top_results: &[SmartSearchResult],
     graph: &KnowledgeGraph,
@@ -223,40 +236,58 @@ pub fn expand_with_graph_neighbors(
     max_expansions_per_result: usize,
     limit: usize,
 ) -> Vec<SmartSearchResult> {
-    let mut by_id: HashMap<String, SmartSearchResult> = HashMap::new();
-    for r in top_results {
-        by_id.insert(r.id.clone(), r.clone());
+    let mut by_key: HashMap<String, SmartSearchResult> = HashMap::new();
+    for result in top_results {
+        by_key.insert(result.canonical_key.clone(), result.clone());
     }
-    let direct_ids: HashSet<String> = top_results.iter().map(|r| r.id.clone()).collect();
+    let direct_keys: HashSet<String> = top_results
+        .iter()
+        .map(|result| result.canonical_key.clone())
+        .collect();
 
-    // Index records by id for fast lookup.
-    let record_by_id: HashMap<&str, &ArtifactRecord> =
-        all_records.iter().map(|r| (r.id.as_str(), r)).collect();
+    let display_by_key: HashMap<&str, &str> = all_records
+        .iter()
+        .map(|record| (record.canonical_key.as_str(), record.id.as_str()))
+        .collect();
+
+    // Index records by canonical key for fast lookup.
+    let record_by_key: HashMap<&str, &ArtifactRecord> = all_records
+        .iter()
+        .map(|record| (record.canonical_key.as_str(), record))
+        .collect();
 
     for parent in top_results {
-        let neighbors = graph.neighbors(&parent.id);
+        let neighbors = graph.neighbors(&parent.canonical_key);
         let mut added = 0usize;
         for n in neighbors {
             if added >= max_expansions_per_result {
                 break;
             }
-            if direct_ids.contains(&n.id) {
+            // The node id is the canonical key; the result is reported by the
+            // display id.
+            let display_id = display_by_key
+                .get(n.id.as_str())
+                .copied()
+                .unwrap_or(n.id.as_str())
+                .to_string();
+            if direct_keys.contains(&n.id) {
                 continue; // direct hit wins
             }
             let neighbor_score = parent.score * decay_factor;
             // Skip if we already have this neighbor with a higher score.
-            if let Some(existing) = by_id.get(&n.id)
+            if let Some(existing) = by_key.get(&n.id)
                 && existing.score >= neighbor_score
             {
                 continue;
             }
             // Pull metadata from records when available; fall back to graph node.
-            let (title, status, r_eff) = match record_by_id.get(n.id.as_str()) {
+            let (title, status, r_eff) = match record_by_key.get(n.id.as_str()) {
                 Some(rec) => (rec.title.clone(), rec.status.clone(), rec.r_eff_score),
                 None => (n.id.clone(), n.status.clone(), 0.0),
             };
             let entry = SmartSearchResult {
-                id: n.id.clone(),
+                id: display_id,
+                canonical_key: n.id.clone(),
                 title,
                 kind: n.kind.clone(),
                 status,
@@ -268,17 +299,17 @@ pub fn expand_with_graph_neighbors(
                 graph_centrality: graph.degree_centrality(&n.id),
                 expanded_from: Some(parent.id.clone()),
             };
-            by_id.insert(n.id.clone(), entry);
+            by_key.insert(n.id.clone(), entry);
             added += 1;
         }
     }
 
-    let mut merged: Vec<SmartSearchResult> = by_id.into_values().collect();
+    let mut merged: Vec<SmartSearchResult> = by_key.into_values().collect();
     merged.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.id.cmp(&b.id))
+            .then(a.canonical_key.cmp(&b.canonical_key))
     });
     merged.truncate(limit);
     merged
@@ -291,6 +322,7 @@ mod tests {
 
     fn make_record(id: &str, title: &str, body: &str, status: &str, r_eff: f64) -> ArtifactRecord {
         ArtifactRecord {
+            canonical_key: id.to_string(),
             id: id.to_string(),
             kind: "prd".to_string(),
             status: status.to_string(),
@@ -307,6 +339,73 @@ mod tests {
             body_hash: None,
             embedding: None,
         }
+    }
+
+    #[test]
+    fn smart_search_keeps_shared_alias_hits_separate_by_key() {
+        let mut alpha = make_record("PRD-001", "Authentication alpha", "", "active", 0.0);
+        alpha.canonical_key = "prd-alpha-k11111111111111111111111111111111".into();
+        let mut beta = make_record("PRD-001", "Authentication beta", "", "active", 0.0);
+        beta.canonical_key = "prd-beta-k22222222222222222222222222222222".into();
+
+        let hits = smart_search(&[alpha, beta], "authentication", None, None, None, 10);
+        assert_eq!(hits.len(), 2);
+        let keys: std::collections::BTreeSet<_> =
+            hits.into_iter().map(|hit| hit.canonical_key).collect();
+        assert_eq!(
+            keys,
+            [
+                "prd-alpha-k11111111111111111111111111111111".to_string(),
+                "prd-beta-k22222222222222222222222222222222".to_string(),
+            ]
+            .into_iter()
+            .collect()
+        );
+    }
+
+    #[test]
+    fn smart_search_finds_exact_identity_after_text_changes_without_merging_aliases() {
+        let mut first = make_record("PRD-074", "Old title", "old unique body", "active", 0.0);
+        first.title = "Changed title".into();
+        first.body = "new body".into();
+        first.canonical_key = "prd-original-k11111111111111111111111111111111".into();
+        let mut second = make_record("PRD-074", "Other title", "other body", "active", 0.0);
+        second.canonical_key = "prd-other-k22222222222222222222222222222222".into();
+        let records = [first, second];
+
+        assert!(
+            smart_search(&records, "old unique", None, None, None, 10).is_empty(),
+            "the edited body must replace the old text in lexical search"
+        );
+
+        let key_hits = smart_search(
+            &records,
+            "prd-original-k11111111111111111111111111111111",
+            None,
+            None,
+            None,
+            10,
+        );
+        assert_eq!(key_hits.len(), 1);
+        assert_eq!(
+            key_hits[0].canonical_key,
+            "prd-original-k11111111111111111111111111111111"
+        );
+
+        let alias_hits = smart_search(&records, "prd-074", None, None, None, 10);
+        let keys: std::collections::BTreeSet<_> = alias_hits
+            .into_iter()
+            .map(|hit| hit.canonical_key)
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                "prd-original-k11111111111111111111111111111111".to_string(),
+                "prd-other-k22222222222222222222222222222222".to_string(),
+            ]
+            .into_iter()
+            .collect()
+        );
     }
 
     // ── keyword_score ───────────────────────────────────────────────
@@ -557,16 +656,19 @@ mod tests {
         let nodes = vec![
             ArtifactNode {
                 id: "PRD-001".into(),
+                label: ArtifactNode::label_for("PRD-001", ""),
                 kind: "prd".into(),
                 status: "active".into(),
             },
             ArtifactNode {
                 id: "PRD-002".into(),
+                label: ArtifactNode::label_for("PRD-002", ""),
                 kind: "prd".into(),
                 status: "active".into(),
             },
             ArtifactNode {
                 id: "RFC-001".into(),
+                label: ArtifactNode::label_for("RFC-001", ""),
                 kind: "rfc".into(),
                 status: "active".into(),
             },
@@ -667,11 +769,13 @@ mod tests {
         // RFC-001 doesn't match query, but is linked from PRD-001 → expansion adds it.
         let nodes = vec![
             ArtifactNode {
+                label: ArtifactNode::label_for("PRD-001", ""),
                 id: "PRD-001".into(),
                 kind: "prd".into(),
                 status: "active".into(),
             },
             ArtifactNode {
+                label: ArtifactNode::label_for("RFC-001", ""),
                 id: "RFC-001".into(),
                 kind: "rfc".into(),
                 status: "active".into(),
@@ -704,11 +808,13 @@ mod tests {
         ];
         let nodes = vec![
             ArtifactNode {
+                label: ArtifactNode::label_for("PRD-001", ""),
                 id: "PRD-001".into(),
                 kind: "prd".into(),
                 status: "active".into(),
             },
             ArtifactNode {
+                label: ArtifactNode::label_for("PRD-002", ""),
                 id: "PRD-002".into(),
                 kind: "prd".into(),
                 status: "active".into(),

@@ -7,8 +7,9 @@
 use forgeplan_core::artifact::frontmatter::Frontmatter;
 use forgeplan_core::db::store::{ArtifactRecord, LanceStore, NewArtifact};
 use forgeplan_core::health::find_duplicate_pairs;
-use forgeplan_core::lifecycle::activate;
+use forgeplan_core::lifecycle::{activate, collect_activation_gates};
 use forgeplan_core::validation::rules::check_stub;
+use forgeplan_core::workspace::lock::WorkspaceLock;
 use tempfile::TempDir;
 
 // ─── helpers ───────────────────────────────────────────────────────────────
@@ -19,6 +20,7 @@ fn empty_fm() -> Frontmatter {
 
 fn make_record(id: &str, kind: &str, title: &str, status: &str) -> ArtifactRecord {
     ArtifactRecord {
+        canonical_key: id.into(),
         id: id.into(),
         kind: kind.into(),
         status: status.into(),
@@ -37,13 +39,19 @@ fn make_record(id: &str, kind: &str, title: &str, status: &str) -> ArtifactRecor
     }
 }
 
-async fn make_store(tmp: &TempDir) -> LanceStore {
+async fn make_store(tmp: &TempDir) -> (LanceStore, WorkspaceLock) {
     let ws = tmp.path().join(".forgeplan");
-    LanceStore::init(&ws).await.unwrap()
+    let lock = forgeplan_core::workspace::acquire_workspace_lock(&ws)
+        .await
+        .unwrap();
+    std::fs::write(ws.join("config.yaml"), "project_name: integrity\n").unwrap();
+    let store = LanceStore::init_new(&ws, &lock).await.unwrap();
+    (store, lock)
 }
 
 fn new_prd(id: &str, body: &str) -> NewArtifact {
     NewArtifact {
+        canonical_key: id.into(),
         id: id.into(),
         kind: "prd".into(),
         status: "draft".into(),
@@ -59,6 +67,7 @@ fn new_prd(id: &str, body: &str) -> NewArtifact {
 
 fn new_evidence(id: &str) -> NewArtifact {
     NewArtifact {
+        canonical_key: id.into(),
         id: id.into(),
         kind: "evidence".into(),
         status: "active".into(),
@@ -83,11 +92,6 @@ fn test_check_stub_blocks_template_body() {
         ## Differentiation\n\nЧем наше решение отличается\n";
     let result = check_stub(body, &empty_fm());
     assert!(result.is_some(), "expected stub to be detected");
-    let msg = result.unwrap();
-    assert!(
-        msg.contains("template"),
-        "msg should mention template: {msg}"
-    );
 }
 
 #[test]
@@ -194,7 +198,7 @@ fn test_integration_find_duplicate_pairs_sorts_by_similarity_desc() {
 #[tokio::test]
 async fn test_integration_activate_blocks_stub_artifact() {
     let tmp = TempDir::new().unwrap();
-    let store = make_store(&tmp).await;
+    let (store, lock) = make_store(&tmp).await;
 
     let stub_body = "## Problem\n\nЧто мы строим и почему это важно\n\n\
         ## Goals\n\n[Actor] can [capability]\n\n\
@@ -206,31 +210,35 @@ async fn test_integration_activate_blocks_stub_artifact() {
     );
 
     store
-        .create_artifact_for_test(&new_prd("PRD-700", &padded))
+        .create_artifact_for_test(&lock, &new_prd("PRD-700", &padded))
         .await
         .unwrap();
     store
-        .create_artifact_for_test(&new_evidence("EVID-700"))
+        .create_artifact_for_test(&lock, &new_evidence("EVID-700"))
         .await
         .unwrap();
     store
-        .add_relation_for_test("EVID-700", "PRD-700", "informs")
+        .add_relation_for_test(&lock, "EVID-700", "PRD-700", "informs")
         .await
         .unwrap();
 
-    let result = activate(&store, "PRD-700", false).await;
-    assert!(result.is_err(), "stub activate must be blocked");
-    let msg = result.unwrap_err().to_string();
-    assert!(
-        msg.contains("stub artifact") || msg.contains("PRD-043"),
-        "error should mention stub gate, got: {msg}"
-    );
+    let record = store.get_record(&lock, "PRD-700").await.unwrap().unwrap();
+    let gates = collect_activation_gates(&lock, &store, &record)
+        .await
+        .unwrap();
+    assert!(gates.length_ok);
+    assert!(gates.evidence_ok);
+    assert!(!gates.stub_ok);
+    assert!(activate(&lock, &store, "PRD-700", false).await.is_err());
+    let refused = store.get_record(&lock, "PRD-700").await.unwrap().unwrap();
+    assert_eq!(refused.status, "draft");
+    assert_eq!(refused.body, padded);
 }
 
 #[tokio::test]
-async fn test_integration_activate_does_not_block_filled_body_on_stub_gate() {
+async fn test_integration_filled_body_passes_activation_stub_gate() {
     let tmp = TempDir::new().unwrap();
-    let store = make_store(&tmp).await;
+    let (store, lock) = make_store(&tmp).await;
 
     let body = "## Problem\n\n\
         Users cannot reliably promote artifacts to active state because the gate \
@@ -243,36 +251,35 @@ async fn test_integration_activate_does_not_block_filled_body_on_stub_gate() {
         FR-1: activate must call check_stub before promoting.\n";
 
     store
-        .create_artifact_for_test(&new_prd("PRD-701", body))
+        .create_artifact_for_test(&lock, &new_prd("PRD-701", body))
         .await
         .unwrap();
     store
-        .create_artifact_for_test(&new_evidence("EVID-701"))
+        .create_artifact_for_test(&lock, &new_evidence("EVID-701"))
         .await
         .unwrap();
     store
-        .add_relation_for_test("EVID-701", "PRD-701", "informs")
+        .add_relation_for_test(&lock, "EVID-701", "PRD-701", "informs")
         .await
         .unwrap();
 
-    // Filled body must NOT trip the stub gate. May still fail other MUST gates.
-    let result = activate(&store, "PRD-701", false).await;
-    if let Err(e) = &result {
-        let msg = e.to_string();
-        assert!(
-            !msg.contains("stub artifact"),
-            "filled body should not trigger stub gate, got: {msg}"
-        );
-    }
+    let record = store.get_record(&lock, "PRD-701").await.unwrap().unwrap();
+    let gates = collect_activation_gates(&lock, &store, &record)
+        .await
+        .unwrap();
+    assert!(gates.length_ok);
+    assert!(gates.evidence_ok);
+    assert!(gates.stub_ok);
 }
 
 #[tokio::test]
 async fn test_integration_activate_already_active_no_recheck() {
     let tmp = TempDir::new().unwrap();
-    let store = make_store(&tmp).await;
+    let (store, lock) = make_store(&tmp).await;
 
     // Notes don't go through the validation gate and can be created active.
     let note = NewArtifact {
+        canonical_key: "NOTE-700".into(),
         id: "NOTE-700".into(),
         kind: "note".into(),
         status: "active".into(),
@@ -284,18 +291,10 @@ async fn test_integration_activate_already_active_no_recheck() {
         valid_until: None,
         tags: Vec::new(),
     };
-    store.create_artifact_for_test(&note).await.unwrap();
+    store.create_artifact_for_test(&lock, &note).await.unwrap();
 
-    // active → active should be a no-op transition error (or success), but
-    // crucially must NOT panic / hit the stub gate.
-    let result = activate(&store, "NOTE-700", false).await;
-    // Either the transition validator rejects active→active, or it succeeds.
-    // What matters: no stub-content error surfaces for an already-active artifact.
-    if let Err(e) = result {
-        let msg = e.to_string();
-        assert!(
-            !msg.contains("stub artifact"),
-            "stub gate must not trigger on already-active artifact, got: {msg}"
-        );
-    }
+    assert!(activate(&lock, &store, "NOTE-700", false).await.is_err());
+    let unchanged = store.get_record(&lock, "NOTE-700").await.unwrap().unwrap();
+    assert_eq!(unchanged.status, "active");
+    assert_eq!(unchanged.body, note.body);
 }

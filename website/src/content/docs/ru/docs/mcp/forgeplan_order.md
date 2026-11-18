@@ -3,7 +3,7 @@ title: forgeplan_order
 description: "Показывает артефакты в топологическом порядке (порядке зависимостей). Возвращает упорядоченный список, классификацию на готовые/заблокированные и обнаружение циклов. Использует только структурные связи."
 ---
 
-Возвращает все артефакты в топологическом порядке - родители перед потомками, основываясь исключительно на структурных связях (`based_on`, `refines`, `supersedes`, `contradicts`). Каждый узел классифицируется как `ready` (нет невыполненных предварительных условий) или `blocked`. Циклы в графе обнаруживаются и сообщаются отдельно.
+Показывает граф структурных связей (`based_on`, `refines`, `supersedes`, `contradicts`), его порядок, классификацию ready/blocked и циклы. Реализация строит узлы из концов структурных рёбер, поэтому изолированные артефакты могут не попасть в ответ. Зависимости со статусом `active`, `deprecated`, `superseded` считаются разрешёнными. Для планирования используйте `ready` и `blocked`; `order` не следует считать полным перечнем или проверенным планом выполнения «сначала родители».
 
 **Категория**: Панели мониторинга и Графы
 
@@ -20,30 +20,13 @@ _Входные параметры отсутствуют. Вызовите эт
 
 ## Возвращает
 
-```json
-{
-  "order": [
-    { "id": "EPIC-003", "kind": "epic", "ready": true },
-    { "id": "PRD-039", "kind": "prd", "ready": true },
-    { "id": "RFC-006", "kind": "rfc", "ready": false, "blocked_by": ["PRD-039"] },
-    { "id": "ADR-004", "kind": "adr", "ready": false, "blocked_by": ["RFC-006"] }
-  ],
-  "ready_count": 2,
-  "blocked_count": 2,
-  "cycles": []
-}
-```
+JSON-текст payload содержит `order` и `ready` как массивы строк ID,
+`blocked` как записи с `id` и массивом `blocked_by`, `cycles` как массивы
+ID путей циклов, а также `_next_action`. Полей `kind`/`ready` у узла
+и счётчиков `ready_count`/`blocked_count` нет.
 
-Если циклы существуют, они сообщаются:
-
-```json
-{
-  "order": [...],
-  "cycles": [
-    ["PRD-042", "PRD-043", "PRD-042"]
-  ]
-}
-```
+Иллюстративный фрагмент: `{"ready":["PRD-039"],"blocked":[{"id":"RFC-006","blocked_by":["PRD-039"]}]}`.
+Это не зафиксированный результат workspace.
 
 ## Пример вызова
 
@@ -53,10 +36,10 @@ _Входные параметры отсутствуют. Вызовите эт
 
 ## Типичная последовательность
 
-1. `forgeplan_order` - получить полную последовательность.
-2. Выбрать первый узел с `ready: true`.
-3. `forgeplan_get` → `forgeplan_validate` → `forgeplan_activate`.
-4. Повторно запустить `forgeplan_order` - нижестоящие узлы теперь должны стать готовыми.
+1. Вызовите `forgeplan_order` и изучите `cycles`, `ready`, `blocked`.
+2. Выберите ID из `ready`, не поле `ready: true`.
+3. До активации прочитайте артефакт, реализуйте, провалидируйте и предоставьте evidence по требованиям процесса.
+4. После изменения статуса зависимости перечитайте граф; другие неразрешённые зависимости могут по-прежнему блокировать работу.
 
 ## Эквивалент CLI
 
@@ -69,3 +52,29 @@ forgeplan order
 - [`forgeplan_blocked`](/ru/docs/mcp/forgeplan_blocked/) - сфокусированный вид только на заблокированных артефактах.
 - [`forgeplan_graph`](/ru/docs/mcp/forgeplan_graph/) - рендеринг того же графа с помощью Mermaid.
 - [Руководство по методологии](/ru/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Снимок tools/list
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, профиль `full`.
+
+Show artifacts in topological order (dependency order). Returns ordered list, ready/blocked classification, and cycle detection. Uses structural relations only.
+
+### Входные параметры
+
+| Имя | Обязателен | Тип | Описание |
+|---|---|---|---|
+| — | — | — | Параметров нет. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "properties": {},
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->
