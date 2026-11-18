@@ -263,3 +263,27 @@ fn many_files_bounded_cost() {
          not an unbounded walk"
     );
 }
+
+/// Cold-cache `embed` must attempt the model bootstrap, not point at
+/// `setup --warm-model` (SPEC-013 "first semantic use bootstraps",
+/// RFC-021 Phase 2.2). With `FORGEPLAN_MODEL_CACHE` empty and the hub
+/// offline, the download fails — but the failure must be the bootstrap
+/// path, never the "warm the model by hand" refusal that fired before the
+/// resolver ran.
+#[test]
+fn cold_cache_embed_bootstraps_not_warm_model_hint() {
+    let workspace = Workspace::migrated();
+
+    let output = workspace.run(&["embed"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Offline + empty cache → the run cannot succeed; assert it reached the
+    // bootstrap path rather than the "warm by hand" refusal.
+    assert!(
+        stderr.contains("setup --warm-model") == false
+            && stdout.contains("setup --warm-model") == false,
+        "embed on cold cache must bootstrap, not refuse with the manual hint\n\
+         stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}

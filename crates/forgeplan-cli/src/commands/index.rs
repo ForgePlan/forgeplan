@@ -236,12 +236,34 @@ async fn drain(
         .ok()
         .and_then(|config| config.embedding.map(|embedding| embedding.chunk_size))
         .unwrap_or(jobs::DEFAULT_BODY_PREFIX_CHARS);
-    let resolved = jobs::ResolvedProfile::open(
+    // Model bootstrap (SPEC-013, RFC-021 Phase 2.2): `index --embed-profile`
+    // is a permitted obtainer — warm the model on a cold cache before the
+    // profile resolve, so first use downloads instead of pointing at
+    // `setup --warm-model`.
+    let resolved = match jobs::ResolvedProfile::open(
         &cache_dir,
         jobs::DEFAULT_MODEL_REPO,
         facade::ENGINE_VERSION,
         body_prefix_chars,
-    )?;
+    ) {
+        Ok(resolved) => resolved,
+        Err(forgeplan_core::constellation::ConstellationError::ModelUnavailable { .. }) => {
+            if let Some(notice) = forgeplan_core::embed::first_run_notice() {
+                ui::info(&notice);
+            }
+            ui::info("Obtaining the embedding model (first use)...");
+            forgeplan_core::embed::Embedder::new()
+                .map_err(|e| anyhow::anyhow!("model bootstrap failed: {e}"))?;
+            jobs::ResolvedProfile::open(
+                &cache_dir,
+                jobs::DEFAULT_MODEL_REPO,
+                facade::ENGINE_VERSION,
+                body_prefix_chars,
+            )
+            .map_err(|e| anyhow::anyhow!("model obtained but profile still unresolvable: {e}"))?
+        }
+        Err(other) => return Err(other.into()),
+    };
     if resolved.profile.profile_id() != expected {
         anyhow::bail!(
             "--embed-profile {expected} does not match the profile the cached snapshot resolves \
