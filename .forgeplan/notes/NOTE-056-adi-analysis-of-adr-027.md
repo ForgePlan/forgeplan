@@ -3,26 +3,26 @@ depth: tactical
 id: NOTE-056
 kind: note
 links:
-- target: ADR-027
+- target: ADR-031
   relation: informs
 status: draft
-title: ADI analysis of ADR-027
+title: ADI analysis of ADR-031
 ---
 
 # ADI Record: NOTE-056
 
-**Artifact**: ADR-027 (adr)
+**Artifact**: ADR-031 (adr)
 **Model**: codex-cli/gpt-6.1-sol
 **Hypotheses**: 4
 **Confidence**: medium
-**Recommendation**: Ранжирование по поддержке предоставленным контекстом: H1 > H4 > H2 > H3; преимущества H4 и H2 относительны и не делают их достаточными решениями. Рекомендуется H1 с сохранением draft до выполнения prerequisites. Сначала независимые pre-source reviewer и guardian должны разрешить вопросы ADR-025/ADR-003, red line 7, действующей квоты и достаточности Deep ADI. Последнее дополнение уточняет статус: поддерживаемый путь model+High показан для RFC-014 через NOTE-054, но ADR-027 engine analysis не получен; NOTE-055 фиксирует неуспешную попытку. Затем возможны только предусмотренные оркестратором source dispatch по RFC-014, независимые проверки актуальных bytes, финальный guardian и canonical lifecycle. Неизвестными остаются фактическая полнота RFC-сценариев, устойчивость протокола к формальному заполнению и согласованность всех оперативных read paths. Этот анализ поддерживает выбор политики, но не является независимым gate verdict, успешным engine receipt или разрешением activation.
+**Recommendation**: Ранжирование по поддержке предоставленным контекстом: H1 > H4 > H2 > H3; преимущества H4 и H2 относительны и не делают их достаточными решениями. Рекомендуется H1 с сохранением draft до выполнения prerequisites. Сначала независимые pre-source reviewer и guardian должны разрешить вопросы ADR-025/ADR-003, red line 7, действующей квоты и достаточности Deep ADI. Последнее дополнение уточняет статус: поддерживаемый путь model+High показан для RFC-014 через NOTE-054, но ADR-031 engine analysis не получен; NOTE-055 фиксирует неуспешную попытку. Затем возможны только предусмотренные оркестратором source dispatch по RFC-014, независимые проверки актуальных bytes, финальный guardian и canonical lifecycle. Неизвестными остаются фактическая полнота RFC-сценариев, устойчивость протокола к формальному заполнению и согласованность всех оперативных read paths. Этот анализ поддерживает выбор политики, но не является независимым gate verdict, успешным engine receipt или разрешением activation.
 
 ## Structured Data
 
 ```json
 {
   "id": "NOTE-056",
-  "artifact_id": "ADR-027",
+  "artifact_id": "ADR-031",
   "created_at": "2026-10-16T21:02:14",
   "model": "codex-cli/gpt-6.1-sol",
   "hypotheses": [
@@ -81,7 +81,7 @@ title: ADI analysis of ADR-027
         "Изменение candidate после verdict делает прежнюю проверку неприменимой без оценки релевантности изменений.",
         "Старые quota-фразы в оперативных копиях или расхождение EN/RU создадут неоднозначность.",
         "Возникает риск замкнутой последовательности: для проверки отмены квоты требуется применить ещё действующую квоту. Основание разрешения этого конфликта должны явно подтвердить независимый reviewer и guardian.",
-        "Последнее дополнение сообщает о неуспешном engine-вызове ADR-027; успешный вызов RFC-014 не закрывает этот prerequisite.",
+        "Последнее дополнение сообщает о неуспешном engine-вызове ADR-031; успешный вызов RFC-014 не закрывает этот prerequisite.",
         "Применимость документационной реализации к red line 7 пока не установлена независимым решением."
       ],
       "feasibility": "medium"
@@ -133,7 +133,7 @@ title: ADI analysis of ADR-027
     },
     {
       "for_hypothesis": "H1",
-      "test": "Проверить NOTE-055 и NOTE-054: отделить failed-call receipt ADR-027 от успешного analysis RFC-014 и подтвердить воспроизводимость поддерживаемого run-local model+High пути. Определить достаточность authored ADI; если нужен повторный ADR engine-вызов, получить предусмотренное отдельное разрешение.",
+      "test": "Проверить NOTE-055 и NOTE-054: отделить failed-call receipt ADR-031 от успешного analysis RFC-014 и подтвердить воспроизводимость поддерживаемого run-local model+High пути. Определить достаточность authored ADI; если нужен повторный ADR engine-вызов, получить предусмотренное отдельное разрешение.",
       "effort": "Medium"
     },
     {
@@ -172,7 +172,7 @@ title: ADI analysis of ADR-027
       "effort": "Low"
     }
   ],
-  "recommendation": "Ранжирование по поддержке предоставленным контекстом: H1 > H4 > H2 > H3; преимущества H4 и H2 относительны и не делают их достаточными решениями. Рекомендуется H1 с сохранением draft до выполнения prerequisites. Сначала независимые pre-source reviewer и guardian должны разрешить вопросы ADR-025/ADR-003, red line 7, действующей квоты и достаточности Deep ADI. Последнее дополнение уточняет статус: поддерживаемый путь model+High показан для RFC-014 через NOTE-054, но ADR-027 engine analysis не получен; NOTE-055 фиксирует неуспешную попытку. Затем возможны только предусмотренные оркестратором source dispatch по RFC-014, независимые проверки актуальных bytes, финальный guardian и canonical lifecycle. Неизвестными остаются фактическая полнота RFC-сценариев, устойчивость протокола к формальному заполнению и согласованность всех оперативных read paths. Этот анализ поддерживает выбор политики, но не является независимым gate verdict, успешным engine receipt или разрешением activation.",
+  "recommendation": "Ранжирование по поддержке предоставленным контекстом: H1 > H4 > H2 > H3; преимущества H4 и H2 относительны и не делают их достаточными решениями. Рекомендуется H1 с сохранением draft до выполнения prerequisites. Сначала независимые pre-source reviewer и guardian должны разрешить вопросы ADR-025/ADR-003, red line 7, действующей квоты и достаточности Deep ADI. Последнее дополнение уточняет статус: поддерживаемый путь model+High показан для RFC-014 через NOTE-054, но ADR-031 engine analysis не получен; NOTE-055 фиксирует неуспешную попытку. Затем возможны только предусмотренные оркестратором source dispatch по RFC-014, независимые проверки актуальных bytes, финальный guardian и canonical lifecycle. Неизвестными остаются фактическая полнота RFC-сценариев, устойчивость протокола к формальному заполнению и согласованность всех оперативных read paths. Этот анализ поддерживает выбор политики, но не является независимым gate verdict, успешным engine receipt или разрешением activation.",
   "confidence": "medium"
 }
 ```
@@ -181,7 +181,7 @@ title: ADI analysis of ADR-027
 
 Author/operator factual receipt, not independent review. Prior failed ADR call NOTE-055 is preserved. The owning orchestrator authorized one new bounded invocation because the temporary adapter prerequisite was corrected and the same literal-receipt-path forwarding mechanism had actually completed RFC-014 in NOTE-054. This is not a blind retry, a repeat of the earlier website call, a change of policy/source/auth/settings, or a fallback.
 
-Command: `/opt/homebrew/bin/forgeplan reason ADR-027 --json --save`, owning cwd `/Users/explosovebit/Work/ForgePlan`, process-local PATH prefix to run-only adapter, FORGEPLAN_LLM_PROVIDER=codex-cli, FORGEPLAN_LLM_MODEL=gpt-6.1-sol; outer deadline720s. Actual stock exec started 2026-10-16T21:01:19Z; tool returned successful completion, wall56.66s, saved this NOTE-056. Input canonical ADR body SHA256 `e757631639c42e4b44f38a93c9dddb16c260400f465d2b45fb049c3cb5d49da2`.
+Command: `/opt/homebrew/bin/forgeplan reason ADR-031 --json --save`, owning cwd `/Users/explosovebit/Work/ForgePlan`, process-local PATH prefix to run-only adapter, FORGEPLAN_LLM_PROVIDER=codex-cli, FORGEPLAN_LLM_MODEL=gpt-6.1-sol; outer deadline720s. Actual stock exec started 2026-10-16T21:01:19Z; tool returned successful completion, wall56.66s, saved this NOTE-056. Input canonical ADR body SHA256 `e757631639c42e4b44f38a93c9dddb16c260400f465d2b45fb049c3cb5d49da2`.
 
 Actual forwarded argv (stdin and vendor output unmodified):
 ```json
@@ -210,13 +210,13 @@ Engine actual output contains 4 hypotheses, 4 deductions and 10 evidence-needed 
 
 Complete stdout/stderr transcript from actual tool result (both streams retained together by harness), 20181 bytes, SHA256 `035046fcfbd0297008700b30b18b5eacf42a80409c6c7fcdc630db709613b8a2`:
 ```text
-  Analyzing ADR-027 with ADI cycle (codex-cli/gpt-6.1-sol)...
+  Analyzing ADR-031 with ADI cycle (codex-cli/gpt-6.1-sol)...
 
 ForgePlan local CLI provider: reusing a stock CLI login under your vendor subscription. Personal/local development only — not for production, shared, or CI environments. Usage draws from the vendor plan and is subject to its terms; ForgePlan does not extract tokens or spoof client identity.
 {
-  "_next_action": "forgeplan new evidence \"<verification>\" && forgeplan link EVID-XXX ADR-027 --relation informs",
+  "_next_action": "forgeplan new evidence \"<verification>\" && forgeplan link EVID-XXX ADR-031 --relation informs",
   "adi_output": {
-    "confidence": "Высокая в выборе H1 среди рассмотренных альтернатив — она согласуется с разрешением владельца, архитектурной границей ADR-025 и file-first моделью ADR-003, сохраняя содержательные требования проверки. Уверенность в готовности применения ограничена: связанные исходные материалы отдельно не проверены, независимые review/guardian отсутствуют, успешный engine analysis ADR-027 не подтверждён, а R_eff указан как 0.00.",
+    "confidence": "Высокая в выборе H1 среди рассмотренных альтернатив — она согласуется с разрешением владельца, архитектурной границей ADR-025 и file-first моделью ADR-003, сохраняя содержательные требования проверки. Уверенность в готовности применения ограничена: связанные исходные материалы отдельно не проверены, независимые review/guardian отсутствуют, успешный engine analysis ADR-031 не подтверждён, а R_eff указан как 0.00.",
     "deductions": [
       {
         "consequence": "Изменение реализуется в действующих инструкциях и QUALITY-GATES, без новых Rust-компонентов, driver traits или схем хранения. Отсутствие дефектов становится допустимым результатом только для актуального, независимо проверенного объёма. Конечность означает устранение повторов ради квоты, а не гарантированное число итераций: реальные дефекты, неполные доказательства и обязательные раунды продолжают требовать работы.",
@@ -228,7 +228,7 @@ ForgePlan local CLI provider: reusing a stock CLI login under your vendor subscr
           "Изменение candidate после verdict делает прежнюю проверку неприменимой без оценки релевантности изменений.",
           "Старые quota-фразы в оперативных копиях или расхождение EN/RU создадут неоднозначность.",
           "Возникает риск замкнутой последовательности: для проверки отмены квоты требуется применить ещё действующую квоту. Основание разрешения этого конфликта должны явно подтвердить независимый reviewer и guardian.",
-          "Последнее дополнение сообщает о неуспешном engine-вызове ADR-027; успешный вызов RFC-014 не закрывает этот prerequisite.",
+          "Последнее дополнение сообщает о неуспешном engine-вызове ADR-031; успешный вызов RFC-014 не закрывает этот prerequisite.",
           "Применимость документационной реализации к red line 7 пока не установлена независимым решением."
         ]
       },
@@ -280,7 +280,7 @@ ForgePlan local CLI provider: reusing a stock CLI login under your vendor subscr
       {
         "effort": "Medium",
         "for_hypothesis": "H1",
-        "test": "Проверить NOTE-055 и NOTE-054: отделить failed-call receipt ADR-027 от успешного analysis RFC-014 и подтвердить воспроизводимость поддерживаемого run-local model+High пути. Определить достаточность authored ADI; если нужен повторный ADR engine-вызов, получить предусмотренное отдельное разрешение."
+        "test": "Проверить NOTE-055 и NOTE-054: отделить failed-call receipt ADR-031 от успешного analysis RFC-014 и подтвердить воспроизводимость поддерживаемого run-local model+High пути. Определить достаточность authored ADI; если нужен повторный ADR engine-вызов, получить предусмотренное отдельное разрешение."
       },
       {
         "effort": "Medium",
@@ -360,14 +360,14 @@ ForgePlan local CLI provider: reusing a stock CLI login under your vendor subscr
         "id": "H4"
       }
     ],
-    "recommendation": "Ранжирование по поддержке предоставленным контекстом: H1 > H4 > H2 > H3; преимущества H4 и H2 относительны и не делают их достаточными решениями. Рекомендуется H1 с сохранением draft до выполнения prerequisites. Сначала независимые pre-source reviewer и guardian должны разрешить вопросы ADR-025/ADR-003, red line 7, действующей квоты и достаточности Deep ADI. Последнее дополнение уточняет статус: поддерживаемый путь model+High показан для RFC-014 через NOTE-054, но ADR-027 engine analysis не получен; NOTE-055 фиксирует неуспешную попытку. Затем возможны только предусмотренные оркестратором source dispatch по RFC-014, независимые проверки актуальных bytes, финальный guardian и canonical lifecycle. Неизвестными остаются фактическая полнота RFC-сценариев, устойчивость протокола к формальному заполнению и согласованность всех оперативных read paths. Этот анализ поддерживает выбор политики, но не является независимым gate verdict, успешным engine receipt или разрешением activation."
+    "recommendation": "Ранжирование по поддержке предоставленным контекстом: H1 > H4 > H2 > H3; преимущества H4 и H2 относительны и не делают их достаточными решениями. Рекомендуется H1 с сохранением draft до выполнения prerequisites. Сначала независимые pre-source reviewer и guardian должны разрешить вопросы ADR-025/ADR-003, red line 7, действующей квоты и достаточности Deep ADI. Последнее дополнение уточняет статус: поддерживаемый путь model+High показан для RFC-014 через NOTE-054, но ADR-031 engine analysis не получен; NOTE-055 фиксирует неуспешную попытку. Затем возможны только предусмотренные оркестратором source dispatch по RFC-014, независимые проверки актуальных bytes, финальный guardian и canonical lifecycle. Неизвестными остаются фактическая полнота RFC-сценариев, устойчивость протокола к формальному заполнению и согласованность всех оперативных read paths. Этот анализ поддерживает выбор политики, но не является независимым gate verdict, успешным engine receipt или разрешением activation."
   },
-  "artifact_id": "ADR-027",
+  "artifact_id": "ADR-031",
   "artifact_kind": "adr",
   "depth": "deep",
   "r_eff_score": 0.0
 }
-  Saved as NOTE-056 -> linked to ADR-027
+  Saved as NOTE-056 -> linked to ADR-031
 
 ```
 

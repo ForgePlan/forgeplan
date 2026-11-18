@@ -3,26 +3,26 @@ depth: tactical
 id: NOTE-054
 kind: note
 links:
-- target: RFC-014
+- target: RFC-020
   relation: informs
 status: draft
-title: ADI analysis of RFC-014
+title: ADI analysis of RFC-020
 ---
 
 # ADI Record: NOTE-054
 
-**Artifact**: RFC-014 (rfc)
+**Artifact**: RFC-020 (rfc)
 **Model**: codex-cli/gpt-6.1-sol
 **Hypotheses**: 3
 **Confidence**: medium
-**Recommendation**: Ранжирование: H1 > H3 > H2. Рекомендуется H1: единый ограниченный cutover 17 файлов после независимого разрешения prerequisites; H3 допустима только как организация подготовки того же полного результата. Следующее действие — fresh pre-source review актуальных ADR-027/RFC-014, связанных active ADR и открытого engine/lifecycle вопроса, затем отдельный guardian. До положительного разрешения source dispatch остаётся запрещённым. После реализации требуются независимые A–G, проверка полного integrated candidate и отдельная lifecycle-приёмка. EVID-173 §P1 объясняет происхождение проблемы, но не заменяет evidence принятия новой политики. Неопределёнными остаются фактическая полнота 17-path охвата, разрешимость последовательности activation/source, достаточность authored ADI и поведение установленного embedded template. Этот анализ основан на предоставленном тексте и не является canonical independent EVID, guardian PASS или выполнением Deep engine gate.
+**Recommendation**: Ранжирование: H1 > H3 > H2. Рекомендуется H1: единый ограниченный cutover 17 файлов после независимого разрешения prerequisites; H3 допустима только как организация подготовки того же полного результата. Следующее действие — fresh pre-source review актуальных ADR-027/RFC-020, связанных active ADR и открытого engine/lifecycle вопроса, затем отдельный guardian. До положительного разрешения source dispatch остаётся запрещённым. После реализации требуются независимые A–G, проверка полного integrated candidate и отдельная lifecycle-приёмка. EVID-173 §P1 объясняет происхождение проблемы, но не заменяет evidence принятия новой политики. Неопределёнными остаются фактическая полнота 17-path охвата, разрешимость последовательности activation/source, достаточность authored ADI и поведение установленного embedded template. Этот анализ основан на предоставленном тексте и не является canonical independent EVID, guardian PASS или выполнением Deep engine gate.
 
 ## Structured Data
 
 ```json
 {
   "id": "NOTE-054",
-  "artifact_id": "RFC-014",
+  "artifact_id": "RFC-020",
   "created_at": "2026-10-16T20:56:46",
   "model": "codex-cli/gpt-6.1-sol",
   "hypotheses": [
@@ -80,7 +80,7 @@ title: ADI analysis of RFC-014
         "Повторный spawn при нулевых findings сохранится в отдельных маршрутах.",
         "Разные reviewer могут получить разные допустимые verdict на одинаковом материале.",
         "Правило precedence превратится в постоянно необходимое разрешение противоречий вместо согласованной нормы.",
-        "Подход не выполнит явный source contract RFC-014 без пересмотра самого решения."
+        "Подход не выполнит явный source contract RFC-020 без пересмотра самого решения."
       ],
       "feasibility": "low"
     },
@@ -98,7 +98,7 @@ title: ADI analysis of RFC-014
   "evidence_needed": [
     {
       "for_hypothesis": "H1",
-      "test": "Fresh pre-source verifier должен прочитать полные актуальные canonical bodies ADR-003, ADR-025, ADR-027 и RFC-014, проверить происхождение owner authorization и дать явное решение о применимости архитектуры, red line 7 и допустимой lifecycle-последовательности. Указанные hashes фиксируют заявленные версии, но сами по себе не доказывают применимость.",
+      "test": "Fresh pre-source verifier должен прочитать полные актуальные canonical bodies ADR-003, ADR-025, ADR-027 и RFC-020, проверить происхождение owner authorization и дать явное решение о применимости архитектуры, red line 7 и допустимой lifecycle-последовательности. Указанные hashes фиксируют заявленные версии, но сами по себе не доказывают применимость.",
       "effort": "Medium"
     },
     {
@@ -137,7 +137,7 @@ title: ADI analysis of RFC-014
       "effort": "Low"
     }
   ],
-  "recommendation": "Ранжирование: H1 > H3 > H2. Рекомендуется H1: единый ограниченный cutover 17 файлов после независимого разрешения prerequisites; H3 допустима только как организация подготовки того же полного результата. Следующее действие — fresh pre-source review актуальных ADR-027/RFC-014, связанных active ADR и открытого engine/lifecycle вопроса, затем отдельный guardian. До положительного разрешения source dispatch остаётся запрещённым. После реализации требуются независимые A–G, проверка полного integrated candidate и отдельная lifecycle-приёмка. EVID-173 §P1 объясняет происхождение проблемы, но не заменяет evidence принятия новой политики. Неопределёнными остаются фактическая полнота 17-path охвата, разрешимость последовательности activation/source, достаточность authored ADI и поведение установленного embedded template. Этот анализ основан на предоставленном тексте и не является canonical independent EVID, guardian PASS или выполнением Deep engine gate.",
+  "recommendation": "Ранжирование: H1 > H3 > H2. Рекомендуется H1: единый ограниченный cutover 17 файлов после независимого разрешения prerequisites; H3 допустима только как организация подготовки того же полного результата. Следующее действие — fresh pre-source review актуальных ADR-027/RFC-020, связанных active ADR и открытого engine/lifecycle вопроса, затем отдельный guardian. До положительного разрешения source dispatch остаётся запрещённым. После реализации требуются независимые A–G, проверка полного integrated candidate и отдельная lifecycle-приёмка. EVID-173 §P1 объясняет происхождение проблемы, но не заменяет evidence принятия новой политики. Неопределёнными остаются фактическая полнота 17-path охвата, разрешимость последовательности activation/source, достаточность authored ADI и поведение установленного embedded template. Этот анализ основан на предоставленном тексте и не является canonical independent EVID, guardian PASS или выполнением Deep engine gate.",
   "confidence": "medium"
 }
 ```
@@ -150,12 +150,12 @@ title: ADI analysis of RFC-014
 
 ```json
 {
-  "operation": "single authorized RFC-014 reason --json --save invocation; no retry",
+  "operation": "single authorized RFC-020 reason --json --save invocation; no retry",
   "workspace": "/Users/explosovebit/Work/ForgePlan",
   "command": [
     "/opt/homebrew/bin/forgeplan",
     "reason",
-    "RFC-014",
+    "RFC-020",
     "--json",
     "--save"
   ],
@@ -205,15 +205,15 @@ title: ADI analysis of RFC-014
 }
 ```
 
-Фактическая shell-команда: `/bin/bash -n /tmp/forgeplan-core-engine.SGWouD/bin/codex && /bin/bash /tmp/forgeplan-core-engine.SGWouD/run-reason RFC-014`. Runner исполнил `env PATH=/tmp/forgeplan-core-engine.SGWouD/bin:$PATH FORGEPLAN_LLM_PROVIDER=codex-cli FORGEPLAN_LLM_MODEL=gpt-6.1-sol /opt/homebrew/bin/forgeplan reason RFC-014 --json --save` (также передан служебный FORGEPLAN_ENGINE_RECEIPT, но исправленный adapter от него не зависит). Deadline внешнего вызова 720 s покрывал configured reason timeout 600 s. stdout/stderr сохранены раздельно; exit code относится к forgeplan, не к pipe. Записанный argv содержит ровно один --model gpt-6.1-sol и supported effort override high; read-only, ephemeral, skip-git-repo-check, ignore-user-config, ignore-rules и original stdin сохранены. Provider сам использовал изолированный временный cwd/HOME и существующий CODEX_HOME; auth не читался и не менялся оператором.
+Фактическая shell-команда: `/bin/bash -n /tmp/forgeplan-core-engine.SGWouD/bin/codex && /bin/bash /tmp/forgeplan-core-engine.SGWouD/run-reason RFC-020`. Runner исполнил `env PATH=/tmp/forgeplan-core-engine.SGWouD/bin:$PATH FORGEPLAN_LLM_PROVIDER=codex-cli FORGEPLAN_LLM_MODEL=gpt-6.1-sol /opt/homebrew/bin/forgeplan reason RFC-020 --json --save` (также передан служебный FORGEPLAN_ENGINE_RECEIPT, но исправленный adapter от него не зависит). Deadline внешнего вызова 720 s покрывал configured reason timeout 600 s. stdout/stderr сохранены раздельно; exit code относится к forgeplan, не к pipe. Записанный argv содержит ровно один --model gpt-6.1-sol и supported effort override high; read-only, ephemeral, skip-git-repo-check, ignore-user-config, ignore-rules и original stdin сохранены. Provider сам использовал изолированный временный cwd/HOME и существующий CODEX_HOME; auth не читался и не менялся оператором.
 
 ### Complete CLI stdout, exact UTF-8 bytes
 
 ```text
-  Analyzing RFC-014 with ADI cycle (codex-cli/gpt-6.1-sol)...
+  Analyzing RFC-020 with ADI cycle (codex-cli/gpt-6.1-sol)...
 
 {
-  "_next_action": "forgeplan new evidence \"<verification>\" && forgeplan link EVID-XXX RFC-014 --relation informs",
+  "_next_action": "forgeplan new evidence \"<verification>\" && forgeplan link EVID-XXX RFC-020 --relation informs",
   "adi_output": {
     "confidence": "Medium — архитектурная совместимость и ограниченность предлагаемого изменения хорошо обоснованы самим RFC и отношениями based_on ADR-025/ADR-003. Готовность к исполнению пока не подтверждена: исходники и связанные canonical bodies здесь независимо не прочитаны, обязательные pre-source решения отсутствуют, а draft/R_eff 0.00 согласуются с незавершённой приёмкой.",
     "deductions": [
@@ -237,7 +237,7 @@ title: ADI analysis of RFC-014
           "Повторный spawn при нулевых findings сохранится в отдельных маршрутах.",
           "Разные reviewer могут получить разные допустимые verdict на одинаковом материале.",
           "Правило precedence превратится в постоянно необходимое разрешение противоречий вместо согласованной нормы.",
-          "Подход не выполнит явный source contract RFC-014 без пересмотра самого решения."
+          "Подход не выполнит явный source contract RFC-020 без пересмотра самого решения."
         ]
       },
       {
@@ -255,7 +255,7 @@ title: ADI analysis of RFC-014
       {
         "effort": "Medium",
         "for_hypothesis": "H1",
-        "test": "Fresh pre-source verifier должен прочитать полные актуальные canonical bodies ADR-003, ADR-025, ADR-027 и RFC-014, проверить происхождение owner authorization и дать явное решение о применимости архитектуры, red line 7 и допустимой lifecycle-последовательности. Указанные hashes фиксируют заявленные версии, но сами по себе не доказывают применимость."
+        "test": "Fresh pre-source verifier должен прочитать полные актуальные canonical bodies ADR-003, ADR-025, ADR-027 и RFC-020, проверить происхождение owner authorization и дать явное решение о применимости архитектуры, red line 7 и допустимой lifecycle-последовательности. Указанные hashes фиксируют заявленные версии, но сами по себе не доказывают применимость."
       },
       {
         "effort": "High",
@@ -325,14 +325,14 @@ title: ADI analysis of RFC-014
         "id": "H3"
       }
     ],
-    "recommendation": "Ранжирование: H1 > H3 > H2. Рекомендуется H1: единый ограниченный cutover 17 файлов после независимого разрешения prerequisites; H3 допустима только как организация подготовки того же полного результата. Следующее действие — fresh pre-source review актуальных ADR-027/RFC-014, связанных active ADR и открытого engine/lifecycle вопроса, затем отдельный guardian. До положительного разрешения source dispatch остаётся запрещённым. После реализации требуются независимые A–G, проверка полного integrated candidate и отдельная lifecycle-приёмка. EVID-173 §P1 объясняет происхождение проблемы, но не заменяет evidence принятия новой политики. Неопределёнными остаются фактическая полнота 17-path охвата, разрешимость последовательности activation/source, достаточность authored ADI и поведение установленного embedded template. Этот анализ основан на предоставленном тексте и не является canonical independent EVID, guardian PASS или выполнением Deep engine gate."
+    "recommendation": "Ранжирование: H1 > H3 > H2. Рекомендуется H1: единый ограниченный cutover 17 файлов после независимого разрешения prerequisites; H3 допустима только как организация подготовки того же полного результата. Следующее действие — fresh pre-source review актуальных ADR-027/RFC-020, связанных active ADR и открытого engine/lifecycle вопроса, затем отдельный guardian. До положительного разрешения source dispatch остаётся запрещённым. После реализации требуются независимые A–G, проверка полного integrated candidate и отдельная lifecycle-приёмка. EVID-173 §P1 объясняет происхождение проблемы, но не заменяет evidence принятия новой политики. Неопределёнными остаются фактическая полнота 17-path охвата, разрешимость последовательности activation/source, достаточность authored ADI и поведение установленного embedded template. Этот анализ основан на предоставленном тексте и не является canonical independent EVID, guardian PASS или выполнением Deep engine gate."
   },
-  "artifact_id": "RFC-014",
+  "artifact_id": "RFC-020",
   "artifact_kind": "rfc",
   "depth": "deep",
   "r_eff_score": 0.0
 }
-  Saved as NOTE-054 -> linked to RFC-014
+  Saved as NOTE-054 -> linked to RFC-020
 ```
 
 ### Complete CLI stderr, exact UTF-8 bytes
@@ -345,9 +345,9 @@ ForgePlan local CLI provider: reusing a stock CLI login under your vendor subscr
 
 Полный output прочитан. Parsed hypotheses=3 (H1/H2/H3), deductions=3, evidence_needed=8. H1 — уже выбранный единый cutover 17 файлов; H2 — только QUALITY-GATES, отвергнут по уже описанным противоречащим read paths; H3 — порционная подготовка того же результата, не новая политика и не разрешение частичной приёмки. Ranking H1 > H3 > H2, confidence Medium. Нет новой содержательной критики, требующей менять owner choice, source allowlist, reviewer roles/count, Critical rounds или другие gates; нормативные разделы ADR/RFC не меняются.
 
-Engine повторил открытые условия архитектурной применимости/red line 7, независимого pre-source review/guardian, A–G, source coverage/EN-RU, integrated candidate и embedded template. Они остаются обязательными, а не объявлены исполненными этим анализом. Замечание о графе — ограничение переданного engine контекста: реальная связь ADR-027 informs RFC-014 видна в inbound canonical read, тогда как prompt Relations перечисляет исходящие based_on. Создавать лишние edges к защищённым EVID или менять их bodies не требуется.
+Engine повторил открытые условия архитектурной применимости/red line 7, независимого pre-source review/guardian, A–G, source coverage/EN-RU, integrated candidate и embedded template. Они остаются обязательными, а не объявлены исполненными этим анализом. Замечание о графе — ограничение переданного engine контекста: реальная связь ADR-027 informs RFC-020 видна в inbound canonical read, тогда как prompt Relations перечисляет исходящие based_on. Создавать лишние edges к защищённым EVID или менять их bodies не требуется.
 
-Фраза engine о том, что его ответ сам по себе не доказывает требуемый engine run/High и не является выполнением gate, сохранена буквально в полном stdout. Модель не имела receipt своего запуска. Внешние реальные argv/exit/analysis выше отдельно доказывают факт нового bounded RFC-014 engine вызова с запрошенной моделью/High. Достаточность содержания и закрытие применимого Deep gate оценивает независимый reviewer/guardian, не creator и не эта NOTE. Не существует self-PASS, activation или автоматического разрешения MiniMax.
+Фраза engine о том, что его ответ сам по себе не доказывает требуемый engine run/High и не является выполнением gate, сохранена буквально в полном stdout. Модель не имела receipt своего запуска. Внешние реальные argv/exit/analysis выше отдельно доказывают факт нового bounded RFC-020 engine вызова с запрошенной моделью/High. Достаточность содержания и закрытие применимого Deep gate оценивает независимый reviewer/guardian, не creator и не эта NOTE. Не существует self-PASS, activation или автоматического разрешения MiniMax.
 
 ### Separate ADR-027 limitation
 
@@ -362,7 +362,7 @@ stock='/Users/explosovebit/.local/share/mise/installs/node/22/bin/codex'
 if [ "${1-}" != 'exec' ]; then
   exec "$stock" "$@"
 fi
-receipt='/tmp/forgeplan-core-engine.SGWouD/RFC-014'
+receipt='/tmp/forgeplan-core-engine.SGWouD/RFC-020'
 args=("$@" --config 'model_reasoning_effort="high"')
 model_count=0
 model_ok=0
@@ -400,7 +400,7 @@ exec "$stock" "${args[@]}"
 
 ### Preservation and handoff
 
-На входе текущей операции body hashes совпали с переданными: ADR-027 47b8239f90ac5b28eca1d6f7503b1e4fdb3de9b77960b2a11b3d1effdbeec1ab; RFC-014 24292ed4a1be007c9def4b7b7e3531cafaaf3ea0a470dabe0b35efd4df5bd7a3. До canonical author-status обновлений проверено отсутствие изменений всех 1783 baseline files и полное совпадение пяти protected canonical records. Финальная after проверка отдельно фиксируется в handoff после всех разрешённых мутаций.
+На входе текущей операции body hashes совпали с переданными: ADR-027 47b8239f90ac5b28eca1d6f7503b1e4fdb3de9b77960b2a11b3d1effdbeec1ab; RFC-020 24292ed4a1be007c9def4b7b7e3531cafaaf3ea0a470dabe0b35efd4df5bd7a3. До canonical author-status обновлений проверено отсутствие изменений всех 1783 baseline files и полное совпадение пяти protected canonical records. Финальная after проверка отдельно фиксируется в handoff после всех разрешённых мутаций.
 
 NOTE/ADR/RFC остаются draft с неизменными title/depth. Никаких source/regulation, website, Marketplace, Rust, config/auth/global writes, build/test/server/browser, tracker, commit/push или activation не выполнено. Run-local receipts и adapter сохранены в /tmp/forgeplan-core-engine.SGWouD для reviewer; adapter не установлен глобально. Изменение reviewed artifact body после этого анализа требует от reviewer учесть factual handoff delta и проверить current pins; предыдущий engine run не объявляется анализом несуществовавшей будущей версии.
 

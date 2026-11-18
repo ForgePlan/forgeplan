@@ -36,12 +36,20 @@ use crate::db::store::{LanceStore, validate_artifact_id};
 ///    the canonical link direction in this codebase puts evidence sources
 ///    pointing INTO the artifact they support, so an outgoing-only walk
 ///    would miss most evidence.
-/// 2. **Dependency recursion (in scope, descendant-only)** — after the
-///    self-score is built, `r_eff_recursive` follows OUTGOING `informs`,
-///    `based_on`, `refines`, `depends_on` edges to recursively score `id`'s
-///    own dependencies. This walk is unbounded in graph depth; PRD-075 FR-005
-///    sets a 100 ms budget; PROB-058 AC-3 tracks the deferred bound (split
-///    into `r_eff_local` for mutator paths if perf measurements demand it).
+/// 2. **Dependency recursion (in scope, descendant-only, NON-evidence)** —
+///    after the self-score is built, `r_eff_recursive` follows OUTGOING
+///    `informs`, `based_on`, `refines`, `depends_on` edges to recursively score
+///    `id`'s own dependencies. Targets of kind `evidence` are deliberately NOT
+///    followed: concern 1 and concern 2 are disjoint, and an outgoing edge into
+///    an evidence pack belongs to concern 1 alone. Recursing into it as well
+///    double-counts one edge — a pack usually has no evidence of its own (it
+///    does only when another pack links into it), so the walk returns 0.0 and
+///    that zero wins the weakest-link min, punishing `id` for carrying
+///    evidence. This deliberately also drops EVID→EVID transitive chains; each
+///    skip is recorded in `factors`. This walk is unbounded in graph depth;
+///    PRD-075 FR-005 sets a 100 ms budget; PROB-058 AC-3 tracks the deferred
+///    bound (split into `r_eff_local` for mutator paths if perf measurements
+///    demand it).
 /// 3. **Transitive parent rescore (OUT of scope, NOT performed)** — the
 ///    cached `r_eff_score` columns of artifacts that *consume* `id` (parents
 ///    up the chain whose own R_eff depends on `id`'s value) are NOT

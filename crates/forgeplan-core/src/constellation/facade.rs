@@ -651,8 +651,21 @@ fn capture_with_published_identity(
     captured: &CapturedSourceView,
     manifest: &GenerationManifest,
 ) -> Result<CapturedSourceView, ConstellationError> {
-    let mismatch = || ConstellationError::IndexGenerationUnavailable {
-        detail: "the generation's durable identity disagrees with its confirmed capture".into(),
+    let mismatch = || {
+        let detail = format!(
+            "the generation's durable identity disagrees with its confirmed capture: \
+             checkout_id captured={} manifest={} | index_epoch captured={} manifest={} | \
+             entries captured={} published={} | artifacts={} entries={}",
+            captured.checkout_id,
+            manifest.checkout_id,
+            captured.index_epoch,
+            manifest.index_epoch,
+            captured.entries.len(),
+            manifest.source_entries.len(),
+            captured.artifacts.len(),
+            captured.entries.len(),
+        );
+        ConstellationError::IndexGenerationUnavailable { detail }
     };
     if captured.checkout_id != manifest.checkout_id
         || captured.index_epoch != manifest.index_epoch
@@ -858,6 +871,18 @@ pub async fn open_workspace_read(
     previous: Option<Arc<CapturedSourceView>>,
     limits: CaptureLimits,
 ) -> Result<super::workspace_read::WorkspaceRead, ConstellationError> {
+    // The durable identity (`checkout_id` / `index_epoch`) is path-derived —
+    // `path_bound_checkout_id` hashes the index root **as spelled**. A caller
+    // may hand in any spelling of the workspace (a symlinked `/var/...` on
+    // macOS, a relative path, a `..` segment), while `maintain_index` always
+    // works on the canonicalized root. Without this normalization the same
+    // physical index mints two different checkout ids, and the published
+    // manifest's durable identity disagrees with this fresh capture —
+    // `IndexGenerationUnavailable` on a read that should have matched.
+    // Canonicalize once here so read and publish see one path.
+    let workspace = &workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_path_buf());
     let mut request = CaptureRequest::new(workspace);
     if let Some(previous) = previous {
         request = request.with_previous(previous);

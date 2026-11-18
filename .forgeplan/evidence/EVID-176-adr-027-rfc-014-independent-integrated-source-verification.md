@@ -5,14 +5,14 @@ kind: evidence
 last_modified_at: 2026-10-16T21:29:32.092959+00:00
 last_modified_by: omp-coding-agent/1.0.0
 links:
-- target: ADR-027
+- target: ADR-031
   relation: informs
-- target: RFC-014
+- target: RFC-020
   relation: informs
-- target: EVID-177
+- target: EVID-213
   relation: supersedes
 status: superseded
-title: ADR-027 RFC-014 independent integrated source verification
+title: ADR-031 RFC-020 independent integrated source verification
 ---
 
 ---
@@ -35,7 +35,7 @@ evidence_type: audit
 
 gate_verdict: BLOCKER
 source_acceptance: NOT_ACCEPTED
-scope: integrated documentation-source candidate of RFC-014, not executable code or release acceptance
+scope: integrated documentation-source candidate of RFC-020, not executable code or release acceptance
 source_manifest_sha256: 7e9242f5e996528eae4bc81758edd0e87db1c8800160e1262cbaffcd4fb6ebd0
 source_changes_by_this_reviewer: none
 activation_authorized: false
@@ -55,12 +55,12 @@ Rules/skills actually read: auto-loaded AGENTS, full actual CLAUDE.md, docs/READ
 
 ## Canonical current bodies and complete evidence chain
 
-Each record below independently obtained through /opt/homebrew/bin/forgeplan get ID --json in owning cwd, exit0. Exact UTF-8 body hashes include internal template YAML, exclude outer projection frontmatter; no normalization. Mounted get ADR-027 also returned the current body; no not-found repair/reindex was needed.
+Each record below independently obtained through /opt/homebrew/bin/forgeplan get ID --json in owning cwd, exit0. Exact UTF-8 body hashes include internal template YAML, exclude outer projection frontmatter; no normalization. Mounted get ADR-031 also returned the current body; no not-found repair/reindex was needed.
 
 | ID | status/depth | canonical slug or legacy fallback | body bytes | body SHA256 |
 |---|---|---|---:|---|
-| ADR-027 | draft/deep | adr-finite-evidence-backed-independent-review-without-a-defect-quota | 43087 | 8478e0267c1eeb4d8f1442476ff49bf4f4744c56835678db264c7e7798cad6d1 |
-| RFC-014 | draft/deep | rfc-core-review-policy-bounded-documentation-cutover | 44551 | 1e7412e50aad464695de1e0096c5371c3e1baabb0181ab3abdf0ecad84511423 |
+| ADR-031 | draft/deep | adr-finite-evidence-backed-independent-review-without-a-defect-quota | 43087 | 8478e0267c1eeb4d8f1442476ff49bf4f4744c56835678db264c7e7798cad6d1 |
+| RFC-020 | draft/deep | rfc-core-review-policy-bounded-documentation-cutover | 44551 | 1e7412e50aad464695de1e0096c5371c3e1baabb0181ab3abdf0ecad84511423 |
 | ADR-025 | active/standard | adr-orchestration-sits-above-forgeplan-the-core-is-the-contract-layer | 4918 | 3e3ca3782908b1c81ddbedab0aa816dc54b702c8cd303171a5ded8088e6e7652 |
 | ADR-003 | active/standard | ADR-003 | 17857 | 8d034028af55e8ecaa1c2a5047322a6997c903f71c75dc78e2112d748a9ac763 |
 | EVID-174 | draft/standard | evid-adr-027-rfc-014-independent-pre-source-architecture-and-policy-review | 40701 | 0f5668c6302d0a1591264a5183a5f962c3c9d354f438d4d9193bcc6ee5fad8af |
@@ -74,11 +74,11 @@ Each record below independently obtained through /opt/homebrew/bin/forgeplan get
 | PRD-087 | draft/deep | prd-website-onboarding-task-stack-selector-and-revision-bound-public-guide | 34406 | 803d422426a6826066c17ed165f28564e7979b5af429cad62d4f2d91d149a83a |
 | SPEC-007 | draft/deep | spec-website-onboarding-bounded-selection-and-public-guidance-behavior | 39292 | 5adc34c6f86ca693580b86c8208b304ff79658b7978b781efb3788850ff60678 |
 
-Full ADR-027 and RFC-014 read, including authored ADI, D1–D4, source contract, acceptance and all later factual engine updates. Full EVID-174 and EVID-175 read, not just verdict tables. Full NOTE-054/056 structured AND original engine outputs and NOTE-055 failed receipt read. NOTE-054 is separate successful RFC analysis (3 hypotheses,3 deductions,8 evidence-needed, exit0); NOTE-056 is the corrected separate successful ADR analysis (4/4/10, reported56.66s). NOTE-055 remains failed exit1 with no accepted engine result, not a disguised auth diagnosis. No new reasoning invoked. Engine requests prove requested model/High via retained argv, not actual server effort or independent source reading. Their historical pre-receipt doubts are not current engine failures.
+Full ADR-031 and RFC-020 read, including authored ADI, D1–D4, source contract, acceptance and all later factual engine updates. Full EVID-174 and EVID-175 read, not just verdict tables. Full NOTE-054/056 structured AND original engine outputs and NOTE-055 failed receipt read. NOTE-054 is separate successful RFC analysis (3 hypotheses,3 deductions,8 evidence-needed, exit0); NOTE-056 is the corrected separate successful ADR analysis (4/4/10, reported56.66s). NOTE-055 remains failed exit1 with no accepted engine result, not a disguised auth diagnosis. No new reasoning invoked. Engine requests prove requested model/High via retained argv, not actual server effort or independent source reading. Their historical pre-receipt doubts are not current engine failures.
 
-Actual complete new-policy independent inbound EVID chain before this report: EVID-174 informs ADR-027 and RFC-014; EVID-175 informs both. Both are draft/standard pre-source-only supports, with source implementation unverified and activation false. ADR-027 based_on ADR-025 and ADR-003, informs RFC-014. RFC-014 based_on ADR-025 and ADR-003. NOTE-054 informs RFC-014; NOTE-055/056 inform ADR-027. These actual links are pinned in the full metadata appendix below. No graph edge to protected website records is needed or created.
+Actual complete new-policy independent inbound EVID chain before this report: EVID-174 informs ADR-031 and RFC-020; EVID-175 informs both. Both are draft/standard pre-source-only supports, with source implementation unverified and activation false. ADR-031 based_on ADR-025 and ADR-003, informs RFC-020. RFC-020 based_on ADR-025 and ADR-003. NOTE-054 informs RFC-020; NOTE-055/056 inform ADR-031. These actual links are pinned in the full metadata appendix below. No graph edge to protected website records is needed or created.
 
-Active ADR-025 fully read: graph/contracts stay in core, process execution above it. Active ADR-003 fully read with both amendments: human markdown source of truth, derived index, canonical mutation discipline. They cover docs-only review instructions. EVID-174 and EVID-175 independently accepted the narrow sequence and real docs implementation interpretation for redline7 twice; that is not a general activation waiver. I agree those active parents remain applicable. They do NOT contain a maximum number of defect-fix rounds. New ADR-027/RFC-014 remain draft/deep; pre-source PASS does not accept actual source. EVID-172/173 retain their prior verdicts/status/links; this source evidence cannot close EVID-173 P1 retroactively or D-PRODUCER.
+Active ADR-025 fully read: graph/contracts stay in core, process execution above it. Active ADR-003 fully read with both amendments: human markdown source of truth, derived index, canonical mutation discipline. They cover docs-only review instructions. EVID-174 and EVID-175 independently accepted the narrow sequence and real docs implementation interpretation for redline7 twice; that is not a general activation waiver. I agree those active parents remain applicable. They do NOT contain a maximum number of defect-fix rounds. New ADR-031/RFC-020 remain draft/deep; pre-source PASS does not accept actual source. EVID-172/173 retain their prior verdicts/status/links; this source evidence cannot close EVID-173 P1 retroactively or D-PRODUCER.
 
 ## Integrated candidate identity, full reads and preservation
 
@@ -128,7 +128,7 @@ a3ce7eb078d2b26f1dbcb4692898e4e57de023431ed32da68d35c7384db067d9  docs/methodolo
 
 The worktree /tmp/forgeplan-minimax-core-review-20261016 on docs/core-review-no-defect-quota-20261016 has the same17 source bytes. Worker git diff --name-only HEAD contains exactly these17 files. Owning narrow diff is184 insertions/88 deletions; all17 HEAD bytes match the RFC before hashes. Both QUALITY-GATES files outside §2 are byte-identical to HEAD: all Verification Gate,13-step,R_eff,min/CL/threshold/decay,depth tables unchanged. CLAUDE redlines, validation/ADI/activation, significant trigger ≥5 commits OR new public API,2+ agents and security/code roles unchanged in the actual diff. Critical minimum2 rounds retained even after zero round1. No operative quota, re-spawn-at-zero, always-finds or >100LOC certainty remains in the allowlist. D2 quotes the old quota only to say it was removed; it is not operative. No competing full protocol was added to the other15 files.
 
-Before creating this EVID, actual git ls-files --cached --others --exclude-standard -z and byte hashing pinned1788 existing tracked/nonignored untracked regular files and symlinks. File hash=raw bytes; symlink hash=link-target bytes without following. Sorted lines kind sha256  relative-path LF: SHA256 8333c56f5466158a47627330cdb0a28b5b7c891de5add60e2bb115920a84683d. Not a clean-tree claim. To independently compare forbidden preservation against EVID-175's pre-write1787-file manifest: exclude only the newly created EVID-175; substitute the actual HEAD bytes for17 source files (each matches RFC before); remove exactly the one trailing LF from ADR-027/RFC-014 that EVID-175 records its own canonical operations appended. The resulting manifest reproduces EXACT dcdc9bc841edcbe189abf40537f77f4cf92cfef62cb063ad789e1b4d24db9d22. Thus the observed changes since that checkpoint are precisely17 source files, EVID-175 addition and the previously documented canonical framing LF, not hidden forbidden edits. Current unrelated Cargo/config/.cargo/docx/PRD024/047 user dirties were preserved, not attributed to MiniMax. No reset/stash/cleanup.
+Before creating this EVID, actual git ls-files --cached --others --exclude-standard -z and byte hashing pinned1788 existing tracked/nonignored untracked regular files and symlinks. File hash=raw bytes; symlink hash=link-target bytes without following. Sorted lines kind sha256  relative-path LF: SHA256 8333c56f5466158a47627330cdb0a28b5b7c891de5add60e2bb115920a84683d. Not a clean-tree claim. To independently compare forbidden preservation against EVID-175's pre-write1787-file manifest: exclude only the newly created EVID-175; substitute the actual HEAD bytes for17 source files (each matches RFC before); remove exactly the one trailing LF from ADR-031/RFC-020 that EVID-175 records its own canonical operations appended. The resulting manifest reproduces EXACT dcdc9bc841edcbe189abf40537f77f4cf92cfef62cb063ad789e1b4d24db9d22. Thus the observed changes since that checkpoint are precisely17 source files, EVID-175 addition and the previously documented canonical framing LF, not hidden forbidden edits. Current unrelated Cargo/config/.cargo/docx/PRD024/047 user dirties were preserved, not attributed to MiniMax. No reset/stash/cleanup.
 
 Protected projection hashes independently match RFC5/5:
 ```text
@@ -146,7 +146,7 @@ Canonical body/status/depth/links of EVID-172/173, NOTE-053, PRD-087 and SPEC-00
 
 Locations: docs/methodology/QUALITY-GATES.md:96; docs/methodology/QUALITY-GATES.ru.md:96.
 
-Required: ADR-027 D4: precedence after actual bounded application and independent verification, with orchestrator lifecycle actions; draft does not declare itself effective. RFC Normative read path: moment of force follows agreed lifecycle.
+Required: ADR-031 D4: precedence after actual bounded application and independent verification, with orchestrator lifecycle actions; draft does not declare itself effective. RFC Normative read path: moment of force follows agreed lifecycle.
 
 Observed: EN says "Until the lifecycle actions complete"; RU says "До завершения lifecycle-действий" and both grant present priority.
 
@@ -160,7 +160,7 @@ Required source correction: MiniMax must restore D4 after-acceptance/lifecycle t
 
 Locations: docs/methodology/QUALITY-GATES.md:88; docs/methodology/QUALITY-GATES.ru.md:88.
 
-Required: ADR-027 D2: real problems determine repeat count by closure of the problem and existing gates, not an artificial ceiling.
+Required: ADR-031 D2: real problems determine repeat count by closure of the problem and existing gates, not an artificial ceiling.
 
 Observed: EN "number of repeat rounds is bounded by the relevant active parent"; RU "число повторов ограничено применимым active parent".
 
@@ -174,7 +174,7 @@ Required source correction: Restore closure-of-real-problems AND existing gates 
 
 Locations: docs/methodology/QUALITY-GATES.md:107-114; docs/methodology/QUALITY-GATES.ru.md:107-114.
 
-Required: ADR-027 D1.5 and RFC: retain fix-or-authorized-justification path for Warning/MEDIUM/LOW; no new condition forcing every recorded issue to disappear.
+Required: ADR-031 D1.5 and RFC: retain fix-or-authorized-justification path for Warning/MEDIUM/LOW; no new condition forcing every recorded issue to disappear.
 
 Observed: Process5 permits PASS only with zero real defects and otherwise CONCERNS, while Process6/table retain authorized justified findings.
 
@@ -214,7 +214,7 @@ Findings are my independent source assessment, not predetermined by the parent's
 
 Actual source read-path text matters: CLAUDE points to §2 for active counterexamples/rounds/no zero respawn; §2 D1.2 demands dirty bytes and D1.3 forbids mandatory skipped→N/A; schema asks goal/edge/timeline/stakeholder/security questions rather than guaranteeing an issue; embedded prompt itself refers to D1.1–D1.7, rounds and HIGH/Critical BLOCKER; template author comments link ../../docs/methodology/QUALITY-GATES.md#2-adversarial-review-protocol and GLOSSARY. These operative texts were read, not accepted by a string-presence test. Both language siblings exist and have equivalent meaning. Guide/course code-fence references remain literal rather than rendered hyperlinks; they are readable by source/prompt consumers. RFC explicitly requested outside link for USAGE, which was not supplied (SRC-L1).
 
-Relative targets actually opened: root docs/methodology/QUALITY-GATES.md; sibling ./QUALITY-GATES.md and ./QUALITY-GATES.ru.md; schemas ../methodology/QUALITY-GATES.md / .ru.md; template ../../docs/methodology/QUALITY-GATES.md and ../../docs/methodology/GLOSSARY.md; both §2 ADR ../../.forgeplan/adrs/ADR-027-finite-evidence-backed-independent-review-without-a-defect-quota.md and RFC ../../.forgeplan/rfcs/RFC-014-core-review-policy-bounded-documentation-cutover.md. Throwaway existence/anchor inspection output retained in appendix; it supplements, not replaces semantic reading. No permanent source-text tests.
+Relative targets actually opened: root docs/methodology/QUALITY-GATES.md; sibling ./QUALITY-GATES.md and ./QUALITY-GATES.ru.md; schemas ../methodology/QUALITY-GATES.md / .ru.md; template ../../docs/methodology/QUALITY-GATES.md and ../../docs/methodology/GLOSSARY.md; both §2 ADR ../../.forgeplan/adrs/ADR-031-finite-evidence-backed-independent-review-without-a-defect-quota.md and RFC ../../.forgeplan/rfcs/RFC-020-core-review-policy-bounded-documentation-cutover.md. Throwaway existence/anchor inspection output retained in appendix; it supplements, not replaces semantic reading. No permanent source-text tests.
 
 ## Real template emission receipt and limits
 
@@ -314,7 +314,7 @@ Observed OLD emitted quota: «Ревьюер ОБЯЗАН найти миним�
 
 ## Actual structural/health checks, not runtime acceptance
 
-forgeplan validate ADR-027 --json and RFC-014 --json in owning cwd each exit0, passed=true, errors0,warnings0,findings[]. Each also printed advisory Session Cannot go from routing to coding; create-prd/activate hints were NOT executed. No session repair. These structure checks do not overrule semantic source findings. forgeplan health --json actually executed exit0: total449, needs_attention,2 at-risk(PRD005/RFC004),10 advisory mismatches, no global healthy claim; existing debt left alone. No new paid reasoning, Rust inspection, build/test/lint/formatter/server/browser, website/Marketplace/config/auth/global/tracker/install/commit/push/lifecycle/cleanup.
+forgeplan validate ADR-031 --json and RFC-020 --json in owning cwd each exit0, passed=true, errors0,warnings0,findings[]. Each also printed advisory Session Cannot go from routing to coding; create-prd/activate hints were NOT executed. No session repair. These structure checks do not overrule semantic source findings. forgeplan health --json actually executed exit0: total449, needs_attention,2 at-risk(PRD005/RFC004),10 advisory mismatches, no global healthy claim; existing debt left alone. No new paid reasoning, Rust inspection, build/test/lint/formatter/server/browser, website/Marketplace/config/auth/global/tracker/install/commit/push/lifecycle/cleanup.
 
 ## Full fictional inputs and actual reasoned responses
 
@@ -650,7 +650,7 @@ Full inputs, no inheritance/delta shorthand in persisted packs. SHA256 over comp
         "location": "SYN-r1:4, runtime/activation clause",
         "claim": "candidate allows premature activation",
         "consequence": "An implementation gate could be advanced without its required evidence.",
-        "provenance": "fictional upstream finding supplied as an unresolved premise by RFC-014 case D; not established from r1",
+        "provenance": "fictional upstream finding supplied as an unresolved premise by RFC-020 case D; not established from r1",
         "resolution": null
       }
     ],
@@ -2394,7 +2394,7 @@ Actual applications after reading full inputs. SHA256 over compact JSON.stringif
 Canonical snapshot is from before EVID176 creation; full bodies referenced by hashes above and read in actual source. Exact significant links/status/depth/slug, including protected records:
 ```json
 {
-  "ADR-027": {
+  "ADR-031": {
     "status": "draft",
     "depth": "deep",
     "slug": "adr-finite-evidence-backed-independent-review-without-a-defect-quota",
@@ -2429,13 +2429,13 @@ Canonical snapshot is from before EVID176 creation; full bodies referenced by ha
         },
         {
           "relation": "informs",
-          "target": "RFC-014"
+          "target": "RFC-020"
         }
       ]
     },
     "body_sha256": "8478e0267c1eeb4d8f1442476ff49bf4f4744c56835678db264c7e7798cad6d1"
   },
-  "RFC-014": {
+  "RFC-020": {
     "status": "draft",
     "depth": "deep",
     "slug": "rfc-core-review-policy-bounded-documentation-cutover",
@@ -2444,7 +2444,7 @@ Canonical snapshot is from before EVID176 creation; full bodies referenced by ha
       "inbound": [
         {
           "relation": "informs",
-          "source": "ADR-027"
+          "source": "ADR-031"
         },
         {
           "relation": "informs",
@@ -2489,11 +2489,11 @@ Canonical snapshot is from before EVID176 creation; full bodies referenced by ha
         },
         {
           "relation": "based_on",
-          "source": "ADR-027"
+          "source": "ADR-031"
         },
         {
           "relation": "based_on",
-          "source": "RFC-014"
+          "source": "RFC-020"
         }
       ],
       "outbound": [
@@ -2622,11 +2622,11 @@ Canonical snapshot is from before EVID176 creation; full bodies referenced by ha
         },
         {
           "relation": "based_on",
-          "source": "ADR-027"
+          "source": "ADR-031"
         },
         {
           "relation": "based_on",
-          "source": "RFC-014"
+          "source": "RFC-020"
         }
       ],
       "outbound": [
@@ -2642,17 +2642,17 @@ Canonical snapshot is from before EVID176 creation; full bodies referenced by ha
     "status": "draft",
     "depth": "standard",
     "slug": "evid-adr-027-rfc-014-independent-pre-source-architecture-and-policy-review",
-    "title": "ADR-027 RFC-014 independent pre-source architecture and policy review",
+    "title": "ADR-031 RFC-020 independent pre-source architecture and policy review",
     "links": {
       "inbound": [],
       "outbound": [
         {
           "relation": "informs",
-          "target": "ADR-027"
+          "target": "ADR-031"
         },
         {
           "relation": "informs",
-          "target": "RFC-014"
+          "target": "RFC-020"
         }
       ]
     },
@@ -2662,17 +2662,17 @@ Canonical snapshot is from before EVID176 creation; full bodies referenced by ha
     "status": "draft",
     "depth": "standard",
     "slug": "evid-adr-027-rfc-014-independent-guardian-source-phase-gate",
-    "title": "ADR-027 RFC-014 independent guardian source-phase gate",
+    "title": "ADR-031 RFC-020 independent guardian source-phase gate",
     "links": {
       "inbound": [],
       "outbound": [
         {
           "relation": "informs",
-          "target": "ADR-027"
+          "target": "ADR-031"
         },
         {
           "relation": "informs",
-          "target": "RFC-014"
+          "target": "RFC-020"
         }
       ]
     },
@@ -2682,13 +2682,13 @@ Canonical snapshot is from before EVID176 creation; full bodies referenced by ha
     "status": "draft",
     "depth": "tactical",
     "slug": null,
-    "title": "ADI analysis of RFC-014",
+    "title": "ADI analysis of RFC-020",
     "links": {
       "inbound": [],
       "outbound": [
         {
           "relation": "informs",
-          "target": "RFC-014"
+          "target": "RFC-020"
         }
       ]
     },
@@ -2698,13 +2698,13 @@ Canonical snapshot is from before EVID176 creation; full bodies referenced by ha
     "status": "draft",
     "depth": "standard",
     "slug": "note-adr-027-bounded-deep-engine-invocation-failure-and-preserved-receipts",
-    "title": "ADR-027 bounded Deep engine invocation failure and preserved receipts",
+    "title": "ADR-031 bounded Deep engine invocation failure and preserved receipts",
     "links": {
       "inbound": [],
       "outbound": [
         {
           "relation": "informs",
-          "target": "ADR-027"
+          "target": "ADR-031"
         }
       ]
     },
@@ -2714,13 +2714,13 @@ Canonical snapshot is from before EVID176 creation; full bodies referenced by ha
     "status": "draft",
     "depth": "tactical",
     "slug": null,
-    "title": "ADI analysis of ADR-027",
+    "title": "ADI analysis of ADR-031",
     "links": {
       "inbound": [],
       "outbound": [
         {
           "relation": "informs",
-          "target": "ADR-027"
+          "target": "ADR-031"
         }
       ]
     },
@@ -2909,32 +2909,32 @@ Throwaway link-existence/heading inspection (raw references inside code fences i
   },
   {
     "from": "docs/methodology/QUALITY-GATES.md",
-    "ref": "../../.forgeplan/adrs/ADR-027-finite-evidence-backed-independent-review-without-a-defect-quota.md",
-    "target": ".forgeplan/adrs/ADR-027-finite-evidence-backed-independent-review-without-a-defect-quota.md",
+    "ref": "../../.forgeplan/adrs/ADR-031-finite-evidence-backed-independent-review-without-a-defect-quota.md",
+    "target": ".forgeplan/adrs/ADR-031-finite-evidence-backed-independent-review-without-a-defect-quota.md",
     "exists": true,
     "anchor": null,
     "anchorFound": true
   },
   {
     "from": "docs/methodology/QUALITY-GATES.md",
-    "ref": "../../.forgeplan/rfcs/RFC-014-core-review-policy-bounded-documentation-cutover.md",
-    "target": ".forgeplan/rfcs/RFC-014-core-review-policy-bounded-documentation-cutover.md",
+    "ref": "../../.forgeplan/rfcs/RFC-020-core-review-policy-bounded-documentation-cutover.md",
+    "target": ".forgeplan/rfcs/RFC-020-core-review-policy-bounded-documentation-cutover.md",
     "exists": true,
     "anchor": null,
     "anchorFound": true
   },
   {
     "from": "docs/methodology/QUALITY-GATES.md",
-    "ref": "../../.forgeplan/adrs/ADR-027-finite-evidence-backed-independent-review-without-a-defect-quota.md",
-    "target": ".forgeplan/adrs/ADR-027-finite-evidence-backed-independent-review-without-a-defect-quota.md",
+    "ref": "../../.forgeplan/adrs/ADR-031-finite-evidence-backed-independent-review-without-a-defect-quota.md",
+    "target": ".forgeplan/adrs/ADR-031-finite-evidence-backed-independent-review-without-a-defect-quota.md",
     "exists": true,
     "anchor": null,
     "anchorFound": true
   },
   {
     "from": "docs/methodology/QUALITY-GATES.md",
-    "ref": "../../.forgeplan/rfcs/RFC-014-core-review-policy-bounded-documentation-cutover.md",
-    "target": ".forgeplan/rfcs/RFC-014-core-review-policy-bounded-documentation-cutover.md",
+    "ref": "../../.forgeplan/rfcs/RFC-020-core-review-policy-bounded-documentation-cutover.md",
+    "target": ".forgeplan/rfcs/RFC-020-core-review-policy-bounded-documentation-cutover.md",
     "exists": true,
     "anchor": null,
     "anchorFound": true
@@ -2957,32 +2957,32 @@ Throwaway link-existence/heading inspection (raw references inside code fences i
   },
   {
     "from": "docs/methodology/QUALITY-GATES.ru.md",
-    "ref": "../../.forgeplan/adrs/ADR-027-finite-evidence-backed-independent-review-without-a-defect-quota.md",
-    "target": ".forgeplan/adrs/ADR-027-finite-evidence-backed-independent-review-without-a-defect-quota.md",
+    "ref": "../../.forgeplan/adrs/ADR-031-finite-evidence-backed-independent-review-without-a-defect-quota.md",
+    "target": ".forgeplan/adrs/ADR-031-finite-evidence-backed-independent-review-without-a-defect-quota.md",
     "exists": true,
     "anchor": null,
     "anchorFound": true
   },
   {
     "from": "docs/methodology/QUALITY-GATES.ru.md",
-    "ref": "../../.forgeplan/rfcs/RFC-014-core-review-policy-bounded-documentation-cutover.md",
-    "target": ".forgeplan/rfcs/RFC-014-core-review-policy-bounded-documentation-cutover.md",
+    "ref": "../../.forgeplan/rfcs/RFC-020-core-review-policy-bounded-documentation-cutover.md",
+    "target": ".forgeplan/rfcs/RFC-020-core-review-policy-bounded-documentation-cutover.md",
     "exists": true,
     "anchor": null,
     "anchorFound": true
   },
   {
     "from": "docs/methodology/QUALITY-GATES.ru.md",
-    "ref": "../../.forgeplan/adrs/ADR-027-finite-evidence-backed-independent-review-without-a-defect-quota.md",
-    "target": ".forgeplan/adrs/ADR-027-finite-evidence-backed-independent-review-without-a-defect-quota.md",
+    "ref": "../../.forgeplan/adrs/ADR-031-finite-evidence-backed-independent-review-without-a-defect-quota.md",
+    "target": ".forgeplan/adrs/ADR-031-finite-evidence-backed-independent-review-without-a-defect-quota.md",
     "exists": true,
     "anchor": null,
     "anchorFound": true
   },
   {
     "from": "docs/methodology/QUALITY-GATES.ru.md",
-    "ref": "../../.forgeplan/rfcs/RFC-014-core-review-policy-bounded-documentation-cutover.md",
-    "target": ".forgeplan/rfcs/RFC-014-core-review-policy-bounded-documentation-cutover.md",
+    "ref": "../../.forgeplan/rfcs/RFC-020-core-review-policy-bounded-documentation-cutover.md",
+    "target": ".forgeplan/rfcs/RFC-020-core-review-policy-bounded-documentation-cutover.md",
     "exists": true,
     "anchor": null,
     "anchorFound": true
@@ -3141,8 +3141,8 @@ Throwaway link-existence/heading inspection (raw references inside code fences i
   },
   {
     "from": "CHANGELOG.md",
-    "ref": ".forgeplan/adrs/ADR-027-finite-evidence-backed-independent-review-without-a-defect-quota.md",
-    "target": ".forgeplan/adrs/ADR-027-finite-evidence-backed-independent-review-without-a-defect-quota.md",
+    "ref": ".forgeplan/adrs/ADR-031-finite-evidence-backed-independent-review-without-a-defect-quota.md",
+    "target": ".forgeplan/adrs/ADR-031-finite-evidence-backed-independent-review-without-a-defect-quota.md",
     "exists": true,
     "anchor": null,
     "anchorFound": true
@@ -3178,13 +3178,13 @@ Of1788 baseline files,1786 remain byte-identical. Only the two NONprotected new 
 ```json
 [
   {
-    "path": ".forgeplan/adrs/ADR-027-finite-evidence-backed-independent-review-without-a-defect-quota.md",
+    "path": ".forgeplan/adrs/ADR-031-finite-evidence-backed-independent-review-without-a-defect-quota.md",
     "only_one_appended_LF": true,
     "before": "0ee887e9e7f50fca172da9fa6333734c637893f7d0351fa933000076d19f1daa",
     "after": "1a283d007a90355f8bcd1bc90164cf3bd0de10cba076c38f16b9bf180073a2b5"
   },
   {
-    "path": ".forgeplan/rfcs/RFC-014-core-review-policy-bounded-documentation-cutover.md",
+    "path": ".forgeplan/rfcs/RFC-020-core-review-policy-bounded-documentation-cutover.md",
     "only_one_appended_LF": true,
     "before": "a9fa5ed7737b22fb3dedc656e1a755f3e661800fb23ad9b98e1df85bb9994e51",
     "after": "1873d9bd604385da71cc6373de5a9eba84006e75c58c90cc5fe40784823b5c33"

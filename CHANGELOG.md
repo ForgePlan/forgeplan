@@ -13,6 +13,26 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ### Added
 
+- **`score_raw` and `type_modifier` on every evidence item** returned by `forgeplan score --json` and by the MCP `forgeplan_score` tool (`EvidenceDto`). They expose the own-merit score and the evidence-source deduction that separate it from the effective `score`, so a caller can reconcile an artifact's R_eff against the packs listed beneath it without reading the source. Both are `#[serde(default)]`, so a consumer that ignores them is unaffected.
+
+### Changed
+
+- **`score` on an evidence item now carries the EFFECTIVE value** — what the weakest-link `min` consumes — rather than the pre-modifier raw value. For `test` and `measurement` packs (modifier 0.0) nothing moves; a `benchmark` pack now reports 0.1 lower and an `audit` pack 0.2 lower than before, on both the CLI `--json` and MCP surfaces. The pre-modifier number remains available as `score_raw`. Scripted consumers that compared `score` against a hard-coded expectation should re-baseline.
+
+### Fixed
+
+- **The evidence breakdown showed a number the score was not computed from** — the per-item line printed `raw_evidence_score` while the aggregate used `score_evidence_full`, which additionally subtracts the evidence-type modifier (`benchmark` −0.1, `audit` −0.2). An `audit` pack rendered as `= 0.5` directly above `R_eff: 0.30`, with nothing in the output to bridge the gap. The CLI text now names the deduction inline (`0.3 (audit −0.2)`), and CLI `--json` plus the MCP `EvidenceDto` gained `score_raw` and `type_modifier` so the arithmetic is reconstructible from the payload alone.
+
+- **The confidence interval did not contain the score it bracketed** — `r_eff_ci` was derived from the flat `r_eff()` (no dependency walk, no type modifier) while the reported `R_eff` came from the recursive engine. A single `forgeplan score --json` payload could therefore carry `r_eff` beside an `r_eff_ci.point` computed by a different formula. The band is now centred on the score the command actually reports.
+
+- **The R_eff walk and breakdown are now deterministic by construction** — `deps` and `evidence_items` are sorted before use, so the same graph prints the same report on any machine regardless of storage or link-creation order (ADR-021).
+
+### Internal
+
+- **PROB-086 / PROB-087 / ADR-021** record the dependency-vs-evidence double-count class (an outgoing edge into an evidence pack is harvested as evidence AND walked as a dependency), its rejected alternatives, and the measured blast radius. Eight E2E regressions land in `crates/forgeplan-cli/tests/cli_score_evidence_semantics.rs`.
+
+### Added
+
 - ContextPack supports explicit source-qualified seeds, declared relation
   closure, complete source-text units, response byte caps and continuation.
   Source, traversal and delivery completeness are reported separately. Compact
@@ -437,6 +457,15 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
   на обоих surface).
 - Локальная сборка `0.39.0+constellation.s1.1` проверена по описанной локальной матрице на macOS (EVID-183, снимок `s1-local-v0396`); четыре оговорки предыдущего среза закрыты исполнением: (a) `constellation pack` отвечает `InsufficientBudget { budget_tokens, smallest_unit_tokens }`, когда бюджет меньше самой маленькой подходящей строки, и сериализует `payload_bytes` при нормальном бюджете; (b) `constellation impact` и `graph` принимают `KEY@src:<hash>` / `@<segment>` / `@<suffix>` и сужают walk к указанному источнику; (c) `constellation_open` запоминает `source_set_digest` каждого источника, а scope-чтения возвращают `snapshot_expired` вместо тихой выдачи новых байт — трёхпроектный федеративный probe: 25/25 PASS, 3 OBSERVED; (d) векторы покрывают всё тело через непрерывные окна секций (реальный документ с 3290-символьным телом получил 4 ready rows и хвостовой токен найден со score 0.541). Дополнительно `--semantic` пропускает model load, когда `count_eligible_semantic` возвращает 0 (CLI без опубликованных векторов отвечает за 0.01 с). Инференс остаётся per-process; daemon — отдельная задача. Матрица v0396: оба feature-режима, 5683 кейса + 10 doctests, 0 падений; fingerprints unchanged между прогонами. Это исторический результат EVID-183, а не повторная приёмка в рамках документационной проверки.
 
+
+### Added
+
+- **Необязательный reasoning effort для `codex-cli`**: `llm.effort`
+  принимает `none`, `minimal`, `low`, `medium`, `high`, `xhigh` и передаётся
+  через `-c model_reasoning_effort="<value>"`. Без поля или с `null`
+  аргументы запуска не меняются. Read-only sandbox сохранён; другие
+  провайдеры поле не используют. Добавлены тесты аргументов и конфигурации.
+  Успех запроса не считается подтверждением effective effort провайдера.
 
 ## [0.38.0] - 2026-10-12
 

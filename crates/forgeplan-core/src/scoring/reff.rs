@@ -89,6 +89,19 @@ pub fn raw_evidence_score(e: &EvidenceItem) -> f64 {
     score_evidence(e)
 }
 
+/// Effective score of a single evidence item — the number the recursive engine
+/// actually feeds into the weakest-link min.
+///
+/// This differs from [`raw_evidence_score`] by the evidence-type modifier
+/// (`benchmark` −0.1, `audit` −0.2; see [`evidence_type_to_cl_modifier`]).
+/// Breakdown renderers must show THIS value: printing the raw score next to an
+/// `R_eff` derived from the full one produced output no reader could reconcile
+/// — an `audit` pack rendered as `= 0.5` above an `R_eff` of 0.30, with nothing
+/// in between to explain the gap.
+pub fn full_evidence_score(e: &EvidenceItem) -> f64 {
+    score_evidence_full(e)
+}
+
 /// Score a single evidence item.
 fn score_evidence(e: &EvidenceItem) -> f64 {
     // Expired evidence = 0.1 (stale, not absent)
@@ -179,7 +192,23 @@ impl ReffCi {
 /// With N=9 evidence, uncertainty ≈ 0.10 (tighter).
 /// With N=100 evidence, uncertainty ≈ 0.03 (confident).
 pub fn r_eff_with_ci(evidence: &[EvidenceItem]) -> ReffCi {
-    let point = r_eff(evidence);
+    r_eff_ci_around(r_eff(evidence), evidence)
+}
+
+/// Same band, centred on an externally supplied point estimate.
+///
+/// Callers that report the RECURSIVE score (`r_eff_recursive`, which also walks
+/// dependencies and applies the evidence-type modifier) must use this and pass
+/// that score. Deriving the band from `r_eff()` instead produced an interval
+/// that did not contain the number printed beside it — `forgeplan score
+/// PROB-047 --json` emitted `r_eff: 0.00` next to `r_eff_ci.point: 1.00`, and
+/// the text band `[0.83 — 1.00]` sat entirely above an `R_eff` of 0.80. A
+/// confidence interval that excludes its own point estimate is worse than none.
+///
+/// The width heuristic is unchanged: it describes how much evidence the
+/// estimate rests on, which is independent of where the estimate landed.
+pub fn r_eff_ci_around(point: f64, evidence: &[EvidenceItem]) -> ReffCi {
+    let point = point.clamp(0.0, 1.0);
     // ADR-020: the CI describes the same population the point estimate was
     // computed over — terminal-status packs are excluded from both, so a
     // superseded pack neither narrows the interval nor counts as "evidence".
@@ -190,10 +219,17 @@ pub fn r_eff_with_ci(evidence: &[EvidenceItem]) -> ReffCi {
         .count();
 
     if count == 0 {
+        // No eligible evidence, so the band has no width to describe — but
+        // carry the caller's point through rather than substituting 0.0.
+        // Today the two always coincide (an artifact with no eligible evidence
+        // has self_score 0.0, and the final score can never exceed it), so this
+        // is not a live divergence. It is written this way because silently
+        // discarding the supplied point is precisely the class of bug this
+        // function was introduced to remove.
         return ReffCi {
-            point: 0.0,
-            low: 0.0,
-            high: 0.0,
+            point,
+            low: point,
+            high: point,
             evidence_count: 0,
             stale_count: 0,
         };
@@ -505,6 +541,12 @@ async fn assurance_recursive(
         }
         evidence_items.push(parse_evidence_from_record(rec));
     }
+    // The self-score is a `min`, so its VALUE does not care about order — but
+    // the breakdown table and the `factors` audit trail are rendered in this
+    // order, and `list_records` carries no ORDER BY. Sort so the same graph
+    // prints the same report twice, which is what makes the output diffable and
+    // safe for an agent to parse positionally.
+    evidence_items.sort_by(|a, b| a.id.cmp(&b.id));
 
     // PRD-086 FR-001 (#325). An EvidencePack asked for its evidence finds none —
     // a pack has no packs — and the empty-evidence branch below returns 0.0 with
@@ -591,7 +633,7 @@ async fn assurance_recursive(
     // makes trust in the measurement flow down from the decision it justifies —
     // backwards. A pack does not become less reliable because the PRD it
     // informs is poorly evidenced elsewhere.
-    let deps: Vec<(String, String)> = outgoing
+    let dep_edges: Vec<(String, String)> = outgoing
         .iter()
         .filter(|(_, rel_type)| dep_relation_types.contains(rel_type.as_str()))
         .filter(|(_, rel_type)| {
@@ -599,15 +641,40 @@ async fn assurance_recursive(
         })
         .cloned()
         .collect();
+    // `get_relations` returns link-creation order, which is unrelated to id
+    // order. The walk order is observable — `weakest_link` ties keep the first
+    // minimum, `factors` are emitted in walk order, and cycle detection gives
+    // the FIRST path to a node its real score and later paths a neutral 1.0,
+    // so when those paths carry different relation types their CL penalties
+    // differ and the resulting min differs with them. Sorting pins the walk to
+    // the graph, not to storage order.
+    //
+    // Relations name their endpoints by the canonical key (`prd-<slug>-k<hash>`),
+    // whose order is driven by the hash suffix — NOT the display id. Sorting on
+    // the key therefore does NOT sort PRD-002 before PRD-003. The walk order the
+    // report (and the reader) can act on is the DISPLAY id, so each dep's
+    // record is resolved once up front and the sort runs on `record.id`. The
+    // resolved record is carried into the loop so the per-dep fetch is not
+    // repeated.
+    let mut deps: Vec<(String, String, Option<ArtifactRecord>)> =
+        Vec::with_capacity(dep_edges.len());
+    for (dep_key, rel_type) in dep_edges {
+        let rec = source.record(&dep_key).await.ok().flatten();
+        deps.push((dep_key, rel_type, rec));
+    }
+    deps.sort_by(|a, b| {
+        let ida = a.2.as_ref().map(|r| r.id.as_str()).unwrap_or(a.0.as_str());
+        let idb = b.2.as_ref().map(|r| r.id.as_str()).unwrap_or(b.0.as_str());
+        ida.cmp(idb)
+    });
 
     let mut min_dep_score = 1.0_f64;
     let mut weakest_link: Option<String> = None;
 
-    for (dep_id, rel_type) in &deps {
+    for (dep_id, rel_type, dep_record) in &deps {
         // The relations name their endpoints by the canonical key; a report
         // names the document by its display id, which is what a reader can
-        // act on.
-        let dep_record = source.record(dep_id).await.ok().flatten();
+        // act on. The record was already resolved for the sort above.
         let dep_name = dep_record
             .as_ref()
             .map(|record| record.id.clone())
@@ -640,6 +707,21 @@ async fn assurance_recursive(
                 factors.push(format!(
                     "Skipped {dep_name} (kind: {} — exempt from evidence by routing depth)",
                     dep_record.kind
+                ));
+                continue;
+            }
+
+            // ADR-021 / PROB-086. An edge whose TARGET is an evidence pack
+            // belongs to evidence collection (concern 1), not dependency
+            // recursion (concern 2). The self-score already harvested this same
+            // edge — in BOTH link directions — as evidence for `id`; walking it
+            // again as a dependency double-counts it, and the recursion pulls
+            // the pack's own score (often 0, or a cap like 0.9) into the
+            // weakest-link min. The edge lands as credit AND as punishment, and
+            // the punishment wins. Skip it, logged, rather than recurse.
+            if dep_record.kind.eq_ignore_ascii_case("evidence") {
+                factors.push(format!(
+                    "Skipped {dep_name} (kind: evidence — belongs to evidence collection, not a dependency)"
                 ));
                 continue;
             }
