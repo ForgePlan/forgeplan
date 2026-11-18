@@ -6,6 +6,9 @@ depth: standard
 domain: general
 epic: null
 id: PRD-092
+links:
+- target: RFC-004
+  relation: refines
 predicted_number: 92
 priority: P1
 projectType: cli_tool
