@@ -9,6 +9,8 @@ links:
   relation: refines
 - target: spec-self-maintaining-index-behavioral-kb75e8c4dd214d20a5a0c66be7f58e3b6
   relation: informs
+- target: adr-auto-bootstrap-embedding-model-on-first-k4bc7428c92fb6a28491150932056679a
+  relation: based_on
 slug: rfc-self-maintaining-index-implementation-lazy-kf0d0b22cb8397eec7c48495bb3005577
 status: Draft
 title: Self-maintaining index implementation — lazy sync, durable embedding queue, model bootstrap
