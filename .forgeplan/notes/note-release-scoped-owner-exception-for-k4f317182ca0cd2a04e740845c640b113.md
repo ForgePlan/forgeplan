@@ -3,7 +3,7 @@ assigned_number: 59
 author: null
 created: 2026-11-14
 depth: tactical
-id: NOTE-065
+id: NOTE-059
 kind: note
 links:
 - target: rfc-plan-cli-mcp-workspaceread-auxiliary-history
