@@ -188,4 +188,4 @@ Then the pass completes and reports `verified: nothing staged` or reconciles
 - RFC-004 — Files-First Architecture (Phase 1 lazy sync, Phase 2 watcher)
 - ADR-003 — Markdown = source of truth
 - PROB-067 / SPEC-005 / RFC-009 / ADR-012 — Constellation identity work (same store)
-- GitHub issues: json-envelope bug, corrupt-config bug (drafts in `.local/issue-*.md`)
+- GitHub #568 — `--json` error-path envelope bug; #569 — corrupt-config index bug

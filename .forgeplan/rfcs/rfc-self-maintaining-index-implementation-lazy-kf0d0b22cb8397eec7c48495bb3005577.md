@@ -7,6 +7,8 @@ id: RFC-021
 links:
 - target: prd-self-maintaining-derived-index-lazy-sync-kff438581336d5e91e7a2662055c61575
   relation: refines
+- target: spec-self-maintaining-index-behavioral-kb75e8c4dd214d20a5a0c66be7f58e3b6
+  relation: informs
 slug: rfc-self-maintaining-index-implementation-lazy-kf0d0b22cb8397eec7c48495bb3005577
 status: Draft
 title: Self-maintaining index implementation — lazy sync, durable embedding queue, model bootstrap
@@ -133,4 +135,4 @@ For output/config bugs:
 - RFC-004 — Files-First Architecture (completes Phase 1)
 - ADR-003 — Markdown source of truth
 - PROB-067 / SPEC-005 / RFC-009 / ADR-012 — Constellation identity work
-- `.local/issue-571-json-envelope.md`, `.local/issue-572-corrupt-config.md` — pending GitHub issue drafts
+- GitHub #568 — `--json` error-path envelope bug; #569 — corrupt-config index bug
