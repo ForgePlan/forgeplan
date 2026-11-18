@@ -1135,24 +1135,34 @@ impl LanceStore {
         let lance = workspace_path.join("lance");
         migrate::ensure_legacy_layout(&lance)?;
         if migrate::read_identity_v5_marker(&lance)?.is_none() {
-            for name in ["artifacts", "relations", "evidence"] {
-                let path = lance.join(format!("{name}.lance"));
-                let metadata = std::fs::metadata(&path).map_err(|error| {
-                    anyhow::anyhow!(
-                        "legacy index table {} is unavailable: {error}",
-                        path.display()
-                    )
-                })?;
-                if !metadata.is_dir() {
-                    anyhow::bail!("legacy index table {} is not a directory", path.display());
+            let has_legacy_tables = ["artifacts", "relations", "evidence"]
+                .iter()
+                .any(|name| lance.join(format!("{name}.lance")).exists());
+            if has_legacy_tables {
+                for name in ["artifacts", "relations", "evidence"] {
+                    let path = lance.join(format!("{name}.lance"));
+                    let metadata = std::fs::metadata(&path).map_err(|error| {
+                        anyhow::anyhow!(
+                            "legacy index table {} is unavailable: {error}",
+                            path.display()
+                        )
+                    })?;
+                    if !metadata.is_dir() {
+                        anyhow::bail!("legacy index table {} is not a directory", path.display());
+                    }
                 }
+                let legacy = Self::open(workspace_path).await?;
+                let db = Self::connect_for_write(workspace_path, _lock).await?;
+                super::auxiliary::check_identity_change_log(&db).await?;
+                drop(legacy);
+                drop(db);
+                migrate::run_identity_v5_migration(workspace_path, _lock).await?;
+            } else {
+                // A missing or empty lance directory on a workspace that holds
+                // canonical Markdown is a fresh index, not a missing index —
+                // bootstrap identity-v5 directly from the Markdown source.
+                migrate::run_identity_v5_initialization(workspace_path, _lock, true).await?;
             }
-            let legacy = Self::open(workspace_path).await?;
-            let db = Self::connect_for_write(workspace_path, _lock).await?;
-            super::auxiliary::check_identity_change_log(&db).await?;
-            drop(legacy);
-            drop(db);
-            migrate::run_identity_v5_migration(workspace_path, _lock).await?;
         }
         let verified = Self::open(workspace_path).await?;
         let db = Self::connect_for_write(workspace_path, _lock).await?;
