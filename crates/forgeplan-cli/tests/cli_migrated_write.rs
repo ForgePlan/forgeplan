@@ -1586,7 +1586,12 @@ fn single_score_on_a_migrated_workspace_reports_the_whole_assurance_chain() {
     assert_eq!(evidence[0]["id"], "EVID-001");
     assert_eq!(evidence[1]["id"], "EVID-002");
     assert_eq!(evidence[0]["score"].as_f64(), Some(1.0));
-    assert_eq!(evidence[1]["score"].as_f64(), Some(0.5));
+    // ADR-021: `score` is the EFFECTIVE value the weakest-link min consumes —
+    // benchmark's −0.1 type modifier already applied. `score_raw` keeps the
+    // own-merit 0.5; the payload is self-consistent (score == raw − modifier).
+    assert_eq!(evidence[1]["score"].as_f64(), Some(0.4));
+    assert_eq!(evidence[1]["score_raw"].as_f64(), Some(0.5));
+    assert_eq!(evidence[1]["type_modifier"].as_f64(), Some(0.1));
     assert_eq!(
         evidence[1]["verdict"], "Weakens",
         "the weaker pack must be reported as such, not silently dropped"
@@ -1767,9 +1772,9 @@ fn single_score_on_a_legacy_workspace_still_reports_the_same_numbers() {
 
     // 0.4, not the raw 0.5: `verdict: weakens` contributes 0.5 and the
     // `benchmark` evidence type applies a -0.1 congruence-level penalty
-    // (`evidence_type_modifier_benchmark_slight_penalty`). The per-pack
-    // `score` field still reports the pre-penalty 0.5, which is where the
-    // earlier 0.5 expectation came from.
+    // (`evidence_type_modifier_benchmark_slight_penalty`). After ADR-021 the
+    // per-pack `score` field reports the effective value too; `score_raw`
+    // keeps the pre-penalty 0.5.
     assert_eq!(
         payload["r_eff"].as_f64(),
         Some(0.4),
