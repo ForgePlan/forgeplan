@@ -1,7 +1,7 @@
 ---
 author: null
 depth: tactical
-id: NOTE-055
+id: NOTE-064
 kind: note
 links:
 - target: PRD-090
@@ -13,7 +13,7 @@ title: ADI analysis of PRD-090
 valid_until: null
 ---
 
-# ADI Record: NOTE-055
+# ADI Record: NOTE-064
 
 **Artifact**: PRD-090 (prd)
 **Model**: openai/MiniMax-M3.1-Flash-Preview
@@ -25,7 +25,7 @@ valid_until: null
 
 ```json
 {
-  "id": "NOTE-055",
+  "id": "NOTE-064",
   "artifact_id": "PRD-090",
   "created_at": "2026-10-28T20:25:17",
   "model": "openai/MiniMax-M3.1-Flash-Preview",

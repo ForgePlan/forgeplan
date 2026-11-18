@@ -1,11 +1,11 @@
 ---
 depth: deep
-id: SPEC-007
+id: SPEC-012
 kind: spec
 last_modified_at: 2026-10-16T18:01:36.041378+00:00
 last_modified_by: omp-coding-agent/1.0.0
 links:
-- target: PRD-087
+- target: PRD-091
   relation: based_on
 status: draft
 title: Website onboarding — bounded selection and public guidance behavior
@@ -25,7 +25,7 @@ updated: 2026-10-16
 
 ## Summary
 
-Автор: specification/Profile A, Eli Rum (https://elirum.me). Candidate r1 от 2026-10-16 для PRD-087, task zWV3XYCwiIeccztMcbhc. Только Shape. Требования и Scenario blocks фиксируются как кандидат независимого design review, НЕ активный SPEC/TDD oracle. Creator не сертифицирует результат. Все MUST/NEVER ниже — обязательства будущей реализации, не утверждения о существующем исполнении.
+Автор: specification/Profile A, Eli Rum (https://elirum.me). Candidate r1 от 2026-10-16 для PRD-091, task zWV3XYCwiIeccztMcbhc. Только Shape. Требования и Scenario blocks фиксируются как кандидат независимого design review, НЕ активный SPEC/TDD oracle. Creator не сертифицирует результат. Все MUST/NEVER ниже — обязательства будущей реализации, не утверждения о существующем исполнении.
 
 ## Scope
 
@@ -355,7 +355,7 @@ Candidate r1, 2026-10-16: stable consumer semantics and S01–S36 for independen
 
 ## Related
 
-Core PRD-087 based_on parent; core active PRD-024/PRD-047 contextual ancestors. Authoritative task brief: `/Users/explosovebit/.omp/agent/sessions/-Work-GertsAi-gertsai_codex/2026-10-16T13-13-31-137Z_01a144d8-a501-7048-9171-61e9652343dd/local/website-onboarding-shape-execution.md`. Primary Claude source fetched 2026-10-16: https://code.claude.com/docs/en/memory#agents-md (native support/modes/settings/legacy/approval/hooks/additional dirs); this is vendor documentation, not runtime proof. Source anchors, ownership, policy and handback details: PRD-087.
+Core PRD-091 based_on parent; core active PRD-024/PRD-047 contextual ancestors. Authoritative task brief: `/Users/explosovebit/.omp/agent/sessions/-Work-GertsAi-gertsai_codex/2026-10-16T13-13-31-137Z_01a144d8-a501-7048-9171-61e9652343dd/local/website-onboarding-shape-execution.md`. Primary Claude source fetched 2026-10-16: https://code.claude.com/docs/en/memory#agents-md (native support/modes/settings/legacy/approval/hooks/additional dirs); this is vendor documentation, not runtime proof. Source anchors, ownership, policy and handback details: PRD-091.
 
 
 ## Candidate Freeze Record

@@ -5,12 +5,12 @@ kind: evidence
 last_modified_at: 2026-10-16T21:46:45.650594+00:00
 last_modified_by: omp-coding-agent/1.0.0
 links:
-- target: ADR-027
+- target: ADR-031
   relation: informs
-- target: RFC-014
+- target: RFC-020
   relation: informs
 status: active
-title: ADR-027 RFC-014 r2 independent corrected core policy source verification
+title: ADR-031 RFC-020 r2 independent corrected core policy source verification
 ---
 
 ---
@@ -32,7 +32,7 @@ evidence_type: audit
 ## Gate verdict and exact scope
 
 source_acceptance: PASS
-gate_scope: current integrated 17-file documentation-source candidate of RFC-014, r2 only
+gate_scope: current integrated 17-file documentation-source candidate of RFC-020, r2 only
 new_source_findings: 0
 historical_findings_fixed_and_independently_verified: SRC-H1, SRC-M1, SRC-M2, SRC-L1
 final_guardian_completed: false
@@ -41,11 +41,11 @@ runtime_verified: false
 shipped_new_template_verified: false
 website_or_producer_acceptance: false
 
-**PASS только текущего исходного регламента r2.** Исправления четырёх реальных расхождений EVID-176 независимо проверены по actual integrated тексту и соответствующим решениям ADR-027 D1–D4. Ноль новых находок — результат полного чтения, сопоставления и отрицательных случаев, не условие автоматического завершения. Это один отдельный source/code-policy reviewer, не финальный guardian и не заявление об исполнении всех reviewer-профилей полного конвейера. Новые ADR-027/RFC-014 остаются draft/deep. Состояние политики «уже действует» этим PASS не объявляется.
+**PASS только текущего исходного регламента r2.** Исправления четырёх реальных расхождений EVID-176 независимо проверены по actual integrated тексту и соответствующим решениям ADR-031 D1–D4. Ноль новых находок — результат полного чтения, сопоставления и отрицательных случаев, не условие автоматического завершения. Это один отдельный source/code-policy reviewer, не финальный guardian и не заявление об исполнении всех reviewer-профилей полного конвейера. Новые ADR-031/RFC-020 остаются draft/deep. Состояние политики «уже действует» этим PASS не объявляется.
 
 ## Identity, independence and owning authority
 
-Дата фактического review: 2026-10-17. Owning workspace `/Users/explosovebit/Work/ForgePlan`. Новый OMP `openai-codex/gpt-6.1-sol`, назначенный High, approved run-local overlay, Profile B source/code-policy reviewer. Этот контекст не создавал ADR-027/RFC-014, MiniMax source, EVID-174/175/176 или NOTE-054/055/056. Дочерние reviewers/writers не запускались. Runtime сообщает модель; High задан поручением. Серверная телеметрия фактического effort недоступна и не заявляется. Единственный автор проекта — Eli Rum, https://elirum.me. Собственный независимый результат находится в этом EVID, не в авторской самооценке.
+Дата фактического review: 2026-10-17. Owning workspace `/Users/explosovebit/Work/ForgePlan`. Новый OMP `openai-codex/gpt-6.1-sol`, назначенный High, approved run-local overlay, Profile B source/code-policy reviewer. Этот контекст не создавал ADR-031/RFC-020, MiniMax source, EVID-174/175/176 или NOTE-054/055/056. Дочерние reviewers/writers не запускались. Runtime сообщает модель; High задан поручением. Серверная телеметрия фактического effort недоступна и не заявляется. Единственный автор проекта — Eli Rum, https://elirum.me. Собственный независимый результат находится в этом EVID, не в авторской самооценке.
 
 Полностью прочитан первичный owner source `/Users/explosovebit/.omp/agent/sessions/-Work-GertsAi-gertsai_codex/2026-10-16T13-13-31-137Z_01a144d8-a501-7048-9171-61e9652343dd/local/website-core-policy-approval.md`; фактический SHA256 `6baeae5735372ed2e2a07bb0761c5aeb89643bd0fd5d7d8055f0361a9b3dc1c8`. Ответ **«Да, оформить и в core»** на **«Применить и в ForgePlan core принцип: независимый review может завершиться PASS без квоты на дефекты, если проверка полная и доказательства достаточны?»**; одобрено **«Отдельно оформить изменение регламента с независимой проверкой; остальные gates остаются обязательными.»** Это основание рассмотреть поправку без фабрикации findings, а не досрочная общая нормативная сила draft или разрешение activation/runtime.
 
@@ -53,9 +53,9 @@ website_or_producer_acceptance: false
 
 ## Current decisions and full prior evidence chain
 
-Самостоятельные canonical CLI `forgeplan get ID --json` из owning cwd для всех 15 записей таблицы pins ниже, каждый exit0; mounted get ADR/RFC/EVID также вернул актуальные объекты. Полностью прочитаны ADR-027/RFC-014, active ADR-025/003 со всеми amendments, EVID-174/175/176, NOTE-054/056 с исходными полными engine outputs и NOTE-055 с failed-call receipt. Digest canonical body — SHA256 точных UTF-8 JSON body, включая внутренний template YAML, без внешнего projection frontmatter и без нормализации. Protected EVID-172/173, NOTE-053, PRD-087/SPEC-007 получены целиком и закреплены для сохранности, не для нового website fitness verdict.
+Самостоятельные canonical CLI `forgeplan get ID --json` из owning cwd для всех 15 записей таблицы pins ниже, каждый exit0; mounted get ADR/RFC/EVID также вернул актуальные объекты. Полностью прочитаны ADR-031/RFC-020, active ADR-025/003 со всеми amendments, EVID-174/175/176, NOTE-054/056 с исходными полными engine outputs и NOTE-055 с failed-call receipt. Digest canonical body — SHA256 точных UTF-8 JSON body, включая внутренний template YAML, без внешнего projection frontmatter и без нормализации. Protected EVID-172/173, NOTE-053, PRD-087/SPEC-007 получены целиком и закреплены для сохранности, не для нового website fitness verdict.
 
-ADR-027 body `8478e0267c1eeb4d8f1442476ff49bf4f4744c56835678db264c7e7798cad6d1`, RFC-014 body `1e7412e50aad464695de1e0096c5371c3e1baabb0181ab3abdf0ecad84511423`: оба совпали с переданными pins, draft/deep. ADR outbound based_on ADR-025/003 и informs RFC-014; RFC outbound based_on ADR-025/003. До моего EVID оба имеют независимые inbound EVID-174/175/176. NOTE-054 informs RFC; NOTE-055/056 informs ADR. Полные actual links сохранены ниже; старые входы не скрыты ради хорошего результата.
+ADR-031 body `8478e0267c1eeb4d8f1442476ff49bf4f4744c56835678db264c7e7798cad6d1`, RFC-020 body `1e7412e50aad464695de1e0096c5371c3e1baabb0181ab3abdf0ecad84511423`: оба совпали с переданными pins, draft/deep. ADR outbound based_on ADR-025/003 и informs RFC-020; RFC outbound based_on ADR-025/003. До моего EVID оба имеют независимые inbound EVID-174/175/176. NOTE-054 informs RFC; NOTE-055/056 informs ADR. Полные actual links сохранены ниже; старые входы не скрыты ради хорошего результата.
 
 EVID-174 `0f5668c6302d0a1591264a5183a5f962c3c9d354f438d4d9193bcc6ee5fad8af` и guardian EVID-175 `2932fe565d8d5d9c95aaf944e4921f407af77810fd6fa348aba0a58fc1f32fb2` — pre-source PASS, не source acceptance. Их narrow docs-only определение redline7 применимо именно этому регламенту: active ADR-025 отделяет процесс внешнего оркестратора от core graph, ADR-003 сохраняет file-first mutation через API/CLI. Снова прочитанные parents совместимы с actual Markdown-only изменением без нового runtime/storage/API. Это не общая отмена code/evidence перед activation и не собственная активация автора.
 
@@ -202,7 +202,7 @@ EVID-177 честно **может заменить актуальное пок�
 
 ```json
 {
-  "ADR-027": {
+  "ADR-031": {
     "status": "draft",
     "depth": "deep",
     "slug": "adr-finite-evidence-backed-independent-review-without-a-defect-quota",
@@ -243,12 +243,12 @@ EVID-177 честно **может заменить актуальное пок�
         },
         {
           "relation": "informs",
-          "target": "RFC-014"
+          "target": "RFC-020"
         }
       ]
     }
   },
-  "RFC-014": {
+  "RFC-020": {
     "status": "draft",
     "depth": "deep",
     "slug": "rfc-core-review-policy-bounded-documentation-cutover",
@@ -259,7 +259,7 @@ EVID-177 честно **может заменить актуальное пок�
       "inbound": [
         {
           "relation": "informs",
-          "source": "ADR-027"
+          "source": "ADR-031"
         },
         {
           "relation": "informs",
@@ -309,11 +309,11 @@ EVID-177 честно **может заменить актуальное пок�
         },
         {
           "relation": "based_on",
-          "source": "ADR-027"
+          "source": "ADR-031"
         },
         {
           "relation": "based_on",
-          "source": "RFC-014"
+          "source": "RFC-020"
         }
       ],
       "outbound": [
@@ -443,11 +443,11 @@ EVID-177 честно **может заменить актуальное пок�
         },
         {
           "relation": "based_on",
-          "source": "ADR-027"
+          "source": "ADR-031"
         },
         {
           "relation": "based_on",
-          "source": "RFC-014"
+          "source": "RFC-020"
         }
       ],
       "outbound": [
@@ -462,7 +462,7 @@ EVID-177 честно **может заменить актуальное пок�
     "status": "draft",
     "depth": "standard",
     "slug": "evid-adr-027-rfc-014-independent-pre-source-architecture-and-policy-review",
-    "title": "ADR-027 RFC-014 independent pre-source architecture and policy review",
+    "title": "ADR-031 RFC-020 independent pre-source architecture and policy review",
     "body_bytes": 40701,
     "body_sha256": "0f5668c6302d0a1591264a5183a5f962c3c9d354f438d4d9193bcc6ee5fad8af",
     "links": {
@@ -470,11 +470,11 @@ EVID-177 честно **может заменить актуальное пок�
       "outbound": [
         {
           "relation": "informs",
-          "target": "ADR-027"
+          "target": "ADR-031"
         },
         {
           "relation": "informs",
-          "target": "RFC-014"
+          "target": "RFC-020"
         }
       ]
     }
@@ -483,7 +483,7 @@ EVID-177 честно **может заменить актуальное пок�
     "status": "draft",
     "depth": "standard",
     "slug": "evid-adr-027-rfc-014-independent-guardian-source-phase-gate",
-    "title": "ADR-027 RFC-014 independent guardian source-phase gate",
+    "title": "ADR-031 RFC-020 independent guardian source-phase gate",
     "body_bytes": 49364,
     "body_sha256": "2932fe565d8d5d9c95aaf944e4921f407af77810fd6fa348aba0a58fc1f32fb2",
     "links": {
@@ -491,11 +491,11 @@ EVID-177 честно **может заменить актуальное пок�
       "outbound": [
         {
           "relation": "informs",
-          "target": "ADR-027"
+          "target": "ADR-031"
         },
         {
           "relation": "informs",
-          "target": "RFC-014"
+          "target": "RFC-020"
         }
       ]
     }
@@ -504,7 +504,7 @@ EVID-177 честно **может заменить актуальное пок�
     "status": "draft",
     "depth": "standard",
     "slug": "evid-adr-027-rfc-014-independent-integrated-source-verification",
-    "title": "ADR-027 RFC-014 independent integrated source verification",
+    "title": "ADR-031 RFC-020 independent integrated source verification",
     "body_bytes": 145129,
     "body_sha256": "3d0bb5864be86caa3d66d5877cec0809c42a1f9903e00060e1eacb368c604a2a",
     "links": {
@@ -512,11 +512,11 @@ EVID-177 честно **может заменить актуальное пок�
       "outbound": [
         {
           "relation": "informs",
-          "target": "ADR-027"
+          "target": "ADR-031"
         },
         {
           "relation": "informs",
-          "target": "RFC-014"
+          "target": "RFC-020"
         }
       ]
     }
@@ -525,7 +525,7 @@ EVID-177 честно **может заменить актуальное пок�
     "status": "draft",
     "depth": "tactical",
     "slug": null,
-    "title": "ADI analysis of RFC-014",
+    "title": "ADI analysis of RFC-020",
     "body_bytes": 42134,
     "body_sha256": "f884501e650d1ad24e848e3cf9d8934d09254de6103fa91345e575815f28f317",
     "links": {
@@ -533,7 +533,7 @@ EVID-177 честно **может заменить актуальное пок�
       "outbound": [
         {
           "relation": "informs",
-          "target": "RFC-014"
+          "target": "RFC-020"
         }
       ]
     }
@@ -542,7 +542,7 @@ EVID-177 честно **может заменить актуальное пок�
     "status": "draft",
     "depth": "standard",
     "slug": "note-adr-027-bounded-deep-engine-invocation-failure-and-preserved-receipts",
-    "title": "ADR-027 bounded Deep engine invocation failure and preserved receipts",
+    "title": "ADR-031 bounded Deep engine invocation failure and preserved receipts",
     "body_bytes": 14877,
     "body_sha256": "d32b2ba178e65e0f797ac209835e23f213cf045c297d21e842a456c59cb259e8",
     "links": {
@@ -550,7 +550,7 @@ EVID-177 честно **может заменить актуальное пок�
       "outbound": [
         {
           "relation": "informs",
-          "target": "ADR-027"
+          "target": "ADR-031"
         }
       ]
     }
@@ -559,7 +559,7 @@ EVID-177 честно **может заменить актуальное пок�
     "status": "draft",
     "depth": "tactical",
     "slug": null,
-    "title": "ADI analysis of ADR-027",
+    "title": "ADI analysis of ADR-031",
     "body_bytes": 40192,
     "body_sha256": "67d1aa41749f82a7efec0f13680d9bda8ce724bf559c9df26b7bb70b54a10e51",
     "links": {
@@ -567,7 +567,7 @@ EVID-177 честно **может заменить актуальное пок�
       "outbound": [
         {
           "relation": "informs",
-          "target": "ADR-027"
+          "target": "ADR-031"
         }
       ]
     }
@@ -1062,7 +1062,7 @@ SYN-r1 computed268 bytes / SHAa4470a220071f5377e876bf8d267e2fbd1360889935f27863d
         "location": "SYN-r1:4, runtime/activation clause",
         "claim": "candidate allows premature activation",
         "consequence": "An implementation gate could be advanced without its required evidence.",
-        "provenance": "fictional upstream finding supplied as an unresolved premise by RFC-014 case D; not established from r1",
+        "provenance": "fictional upstream finding supplied as an unresolved premise by RFC-020 case D; not established from r1",
         "resolution": null
       }
     ],
@@ -2921,32 +2921,32 @@ SYN-r1 computed268 bytes / SHAa4470a220071f5377e876bf8d267e2fbd1360889935f27863d
   {
     "from": "docs/methodology/QUALITY-GATES.md",
     "line": 58,
-    "ref": "../../.forgeplan/adrs/ADR-027-finite-evidence-backed-independent-review-without-a-defect-quota.md",
-    "target": ".forgeplan/adrs/ADR-027-finite-evidence-backed-independent-review-without-a-defect-quota.md",
+    "ref": "../../.forgeplan/adrs/ADR-031-finite-evidence-backed-independent-review-without-a-defect-quota.md",
+    "target": ".forgeplan/adrs/ADR-031-finite-evidence-backed-independent-review-without-a-defect-quota.md",
     "exists": true,
     "anchor_ok": true
   },
   {
     "from": "docs/methodology/QUALITY-GATES.md",
     "line": 58,
-    "ref": "../../.forgeplan/rfcs/RFC-014-core-review-policy-bounded-documentation-cutover.md",
-    "target": ".forgeplan/rfcs/RFC-014-core-review-policy-bounded-documentation-cutover.md",
+    "ref": "../../.forgeplan/rfcs/RFC-020-core-review-policy-bounded-documentation-cutover.md",
+    "target": ".forgeplan/rfcs/RFC-020-core-review-policy-bounded-documentation-cutover.md",
     "exists": true,
     "anchor_ok": true
   },
   {
     "from": "docs/methodology/QUALITY-GATES.md",
     "line": 141,
-    "ref": "../../.forgeplan/adrs/ADR-027-finite-evidence-backed-independent-review-without-a-defect-quota.md",
-    "target": ".forgeplan/adrs/ADR-027-finite-evidence-backed-independent-review-without-a-defect-quota.md",
+    "ref": "../../.forgeplan/adrs/ADR-031-finite-evidence-backed-independent-review-without-a-defect-quota.md",
+    "target": ".forgeplan/adrs/ADR-031-finite-evidence-backed-independent-review-without-a-defect-quota.md",
     "exists": true,
     "anchor_ok": true
   },
   {
     "from": "docs/methodology/QUALITY-GATES.md",
     "line": 142,
-    "ref": "../../.forgeplan/rfcs/RFC-014-core-review-policy-bounded-documentation-cutover.md",
-    "target": ".forgeplan/rfcs/RFC-014-core-review-policy-bounded-documentation-cutover.md",
+    "ref": "../../.forgeplan/rfcs/RFC-020-core-review-policy-bounded-documentation-cutover.md",
+    "target": ".forgeplan/rfcs/RFC-020-core-review-policy-bounded-documentation-cutover.md",
     "exists": true,
     "anchor_ok": true
   },
@@ -2969,32 +2969,32 @@ SYN-r1 computed268 bytes / SHAa4470a220071f5377e876bf8d267e2fbd1360889935f27863d
   {
     "from": "docs/methodology/QUALITY-GATES.ru.md",
     "line": 58,
-    "ref": "../../.forgeplan/adrs/ADR-027-finite-evidence-backed-independent-review-without-a-defect-quota.md",
-    "target": ".forgeplan/adrs/ADR-027-finite-evidence-backed-independent-review-without-a-defect-quota.md",
+    "ref": "../../.forgeplan/adrs/ADR-031-finite-evidence-backed-independent-review-without-a-defect-quota.md",
+    "target": ".forgeplan/adrs/ADR-031-finite-evidence-backed-independent-review-without-a-defect-quota.md",
     "exists": true,
     "anchor_ok": true
   },
   {
     "from": "docs/methodology/QUALITY-GATES.ru.md",
     "line": 58,
-    "ref": "../../.forgeplan/rfcs/RFC-014-core-review-policy-bounded-documentation-cutover.md",
-    "target": ".forgeplan/rfcs/RFC-014-core-review-policy-bounded-documentation-cutover.md",
+    "ref": "../../.forgeplan/rfcs/RFC-020-core-review-policy-bounded-documentation-cutover.md",
+    "target": ".forgeplan/rfcs/RFC-020-core-review-policy-bounded-documentation-cutover.md",
     "exists": true,
     "anchor_ok": true
   },
   {
     "from": "docs/methodology/QUALITY-GATES.ru.md",
     "line": 141,
-    "ref": "../../.forgeplan/adrs/ADR-027-finite-evidence-backed-independent-review-without-a-defect-quota.md",
-    "target": ".forgeplan/adrs/ADR-027-finite-evidence-backed-independent-review-without-a-defect-quota.md",
+    "ref": "../../.forgeplan/adrs/ADR-031-finite-evidence-backed-independent-review-without-a-defect-quota.md",
+    "target": ".forgeplan/adrs/ADR-031-finite-evidence-backed-independent-review-without-a-defect-quota.md",
     "exists": true,
     "anchor_ok": true
   },
   {
     "from": "docs/methodology/QUALITY-GATES.ru.md",
     "line": 142,
-    "ref": "../../.forgeplan/rfcs/RFC-014-core-review-policy-bounded-documentation-cutover.md",
-    "target": ".forgeplan/rfcs/RFC-014-core-review-policy-bounded-documentation-cutover.md",
+    "ref": "../../.forgeplan/rfcs/RFC-020-core-review-policy-bounded-documentation-cutover.md",
+    "target": ".forgeplan/rfcs/RFC-020-core-review-policy-bounded-documentation-cutover.md",
     "exists": true,
     "anchor_ok": true
   },
@@ -3161,8 +3161,8 @@ SYN-r1 computed268 bytes / SHAa4470a220071f5377e876bf8d267e2fbd1360889935f27863d
   {
     "from": "CHANGELOG.md",
     "line": 15,
-    "ref": ".forgeplan/adrs/ADR-027-finite-evidence-backed-independent-review-without-a-defect-quota.md",
-    "target": ".forgeplan/adrs/ADR-027-finite-evidence-backed-independent-review-without-a-defect-quota.md",
+    "ref": ".forgeplan/adrs/ADR-031-finite-evidence-backed-independent-review-without-a-defect-quota.md",
+    "target": ".forgeplan/adrs/ADR-031-finite-evidence-backed-independent-review-without-a-defect-quota.md",
     "exists": true,
     "anchor_ok": true
   },
@@ -3195,7 +3195,7 @@ SYN-r1 computed268 bytes / SHAa4470a220071f5377e876bf8d267e2fbd1360889935f27863d
 
 ## Persistence checkpoint: actually observed canonical readback
 
-Создан ровно один EVID-177 через owning MCP; update сохранил весь собственный authored payload, добавив176 bytes internal template metadata. CLI get EVID-177 --json exit0: draft/standard, slug `evid-adr-027-rfc-014-r2-independent-corrected-core-policy-source-verification`, inbound=[], outbound ровно informs ADR-027 и RFC-014. Оба link выполнены с auto_activate_source_if_complete=false; activation hints не исполнены. Собственный payload найден целиком, исходный input JSON block byte-for-byte равен retained EVID176 input block, parsed15 inputs и15 собственных response objects совпали с подготовленными материалами. Вывод инструмента с сокращением не выдавался за сохранение: сравнивался полный полученный canonical body.
+Создан ровно один EVID-177 через owning MCP; update сохранил весь собственный authored payload, добавив176 bytes internal template metadata. CLI get EVID-177 --json exit0: draft/standard, slug `evid-adr-027-rfc-014-r2-independent-corrected-core-policy-source-verification`, inbound=[], outbound ровно informs ADR-031 и RFC-020. Оба link выполнены с auto_activate_source_if_complete=false; activation hints не исполнены. Собственный payload найден целиком, исходный input JSON block byte-for-byte равен retained EVID176 input block, parsed15 inputs и15 собственных response objects совпали с подготовленными материалами. Вывод инструмента с сокращением не выдавался за сохранение: сравнивался полный полученный canonical body.
 
 Checkpoint ДО этого приложения:154555 UTF-8 body bytes, SHA256 `6081716cc0d3888176faefc864f944e06c1bc3e55f97b4c039e87940f6303e7f`. Это не самоссылочный final hash. Mounted validate EVID177: total_artifacts1,total_passed1,total_errors0,total_warnings0,findings[]. Реальный CLI validate EVID-177 --json: exit0, passed=true/errors0/warnings0/findings[]. Существующий Session routing→coding advisory и generic new-prd/activation hints не исполнены. Validation — структура Evidence, не финальный guardian/activation.
 
@@ -3204,13 +3204,13 @@ Checkpoint ДО этого приложения:154555 UTF-8 body bytes, SHA256 
 ```json
 [
   {
-    "path": ".forgeplan/rfcs/RFC-014-core-review-policy-bounded-documentation-cutover.md",
+    "path": ".forgeplan/rfcs/RFC-020-core-review-policy-bounded-documentation-cutover.md",
     "before": "1873d9bd604385da71cc6373de5a9eba84006e75c58c90cc5fe40784823b5c33",
     "after": "0983232b5159c0d19ea168574299e531546dd61be13c2eabbf62cda3fd4f06d1",
     "only_one_appended_LF": true
   },
   {
-    "path": ".forgeplan/adrs/ADR-027-finite-evidence-backed-independent-review-without-a-defect-quota.md",
+    "path": ".forgeplan/adrs/ADR-031-finite-evidence-backed-independent-review-without-a-defect-quota.md",
     "before": "1a283d007a90355f8bcd1bc90164cf3bd0de10cba076c38f16b9bf180073a2b5",
     "after": "d6dd9741f46cf19560f4c0e490fca5b2afcdf44158b42236d399195cf952515f",
     "only_one_appended_LF": true

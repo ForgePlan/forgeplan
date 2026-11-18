@@ -5,12 +5,12 @@ kind: note
 last_modified_at: 2026-10-16T20:20:40.027986+00:00
 last_modified_by: omp-coding-agent/1.0.0
 links:
-- target: PRD-087
+- target: PRD-091
   relation: informs
-- target: SPEC-007
+- target: SPEC-012
   relation: informs
 status: draft
-title: PRD-087 SPEC-007 bounded authored ADI and factual Shape handoff resolution
+title: PRD-091 SPEC-012 bounded authored ADI and factual Shape handoff resolution
 ---
 
 ---
@@ -21,7 +21,7 @@ slug: note-prd-087-spec-007-bounded-authored-adi-and-factual-shape-handoff-resol
 updated: 2026-10-16
 ---
 
-# Новый ограниченный ADI PRD-087 / SPEC-007 и фактическое продолжение Shape
+# Новый ограниченный ADI PRD-091 / SPEC-012 и фактическое продолжение Shape
 
 ## Автор, полномочия и протокол
 
@@ -29,21 +29,21 @@ updated: 2026-10-16
 
 Это ОДИН НОВЫЙ авторский ADI: Abduction → Deduction → Induction на текущих закреплённых текстах. Это НЕ восстановленный ответ forgeplan_reason, НЕ второй вызов движка и НЕ Evidence/self-PASS. Старый обязательный вызов движка завершился на сервере; его текст и качество неизвестны. Эта NOTE предоставляет полный новый проверяемый разбор. Только FRESH независимый Sol6.1 High reviewer решает, достаточно ли этого для выхода B1. Никакого автоматического переноса исторического BLOCKER в PASS, активации или разрешения кода нет.
 
-Границы: finite SHAPE-only continuation, Smith Row3/SPARC existing feature. Разрешены одна draft NOTE с informs только к PRD-087/SPEC-007 и добавление фактического разрешения ADI/Handoff в собственный draft PRD. SPEC, его Requirements/Scenario blocks, EVID-172 и active родители не редактируются. Никаких RFC/ADR/SOLUTION/нового producer контракта, source/test/config/auth/install/tracker/release/commit/activation. Canonical mutations только MCP/CLI; прямых записей projection нет. Общие methodology hints к реализации/activation не отменяют этот запрет. Текущий dispatch ограничивает работу сильнее общего полного Deep pipeline.
+Границы: finite SHAPE-only continuation, Smith Row3/SPARC existing feature. Разрешены одна draft NOTE с informs только к PRD-091/SPEC-012 и добавление фактического разрешения ADI/Handoff в собственный draft PRD. SPEC, его Requirements/Scenario blocks, EVID-172 и active родители не редактируются. Никаких RFC/ADR/SOLUTION/нового producer контракта, source/test/config/auth/install/tracker/release/commit/activation. Canonical mutations только MCP/CLI; прямых записей projection нет. Общие methodology hints к реализации/activation не отменяют этот запрет. Текущий dispatch ограничивает работу сильнее общего полного Deep pipeline.
 
 ## Источники полномочий и рассмотренные входы
 
 1. Approved shape brief: /Users/explosovebit/.omp/agent/sessions/-Work-GertsAi-gertsai_codex/2026-10-16T13-13-31-137Z_01a144d8-a501-7048-9171-61e9652343dd/local/website-onboarding-shape-execution.md, включая полный required behavior и запреты.
 2. Resume: тот же каталог, website-resume-storage.md. Новое ограниченное назначение: website-local-adi-resolution.md, переданное в текущем сообщении. Parent восстановил storage; мы ничего не чистили. Изменившийся контекст: серверный terminal status найден, свежий MCP читает обе записи, EVID-172 задаёт конкретные B1/F1/B2/B3, но прежний текст ADI не восстановлен. Именно это разрешает новый авторский разбор, не слепой retry nonretryable операции.
-3. Канонические PRD-087 и SPEC-007 прочитаны целиком через CLI get --json и mounted MCP get с явным workspace; тело, status и depth совпали. EVID-172 прочитан как неизменяемый исторический вход. PRD-024 и PRD-047 CLI get подтверждает active; их тела не пересматриваются.
+3. Канонические PRD-091 и SPEC-012 прочитаны целиком через CLI get --json и mounted MCP get с явным workspace; тело, status и depth совпали. EVID-172 прочитан как неизменяемый исторический вход. PRD-024 и PRD-047 CLI get подтверждает active; их тела не пересматриваются.
 4. CLAUDE.md:8–35,197–220,689–747; docs/README.md; skill://fpf-simple и B.5 Canonical Reasoning Cycle; skill://forgeplan-methodology; skill://spec-author. Порядок «предложить → вывести последствия → сопоставить с наблюдениями» применяется ниже; достоверность runtime не повышается без исполнения.
 
 SHA-256 канонического тела = точные UTF-8 bytes строки body из get --json, включая внутренние template-derived YAML, без внешних projection metadata и без нормализации. Projection SHA-256 = точные bytes файла. Эти pins относятся к входам НОВОГО разбора, а не к неизвестному содержимому старого engine response.
 
 | Вход | Bytes тела | SHA-256 тела | SHA-256 projection до работы |
 |---|---:|---|---|
-| PRD-087, draft/deep | 30278 | 24ba25e45c1f3d5a000cb502ccb67ab6bb329003f6c9c7cec2670dd364ad2d25 | 0512824c5a6d67185471693a0e0bd03c99ad76640692e324263d8b1820fa2044 |
-| SPEC-007, draft/deep | 39292 | 5adc34c6f86ca693580b86c8208b304ff79658b7978b781efb3788850ff60678 | bc6aef8dda2c48bbf433e4323d38a07dad76fc1c39e55872c24637a52514df16 |
+| PRD-091, draft/deep | 30278 | 24ba25e45c1f3d5a000cb502ccb67ab6bb329003f6c9c7cec2670dd364ad2d25 | 0512824c5a6d67185471693a0e0bd03c99ad76640692e324263d8b1820fa2044 |
+| SPEC-012, draft/deep | 39292 | 5adc34c6f86ca693580b86c8208b304ff79658b7978b781efb3788850ff60678 | bc6aef8dda2c48bbf433e4323d38a07dad76fc1c39e55872c24637a52514df16 |
 | EVID-172, draft/tactical | 22610 | 166459e3b24ace7fab5effaa917094914b38cdb09bba1e7c8c39e52ec74171d2 | a0959046856a371d457bc497f6251a827ece9f28b2956663aa6b15ae433c7e7d |
 
 SPEC Requirements: 25748 bytes, SHA-256 52c6aba79d2cf5349c4122b6d03e1ffdb29169444a65b7727478c44bce24f6d4. Граница — от начала строки ## Requirements с LF до байта перед ## Behavioral Contract. Scenario-only stream: 22873 bytes, SHA-256 9c2bcdfca3af70c8cd51aca5af22784e875333b77bc86ee87eed428afb8f03c1; последовательное соединение полных блоков #### Scenario SNN до следующего heading уровня 1–4 с сохранением пустых строк. Измерено 12 FR, 10 Requirement, 36 уникальных S01–S36. Хеш доказывает идентичность текста, не поведение.
@@ -52,15 +52,15 @@ SPEC Requirements: 25748 bytes, SHA-256 52c6aba79d2cf5349c4122b6d03e1ffdb2916944
 
 ### Старый запрос: timeout клиента и завершение сервера — разные факты
 
-Прочитан прежний creator transcript /Users/explosovebit/.omp/agent/sessions/-Work-ForgePlan/2026-10-16T17-55-04-864Z_01a145da-6c20-77b2-8c79-a517be5857f1.jsonl. Assistant toolCall от 2026-10-16T17:57:42.357Z содержит forgeplan_reason, id=PRD-087, workspace=/Users/explosovebit/Work/ForgePlan. Tool result от 17:58:12.367Z: MCP failure, transport stdio, stage receive, failure timeout, retryable no, Request timeout after 30000ms, outcome unknown. Текст анализа клиенту не доставлен. Запрос предшествует окончательной фиксации candidate r1; приписывать ему рассмотрение всех текущих pins нельзя.
+Прочитан прежний creator transcript /Users/explosovebit/.omp/agent/sessions/-Work-ForgePlan/2026-10-16T17-55-04-864Z_01a145da-6c20-77b2-8c79-a517be5857f1.jsonl. Assistant toolCall от 2026-10-16T17:57:42.357Z содержит forgeplan_reason, id=PRD-091, workspace=/Users/explosovebit/Work/ForgePlan. Tool result от 17:58:12.367Z: MCP failure, transport stdio, stage receive, failure timeout, retryable no, Request timeout after 30000ms, outcome unknown. Текст анализа клиенту не доставлен. Запрос предшествует окончательной фиксации candidate r1; приписывать ему рассмотрение всех текущих pins нельзя.
 
 Повторно прочитаны forgeplan_activity(tool=forgeplan_reason,since_hours=24,limit=100,workspace=owning) и .forgeplan/logs/tools-2026-10-16.jsonl:138. Точная запись: ts=2026-10-16T17:58:42.621Z, tool=forgeplan_reason, args_hash=ec08d4f02ead, duration_ms=60260, status=ok, workspace=/Users/explosovebit/Work/ForgePlan/.forgeplan. Тот же hash встречается у get/validate для точных PRD аргументов. Остальные четыре reason записи имеют другие hashes (e281f245ec8b, 7590e965be90, d98c41f3b8e1); их tool_err не является результатом этого запроса. Лог подтверждает server completion после client timeout, НЕ текст/качество анализа и НЕ выполненный design gate.
 
-Parent передал проверку handler crates/forgeplan-mcp/src/server.rs:6225–6299: analysis возвращается только в response, durable ADI result/operation storage в этом handler нет; CLI reason --save отдельно сохраняет NOTE, старый MCP запрос save не имел. Parent искал canonical notes/log и не нашёл PRD-087 analysis. Здесь исходник повторно не исследовался, отсутствие результата во всех возможных местах не утверждается. Прежний OUTPUT не восстановлен; status ok нельзя переименовать в восстановленный анализ.
+Parent передал проверку handler crates/forgeplan-mcp/src/server.rs:6225–6299: analysis возвращается только в response, durable ADI result/operation storage в этом handler нет; CLI reason --save отдельно сохраняет NOTE, старый MCP запрос save не имел. Parent искал canonical notes/log и не нашёл PRD-091 analysis. Здесь исходник повторно не исследовался, отсутствие результата во всех возможных местах не утверждается. Прежний OUTPUT не восстановлен; status ok нельзя переименовать в восстановленный анализ.
 
 ### Видимость и depth сейчас
 
-Текущее собственное наблюдение: CLI и mounted MCP get PRD-087/SPEC-007 возвращают совпадающие полные тела, draft/deep; оба MCP validate passed=true, errors=0, warnings=0. PRD имеет один COULD prd-fr-format для русского текста; SPEC findings пуст. Projection обоих говорит depth: deep. Историческое F1 сейчас не воспроизводится; metadata repair не проводился и его причина неизвестна. Историческое B2 сейчас не воспроизводится на доступном mounted MCP. Это текущее согласованное чтение, не доказанная первопричина старого сбоя и не право переписать EVID-172.
+Текущее собственное наблюдение: CLI и mounted MCP get PRD-091/SPEC-012 возвращают совпадающие полные тела, draft/deep; оба MCP validate passed=true, errors=0, warnings=0. PRD имеет один COULD prd-fr-format для русского текста; SPEC findings пуст. Projection обоих говорит depth: deep. Историческое F1 сейчас не воспроизводится; metadata repair не проводился и его причина неизвестна. Историческое B2 сейчас не воспроизводится на доступном mounted MCP. Это текущее согласованное чтение, не доказанная первопричина старого сбоя и не право переписать EVID-172.
 
 Parent передал отдельные read-only измерения: .mcp.json forgeplan command=/opt/homebrew/bin/forgeplan, args=[serve], без custom cwd/env; binary v0.38.0 SHA-256 55c32b6d230b4ebd56a6c4e3f38a6fb20b5c31f8ee91558c0850fc92c3771113. Resumed session PID 81772 и MCP child 81786 started 2026-10-16T20:08:26Z, lsof cwd=/Users/explosovebit/Work/ForgePlan, executable=/opt/homebrew/Cellar/forgeplan/0.38.0/bin/forgeplan. Другой старый MCP PID 87944 started 14:33:52Z принадлежит другой session. Эти PID/cwd/binary факты — provenance parent, не повторное измерение текущим автором. Ни kill/restart/reindex/config repair не выполнялись. Stale cached reader — INFERENCE, не установленная причина.
 
@@ -68,7 +68,7 @@ Parent также прочитал config: llm codex-cli, empty model означ
 
 ### Предмутационные проверки
 
-forgeplan_claims(workspace=owning): count=0, claims=[], skipped=0. forgeplan_search query=PRD-087, kind=note, keyword, no_expand=true: 0 results; дополнительный поиск текста PRD-087/SPEC-007/onboarding ADI по .forgeplan/notes не обнаружил совпадающей NOTE. Это scoped duplicate check, не утверждение об отсутствии любых чужих задач. CLI health до записи: 440 artifacts, 2 unrelated at-risk (PRD-005/RFC-004), 10 phase mismatches; needs attention, не project health PASS. df -h .: 14G available, 99% use; parent ранее сообщал 19GiB. Cleanup не выполнялся. Диск остаётся риском мутации; чужая работа вне scope не исправлялась.
+forgeplan_claims(workspace=owning): count=0, claims=[], skipped=0. forgeplan_search query=PRD-091, kind=note, keyword, no_expand=true: 0 results; дополнительный поиск текста PRD-091/SPEC-012/onboarding ADI по .forgeplan/notes не обнаружил совпадающей NOTE. Это scoped duplicate check, не утверждение об отсутствии любых чужих задач. CLI health до записи: 440 artifacts, 2 unrelated at-risk (PRD-005/RFC-004), 10 phase mismatches; needs attention, не project health PASS. df -h .: 14G available, 99% use; parent ранее сообщал 19GiB. Cleanup не выполнялся. Диск остаётся риском мутации; чужая работа вне scope не исправлялась.
 
 ## Abduction — действительно рассмотренные направления
 
@@ -131,7 +131,7 @@ Publication/implementation BLOCKED по этой единственной вне
 
 ## Журнал канонического сохранения и фактический readback
 
-Выполнено текущим автором через mounted MCP с workspace=/Users/explosovebit/Work/ForgePlan: new kind=note → NOTE-053; немедленный update полного авторского тела; link NOTE-053 informs PRD-087; link NOTE-053 informs SPEC-007, auto_activate_source_if_complete=false. Canonical slug: note-prd-087-spec-007-bounded-authored-adi-and-factual-shape-handoff-resolution. Файл: .forgeplan/notes/NOTE-053-prd-087-spec-007-bounded-authored-adi-and-factual-shape-handoff-resolution.md. Обе связи подтверждены CLI/MCP get: только два outbound informs, inbound отсутствуют. NOTE draft/standard по умолчанию; это не понижение draft/deep кандидатов. Новый Evidence не создавался.
+Выполнено текущим автором через mounted MCP с workspace=/Users/explosovebit/Work/ForgePlan: new kind=note → NOTE-053; немедленный update полного авторского тела; link NOTE-053 informs PRD-091; link NOTE-053 informs SPEC-012, auto_activate_source_if_complete=false. Canonical slug: note-prd-087-spec-007-bounded-authored-adi-and-factual-shape-handoff-resolution. Файл: .forgeplan/notes/NOTE-053-prd-087-spec-007-bounded-authored-adi-and-factual-shape-handoff-resolution.md. Обе связи подтверждены CLI/MCP get: только два outbound informs, inbound отсутствуют. NOTE draft/standard по умолчанию; это не понижение draft/deep кандидатов. Новый Evidence не создавался.
 
 Перед PRD update повторно прочитаны обе исходные body; они совпали с pins. В PRD добавлен только subsection Resolution 2026-10-16 — terminal status и новый авторский ADI внутри ADI Attempt and Design Handoff, перед Stakeholders. Исходные исторические абзацы сохранены целиком; остальной body — исходный prefix+suffix, без изменения title/status/depth, FR/goals/journeys. Canonical update ответил Updated successfully, status=draft.
 
@@ -139,18 +139,18 @@ Publication/implementation BLOCKED по этой единственной вне
 
 Две проверки идентичности первоначально остановились и не скрываются как непрерывно успешная проверка. (1) NOTE get добавил 176 bytes внутреннего template metadata (assigned_number/created/predicted_number/slug/updated); после отделения этого блока весь переданный авторский текст совпадает точно, CLI и MCP равны. Это не потеря ADI. (2) У SPEC projection обнаружен ровно один дополнительный завершающий LF, исходный projection bc6aef8dda2c48bbf433e4323d38a07dad76fc1c39e55872c24637a52514df16 → c137efa21f79a906c4a5d168477970e15b3d6c62d0e704abe43e09683484a12d. Body, depth, status, Requirements и scenarios при повторном CLI/MCP get прежние. Точная операция, породившая LF в последовательности canonical new/update/link/get/validate, не изолирована; root cause не утверждается. raw writes и corrective update SPEC не выполнялись. Отчёт xd://report_issue принят ответом Noted, thanks! Это ограниченное несоответствие projection сохранено для reviewer, не выдаётся за полностью неизменный projection. EVID-172 побочного LF не получил.
 
-Выполнены CLI validate ID --json и mounted MCP validate для PRD-087, SPEC-007, NOTE-053. У всех CLI exit=0, passed=true, errors=0, warnings=0; PRD один COULD prd-fr-format, SPEC/NOTE findings пусты. Это structural validation, не независимый gate/behavior PASS. CLI stderr каждого validate сообщает Cannot go from routing to coding и hint new prd; эти session hints не выполнялись, никаких переходов coding/activation не было. MCP hints Implement/activate также не являются разрешением. Ниже точные stdout/stderr CLI и decoded JSON MCP, полученные до добавления этой завершающей записи; final NOTE persistence readback выполняется после её записи, без самоссылочного собственного hash.
+Выполнены CLI validate ID --json и mounted MCP validate для PRD-091, SPEC-012, NOTE-053. У всех CLI exit=0, passed=true, errors=0, warnings=0; PRD один COULD prd-fr-format, SPEC/NOTE findings пусты. Это structural validation, не независимый gate/behavior PASS. CLI stderr каждого validate сообщает Cannot go from routing to coding и hint new prd; эти session hints не выполнялись, никаких переходов coding/activation не было. MCP hints Implement/activate также не являются разрешением. Ниже точные stdout/stderr CLI и decoded JSON MCP, полученные до добавления этой завершающей записи; final NOTE persistence readback выполняется после её записи, без самоссылочного собственного hash.
 
 ```json
 {
-  "PRD-087": {
+  "PRD-091": {
     "cli_exit": 0,
-    "cli_stdout": "{\n  \"_next_action\": \"forgeplan activate PRD-087\",\n  \"results\": [\n    {\n      \"artifact_id\": \"PRD-087\",\n      \"depth\": \"Deep\",\n      \"errors\": 0,\n      \"findings\": [\n        {\n          \"message\": \"FR items not in '[Actor] can [capability]' format: line 70: '- [ ] FR-01: Посетитель может задать intent, language/framework/stack, harness/version, scope, model policy, integrations; отличить неполные и неоднозначные ответы. Journey: J1,J3,J4.'; line 71: '- [ ] FR-02: Посетитель получает bounded recommendation и объяснение обязательных/optional зависимостей по ЕДИНОМУ принятому selection contract с CLI, без второго справочника и full default. Journey: J1,J3.'; line 72: '- [ ] FR-03: Посетитель видит installed, enabled/discovered и instructions actually loaded как различные состояния; все локальные сведения сайта unverified, browser never Ready. Discovery не доказывает изоляцию ресурсов. Journey: J1,J2.'\",\n          \"rule_id\": \"prd-fr-format\",\n          \"section\": \"FR format: [Actor] can [capability]\",\n          \"severity\": \"Could\"\n        }\n      ],\n      \"kind\": \"Prd\",\n      \"passed\": true,\n      \"warnings\": 0\n    }\n  ]\n}\n",
+    "cli_stdout": "{\n  \"_next_action\": \"forgeplan activate PRD-091\",\n  \"results\": [\n    {\n      \"artifact_id\": \"PRD-091\",\n      \"depth\": \"Deep\",\n      \"errors\": 0,\n      \"findings\": [\n        {\n          \"message\": \"FR items not in '[Actor] can [capability]' format: line 70: '- [ ] FR-01: Посетитель может задать intent, language/framework/stack, harness/version, scope, model policy, integrations; отличить неполные и неоднозначные ответы. Journey: J1,J3,J4.'; line 71: '- [ ] FR-02: Посетитель получает bounded recommendation и объяснение обязательных/optional зависимостей по ЕДИНОМУ принятому selection contract с CLI, без второго справочника и full default. Journey: J1,J3.'; line 72: '- [ ] FR-03: Посетитель видит installed, enabled/discovered и instructions actually loaded как различные состояния; все локальные сведения сайта unverified, browser never Ready. Discovery не доказывает изоляцию ресурсов. Journey: J1,J2.'\",\n          \"rule_id\": \"prd-fr-format\",\n          \"section\": \"FR format: [Actor] can [capability]\",\n          \"severity\": \"Could\"\n        }\n      ],\n      \"kind\": \"Prd\",\n      \"passed\": true,\n      \"warnings\": 0\n    }\n  ]\n}\n",
     "cli_stderr": "  Session: Cannot go from 'routing' to 'coding'. Create an artifact first: forgeplan new prd\n  Hint: Create artifact: `forgeplan new prd \"Title\"`\n",
     "mcp": {
       "results": [
         {
-          "artifact_id": "PRD-087",
+          "artifact_id": "PRD-091",
           "kind": "Prd",
           "depth": "Deep",
           "passed": true,
@@ -173,14 +173,14 @@ Publication/implementation BLOCKED по этой единственной вне
       "_next_action": "All passed! Implement → create EvidencePack with structured fields (verdict/congruence_level/evidence_type) → `forgeplan_link EVID-XXX <id>` → `forgeplan_activate <id>`."
     }
   },
-  "SPEC-007": {
+  "SPEC-012": {
     "cli_exit": 0,
-    "cli_stdout": "{\n  \"_next_action\": \"forgeplan activate SPEC-007\",\n  \"results\": [\n    {\n      \"artifact_id\": \"SPEC-007\",\n      \"depth\": \"Deep\",\n      \"errors\": 0,\n      \"findings\": [],\n      \"kind\": \"Spec\",\n      \"passed\": true,\n      \"warnings\": 0\n    }\n  ]\n}\n",
+    "cli_stdout": "{\n  \"_next_action\": \"forgeplan activate SPEC-012\",\n  \"results\": [\n    {\n      \"artifact_id\": \"SPEC-012\",\n      \"depth\": \"Deep\",\n      \"errors\": 0,\n      \"findings\": [],\n      \"kind\": \"Spec\",\n      \"passed\": true,\n      \"warnings\": 0\n    }\n  ]\n}\n",
     "cli_stderr": "  Session: Cannot go from 'routing' to 'coding'. Create an artifact first: forgeplan new prd\n  Hint: Create artifact: `forgeplan new prd \"Title\"`\n",
     "mcp": {
       "results": [
         {
-          "artifact_id": "SPEC-007",
+          "artifact_id": "SPEC-012",
           "kind": "Spec",
           "depth": "Deep",
           "passed": true,

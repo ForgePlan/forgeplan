@@ -1,6 +1,6 @@
 ---
 depth: standard
-id: NOTE-054
+id: NOTE-063
 kind: note
 last_modified_at: 2026-10-23T22:26:34.951648+00:00
 last_modified_by: documentation-walkthrough/1
@@ -25,7 +25,7 @@ slug: note-research-forgeplan-0-38-0-constellation-0-39-0
 updated: 2026-10-23
 ---
 
-# NOTE-054: Research: обратная совместимость ForgePlan 0.38.0 на Constellation 0.39.0
+# NOTE-063: Research: обратная совместимость ForgePlan 0.38.0 на Constellation 0.39.0
 
 | Field | Value |
 |-------|-------|
@@ -69,7 +69,7 @@ updated: 2026-10-23
 | G6 | Pinned stdio `serve --profile full --workspace <target>`: `initialize` → protocolVersion `2024-11-05`, serverInfo `forgeplan 0.39.0+constellation.s1.1`; `forgeplan_list` → 478 артефактов (122 draft); EOF → **exit 0** | тот же pinned-бинарь |
 | G7 | При старте pinned-хоста stderr несёт одну строку: `mcp: maintenance failed: storage_io: post-commit verification failed: unexpected_row: 'ADR-001#s0' is present but the capture does not describe it` | тот же запуск; факт наблюдения, не исправлялся |
 | G8 | Отличие flag/default-контракта — только на 3 из 103 paths: `watch` (+`--constellation`), `serve` (+`--auto-index`,`--profile`,`--workspace`), `mcp serve` (+`--auto-index`,`--workspace`) | сопоставление help-снимков; 178→184 options, 19→20 явных defaults, удалённых/изменённых прежних нет |
-| G9 | MCP `forgeplan_validate` выдаёт SHOULD-warning `body-links-drift` на артефактах, чьи связи присутствуют: у NOTE-054 все 4 связи в `links:` и подтверждены `forgeplan_get`, но warning всё равно выдан | pinned stdio, `forgeplan_validate`; та же ошибка воспроизводится на NOTE-053, RFC-015, ADR-028 (у PRD-073 — нет), то есть это существующий дефект MCP-пути, а не дефект этой записи |
+| G9 | MCP `forgeplan_validate` выдаёт SHOULD-warning `body-links-drift` на артефактах, чьи связи присутствуют: у NOTE-063 все 4 связи в `links:` и подтверждены `forgeplan_get`, но warning всё равно выдан | pinned stdio, `forgeplan_validate`; та же ошибка воспроизводится на NOTE-053, RFC-015, ADR-028 (у PRD-073 — нет), то есть это существующий дефект MCP-пути, а не дефект этой записи |
 | G10 | Исходные подтверждённые отказы CLI `validate` и `gaps` на migrated workspace; тот же артефакт через full MCP validate прочитан штатно. В этом исследовании отказы не повторялись ради подтверждения | `local://compatibility-public-contract-20261023T1952.json`: `observed.cliValidate`, `observed.cliGaps`; issue #538 comments 6361574528 и 6366400792 |
 
 **Статически установлено, но не подтверждено запуском (🟡 вывод из кода).**
@@ -182,7 +182,7 @@ updated: 2026-10-23
 
 **R4 — Native playbook.** Общий CLI/MCP-dispatcher открывает legacy store (S10), из-за чего native `new`/`validate`/`activate`/`search`/apply-`ingest` обходят уже перенесённые CLI-обработчики. Риск: два пути к одному артефакту дают разные side effects; «плейбук прошёл» не означает «команда прошла».
 
-**R5 — MCP-валидация расходится с CLI-валидацией.** MCP-путь берёт frontmatter без `links:` (S12), поэтому правило `body-links-drift` в MCP видит пустое множество целей и выдаёт ложный SHOULD-warning на корректно связанных артефактах (G9: NOTE-054, NOTE-053, RFC-015, ADR-028). Риск: сигнал о рассинхронизации связи/таблицы обесценивается — «валидатор ругается на связанные артефакты» перестаёт быть сигналом, а правило при этом остаётся видимым в выводе. Отдельно отмечено, что этот дефект воспроизводится и на записях, созданных до текущей работы, то есть он не внесён настоящим исследованием.
+**R5 — MCP-валидация расходится с CLI-валидацией.** MCP-путь берёт frontmatter без `links:` (S12), поэтому правило `body-links-drift` в MCP видит пустое множество целей и выдаёт ложный SHOULD-warning на корректно связанных артефактах (G9: NOTE-063, NOTE-053, RFC-015, ADR-028). Риск: сигнал о рассинхронизации связи/таблицы обесценивается — «валидатор ругается на связанные артефакты» перестаёт быть сигналом, а правило при этом остаётся видимым в выводе. Отдельно отмечено, что этот дефект воспроизводится и на записях, созданных до текущей работы, то есть он не внесён настоящим исследованием.
 
 ### 9. Что осталось неизвестным
 

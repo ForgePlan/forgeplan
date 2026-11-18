@@ -1,6 +1,6 @@
 ---
 depth: deep
-id: RFC-014
+id: RFC-020
 kind: rfc
 last_modified_at: 2026-10-16T20:48:53.101550+00:00
 last_modified_by: omp-coding-agent/1.0.0
@@ -22,7 +22,7 @@ slug: rfc-core-review-policy-bounded-documentation-cutover
 updated: 2026-10-16
 ---
 
-# RFC-014: Ограниченное применение core review policy в документации
+# RFC-020: Ограниченное применение core review policy в документации
 
 | Поле | Значение |
 |---|---|
@@ -74,7 +74,7 @@ updated: 2026-10-16
 
 Это **авторское обоснование**, не разрешение исполнения. Fresh Sol High pre-source reviewer и затем fresh Sol High guardian обязаны прямо сертифицировать: (1) эти active решения действительно покрывают ограниченные docs-only правки; (2) новый active RFC не обязателен до них; (3) последовательность не обходит CLAUDE red line 7; (4) authored ADI достаточен либо назван недостающий engine prerequisite; (5) разрешение владельца позволяет оценить само изменение квоты без фабрикации finding, не отменяя прочие gates.
 
-Новые ADR-027/RFC-014 остаются **draft** до реального source применения и независимых доказательств. Если gate считает новый active RFC обязательным до source, а red line 7 требует source до активации, source dispatch BLOCKED до узкого owning разъяснения. Если literal code означает только Rust, markdown не объявляется таким code; конфликт не снимается автором. Ни псевдокод, ни фиктивная заглушка, ни изменение activation policy не допускаются. Engine prerequisite ADR-027 остаётся отдельно открытым: документирован model env override, но supported High-effort control для configured codex-cli в прочитанных help/schema/docs не найден. Новый engine run/default/fallback не выполнен. Старый website reason не удовлетворяет новому gate автоматически.
+Новые ADR-027/RFC-020 остаются **draft** до реального source применения и независимых доказательств. Если gate считает новый active RFC обязательным до source, а red line 7 требует source до активации, source dispatch BLOCKED до узкого owning разъяснения. Если literal code означает только Rust, markdown не объявляется таким code; конфликт не снимается автором. Ни псевдокод, ни фиктивная заглушка, ни изменение activation policy не допускаются. Engine prerequisite ADR-027 остаётся отдельно открытым: документирован model env override, но supported High-effort control для configured codex-cli в прочитанных help/schema/docs не найден. Новый engine run/default/fallback не выполнен. Старый website reason не удовлетворяет новому gate автоматически.
 
 ### Normative read path and precedence
 
@@ -215,7 +215,7 @@ Runtime and activation gates remain separate and mandatory when applicable.
 
 | Phase | Выход | Состояние при handoff |
 |---|---|---|
-| 0 Design | Полные ADR-027/RFC-014, formal authored ADI, exact source baseline | Подготовлено автором; validation/readback выполняются отдельно, это не gate verdict |
+| 0 Design | Полные ADR-027/RFC-020, formal authored ADI, exact source baseline | Подготовлено автором; validation/readback выполняются отдельно, это не gate verdict |
 | 1 Pre-source gates | Independent architecture/ADI/sequence evidence и guardian | Не выполнено; source dispatch запрещён до разрешения |
 | 2 Source cutover | Только MiniMax, allowlist, свой worktree, затем безопасная интеграция | Не начато |
 | 3 Verification | Fresh independent A–G, semantic parity, read path, links/template boundary, preservation | Не выполнено |
@@ -257,9 +257,9 @@ Runtime and activation gates remain separate and mandatory when applicable.
 
 Это factual дополнение creator/operator. Указания выше «engine run не выполнен»/«supported High control не найден» сохраняют исторический статус **до** этой операции, а не текущую оценку. Нормативный контракт, 17-path allowlist, before hashes, title/depth/status не меняются.
 
-Выполнен ровно один новый `/opt/homebrew/bin/forgeplan reason RFC-014 --json --save` с process-local provider=codex-cli/model=gpt-6.1-sol и временным PATH adapter. Время 2026-10-16T20:55:04Z–20:56:47Z, **exit 0**, outer deadline 720 s. Input body SHA-256: 24292ed4a1be007c9def4b7b7e3531cafaaf3ea0a470dabe0b35efd4df5bd7a3. Реальный argv содержит абсолютный stock Codex 0.163.0, ровно один --model gpt-6.1-sol и --config model_reasoning_effort="high"; original stdin и read-only/ephemeral/ignore-user-config/ignore-rules/skip-git-repo-check сохранены. Config/auth/global files не изменены. Подтверждён запрошенный supported High control, не независимая телеметрия effort на сервере.
+Выполнен ровно один новый `/opt/homebrew/bin/forgeplan reason RFC-020 --json --save` с process-local provider=codex-cli/model=gpt-6.1-sol и временным PATH adapter. Время 2026-10-16T20:55:04Z–20:56:47Z, **exit 0**, outer deadline 720 s. Input body SHA-256: 24292ed4a1be007c9def4b7b7e3531cafaaf3ea0a470dabe0b35efd4df5bd7a3. Реальный argv содержит абсолютный stock Codex 0.163.0, ровно один --model gpt-6.1-sol и --config model_reasoning_effort="high"; original stdin и read-only/ephemeral/ignore-user-config/ignore-rules/skip-git-repo-check сохранены. Config/auth/global files не изменены. Подтверждён запрошенный supported High control, не независимая телеметрия effort на сервере.
 
-**NOTE-054**, draft/tactical, title «ADI analysis of RFC-014», создана самим --save и уже informs RFC-014. В ту же NOTE дописаны полные без сокращения engine stdout/stderr, actual argv, времена, exit, bytes/hashes и input pin; вторая одноцелевая analysis NOTE не создавалась. Полный output прочитан: 3 hypotheses, 3 deductions, 8 evidence-needed, ranking H1 > H3 > H2, confidence Medium. H1 совпадает с выбранным 17-file cutover; H2 — ранее отвергнутое изменение только QUALITY-GATES; H3 допустима лишь как организация подготовки полного результата, не частичная приёмка. Новых нормативных поправок не принято.
+**NOTE-054**, draft/tactical, title «ADI analysis of RFC-020», создана самим --save и уже informs RFC-020. В ту же NOTE дописаны полные без сокращения engine stdout/stderr, actual argv, времена, exit, bytes/hashes и input pin; вторая одноцелевая analysis NOTE не создавалась. Полный output прочитан: 3 hypotheses, 3 deductions, 8 evidence-needed, ranking H1 > H3 > H2, confidence Medium. H1 совпадает с выбранным 17-file cutover; H2 — ранее отвергнутое изменение только QUALITY-GATES; H3 допустима лишь как организация подготовки полного результата, не частичная приёмка. Новых нормативных поправок не принято.
 
 Engine не читал независимо actual source или связанные canonical bodies и сам оговорил отсутствие такого подтверждения. Его слова о недоказанном собственном engine run сохранены буквально; receipt отдельно фиксирует реальное исполнение. Advisory output не является independent Evidence, guardian verdict или creator self-PASS. Достаточность Deep анализа и factual-only delta до текущего body независимо оцениваются reviewer/guardian.
 
@@ -268,7 +268,7 @@ Engine не читал независимо actual source или связанн�
 
 ## Current engine resolution — 2026-10-16T21:03:37.838Z
 
-Factual creator/operator update: the owning orchestrator authorized one NEW bounded ADR-027 invocation after the temporary adapter precondition changed from custom environment dependency (removed by provider) to a literal receipt path, already proven by actual RFC-014 success. Command `forgeplan reason ADR-027 --json --save` completed successfully (wall56.66s) and saved NOTE-056, linked informs ADR-027. Input ADR body SHA256 `e757631639c42e4b44f38a93c9dddb16c260400f465d2b45fb049c3cb5d49da2`; actual model `gpt-6.1-sol`, supported requested effort `high` verified in stock Codex argv. NOTE-056 preserves complete original tool transcript, exact argv, provenance and limits. Four hypotheses/deductions and ten evidence-needed; H1 finite evidence-bound policy preferred, no normative delta. NOTE-055 failed attempt preserved; preceding engine-unresolved handoff statements are historical, not the current execution state. Both new Deep artifacts now have actual separate engine analyses (RFC-014 NOTE-054, ADR-027 NOTE-056) plus authored ADI. Independent reviewer/guardian must assess their adequacy, active architecture/redline7 and actual source readiness. This operator update is not self-PASS, not activation and not MiniMax dispatch. No source/config/auth/website/producer/tracker changes. New successful engine request is not a repetition of the old website call.
+Factual creator/operator update: the owning orchestrator authorized one NEW bounded ADR-027 invocation after the temporary adapter precondition changed from custom environment dependency (removed by provider) to a literal receipt path, already proven by actual RFC-020 success. Command `forgeplan reason ADR-027 --json --save` completed successfully (wall56.66s) and saved NOTE-056, linked informs ADR-027. Input ADR body SHA256 `e757631639c42e4b44f38a93c9dddb16c260400f465d2b45fb049c3cb5d49da2`; actual model `gpt-6.1-sol`, supported requested effort `high` verified in stock Codex argv. NOTE-056 preserves complete original tool transcript, exact argv, provenance and limits. Four hypotheses/deductions and ten evidence-needed; H1 finite evidence-bound policy preferred, no normative delta. NOTE-055 failed attempt preserved; preceding engine-unresolved handoff statements are historical, not the current execution state. Both new Deep artifacts now have actual separate engine analyses (RFC-020 NOTE-054, ADR-027 NOTE-056) plus authored ADI. Independent reviewer/guardian must assess their adequacy, active architecture/redline7 and actual source readiness. This operator update is not self-PASS, not activation and not MiniMax dispatch. No source/config/auth/website/producer/tracker changes. New successful engine request is not a repetition of the old website call.
 
 
 

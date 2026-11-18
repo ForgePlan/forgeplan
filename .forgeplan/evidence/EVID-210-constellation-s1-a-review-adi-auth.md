@@ -1,6 +1,6 @@
 ---
 depth: standard
-id: EVID-174
+id: EVID-210
 kind: evidence
 last_modified_at: 2026-10-16T19:42:12.839542+00:00
 last_modified_by: omp-coding-agent/1.0.0
@@ -23,7 +23,7 @@ slug: evid-constellation-s1-a-review-adi-auth
 updated: 2026-10-16
 ---
 
-# EVID-174: Constellation S1-A — статическая архитектура и внешний ADI-блокер
+# EVID-210: Constellation S1-A — статическая архитектура и внешний ADI-блокер
 
 | Field | Value |
 |---|---|
@@ -59,7 +59,7 @@ RFC-015 (2026-10-16T18:58:09.945Z) и ADR-029 (2026-10-16T19:04:14.270Z): forgep
 
 ### Исполненная статическая проверка командой
 
-Установленный forgeplan0.38.0, cwd=/Users/explosovebit/Work/ForgePlan-Constellation-P0, команда forgeplan validate ADR-029 --json --ci && forgeplan validate SPEC-008 --json --ci && forgeplan validate RFC-015 --json --ci выполнена: 3/3 CI PASSED, 0MUST, 0warnings на редакции generic local route до Windows уточнения. Это НЕ тест source binary. CLI выдал advisory Cannot go from routing to coding; изменение сессии/разрешение кода не выполнялось. После Windows уточнения реально выполнена итоговая цепочка validate --json --ci ADR-029/SPEC-008/RFC-015/EVID-174/NOTE-053: 5/5 CI PASSED, 0MUST. У первых четырёх0warnings; NOTE имела1SHOULD по incidental таблице Related — эти ссылки вынесены в обычный текст без изобретения edges, затем NOTE/EVID проверяются отдельно. Итоговые сырые read-back/validation результаты — audit/s1a-final-verification.json.
+Установленный forgeplan0.38.0, cwd=/Users/explosovebit/Work/ForgePlan-Constellation-P0, команда forgeplan validate ADR-029 --json --ci && forgeplan validate SPEC-008 --json --ci && forgeplan validate RFC-015 --json --ci выполнена: 3/3 CI PASSED, 0MUST, 0warnings на редакции generic local route до Windows уточнения. Это НЕ тест source binary. CLI выдал advisory Cannot go from routing to coding; изменение сессии/разрешение кода не выполнялось. После Windows уточнения реально выполнена итоговая цепочка validate --json --ci ADR-029/SPEC-008/RFC-015/EVID-210/NOTE-053: 5/5 CI PASSED, 0MUST. У первых четырёх0warnings; NOTE имела1SHOULD по incidental таблице Related — эти ссылки вынесены в обычный текст без изобретения edges, затем NOTE/EVID проверяются отдельно. Итоговые сырые read-back/validation результаты — audit/s1a-final-verification.json.
 
 MCP validate ранее: ADR/SPEC0MUST0SHOULD, RFC0MUST1SHOULD body-links-drift. Последний объявляет absent три реально существующих edges; canonical RFC frontmatter lines7–13 и MCP get содержат based_on SPEC-008/ADR-028/ADR-029. QA report подан, validator не чинится в S1-A и warning не замалчивается.
 

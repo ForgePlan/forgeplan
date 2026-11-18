@@ -1,13 +1,13 @@
 ---
 depth: standard
-id: EVID-179
+id: EVID-215
 kind: evidence
 last_modified_at: 2026-10-19T08:43:21.361332+00:00
 last_modified_by: omp-coding-agent/1.0.0
 links:
 - target: RFC-015
   relation: informs
-- target: EVID-178
+- target: EVID-214
   relation: based_on
 status: draft
 title: 'Constellation compiler recovery: default and semantic targets type-check; runtime gate remains blocked'
@@ -51,7 +51,7 @@ congruence_level: 3
 
 ## Interpretation
 
-Подтверждено устранение перечисленных ошибок компиляции и успешная проверка указанных целей. Не подтверждены исполнение тестов, линковка, модельный inference, CLI/MCP E2E, вся матрица features или готовность RFC-015 к активации. Общий вердикт остаётся inconclusive. Отрицательные EVID-176, EVID-177 и статический EVID-178 не переписаны и не отменены этим измерением.
+Подтверждено устранение перечисленных ошибок компиляции и успешная проверка указанных целей. Не подтверждены исполнение тестов, линковка, модельный inference, CLI/MCP E2E, вся матрица features или готовность RFC-015 к активации. Общий вердикт остаётся inconclusive. Отрицательные EVID-176, EVID-177 и статический EVID-214 не переписаны и не отменены этим измерением.
 
 Остаются отдельные требования полного перехода MCP с legacy store, единого snapshot модели, серверного supervisor, ограничения доступа к исходникам, handles/лимитов и ContextPack. Проверка типов не закрывает эти требования.
 
@@ -68,6 +68,6 @@ CL3: реальные изменённые исходники целевого w
 | Artifact | Relation |
 |---|---|
 | RFC-015 | informs |
-| EVID-178 | независимый статический аудит; замечания остаются открытыми до отдельного доказательства |
+| EVID-214 | независимый статический аудит; замечания остаются открытыми до отдельного доказательства |
 
 

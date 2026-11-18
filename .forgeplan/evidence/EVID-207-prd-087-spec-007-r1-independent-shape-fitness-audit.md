@@ -1,14 +1,14 @@
 ---
 depth: tactical
-id: EVID-172
+id: EVID-207
 kind: evidence
 links:
-- target: PRD-087
+- target: PRD-091
   relation: informs
-- target: SPEC-007
+- target: SPEC-012
   relation: informs
 status: draft
-title: PRD-087 SPEC-007 r1 independent Shape fitness audit
+title: PRD-091 SPEC-012 r1 independent Shape fitness audit
 ---
 
 ---
@@ -19,7 +19,7 @@ slug: evid-prd-087-spec-007-r1-independent-shape-fitness-audit
 updated: 2026-10-16
 ---
 
-# Независимое ограниченное Shape review PRD-087 / SPEC-007 r1
+# Независимое ограниченное Shape review PRD-091 / SPEC-012 r1
 
 ## Structured Fields
 
@@ -47,9 +47,9 @@ Owning artifact workspace: /Users/explosovebit/Work/ForgePlan. Проверяе�
 
 - Approved task: /Users/explosovebit/.omp/agent/sessions/-Work-GertsAi-gertsai_codex/2026-10-16T13-13-31-137Z_01a144d8-a501-7048-9171-61e9652343dd/local/website-onboarding-shape-execution.md:3-24,30-34.
 - Core CLAUDE.md:8-35,197-220,502-517,679-685,689-715; website/CLAUDE.md:1-4,198-206; docs/README.md:9-35,80-113; loaded methodology skill agents/forgeplan-methodology.
-- Canonical CLI get / get --json для PRD-087, SPEC-007 и contextual active PRD-024/PRD-047; get показывает PRD-087 refines PRD-024 и PRD-047, SPEC-007 based_on PRD-087. Parents остаются active и не пересматриваются этим Evidence.
-- PRD projection: .forgeplan/prds/PRD-087-website-onboarding-task-stack-selector-and-revision-bound-public-guide.md.
-- SPEC projection: .forgeplan/specs/SPEC-007-website-onboarding-bounded-selection-and-public-guidance-behavior.md.
+- Canonical CLI get / get --json для PRD-091, SPEC-012 и contextual active PRD-024/PRD-047; get показывает PRD-091 refines PRD-024 и PRD-047, SPEC-012 based_on PRD-091. Parents остаются active и не пересматриваются этим Evidence.
+- PRD projection: .forgeplan/prds/PRD-091-website-onboarding-task-stack-selector-and-revision-bound-public-guide.md.
+- SPEC projection: .forgeplan/specs/SPEC-012-website-onboarding-bounded-selection-and-public-guidance-behavior.md.
 - Primary vendor source прочитан в этом review: https://code.claude.com/docs/en/memory#agents-md (markdown alternate https://code.claude.com/docs/en/memory.md), 2026-10-16. Секции AGENTS.md / When Claude Code reads AGENTS.md / Choose which instruction files load / When AGENTS.md support is unavailable / Where AGENTS.md differs from CLAUDE.md. Это документация поставщика, не запуск Claude.
 
 ## Reviewed Identity and Hashes
@@ -58,10 +58,10 @@ Owning artifact workspace: /Users/explosovebit/Work/ForgePlan. Проверяе�
 
 | Object | Bytes | SHA-256 |
 |---|---:|---|
-| PRD-087 canonical full body | 30278 | 24ba25e45c1f3d5a000cb502ccb67ab6bb329003f6c9c7cec2670dd364ad2d25 |
-| PRD-087 full projection | 30593 | fdfcf0da5d175bfdba9a3dd363c9adb485832cbb5e6eb1e1c4e1cc89f828d7c7 |
-| SPEC-007 canonical full body | 39292 | 5adc34c6f86ca693580b86c8208b304ff79658b7978b781efb3788850ff60678 |
-| SPEC-007 full projection | 39571 | c2a375501395a7836dc4784df3cd27726e65e42c3d112031d5a16f1eab901345 |
+| PRD-091 canonical full body | 30278 | 24ba25e45c1f3d5a000cb502ccb67ab6bb329003f6c9c7cec2670dd364ad2d25 |
+| PRD-091 full projection | 30593 | fdfcf0da5d175bfdba9a3dd363c9adb485832cbb5e6eb1e1c4e1cc89f828d7c7 |
+| SPEC-012 canonical full body | 39292 | 5adc34c6f86ca693580b86c8208b304ff79658b7978b781efb3788850ff60678 |
+| SPEC-012 full projection | 39571 | c2a375501395a7836dc4784df3cd27726e65e42c3d112031d5a16f1eab901345 |
 | SPEC Requirements block | 25748 | 52c6aba79d2cf5349c4122b6d03e1ffdb29169444a65b7727478c44bce24f6d4 |
 | SPEC scenario-only stream S01–S36 | 22873 | 9c2bcdfca3af70c8cd51aca5af22784e875333b77bc86ee87eed428afb8f03c1 |
 
@@ -69,9 +69,9 @@ Requirements bytes: от начала ## Requirements newline до байта п
 
 ## Executed Verification
 
-1. forgeplan get PRD-087 / SPEC-007 и JSON-формы: оба draft, CLI depth deep; links соответствуют назначению. Canonical get parents: PRD-024 active, PRD-047 active.
-2. forgeplan validate PRD-087: PASS, 0 errors, 0 warnings; отдельно один COULD prd-fr-format для русского actor/capability текста. Печатное PASS (with warnings) не превращается здесь в один warning.
-3. forgeplan validate SPEC-007: PASS, All checks passed, 0 errors, 0 warnings; CLI depth Deep.
+1. forgeplan get PRD-091 / SPEC-012 и JSON-формы: оба draft, CLI depth deep; links соответствуют назначению. Canonical get parents: PRD-024 active, PRD-047 active.
+2. forgeplan validate PRD-091: PASS, 0 errors, 0 warnings; отдельно один COULD prd-fr-format для русского actor/capability текста. Печатное PASS (with warnings) не превращается здесь в один warning.
+3. forgeplan validate SPEC-012: PASS, All checks passed, 0 errors, 0 warnings; CLI depth Deep.
 4. У обоих validate есть отказ session routing→coding и hint activate. Hint не даёт разрешения ни coding, ни activation; оба не выполнялись.
 5. Независимое вычисление full body/projection/Requirements/scenario hashes и counts; source reading для coverage и vendor cases.
 6. forgeplan health: 439 artifacts, 2 at-risk и 10 phase mismatches; исторические health-находки вне этого конечного review не чинились. Это не health PASS проекта.
@@ -108,11 +108,11 @@ Requirements bytes: от начала ## Requirements newline до байта п
 
 ### B1 — HIGH, methodology prerequisite; полный design gate blocked
 
-PRD-087:166-170 честно фиксирует mandatory Deep ADI attempt: Request timeout after 30000ms, retryable:no, outcome unknown. CLAUDE.md:203 требует ADI для Deep/Critical; canonical CLI показывает Deep у обоих кандидатов. Завершённого ADI output reviewer не получил. Это reported owner/tool observation, не самостоятельно повторённый failure; reason не перезапускался и процесс не опрашивался. Trigger снятия: owning session предоставляет завершённый ADI с идентичностью рассмотренных текстов/результатом и передаёт кандидата на fresh independent re-review. Таймаут нельзя считать ни успешным reasoning, ни доказанным отсутствием серверного результата.
+PRD-091:166-170 честно фиксирует mandatory Deep ADI attempt: Request timeout after 30000ms, retryable:no, outcome unknown. CLAUDE.md:203 требует ADI для Deep/Critical; canonical CLI показывает Deep у обоих кандидатов. Завершённого ADI output reviewer не получил. Это reported owner/tool observation, не самостоятельно повторённый failure; reason не перезапускался и процесс не опрашивался. Trigger снятия: owning session предоставляет завершённый ADI с идентичностью рассмотренных текстов/результатом и передаёт кандидата на fresh independent re-review. Таймаут нельзя считать ни успешным reasoning, ни доказанным отсутствием серверного результата.
 
 ### F1 — MEDIUM, artifact/tool integrity; metadata disagreement
 
-SPEC-007 projection:2 говорит depth: standard; canonical CLI get --json и validate говорят deep/Deep. PRD-087 projection:2 и CLI согласованы на deep. Canonical bodies совпадают с projection bodies с обычным внешним newline framing, поэтому расхождение по depth нельзя объявить потерей/подменой body. Root cause не установлен. Trigger снятия: owning artifact/tool maintainer объясняет/согласует metadata через scoped canonical operation и повторяет validation/readback; новый projection hash требует обновления identity record. Нельзя молча считать standard и обходить Deep ADI. Здесь ни metadata rewrite, ни global reindex/rebuild не выполнялись.
+SPEC-012 projection:2 говорит depth: standard; canonical CLI get --json и validate говорят deep/Deep. PRD-091 projection:2 и CLI согласованы на deep. Canonical bodies совпадают с projection bodies с обычным внешним newline framing, поэтому расхождение по depth нельзя объявить потерей/подменой body. Root cause не установлен. Trigger снятия: owning artifact/tool maintainer объясняет/согласует metadata через scoped canonical operation и повторяет validation/readback; новый projection hash требует обновления identity record. Нельзя молча считать standard и обходить Deep ADI. Здесь ни metadata rewrite, ни global reindex/rebuild не выполнялись.
 
 ### B2 — HIGH, reported cross-surface integrity limitation
 
@@ -132,11 +132,11 @@ CLAUDE.md:516 находится внутри Rust coding rules (:502), сраз
 
 ## Resume and Exit
 
-Finite independent review завершён этим draft Evidence, но полный design gate BLOCKER. PRD-087 и SPEC-007 остаются draft, родители untouched. Не выполнены reasoning retry, producer polling, source implementation, RFC/ADR creation, tracking writes, release/activation.
+Finite independent review завершён этим draft Evidence, но полный design gate BLOCKER. PRD-091 и SPEC-012 остаются draft, родители untouched. Не выполнены reasoning retry, producer polling, source implementation, RFC/ADR creation, tracking writes, release/activation.
 
 Owning session: сначала получить подтверждённый mandatory ADI и разрешить artifact/tool identity limitations; от Marketplace parent принять handback catalog/export/commands/regulation на immutable revision. Затем consistency mapping на S01–S36 и все семь входов; при изменении текста новый candidate/hash и fresh independent review. Только после принятых предпосылок — architecture/RFC с независимым gate и отдельно разрешённая MiniMax implementation. Runtime acceptance остаётся будущей работой по S33–S36, не текущим PASS. При изменении любой pinned body/source revision этот audit не переносится автоматически.
 
 ## Evidence Persistence Verification
 
-Создан EVID-172 в draft через canonical CLI new/update. Первая informs-связь с PRD-087 записалась; первая попытка связи с SPEC-007 завершилась LanceStore transient error No space left on device (os error 28). Readback после ошибки показал только PRD-087 link; forgeplan validate EVID-172 тогда PASS, 0 errors/0 warnings. df -h . показал 927G size, 927G used, 120M available, 100% use. Без удаления/чистки/изменения чужих данных одна повторная canonical link операция затем успешно записала SPEC-007 informs. Этот сбой не скрывается как непрерывно успешная запись; малый остаток диска — риск следующих мутаций, не причина изобретать обход canonical API. Финальный readback/validation выполняются отдельно после сохранения этой записи.
+Создан EVID-207 в draft через canonical CLI new/update. Первая informs-связь с PRD-091 записалась; первая попытка связи с SPEC-012 завершилась LanceStore transient error No space left on device (os error 28). Readback после ошибки показал только PRD-091 link; forgeplan validate EVID-207 тогда PASS, 0 errors/0 warnings. df -h . показал 927G size, 927G used, 120M available, 100% use. Без удаления/чистки/изменения чужих данных одна повторная canonical link операция затем успешно записала SPEC-012 informs. Этот сбой не скрывается как непрерывно успешная запись; малый остаток диска — риск следующих мутаций, не причина изобретать обход canonical API. Финальный readback/validation выполняются отдельно после сохранения этой записи.
 

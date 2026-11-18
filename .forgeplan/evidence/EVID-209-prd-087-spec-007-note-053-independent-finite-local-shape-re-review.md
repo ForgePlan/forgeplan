@@ -1,18 +1,18 @@
 ---
 depth: standard
-id: EVID-173
+id: EVID-209
 kind: evidence
 last_modified_at: 2026-10-16T20:27:56.089445+00:00
 last_modified_by: omp-coding-agent/1.0.0
 links:
-- target: PRD-087
+- target: PRD-091
   relation: informs
-- target: SPEC-007
+- target: SPEC-012
   relation: informs
 - target: NOTE-053
   relation: informs
 status: draft
-title: PRD-087 SPEC-007 NOTE-053 independent finite local Shape re-review
+title: PRD-091 SPEC-012 NOTE-053 independent finite local Shape re-review
 ---
 
 ---
@@ -23,7 +23,7 @@ slug: evid-prd-087-spec-007-note-053-independent-finite-local-shape-re-review
 updated: 2026-10-16
 ---
 
-# Независимый конечный повторный Shape review PRD-087 / SPEC-007 / NOTE-053
+# Независимый конечный повторный Shape review PRD-091 / SPEC-012 / NOTE-053
 
 ## Structured Fields
 
@@ -48,7 +48,7 @@ B1/F1/B2 больше не удерживают этот локальный revi
 
 ## Identity, Independence and Authority
 
-Reviewer: architect-reviewer / Profile B, NEW independent openai-codex/gpt-6.1-sol High context. Не автор NOTE-053, PRD-087 или SPEC-007; не прежний reviewer EVID-172. Модель и High назначены authoritative dispatch с одобренным run-local overlay; аргументы процесса независимо не исследовались. Fallback/prewalk, reasoning/model/provider probes и делегирование не выполнялись. Дата: 2026-10-16. Product owner: Eli Rum, https://elirum.me.
+Reviewer: architect-reviewer / Profile B, NEW independent openai-codex/gpt-6.1-sol High context. Не автор NOTE-053, PRD-091 или SPEC-012; не прежний reviewer EVID-172. Модель и High назначены authoritative dispatch с одобренным run-local overlay; аргументы процесса независимо не исследовались. Fallback/prewalk, reasoning/model/provider probes и делегирование не выполнялись. Дата: 2026-10-16. Product owner: Eli Rum, https://elirum.me.
 
 Owning workspace: /Users/explosovebit/Work/ForgePlan. Работа ограничена конечным design-only review. Единственная новая изменяемая запись — этот draft Evidence через canonical MCP new/update/link. PRD/SPEC/NOTE, EVID-172 и active parents не редактируются. Никаких source/test/build/lint/server/browser/config/auth/install/global/tracker/release/commit/RFC/activation действий. Новый Evidence contextualizes исторический EVID-172; не supersedes/deprecates его и не переписывает прежний BLOCKER.
 
@@ -60,14 +60,14 @@ Owning workspace: /Users/explosovebit/Work/ForgePlan. Работа ограни�
 
 | Запись | status/depth | Body bytes | Body SHA-256 | Projection bytes | Projection SHA-256 |
 |---|---|---:|---|---:|---|
-| PRD-087 | draft/deep | 34406 | 803d422426a6826066c17ed165f28564e7979b5af429cad62d4f2d91d149a83a | 34721 | ccca09aca9ae78b5e48611afa86ba4a61fd5711263f6079f5a6680c68103fad5 |
-| SPEC-007 | draft/deep | 39292 | 5adc34c6f86ca693580b86c8208b304ff79658b7978b781efb3788850ff60678 | 39569 | c137efa21f79a906c4a5d168477970e15b3d6c62d0e704abe43e09683484a12d |
+| PRD-091 | draft/deep | 34406 | 803d422426a6826066c17ed165f28564e7979b5af429cad62d4f2d91d149a83a | 34721 | ccca09aca9ae78b5e48611afa86ba4a61fd5711263f6079f5a6680c68103fad5 |
+| SPEC-012 | draft/deep | 39292 | 5adc34c6f86ca693580b86c8208b304ff79658b7978b781efb3788850ff60678 | 39569 | c137efa21f79a906c4a5d168477970e15b3d6c62d0e704abe43e09683484a12d |
 | NOTE-053 | draft/standard | 40187 | 961b084cab0b0ca1ee60c49a8f08668490301ef3e4a01128aea822e601ab2783 | 40509 | 37be7a44bd60519c670205c813d49d7bbe74afd1950ff358bdac9c023c4a57c5 |
 | EVID-172 | draft/tactical | 22610 | 166459e3b24ace7fab5effaa917094914b38cdb09bba1e7c8c39e52ec74171d2 | 22821 | a0959046856a371d457bc497f6251a827ece9f28b2956663aa6b15ae433c7e7d |
 
 Paths и line anchors — текущие projections:
-- .forgeplan/prds/PRD-087-website-onboarding-task-stack-selector-and-revision-bound-public-guide.md:47–81 Goals/Journeys;83–96 FR;98–124 homes/dependency;134–141 future acceptance;147–149 policy;166–181 historic ADI + dated Resolution.
-- .forgeplan/specs/SPEC-007-website-onboarding-bounded-selection-and-public-guidance-behavior.md:34–50 conceptual contract;52–303 R1–R10/S01–S36;304–346 behavior/contracts/errors/acceptance;348–350 policy;361–366 candidate freeze.
+- .forgeplan/prds/PRD-091-website-onboarding-task-stack-selector-and-revision-bound-public-guide.md:47–81 Goals/Journeys;83–96 FR;98–124 homes/dependency;134–141 future acceptance;147–149 policy;166–181 historic ADI + dated Resolution.
+- .forgeplan/specs/SPEC-012-website-onboarding-bounded-selection-and-public-guidance-behavior.md:34–50 conceptual contract;52–303 R1–R10/S01–S36;304–346 behavior/contracts/errors/acceptance;348–350 policy;361–366 candidate freeze.
 - .forgeplan/notes/NOTE-053-prd-087-spec-007-bounded-authored-adi-and-factual-shape-handoff-resolution.md:26–49 authority/pins;51–71 diagnostics;73–110 полный новый ADI;112–130 unchanged invariants/dependency/resume;132–226 persistence/readback.
 - .forgeplan/evidence/EVID-172-prd-087-spec-007-r1-independent-shape-fitness-audit.md:109–123 B1/F1/B2/B3;125–131 policy;139–141 historical persistence.
 
@@ -78,18 +78,18 @@ Paths и line anchors — текущие projections:
 ## Own Executed CLI and MCP Checks
 
 1. Полностью прочитаны текущие canonical body PRD/SPEC/NOTE/EVID через CLI+MCP и projections; полная NOTE рассмотрена, включая выводы и diagnostic limits, а не только её summary.
-2. CLI validate PRD-087 --json, SPEC-007 --json, NOTE-053 --json: каждый exit=0, passed=true, errors=0, warnings=0. Mounted MCP validate каждого: total_passed=1,total_errors=0,total_warnings=0. PRD имеет один COULD prd-fr-format для русского actor/capability; SPEC/NOTE findings пусты. COULD не засчитан как warning или поведенческий дефект.
-3. Оба кандидата draft/deep в CLI/MCP и depth: deep во внешнем YAML projections. NOTE draft/standard. CLI get PRD-024 и PRD-047 подтверждает active; PRD refines обоих, SPEC based_on PRD-087. Их содержание не пересматривается.
+2. CLI validate PRD-091 --json, SPEC-012 --json, NOTE-053 --json: каждый exit=0, passed=true, errors=0, warnings=0. Mounted MCP validate каждого: total_passed=1,total_errors=0,total_warnings=0. PRD имеет один COULD prd-fr-format для русского actor/capability; SPEC/NOTE findings пусты. COULD не засчитан как warning или поведенческий дефект.
+3. Оба кандидата draft/deep в CLI/MCP и depth: deep во внешнем YAML projections. NOTE draft/standard. CLI get PRD-024 и PRD-047 подтверждает active; PRD refines обоих, SPEC based_on PRD-091. Их содержание не пересматривается.
 4. CLI stderr validate: Cannot go from routing to coding; hint Create artifact/new prd. MCP hints implement/activate также получены. Ни подсказка, ни validation PASS не разрешают выход за Shape; эти действия не выполнены.
 5. Собственное activity чтение forgeplan_reason за 24 часа/limit100 и raw tools-2026-10-16.jsonl:138 подтверждает server terminal запись, указанную в B1 ниже. Новый reason не вызывался.
-6. Scoped canonical search kind=evidence, query PRD-087, keyword/no_expand вернул только EVID-172 перед созданием этого Evidence; claims count=0,skipped=0. Это отсутствие scoped duplicate/claim, не утверждение об отсутствии иной чужой работы.
+6. Scoped canonical search kind=evidence, query PRD-091, keyword/no_expand вернул только EVID-172 перед созданием этого Evidence; claims count=0,skipped=0. Это отсутствие scoped duplicate/claim, не утверждение об отсутствии иной чужой работы.
 7. Собственный CLI health exit=0: 441 artifacts, 2 at-risk (PRD-005/RFC-004), 10 phase mismatches, Project needs attention. Не health PASS; unrelated debt не исправлялся. df -h . до мутации: 14Gi available,99% capacity. Cleanup не выполнялся.
 
 Сборки, тесты, линтеры, сервер, browser/keyboard rendering, disposable local command proof, Claude loading и producer polling НЕ выполнялись. Это фактическая проверка artifact/read/validate/write surfaces, не website runtime/build/implementation acceptance.
 
 ## Independent B1 Determination — Accepted Local Exit
 
-CLAUDE.md:203 требует forgeplan reason PRD-087 → 3+ hypotheses для Deep/Critical; :316 и methodology skill требуют ADI. Реальный engine invocation не заменён авторской NOTE: он уже был сделан. Этот reviewer прочитал исходный creator transcript /Users/explosovebit/.omp/agent/sessions/-Work-ForgePlan/2026-10-16T17-55-04-864Z_01a145da-6c20-77b2-8c79-a517be5857f1.jsonl:95,97, выбрав toolCall/toolResult без private thinking. В 17:57:42.357Z переданы id=PRD-087 и owning workspace; клиент в 17:58:12.367Z сообщил nonretryable Request timeout after 30000ms, outcome unknown. Сам сбой не перезапускался для подтверждения.
+CLAUDE.md:203 требует forgeplan reason PRD-091 → 3+ hypotheses для Deep/Critical; :316 и methodology skill требуют ADI. Реальный engine invocation не заменён авторской NOTE: он уже был сделан. Этот reviewer прочитал исходный creator transcript /Users/explosovebit/.omp/agent/sessions/-Work-ForgePlan/2026-10-16T17-55-04-864Z_01a145da-6c20-77b2-8c79-a517be5857f1.jsonl:95,97, выбрав toolCall/toolResult без private thinking. В 17:57:42.357Z переданы id=PRD-091 и owning workspace; клиент в 17:58:12.367Z сообщил nonretryable Request timeout after 30000ms, outcome unknown. Сам сбой не перезапускался для подтверждения.
 
 Собственные current forgeplan_activity и local JSONL:138 дают terminal SERVER status ok в 17:58:42.621Z,duration_ms=60260,args_hash=ec08d4f02ead. Четыре другие записи reason имеют иные hashes и не подменяют исход. Сервер завершил запрос после client timeout. OUTPUT NOT RECOVERED: status не доказывает количество/качество гипотез, точное candidate coverage или доставку. Вызов предшествовал final candidate r1. Ни восстановленного engine analysis, ни нового engine output этот Evidence не заявляет.
 
@@ -148,18 +148,18 @@ B2: собственный mounted MCP get+validate обоих IDs с явным
 
 ## Canonical Persistence Verification
 
-Создан ровно один NEW EVID-173 через mounted MCP new; canonical slug evid-prd-087-spec-007-note-053-independent-finite-local-shape-re-review. Полное тело сразу передано update, затем три последовательных informs-связи к PRD-087, SPEC-007, NOTE-053 с auto_activate_source_if_complete=false. Path: .forgeplan/evidence/EVID-173-prd-087-spec-007-note-053-independent-finite-local-shape-re-review.md. link ответы подтвердили каждую связь и предложили activation; она не выполнялась. Link hint эмитировал R_eff=0.30 на EVID-173, но это не gate PASS/измерение runtime и не основание активации.
+Создан ровно один NEW EVID-209 через mounted MCP new; canonical slug evid-prd-087-spec-007-note-053-independent-finite-local-shape-re-review. Полное тело сразу передано update, затем три последовательных informs-связи к PRD-091, SPEC-012, NOTE-053 с auto_activate_source_if_complete=false. Path: .forgeplan/evidence/EVID-209-prd-087-spec-007-note-053-independent-finite-local-shape-re-review.md. link ответы подтвердили каждую связь и предложили activation; она не выполнялась. Link hint эмитировал R_eff=0.30 на EVID-209, но это не gate PASS/измерение runtime и не основание активации.
 
-Фактический первый readback после links: CLI get --json и mounted MCP get совпали по full body/status/depth/links; draft/standard, inbound пуст, ровно три outbound informs. Переданный reviewer текст сохранён целиком после внутреннего template-derived YAML. Первый canonical body SHA-256: 53da0ea83dc771fb6512ecec787991ab883ccee55696a2a8577b4df4beb2ff1a. Первая CLI validation exit=0 и MCP passed=true, 0 errors, 1 SHOULD warning: no-placeholders ошибочно для смысла текста отметил literal общий пример PRD с тремя X в процитированной норме CLAUDE. В этом же Evidence пример заменён на конкретный PRD-087, смысл нормы сохранён. Ранний warning не скрывается как непрерывный zero-warning результат; итоговые validation/readback следуют после сохранения этой секции. Самоссылочный финальный hash в собственное тело не вписывается.
+Фактический первый readback после links: CLI get --json и mounted MCP get совпали по full body/status/depth/links; draft/standard, inbound пуст, ровно три outbound informs. Переданный reviewer текст сохранён целиком после внутреннего template-derived YAML. Первый canonical body SHA-256: 53da0ea83dc771fb6512ecec787991ab883ccee55696a2a8577b4df4beb2ff1a. Первая CLI validation exit=0 и MCP passed=true, 0 errors, 1 SHOULD warning: no-placeholders ошибочно для смысла текста отметил literal общий пример PRD с тремя X в процитированной норме CLAUDE. В этом же Evidence пример заменён на конкретный PRD-091, смысл нормы сохранён. Ранний warning не скрывается как непрерывный zero-warning результат; итоговые validation/readback следуют после сохранения этой секции. Самоссылочный финальный hash в собственное тело не вписывается.
 
-После связей и readback защищённые PRD/SPEC/NOTE canonical body/status/depth и outbound links остались прежними на обеих поверхностях; inbound graph ожидаемо получил EVID-173. Однако full projections каждого получили ровно один дополнительный завершающий LF, что проверено byte comparison new==before+LF:
-- PRD-087: 34721→34722 bytes; SHA-256 9f83bd7974b82e07b1b2cb2e90787e1ca742e2afa145c2c8e0f6f52294286e98.
-- SPEC-007: 39569→39570 bytes; SHA-256 4abb2402c0e24e84383a5dd5cb0b29853502e6d5f5f66d0236c1949405d64833.
+После связей и readback защищённые PRD/SPEC/NOTE canonical body/status/depth и outbound links остались прежними на обеих поверхностях; inbound graph ожидаемо получил EVID-209. Однако full projections каждого получили ровно один дополнительный завершающий LF, что проверено byte comparison new==before+LF:
+- PRD-091: 34721→34722 bytes; SHA-256 9f83bd7974b82e07b1b2cb2e90787e1ca742e2afa145c2c8e0f6f52294286e98.
+- SPEC-012: 39569→39570 bytes; SHA-256 4abb2402c0e24e84383a5dd5cb0b29853502e6d5f5f66d0236c1949405d64833.
 - NOTE-053: 40509→40510 bytes; SHA-256 52788c120dbfdd8fb19c5b51f31005892f8cd53730472da16de56be27014d8ac.
 
 Это observed canonical tool side effect, не прямое редактирование reviewer и не изменение consumer семантики. Конкретная операция среди new/update/link/get/validate не изолирована; root cause не приписывается. Tool QA через xd://report_issue принят ответом Noted, thanks! Ни corrective update, ни raw projection repair защищённых записей не делался. Базовые pre-link pins выше сохраняют значение reviewed input; эти post-link pins честно фиксируют текущую framing identity.
 
 EVID-172 после мутаций отдельно прочитан CLI+MCP: body/status/depth и ВЕСЬ links object точно совпали с исходными; full projection bytes22821 и SHA-256 a0959046856a371d457bc497f6251a827ece9f28b2956663aa6b15ae433c7e7d побайтно прежние. Ни нового link к нему, ни изменения historic verdict/status/body, ни supersede/deprecate нет. df -h . после записи: 14Gi available,99%; очистка не проводилась. Финальная проверка нового Evidence и защищённых pins выполняется после последней записи; её фактический результат и финальный hash передаются вызывающей сессии.
 
-Фактический заключительный checkpoint после исправления literal placeholder и добавления журнала: CLI validate EVID-173 --json exit=0,passed=true,errors=0,warnings=0,findings=[]; mounted MCP validate total_passed=1,total_errors=0,total_warnings=0,findings=[]. CLI и MCP get совпали по полному body/status/depth/links; body точно равен переданному full update, draft/standard и ровно три informs к PRD-087/SPEC-007/NOTE-053. Body SHA-256 этого проверенного checkpoint до добавления данного абзаца: db5322bb92d87a9c37ac0750e4276413153b6fca83733aad57e19c6445e7e5d8 (32669 bytes). Generic CLI routing→coding rejection/hints остались и не исполнялись. После записи этого фактического checkpoint reviewer ещё раз проверяет canonical persistence/validation и сообщает окончательный hash вовне; checkpoint hash не выдаётся за самоссылочный hash последнего тела.
+Фактический заключительный checkpoint после исправления literal placeholder и добавления журнала: CLI validate EVID-209 --json exit=0,passed=true,errors=0,warnings=0,findings=[]; mounted MCP validate total_passed=1,total_errors=0,total_warnings=0,findings=[]. CLI и MCP get совпали по полному body/status/depth/links; body точно равен переданному full update, draft/standard и ровно три informs к PRD-091/SPEC-012/NOTE-053. Body SHA-256 этого проверенного checkpoint до добавления данного абзаца: db5322bb92d87a9c37ac0750e4276413153b6fca83733aad57e19c6445e7e5d8 (32669 bytes). Generic CLI routing→coding rejection/hints остались и не исполнялись. После записи этого фактического checkpoint reviewer ещё раз проверяет canonical persistence/validation и сообщает окончательный hash вовне; checkpoint hash не выдаётся за самоссылочный hash последнего тела.
 

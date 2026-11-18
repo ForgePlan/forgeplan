@@ -3,7 +3,7 @@ assigned_number: 205
 author: null
 created: 2026-11-13
 depth: tactical
-id: EVID-205
+id: EVID-216
 kind: evidence
 links:
 - target: spec-contextpack-bounded-federated-evidence-kb8bac5ddcb6edda3c6a10447bff91441

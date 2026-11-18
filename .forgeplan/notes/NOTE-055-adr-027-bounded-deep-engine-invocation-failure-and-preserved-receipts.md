@@ -5,10 +5,10 @@ kind: note
 last_modified_at: 2026-10-16T20:57:11.722339+00:00
 last_modified_by: omp-coding-agent/1.0.0
 links:
-- target: ADR-027
+- target: ADR-031
   relation: informs
 status: draft
-title: ADR-027 bounded Deep engine invocation failure and preserved receipts
+title: ADR-031 bounded Deep engine invocation failure and preserved receipts
 ---
 
 ---
@@ -19,24 +19,24 @@ slug: note-adr-027-bounded-deep-engine-invocation-failure-and-preserved-receipts
 updated: 2026-10-16
 ---
 
-# ADR-027 — неуспешная ограниченная попытка нового Deep ADI
+# ADR-031 — неуспешная ограниченная попытка нового Deep ADI
 
 Автор: Eli Rum, https://elirum.me. Profile A creator/operator; назначенный OMP Sol6.1 High. Это фактическая запись вызова, не независимый Evidence, не gate verdict и не engine analysis.
 
 ## Authorization and boundary
 
-Исходное разрешение владельца: «Да, оформить и в core»; «Отдельно оформить изменение регламента с независимой проверкой; остальные gates остаются обязательными.» Полное происхождение закреплено в ADR-027. Текущая операция разрешала ровно один новый bounded вызов на ADR-027 и один на RFC-014, только process-local provider/model и временный PATH adapter, без config/auth/source/global изменений и без повторов старого website reasoning. ADR-027 не повторялся после ошибки. Историческое ограничение в ADR/RFC сохраняется.
+Исходное разрешение владельца: «Да, оформить и в core»; «Отдельно оформить изменение регламента с независимой проверкой; остальные gates остаются обязательными.» Полное происхождение закреплено в ADR-031. Текущая операция разрешала ровно один новый bounded вызов на ADR-031 и один на RFC-014, только process-local provider/model и временный PATH adapter, без config/auth/source/global изменений и без повторов старого website reasoning. ADR-031 не повторялся после ошибки. Историческое ограничение в ADR/RFC сохраняется.
 
 ## Actual receipt
 
 ```json
 {
-  "operation": "single authorized ADR-027 CLI attempt; no retry",
+  "operation": "single authorized ADR-031 CLI attempt; no retry",
   "workspace": "/Users/explosovebit/Work/ForgePlan",
   "command": [
     "/opt/homebrew/bin/forgeplan",
     "reason",
-    "ADR-027",
+    "ADR-031",
     "--json",
     "--save"
   ],
@@ -68,12 +68,12 @@ updated: 2026-10-16
 }
 ```
 
-Фактическая shell-команда вызова: `/bin/bash /tmp/forgeplan-core-engine.SGWouD/run-reason ADR-027`. Runner передал process-local `PATH=/tmp/forgeplan-core-engine.SGWouD/bin:$PATH`, `FORGEPLAN_LLM_PROVIDER=codex-cli`, `FORGEPLAN_LLM_MODEL=gpt-6.1-sol` и служебную `FORGEPLAN_ENGINE_RECEIPT=/tmp/forgeplan-core-engine.SGWouD/ADR-027`; последний ключ не является ForgePlan setting. stdout/stderr захвачены отдельно; exit измерен у самого CLI, не у pipe.
+Фактическая shell-команда вызова: `/bin/bash /tmp/forgeplan-core-engine.SGWouD/run-reason ADR-031`. Runner передал process-local `PATH=/tmp/forgeplan-core-engine.SGWouD/bin:$PATH`, `FORGEPLAN_LLM_PROVIDER=codex-cli`, `FORGEPLAN_LLM_MODEL=gpt-6.1-sol` и служебную `FORGEPLAN_ENGINE_RECEIPT=/tmp/forgeplan-core-engine.SGWouD/ADR-031`; последний ключ не является ForgePlan setting. stdout/stderr захвачены отдельно; exit измерен у самого CLI, не у pipe.
 
 ## Complete stdout
 
 ```text
-  Analyzing ADR-027 with ADI cycle (codex-cli/gpt-6.1-sol)...
+  Analyzing ADR-031 with ADI cycle (codex-cli/gpt-6.1-sol)...
 
 ```
 
@@ -82,7 +82,7 @@ updated: 2026-10-16
 ```text
 ForgePlan local CLI provider: reusing a stock CLI login under your vendor subscription. Personal/local development only — not for production, shared, or CI environments. Usage draws from the vendor plan and is subject to its terms; ForgePlan does not extract tokens or spoof client identity.
 Error: ADI reasoning failed: codex-cli provider: `codex` exited with status Some(1); vendor stderr was withheld because it may contain prompt or environment data; run `codex login`.
-Fix: local provider `codex-cli` is unavailable — run codex login; then retry `forgeplan reason ADR-027`
+Fix: local provider `codex-cli` is unavailable — run codex login; then retry `forgeplan reason ADR-031`
 Error: LLM call failed
 ```
 
@@ -92,11 +92,11 @@ Error: LLM call failed
 
 После ошибки read-only прочитан исходник установленного релиза v0.38.0. `build_environment`/`build_env_allowlist` вместе с `run_subprocess.env_clear()` удаляют произвольные переменные; Codex extra_env_keys пуст. Исходный adapter требовал `FORGEPLAN_ENGINE_RECEIPT` до записи argv и `exec`. Отсутствие receipt и exit 1 согласуются с этой ранней остановкой. Идентичность исходника релиза с конкретной установленной сборкой отдельно не доказана; заключение основано на версии и наблюдаемом результате, raw vendor diagnostic недоступен.
 
-Для отдельного разрешённого RFC-014 вызова зависимость от custom env устранена только во временном adapter: receipt path задан literal, исходные аргументы и stdin не меняются, добавляется только supported `--config 'model_reasoning_effort="high"'`. Это не повтор ADR-027. Для ADR-027 новый engine-call prerequisite остаётся открытым: нужен отдельно разрешённый будущий вызов через проверяемый process-local путь; текущая авторизация на попытку уже использована. Никакого fallback, нового paid probe, credential inspection или конфигурационной правки не выполнено.
+Для отдельного разрешённого RFC-014 вызова зависимость от custom env устранена только во временном adapter: receipt path задан literal, исходные аргументы и stdin не меняются, добавляется только supported `--config 'model_reasoning_effort="high"'`. Это не повтор ADR-031. Для ADR-031 новый engine-call prerequisite остаётся открытым: нужен отдельно разрешённый будущий вызов через проверяемый process-local путь; текущая авторизация на попытку уже использована. Никакого fallback, нового paid probe, credential inspection или конфигурационной правки не выполнено.
 
 ## Gate state
 
-ADR-027/RFC-014 остаются draft/deep. Structural validation обоих дала 0 MUST/0 SHOULD ошибок, но это не independent review. Owner policy, source allowlist 17 файлов, active architecture applicability, safe sequence/red line 7, pre-source reviewer и guardian остаются без авторского PASS. MiniMax source dispatch не разрешён этой записью. EVID-172/173, NOTE-053, PRD-087/SPEC-007 и operative source не менялись на момент сохранения receipt; финальная проверка сохранности записывается в handoff.
+ADR-031/RFC-014 остаются draft/deep. Structural validation обоих дала 0 MUST/0 SHOULD ошибок, но это не independent review. Owner policy, source allowlist 17 файлов, active architecture applicability, safe sequence/red line 7, pre-source reviewer и guardian остаются без авторского PASS. MiniMax source dispatch не разрешён этой записью. EVID-172/173, NOTE-053, PRD-087/SPEC-007 и operative source не менялись на момент сохранения receipt; финальная проверка сохранности записывается в handoff.
 
 ## Receipt retention
 
@@ -105,14 +105,14 @@ Run-local файлы сохранены в `/tmp/forgeplan-core-engine.SGWouD/` 
 
 ## Final preservation verification and current pins
 
-Ниже реальные результаты после canonical author updates и links. Это проверка сохранности/происхождения, не независимый verdict. NOTE-055 собственный hash не включён, чтобы не создавать самоссылку; конечный body pin выдаётся в handoff. Исходные 1783 файла включают dirty/untracked baseline и локальный `.forgeplan/config.yaml`; изменились только собственные ADR-027/RFC-014 projections, новые NOTE-054/055 добавлены отдельно. Все 17 будущих source файлов RFC совпали с исходными before hashes. Protected canonical records сравнивались целиком (body/status/depth/links/metadata), raw projections — по точным bytes SHA-256.
+Ниже реальные результаты после canonical author updates и links. Это проверка сохранности/происхождения, не независимый verdict. NOTE-055 собственный hash не включён, чтобы не создавать самоссылку; конечный body pin выдаётся в handoff. Исходные 1783 файла включают dirty/untracked baseline и локальный `.forgeplan/config.yaml`; изменились только собственные ADR-031/RFC-014 projections, новые NOTE-054/055 добавлены отдельно. Все 17 будущих source файлов RFC совпали с исходными before hashes. Protected canonical records сравнивались целиком (body/status/depth/links/metadata), raw projections — по точным bytes SHA-256.
 
 ```json
 {
   "verified_at_utc": "2026-10-16T20:59:43.921175+00:00",
   "baseline_files": 1783,
   "changed_baseline_paths": [
-    ".forgeplan/adrs/ADR-027-finite-evidence-backed-independent-review-without-a-defect-quota.md",
+    ".forgeplan/adrs/ADR-031-finite-evidence-backed-independent-review-without-a-defect-quota.md",
     ".forgeplan/rfcs/RFC-014-core-review-policy-bounded-documentation-cutover.md"
   ],
   "source_allowlist_unchanged": [
@@ -200,7 +200,7 @@ Run-local файлы сохранены в `/tmp/forgeplan-core-engine.SGWouD/` 
     "SPEC-007": true
   },
   "artifacts": {
-    "ADR-027": {
+    "ADR-031": {
       "status": "draft",
       "depth": "deep",
       "title": "Finite evidence-backed independent review without a defect quota",
@@ -219,8 +219,8 @@ Run-local файлы сохранены в `/tmp/forgeplan-core-engine.SGWouD/` 
       "body_sha256": "f884501e650d1ad24e848e3cf9d8934d09254de6103fa91345e575815f28f317"
     }
   },
-  "structural_validation": "ADR-027 and RFC-014 both 0 errors / 0 warnings; no independent verdict",
-  "remaining": "ADR-027 accepted engine result absent; no retries. Independent pre-source review/guardian and lifecycle prerequisites remain. No MiniMax dispatch.",
+  "structural_validation": "ADR-031 and RFC-014 both 0 errors / 0 warnings; no independent verdict",
+  "remaining": "ADR-031 accepted engine result absent; no retries. Independent pre-source review/guardian and lifecycle prerequisites remain. No MiniMax dispatch.",
   "note54_mcp_visibility": "MCP get NOTE-054 returned not found; canonical CLI get and update succeeded. Next reviewer should read actual saved note via owning CLI if MCP still cannot resolve it."
 }
 ```

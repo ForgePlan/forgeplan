@@ -1,6 +1,6 @@
 ---
 depth: standard
-id: EVID-175
+id: EVID-211
 kind: evidence
 last_modified_at: 2026-10-16T20:43:47.585842+00:00
 last_modified_by: omp-coding-agent/1.0.0
@@ -23,7 +23,7 @@ slug: evid-constellation-s1-a-codex-adi
 updated: 2026-10-16
 ---
 
-# EVID-175: Constellation S1-A — действительный Codex ADI и докодовые условия
+# EVID-211: Constellation S1-A — действительный Codex ADI и докодовые условия
 
 | Field | Value |
 |---|---|
@@ -301,9 +301,9 @@ Conditional publication с полной привязкой source/input/profile/
 
 Threshold source: /Users/explosovebit/.omp/plugins/cache/plugins/forgeplan-marketplace___fpl-skills___1.75.1/templates/quality-gates.yaml, pre_build.deep; project override отсутствует, не создавался. Depth явно Deep и calibrate подтвердил Deep. CLI get RFC-015 (artifact://252) соответствует canonical body SHA 01ffe8e926d485c8ab87b96e48fb0d16e053a534a5ef4c840cdcaeedee8f8690.
 
-MUST: validate_errors_max=0 соблюдён для A/S/R; linked EVID-175 содержит8 ### Hypothesis headings и actual ADI4+4. Измеренная структурная часть PASS без --force; это **не** независимый докодовый допуск.
+MUST: validate_errors_max=0 соблюдён для A/S/R; linked EVID-211 содержит8 ### Hypothesis headings и actual ADI4+4. Измеренная структурная часть PASS без --force; это **не** независимый докодовый допуск.
 
-SHOULD/advisory: все3 r_eff=0.3, weakest_link=null; EVID-174 Weakens0.5 и EVID-175 Supports1.0 сохранены оба, draft parents skipped по реальному score. Формальность A0.846/S0.778/R0.769, granularityA/S0.4/R0.8, reliability0.65, evidence_count2. Низкий R_eff/granularity не превращены в MUST и старое evidence не скрыто ради цифры. Gapsworkspace43MUST/3SHOULD/2COULD — advisory; релевантны прежниеPRD081/085 directRFC-gap и RFC004r_eff0.10, approvedtrace черезSPEC сохранён. Blindspots не обнаружены. ПосторонниеEVID033–035 structured-field warnings не чинились.
+SHOULD/advisory: все3 r_eff=0.3, weakest_link=null; EVID-174 Weakens0.5 и EVID-211 Supports1.0 сохранены оба, draft parents skipped по реальному score. Формальность A0.846/S0.778/R0.769, granularityA/S0.4/R0.8, reliability0.65, evidence_count2. Низкий R_eff/granularity не превращены в MUST и старое evidence не скрыто ради цифры. Gapsworkspace43MUST/3SHOULD/2COULD — advisory; релевантны прежниеPRD081/085 directRFC-gap и RFC004r_eff0.10, approvedtrace черезSPEC сохранён. Blindspots не обнаружены. ПосторонниеEVID033–035 structured-field warnings не чинились.
 
 CLI --fpf: для ADR context injected, для RFC No FPF sections found; ingestion/нового download не было. Это ограничение retrieval контекста, а не отсутствие реально полученного structured ADI, но injection FPF-knowledge в RFC не заявляется.
 

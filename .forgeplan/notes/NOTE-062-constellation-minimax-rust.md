@@ -1,6 +1,6 @@
 ---
 depth: deep
-id: NOTE-053
+id: NOTE-062
 kind: note
 last_modified_at: 2026-10-16T20:44:18.859973+00:00
 last_modified_by: omp-coding-agent/1.0.0
@@ -19,7 +19,7 @@ slug: note-constellation-minimax-rust
 updated: 2026-10-16
 ---
 
-# NOTE-053: Constellation — подготовка, передача MiniMax и отложенные Rust-проверки
+# NOTE-062: Constellation — подготовка, передача MiniMax и отложенные Rust-проверки
 
 | Field | Value |
 |-------|-------|
@@ -75,7 +75,7 @@ Rust checks у задач отражает эту политику: `NOT_RUN` у
 | R | RFC-015 | rfcs/RFC-015-constellation-0-0.md |
 | D | ADR-028 | adrs/ADR-028-constellation-rust.md |
 | J | EVID-173 | evidence/EVID-173-constellation.md |
-| N | NOTE-053 | notes/NOTE-053-constellation-minimax-rust.md |
+| N | NOTE-062 | notes/NOTE-062-constellation-minimax-rust.md |
 | D_GENERATION | ADR-029 | adrs/ADR-029-constellation-manifest.md |
 | J_S1A | EVID-174 | evidence/EVID-174-constellation-s1-a-review-adi-auth.md |
 

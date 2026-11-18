@@ -17,7 +17,7 @@ links:
   relation: based_on
 - target: ADR-029
   relation: based_on
-- target: NOTE-054
+- target: NOTE-063
   relation: based_on
 prd: null
 predicted_number: 18
@@ -41,7 +41,7 @@ updated: 2026-10-23
 
 ## Status
 
-draft; автор openai-codex/gpt-6.1-sol. База c852f40c515085d328f02e4b275edda37279a610. NOTE-054: C4 SUFFICIENT; исправленный body pin `b1d302e52e6c2e6c9b6b8d9221f0820e43b89ea465a806246ab85edb0dbc32ba` (UTF-8 от первого `## ` до EOF, без frontmatter). Source writes и behavioural acceptance этим автором не выполнялись.
+draft; автор openai-codex/gpt-6.1-sol. База c852f40c515085d328f02e4b275edda37279a610. NOTE-063: C4 SUFFICIENT; исправленный body pin `b1d302e52e6c2e6c9b6b8d9221f0820e43b89ea465a806246ab85edb0dbc32ba` (UTF-8 от первого `## ` до EOF, без frontmatter). Source writes и behavioural acceptance этим автором не выполнялись.
 
 ### Фактическое состояние интеграции после R3
 
@@ -63,7 +63,7 @@ draft; автор openai-codex/gpt-6.1-sol. База c852f40c515085d328f02e4b275
 
 ## Context
 
-SPEC-008 / PRD-085; уточнение RFC-015 при ADR-028/ADR-029. PRD-073 — исторический mutation-only контекст, не ограничение reads/FPF. Основание — NOTE-054 и готовые CompatCLIInventory §7 / CompatMCPInventory / CompatSkillConsumers / CompatResearchSynthesis.
+SPEC-008 / PRD-085; уточнение RFC-015 при ADR-028/ADR-029. PRD-073 — исторический mutation-only контекст, не ограничение reads/FPF. Основание — NOTE-063 и готовые CompatCLIInventory §7 / CompatMCPInventory / CompatSkillConsumers / CompatResearchSynthesis.
 
 ## Goals
 
@@ -186,7 +186,7 @@ NOT_RUN этим автором. Один tester фиксирует case → com
 - PRD-085: goal context, based_on.
 - RFC-015: existing implementation context, refines.
 - ADR-028 и ADR-029: existing read/owner constraints, based_on.
-- NOTE-054: C4 SUFFICIENT research, based_on; исправленный C6 pin закреплён в Status.
+- NOTE-063: C4 SUFFICIENT research, based_on; исправленный C6 pin закреплён в Status.
 - Новые EVIDENCE создаются после code/test, их IDs здесь не выдумываются.
 
 ## References

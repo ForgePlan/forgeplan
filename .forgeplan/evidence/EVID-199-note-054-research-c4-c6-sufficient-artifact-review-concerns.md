@@ -5,10 +5,10 @@ kind: evidence
 last_modified_at: 2026-10-23T22:29:32.334636+00:00
 last_modified_by: CompatResearchC4/gpt-6.1-sol
 links:
-- target: NOTE-054
+- target: NOTE-063
   relation: informs
 status: draft
-title: NOTE-054 Research C4/C6 — SUFFICIENT; artifact review CONCERNS
+title: NOTE-063 Research C4/C6 — SUFFICIENT; artifact review CONCERNS
 ---
 
 ---
@@ -19,7 +19,7 @@ slug: evid-note-054-research-c4-c6-sufficient-artifact-review-concerns
 updated: 2026-10-23
 ---
 
-# NOTE-054 — независимый Research C4/C6
+# NOTE-063 — независимый Research C4/C6
 
 ## Structured Fields
 
@@ -41,7 +41,7 @@ Reviewer `CompatResearchC4`, actual model `openai-codex/gpt-6.1-sol`; identity `
 
 ## Pinned revision
 
-- NOTE id: `NOTE-054`; status draft; non-freezable Research product.
+- NOTE id: `NOTE-063`; status draft; non-freezable Research product.
 - Body SHA256: `b1d302e52e6c2e6c9b6b8d9221f0820e43b89ea465a806246ab85edb0dbc32ba`.
 - Basis: точные UTF-8 bytes native get body от первой строки `^## ` до EOF, включая конечный newline; без frontmatter, преамбулы, title и вынесенного digest. Без trim/Unicode normalization. Эквивалент: `awk '/^## /{p=1} p' Research-NOTE.md | shasum -a 256`.
 - Previous pin: `0dc2cdfbec37201a0262052c2c1392dff8680035c4bb6c447b71dc71f39134a7`. Main точечно заменил 103×73 на 103+73, добавил G10 для исходных validate/gaps и отделил author G5 list, уточнил auxiliary change_log/evidence в S4; остальной research scope не менялся. Независимый unified diff прочитан целиком, повторного исследования не было.
@@ -52,7 +52,7 @@ Reviewer `CompatResearchC4`, actual model `openai-codex/gpt-6.1-sol`; identity `
 - Base..head: n/a — artifact mutation, git/source change не заявлен.
 - Canonical transport: `/Users/explosovebit/.local/share/forgeplan/versions/0.39.0-constellation-c852f40c/forgeplan serve --profile full --workspace /Users/explosovebit/Work/ForgePlan-Constellation-P0`; все artifact calls с explicit workspace, без mounted legacy server.
 - Actual binary SHA256: `95ce1953a7d59d92b3806ebca86b8162f0d66362c9a87ee7b9e94a600327e332` (`shasum -a 256`); initialize: `0.39.0+constellation.s1.1`.
-- Diff probe: n/a — native `forgeplan_get NOTE-054` + прочитанный unified diff двух полученных тел. Expected tokens G10 и 103+73 → FOUND; independently computed pin совпал с Main. Claim-vs-reality BLOCKER не обнаружен; review floor CONCERNS.
+- Diff probe: n/a — native `forgeplan_get NOTE-063` + прочитанный unified diff двух полученных тел. Expected tokens G10 и 103+73 → FOUND; independently computed pin совпал с Main. Claim-vs-reality BLOCKER не обнаружен; review floor CONCERNS.
 
 Literal native-get excerpt:
 
@@ -84,7 +84,7 @@ Baseline receipts независимо прочитаны: 104 help exit 0, stde
 
 ## Link graph health
 
-Проверены 6 исходных рёбер: NOTE-054 based_on ADR-028, ADR-029, RFC-015; NOTE-054 informs PRD-073; RFC-015 based_on SPEC-008; SPEC-008 refines PRD-085. Stale 0, broken 0; PRD-073 active, остальные targets draft, не terminal. Этот pack добавляет EVID-199 informs NOTE-054.
+Проверены 6 исходных рёбер: NOTE-063 based_on ADR-028, ADR-029, RFC-015; NOTE-063 informs PRD-073; RFC-015 based_on SPEC-008; SPEC-008 refines PRD-085. Stale 0, broken 0; PRD-073 active, остальные targets draft, не terminal. Этот pack добавляет EVID-199 informs NOTE-063.
 
 PRD-073 — допустимый исторический mutation-only контекст; его Non-Goals для reads/FPF не сужают эту работу. Исходная цель PRD-085 Goal 2/AC-2 прослеживается через SPEC-008 → RFC-015; общая поставка PRD-085 не объявлена закрытой.
 
@@ -94,7 +94,7 @@ Canonical тело и graph прочитаны независимо; NOTE DTO cr
 
 ## R_eff trust
 
-До C6 native score NOTE-054: r_eff 0.0, evidence [], weakest_link PRD-073. Это ожидаемое отсутствие первого C4 pack, не manufactured defect и не runtime verdict. Прямых linked EVID до этого review не было; CL parse errors в пустой цепи нет. Этот pack содержит integer CL3; после native link фактические score читаются отдельно, не предполагаются.
+До C6 native score NOTE-063: r_eff 0.0, evidence [], weakest_link PRD-073. Это ожидаемое отсутствие первого C4 pack, не manufactured defect и не runtime verdict. Прямых linked EVID до этого review не было; CL parse errors в пустой цепи нет. Этот pack содержит integer CL3; после native link фактические score читаются отдельно, не предполагаются.
 
 ## Provenance
 
