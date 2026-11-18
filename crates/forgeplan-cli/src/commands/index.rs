@@ -144,10 +144,16 @@ pub async fn run(embed_profile: Option<String>, deadline_secs: u64) -> Result<()
     let cwd = std::env::current_dir()?;
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
-    // Config is optional for a maintenance pass — a workspace restored
-    // from markdown alone (no config.yaml) must still index. The drain
-    // path below falls back to defaults the same way.
-    let _config = workspace::load_config(&ws).unwrap_or_default();
+    // Fail closed on a config.yaml that exists but does not parse
+    // (SPEC-013 "Corrupt config fails the index pass", GitHub #569): the
+    // config drives the embedding profile, and silent defaulting would index
+    // under wrong assumptions. A *missing* config.yaml stays legal — a
+    // workspace restored from markdown alone must still index.
+    let config_path = ws.join("config.yaml");
+    if config_path.is_file() {
+        workspace::load_config(&ws)
+            .map_err(|e| anyhow::anyhow!("cannot parse {}: {e}", config_path.display()))?;
+    }
 
     let canonical = ws.canonicalize().unwrap_or_else(|_| ws.clone());
     let capability = MaintainCapability::for_strict_maintenance(canonical);

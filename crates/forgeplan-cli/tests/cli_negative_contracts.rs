@@ -83,15 +83,23 @@ fn get_missing_id_json_is_parseable() {
     let tmp = TempDir::new().unwrap();
     init_workspace(&tmp);
 
-    let (_ok, out, _err) = cmd(&tmp, &["get", "NOPE-999", "--json"]);
+    let (ok, out, _err) = cmd(&tmp, &["get", "NOPE-999", "--json"]);
     // --json contract must survive the error path: stdout stays a JSON
-    // envelope so callers can still parse a result object (or a null/error
-    // marker). Plain `Error:` text on stdout is a bug — the flag asked for
+    // envelope `{ok:false,error:...}` so callers can still parse a result
+    // object. Plain `Error:` text on stdout is a bug — the flag asked for
     // machine output.
+    let envelope: serde_json::Value = serde_json::from_str(out.trim()).unwrap_or_else(|_| {
+        panic!("--json must produce a JSON envelope even on error; got:\n{out}")
+    });
+    assert_eq!(envelope["ok"], false, "envelope must report failure: {out}");
     assert!(
-        out.trim_start().starts_with('{') || out.trim_start().starts_with("null"),
-        "--json must produce a JSON envelope even on error; got:\n{out}"
+        envelope["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("NOPE-999"),
+        "error must name the bad selector; got:\n{out}"
     );
+    assert!(!ok, "get of a missing id must exit non-zero");
 }
 
 /// `link` with a bogus relation name must fail naming valid relations.
