@@ -77,6 +77,7 @@ fn serve_responds_to_mcp_initialize() {
     }
 
     let _ = child.kill();
+    let _ = child.wait();
     let response_text = String::from_utf8_lossy(&response);
     assert!(
         response_text.contains("serverInfo")
@@ -136,6 +137,7 @@ fn serve_constellation_read_profile_starts() {
         }
     }
     let _ = child.kill();
+    let _ = child.wait();
     let response_text = String::from_utf8_lossy(&response);
     assert!(
         response_text.contains("serverInfo") || response_text.contains("capabilities"),

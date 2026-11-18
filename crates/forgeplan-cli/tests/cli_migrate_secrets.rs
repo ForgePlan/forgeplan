@@ -78,7 +78,7 @@ fn migrate_secrets_apply_preserves_existing_file() {
     let secrets_path = tmp.path().join(".forgeplan/secrets.env");
     std::fs::write(&secrets_path, "EXISTING_KEY=original\n").unwrap();
 
-    let out = forgeplan()
+    let _out = forgeplan()
         .args(["migrate-secrets", "--apply"])
         .current_dir(tmp.path())
         .env("GEMINI_API_KEY", "new-key")

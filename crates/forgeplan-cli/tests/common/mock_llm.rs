@@ -20,7 +20,6 @@ use std::thread;
 pub struct MockLlmServer {
     listener: TcpListener,
     port: u16,
-    responses: Arc<Mutex<Vec<String>>>,
     request_count: Arc<AtomicU16>,
     shutdown: Arc<Mutex<bool>>,
     handle: Option<thread::JoinHandle<()>>,
@@ -59,16 +58,10 @@ impl MockLlmServer {
         Self {
             listener,
             port,
-            responses,
             request_count: count_clone,
             shutdown,
             handle: Some(handle),
         }
-    }
-
-    /// The port this server listens on.
-    pub fn port(&self) -> u16 {
-        self.port
     }
 
     /// The base URL to put in `.forgeplan/config.yaml`.
