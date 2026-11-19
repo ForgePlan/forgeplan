@@ -13,6 +13,7 @@ pub mod claims;
 pub mod common;
 pub mod constellation;
 pub mod context;
+pub mod contradictions;
 pub mod coverage;
 pub mod decay;
 pub mod decompose;
@@ -52,6 +53,7 @@ pub mod migrate_secrets;
 // PROB-060 Phase 2.4 (W2.C) — manual cleanup tool for post-merge identity drift.
 pub mod new;
 pub mod order;
+pub mod orphans;
 pub mod phase;
 pub mod phase_advance;
 pub mod playbook;

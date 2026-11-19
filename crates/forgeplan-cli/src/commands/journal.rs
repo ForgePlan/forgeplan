@@ -4,7 +4,7 @@ use forgeplan_core::journal;
 
 use crate::commands::common;
 
-pub async fn run(kind: Option<&str>, risk: bool) -> anyhow::Result<()> {
+pub async fn run(kind: Option<&str>, risk: bool, json: bool) -> anyhow::Result<()> {
     let (_ws, source, _read_guard) = common::open_read_source().await?;
     // Filters, ordering and the empty-journal output are unchanged; only the
     // read source differs. A capture failure propagates — an unreadable
@@ -17,6 +17,55 @@ pub async fn run(kind: Option<&str>, risk: bool) -> anyhow::Result<()> {
             journal::build_journal_captured(read, kind, risk).await?
         }
     };
+
+    if json {
+        // Mirrors the `forgeplan_journal` MCP wire shape: {entries, total}
+        // plus the `_next_action` marker. At-risk uses the same threshold
+        // the MCP handler does (stale evidence or r_eff < 0.5) — the text
+        // renderer's own indicator scale is display-only.
+        let at_risk_count = entries
+            .iter()
+            .filter(|e| e.has_stale_evidence || e.r_eff < 0.5)
+            .count();
+        let total = entries.len();
+        let dtos: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "id": e.id, "title": e.title, "kind": e.kind,
+                    "created_at": e.created_at, "r_eff": e.r_eff,
+                    "evidence_count": e.evidence_count,
+                    "has_stale_evidence": e.has_stale_evidence,
+                })
+            })
+            .collect();
+        let next_action = if total == 0 {
+            "No decision-kind artifacts yet (adr, note, problem, solution). Create one: \
+             `forgeplan_new kind=adr title=\"...\"`."
+                .to_string()
+        } else if at_risk_count > 0 {
+            let first_risky = entries
+                .iter()
+                .find(|e| e.has_stale_evidence || e.r_eff < 0.5)
+                .map(|e| sanitize_for_hint(&e.id));
+            match first_risky {
+                Some(id) => format!(
+                    "{at_risk_count} at-risk of {total} entries. Score the worst: \
+                     `forgeplan_score {id}`."
+                ),
+                None => format!("{at_risk_count} at-risk decision(s). Run `forgeplan_health`."),
+            }
+        } else {
+            format!("{total} decision(s) documented, all healthy.")
+        };
+        let payload = serde_json::json!({
+            "entries": dtos,
+            "total": total,
+            "_next_action": next_action,
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(());
+    }
 
     if entries.is_empty() {
         println!("No decision artifacts found.");

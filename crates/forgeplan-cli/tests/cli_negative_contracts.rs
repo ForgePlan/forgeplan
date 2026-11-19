@@ -390,3 +390,41 @@ fn index_succeeds_when_config_yaml_is_absent() {
         "index must succeed without config.yaml; got failure:\n{out}\n{err}"
     );
 }
+
+// ── reporting --json surface (issue #571) ───────────────────────────────
+
+/// `status --json` is the flagship of the issue-#571 reporting set: stdout
+/// must be a single JSON object with the MCP-mirroring keys (project,
+/// workspace, total, by_kind, by_status, _next_action) — never the text
+/// dashboard. Pinning `status` exercises both the new flag and the
+/// workspace-empty success path.
+#[test]
+fn status_json_emits_parseable_report() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(&tmp);
+
+    let (ok, out, err) = cmd(&tmp, &["status", "--json"]);
+    assert!(
+        ok,
+        "status --json must succeed on an init'd workspace; err:\n{err}"
+    );
+    let report: serde_json::Value = serde_json::from_str(out.trim())
+        .unwrap_or_else(|_| panic!("status --json must emit one JSON object; got:\n{out}"));
+    for key in [
+        "project",
+        "workspace",
+        "total",
+        "by_kind",
+        "by_status",
+        "_next_action",
+    ] {
+        assert!(
+            report.get(key).is_some(),
+            "status --json must carry `{key}` (MCP StatusResponse shape); got:\n{out}"
+        );
+    }
+    assert!(
+        report["total"].is_number(),
+        "total must be a number; got:\n{out}"
+    );
+}
