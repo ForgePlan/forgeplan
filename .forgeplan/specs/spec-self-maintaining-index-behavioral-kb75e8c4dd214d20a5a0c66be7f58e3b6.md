@@ -9,7 +9,7 @@ links:
   relation: refines
 predicted_number: 13
 slug: spec-self-maintaining-index-behavioral-kb75e8c4dd214d20a5a0c66be7f58e3b6
-status: Draft
+status: active
 title: Self-maintaining index behavioral contracts
 updated: 2026-11-18
 ---

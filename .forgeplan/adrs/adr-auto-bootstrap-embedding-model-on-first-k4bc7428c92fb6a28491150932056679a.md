@@ -8,23 +8,9 @@ links:
   relation: based_on
 parent_epic: null
 slug: adr-auto-bootstrap-embedding-model-on-first-k4bc7428c92fb6a28491150932056679a
-status: draft
+status: active
 tags: []
 title: Auto-bootstrap embedding model on first semantic use
-valid_until: 2027-05-18
----
-
----
-assigned_number: 32
-created: 2026-11-18
-depth: standard
-id: ADR-032
-predicted_number: 32
-problem_ref: null
-slug: adr-auto-bootstrap-embedding-model-on-first-k4bc7428c92fb6a28491150932056679a
-status: Proposed
-title: Auto-bootstrap embedding model on first semantic use
-updated: 2026-11-18
 valid_until: 2027-05-18
 ---
 
