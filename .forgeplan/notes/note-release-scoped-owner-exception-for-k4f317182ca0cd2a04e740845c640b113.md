@@ -1,15 +1,15 @@
 ---
-assigned_number: 65
+assigned_number: 59
 author: null
 created: 2026-11-14
 depth: tactical
-id: NOTE-065
+id: NOTE-059
 kind: note
 links:
 - target: rfc-plan-cli-mcp-workspaceread-auxiliary-history
   relation: informs
 parent_epic: null
-predicted_number: 65
+predicted_number: 59
 slug: note-release-scoped-owner-exception-for-k4f317182ca0cd2a04e740845c640b113
 status: draft
 tags: []
@@ -19,9 +19,9 @@ valid_until: null
 ---
 
 ---
-assigned_number: 65
+assigned_number: 59
 created: 2026-11-14
-predicted_number: 65
+predicted_number: 59
 slug: note-release-scoped-owner-exception-for-k4f317182ca0cd2a04e740845c640b113
 updated: 2026-11-14
 ---
