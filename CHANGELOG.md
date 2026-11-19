@@ -11,6 +11,20 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-11-20
+
+Sprint headline: **Constellation reaches S1 and the index maintains itself.**
+
+Two arcs land together: the Constellation multi-source read surface
+finishes its S1 readiness program (artifact identity, F11 adapter, S14
+fault proofs, RU corpus), and RFC-021 makes `.forgeplan/` markdown
+self-maintaining — read paths reconcile before the lock, the embedding
+queue survives SIGKILL, `embed` bootstraps the model on first use, and
+`--json` errors carry a parseable envelope. The reporting surface closes
+the loop: `status`/`coverage`/`blindspots`/`orphans`/`decay`/`journal`/
+`session`/`gaps`/`export` emit the same JSON as their MCP twins.
+
+
 ### Added
 
 - **`score_raw` and `type_modifier` on every evidence item** returned by `forgeplan score --json` and by the MCP `forgeplan_score` tool (`EvidenceDto`). They expose the own-merit score and the evidence-source deduction that separate it from the effective `score`, so a caller can reconcile an artifact's R_eff against the packs listed beneath it without reading the source. Both are `#[serde(default)]`, so a consumer that ignores them is unaffected.

@@ -2355,7 +2355,7 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "forgeplan"
-version = "0.39.0+constellation.s1.1"
+version = "0.39.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -2382,7 +2382,7 @@ dependencies = [
 
 [[package]]
 name = "forgeplan-core"
-version = "0.39.0+constellation.s1.1"
+version = "0.39.0"
 dependencies = [
  "anyhow",
  "arrow-array",
@@ -2430,7 +2430,7 @@ dependencies = [
 
 [[package]]
 name = "forgeplan-mcp"
-version = "0.39.0+constellation.s1.1"
+version = "0.39.0"
 dependencies = [
  "anyhow",
  "chrono",
