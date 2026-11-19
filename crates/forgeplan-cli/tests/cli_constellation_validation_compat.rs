@@ -482,7 +482,10 @@ async fn a_missing_validation_target_exits_with_not_found_status() {
     for fixture in paired(VALIDATION_ARTIFACTS).await {
         let out = fixture.run(&["validate", "note-does-not-exist", "--json"]);
         assert_code(&out, 3);
-        assert!(out.stdout.is_empty());
+        // P3 envelope: failed --json may emit {"ok":false,…} on stdout.
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+            assert_eq!(v["ok"], false);
+        }
         assert_eq!(SessionState::load(&fixture.workspace()).phase, Phase::Idle);
         fixture.assert_read_only();
     }
@@ -502,7 +505,10 @@ async fn empty_workspaces_return_json_and_missing_selectors_fail() {
         }
         let out = fixture.run(&["validate", "NOTE-999", "--json"]);
         assert_code(&out, 3);
-        assert!(out.stdout.is_empty());
+        // P3 envelope: failed --json may emit {"ok":false,…} on stdout.
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+            assert_eq!(v["ok"], false);
+        }
         let out = fixture.run(&["gaps"]);
         assert_code(&out, 0);
         let stdout = String::from_utf8_lossy(&out.stdout);

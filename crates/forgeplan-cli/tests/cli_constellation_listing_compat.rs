@@ -542,10 +542,11 @@ fn corrupt_captured_generation_fails_instead_of_emitting_empty_success() {
             !out.status.success(),
             "accepted corrupt capture for {args:?}"
         );
-        assert!(
-            out.stdout.is_empty(),
-            "failure emitted a report for {args:?}"
-        );
+        // P3 JSON envelope: a failed --json read may emit
+        // {"ok": false, "error": "…"} on stdout. Forbidden is a fake report.
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+            assert_eq!(v["ok"], false, "failure emitted a report for {args:?}");
+        }
         let error = String::from_utf8_lossy(&out.stderr);
         assert!(
             error.contains("index_generation_unavailable"),
