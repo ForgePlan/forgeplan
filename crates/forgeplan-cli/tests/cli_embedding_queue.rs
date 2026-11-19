@@ -436,3 +436,137 @@ fn embed_profile_index_bootstraps_not_warm_model_hint() {
          stdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }
+
+/// Child half of the SIGKILL durability test. Re-executed by the driver as
+/// `current_exe() --exact sigkill_child_admits_then_sleeps` with
+/// `QUEUE_TEST_CHILD=1`, it admits the eligible corpus into the durable
+/// pending queue and then sleeps — giving the driver a live process to kill
+/// after the admission commit has landed. In the parent run (no
+/// `QUEUE_TEST_CHILD`) it returns immediately.
+#[test]
+#[serial_test::serial]
+fn sigkill_child_admits_then_sleeps() {
+    if std::env::var("QUEUE_TEST_CHILD").ok().as_deref() != Some("1") {
+        return;
+    }
+    // No `pin_process_env()` here: the driver already exported
+    // `FORGEPLAN_MODEL_CACHE` pointing at ITS shared `EMPTY_MODEL_CACHE`
+    // TempDir. Re-pinning would substitute this process's own fresh TempDir —
+    // a different path, hence a different `semantic_unavailable` fingerprint
+    // and a `ProfileIncompatible` refusal at admission.
+    let workspace_root = PathBuf::from(
+        std::env::var("QUEUE_TEST_WS").expect("QUEUE_TEST_WS unset in child mode"),
+    );
+    let capability = MaintainCapability::for_strict_maintenance(
+        workspace_root
+            .join(".forgeplan")
+            .canonicalize()
+            .expect("child workspace .forgeplan missing"),
+    );
+    let prepared = runtime().block_on(async {
+        facade::prepare_embedding_batch(
+            &capability,
+            &queue_profile(),
+            Instant::now() + Duration::from_secs(60),
+        )
+        .await
+        .expect("child admission failed")
+    });
+    assert!(
+        !prepared.inputs.is_empty(),
+        "child admitted no inputs — corpus must admit at least one row"
+    );
+    // Admission is committed; stay alive so the driver can SIGKILL a real
+    // process mid-life rather than re-reading files it wrote itself.
+    std::thread::sleep(Duration::from_secs(600));
+}
+
+/// The existing durability tests re-read the manifest from the same process
+/// that wrote it — that proves the file is durable, not that the queue
+/// survives a process dying mid-flight. This driver spawns the test binary
+/// as a separate process, waits until the child's admission is visible in
+/// the published manifest, then SIGKILLs it (unix `child.kill()` — no
+/// destructors, no flush) and asserts the pending set is byte-for-byte what
+/// was observed before the kill (SPEC-013 Phase 2.3 "enqueue survives
+/// kill", the real-kill variant).
+#[test]
+#[serial_test::serial]
+fn sigkill_does_not_lose_pending_jobs() {
+    // When this test is itself re-executed as the child binary it must not
+    // act as a driver — the child test owns that mode.
+    if std::env::var("QUEUE_TEST_CHILD").ok().as_deref() == Some("1") {
+        return;
+    }
+    let workspace = Workspace::migrated();
+    assert!(
+        workspace.pending_keys().is_empty(),
+        "fixture started with pending jobs"
+    );
+
+    let exe = std::env::current_exe().expect("no test binary path");
+    let mut child = Command::new(exe)
+        .args([
+            "--exact",
+            "sigkill_child_admits_then_sleeps",
+            "--nocapture",
+        ])
+        .current_dir(&workspace.root)
+        .env("QUEUE_TEST_CHILD", "1")
+        .env("QUEUE_TEST_WS", &workspace.root)
+        .env("HOME", &workspace.home)
+        .env("USERPROFILE", &workspace.home)
+        .env("XDG_DATA_HOME", &workspace.home)
+        .env("FORGEPLAN_MODEL_CACHE", EMPTY_MODEL_CACHE.path())
+        .env("HF_HUB_OFFLINE", "1")
+        .env("FORGEPLAN_DISABLE_PLUGIN_DISCOVERY", "1")
+        .stdin(Stdio::null())
+        .spawn()
+        .expect("failed to spawn child test binary");
+
+    // Poll until the child's admission commit is visible — proves the write
+    // reached the durable manifest before we kill, not after.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let pending = loop {
+        let keys = workspace.pending_keys();
+        if !keys.is_empty() {
+            break keys;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "child never committed a pending job within 60s"
+        );
+        if let Some(status) = child.try_wait().expect("child try_wait failed") {
+            panic!("child exited early with {status} before admitting jobs");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+
+    child.kill().expect("failed to SIGKILL child");
+    child.wait().expect("failed to reap child");
+
+    // A killed process ran no destructors and flushed nothing: whatever the
+    // manifest holds now is exactly what the crash left behind.
+    let pending_after = workspace.pending_keys();
+    assert_eq!(
+        pending, pending_after,
+        "SIGKILL lost or mutated pending jobs"
+    );
+
+    // And the durable state is not just non-empty but uncorrupted: both
+    // reads parse cleanly and still describe a coherent queue.
+    let descriptor = storage::read_current(&workspace.lance())
+        .unwrap()
+        .expect("CURRENT.json unreadable after kill");
+    let manifest = storage::read_manifest(&workspace.lance(), &descriptor)
+        .expect("manifest unreadable after kill");
+    let surviving: usize = manifest
+        .pending_jobs
+        .values()
+        .map(|group| group.inputs.len())
+        .sum();
+    assert_eq!(
+        surviving,
+        pending.len(),
+        "manifest pending count diverged from the pre-kill set"
+    );
+}
