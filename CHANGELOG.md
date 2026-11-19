@@ -44,6 +44,7 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ### Added
 
+- **Structured `--json` on the reporting surface (#571)** — `status`, `coverage`, `blindspots`, `decay`, `journal`, `session`, `gaps`, `export`, and the two new read-only subcommands `orphans` and `contradictions` now accept `--json` and emit the same payloads as their MCP twins (`StatusResponse`, `DecayResponse`, `forgeplan_blindspots`, `forgeplan_journal`, `forgeplan_session`, `forgeplan_orphans`, `forgeplan_contradictions`). `export --json` prints the bundle to stdout or, with `--output`, a write-confirmation object. Failures keep riding the `{ "ok": false, "error": "…" }` envelope; mutating commands keep text output.
 - ContextPack supports explicit source-qualified seeds, declared relation
   closure, complete source-text units, response byte caps and continuation.
   Source, traversal and delivery completeness are reported separately. Compact
