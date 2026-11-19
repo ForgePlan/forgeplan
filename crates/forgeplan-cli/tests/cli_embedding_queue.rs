@@ -565,3 +565,150 @@ fn sigkill_does_not_lose_pending_jobs() {
         "manifest pending count diverged from the pre-kill set"
     );
 }
+/// A mutation on a workspace with no cached model still succeeds and leaves
+/// durable, recoverable work — not a crash and not silent loss. The durable
+/// record the mutation itself publishes is the manifest's `source_entries`:
+/// the new artifact is marked `unavailable` (there is no model to mark it
+/// anything else), which is the committed backlog admission mints
+/// `pending_jobs` from. The second half proves exactly that: the same public
+/// admission path every drain opens with finds the new key and writes its
+/// durable job into the committed manifest (SPEC-013 Phase 2.3 "new work on
+/// a model-less workspace is queued durably").
+#[test]
+fn new_note_records_durable_backlog_that_admission_mints() {
+    let workspace = Workspace::migrated();
+    workspace.enable_embedding_config();
+
+    let output = workspace.run(&["new", "note", "Queue durability note", "--allow-duplicate"]);
+    assert!(
+        output.status.success(),
+        "new must succeed without a cached model\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let note_key = stdout
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("Key:").map(str::trim))
+        .expect("new printed no canonical Key line")
+        .to_string();
+
+    // What the mutation durably committed: the note is a source entry whose
+    // semantic work is explicitly not done. The contract is `!= ready` — the
+    // manifest must not claim a vector it never computed.
+    let descriptor = storage::read_current(&workspace.lance())
+        .unwrap()
+        .expect("no published generation after new");
+    let manifest = storage::read_manifest(&workspace.lance(), &descriptor).unwrap();
+    let entry = manifest
+        .source_entries
+        .iter()
+        .find(|entry| entry.canonical_key == note_key)
+        .expect("the mutation committed no source entry for the new note");
+    assert_ne!(
+        entry.semantic_state,
+        jobs::SemanticState::Ready,
+        "a model-less mutation published the note as semantically ready"
+    );
+
+    // The committed backlog is real work, not a dead record: the next
+    // admission mints a durable pending job for it under the note's parent
+    // key in the published manifest.
+    let prepared = workspace.admit_pending();
+    let descriptor = storage::read_current(&workspace.lance())
+        .unwrap()
+        .expect("no published generation after admission");
+    let manifest = storage::read_manifest(&workspace.lance(), &descriptor).unwrap();
+    let group = manifest.pending_jobs.get(&note_key).unwrap_or_else(|| {
+        panic!(
+            "admission minted no pending jobs for {note_key} ({} prepared input(s))",
+            prepared.inputs.len()
+        )
+    });
+    assert!(
+        group
+            .inputs
+            .values()
+            .any(|job| job.canonical_key == note_key
+                || job.canonical_key.starts_with(&format!("{note_key}#"))),
+        "pending jobs for {note_key} name no input of the new note"
+    );
+}
+
+/// A job whose drain fails is not dropped: the failure record leaves the
+/// same job pending with its attempt spent and a `retry_after` backoff, and
+/// a plain `index` maintenance pass afterwards — run with the model still
+/// absent — neither needs the model nor loses the queue (SPEC-013 Phase 2.3
+/// "a failed drain keeps its jobs").
+#[test]
+fn failed_drain_keeps_jobs_across_maintenance() {
+    let workspace = Workspace::migrated();
+    workspace.enable_embedding_config();
+    let prepared = workspace.admit_pending();
+    assert!(!prepared.inputs.is_empty(), "nothing was admitted");
+
+    // Record what a drained-then-failed batch records: the exact jobs the
+    // admission issued, marked failed against the durable attempt counter.
+    let failed_jobs: Vec<jobs::EmbeddingJob> = prepared
+        .inputs
+        .iter()
+        .map(|input| input.job.clone())
+        .collect();
+    let capability = workspace.capability();
+    runtime().block_on(async {
+        facade::fail_embedding_batch(
+            &capability,
+            &prepared,
+            &failed_jobs,
+            "model produced no vector",
+            Instant::now() + Duration::from_secs(60),
+        )
+        .await
+        .expect("failure record failed")
+    });
+
+    // The jobs were not completed and were not lost: they sit pending with
+    // the attempt spent and a backoff recorded, so a later drain can retry
+    // them without minting fresh admissions.
+    let descriptor = storage::read_current(&workspace.lance())
+        .unwrap()
+        .expect("no published generation after failure record");
+    let manifest = storage::read_manifest(&workspace.lance(), &descriptor).unwrap();
+    for job in &failed_jobs {
+        let current = manifest
+            .pending_jobs
+            .values()
+            .flat_map(|group| group.inputs.values())
+            .find(|pending| pending.canonical_key == job.canonical_key)
+            .unwrap_or_else(|| {
+                panic!(
+                    "failed job {} vanished from the durable queue",
+                    job.canonical_key
+                )
+            });
+        assert_eq!(
+            current.attempt,
+            job.attempt + 1,
+            "failed job {} kept its unspent attempt",
+            job.canonical_key
+        );
+        assert!(
+            current.retry_after.is_some(),
+            "failed job {} has no backoff recorded",
+            job.canonical_key
+        );
+    }
+
+    // A maintenance pass with the model still absent preserves the queue:
+    // pending jobs are durable manifest state, not in-memory drain
+    // bookkeeping that a reconcile could silently clear.
+    workspace.run_ok(&["index"]);
+    let after = workspace.pending_keys();
+    for job in &failed_jobs {
+        assert!(
+            after.contains(&job.canonical_key),
+            "a maintenance pass dropped the failed job {}",
+            job.canonical_key
+        );
+    }
+}

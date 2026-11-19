@@ -312,3 +312,81 @@ fn index_reports_corrupt_workspace() {
         "corrupt config must surface an error; got ok={ok}:\n{all}"
     );
 }
+
+/// `index` must fail closed when `.forgeplan/config.yaml` exists but is not a
+/// readable file. The old `is_file()` gate read a directory or a broken
+/// symlink as "no config" and indexed under silent defaults — a TOCTOU-adjacent
+/// hole, because the gate's own probe disagreed with what the loader would do.
+/// The contract: any on-disk entry named `config.yaml` (anything but a
+/// `NotFound` at the path itself) is handed to the loader, whose error fails
+/// the pass and names the file.
+#[test]
+fn index_fails_when_config_yaml_is_a_directory() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(&tmp);
+
+    let config = tmp.path().join(".forgeplan/config.yaml");
+    if config.exists() {
+        std::fs::remove_file(&config).unwrap();
+    }
+    std::fs::create_dir(&config).unwrap();
+
+    let (ok, out, err) = cmd(&tmp, &["index"]);
+    assert!(
+        !ok,
+        "index must fail when config.yaml is a directory; got success:\n{out}\n{err}"
+    );
+    let all = format!("{out}{err}");
+    assert!(
+        all.contains("config.yaml"),
+        "the failure must name config.yaml; got:\n{all}"
+    );
+}
+
+/// A dangling `config.yaml` symlink exists on disk even though `stat` (and
+/// therefore `is_file`) reports nothing — the gate must use the existence of
+/// the entry, not of its target. The loader's `NotFound` on the broken target
+/// is then an error the pass surfaces, not a licence to skip config loading.
+#[cfg(unix)]
+#[test]
+fn index_fails_when_config_yaml_is_a_broken_symlink() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(&tmp);
+
+    let config = tmp.path().join(".forgeplan/config.yaml");
+    if config.exists() {
+        std::fs::remove_file(&config).unwrap();
+    }
+    std::os::unix::fs::symlink(tmp.path().join(".forgeplan/does-not-exist.yaml"), &config).unwrap();
+
+    let (ok, out, err) = cmd(&tmp, &["index"]);
+    assert!(
+        !ok,
+        "index must fail when config.yaml is a broken symlink; got success:\n{out}\n{err}"
+    );
+    let all = format!("{out}{err}");
+    assert!(
+        all.contains("config.yaml"),
+        "the failure must name config.yaml; got:\n{all}"
+    );
+}
+
+/// The fail-closed rule covers entries that exist; an absent `config.yaml`
+/// keeps the legacy behaviour — a workspace restored from markdown alone must
+/// still index (defaults, no config-driven embedding profile).
+#[test]
+fn index_succeeds_when_config_yaml_is_absent() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(&tmp);
+
+    let config = tmp.path().join(".forgeplan/config.yaml");
+    if config.exists() {
+        std::fs::remove_file(&config).unwrap();
+    }
+
+    let (ok, out, err) = cmd(&tmp, &["index"]);
+    assert!(
+        ok,
+        "index must succeed without config.yaml; got failure:\n{out}\n{err}"
+    );
+}

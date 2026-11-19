@@ -144,15 +144,30 @@ pub async fn run(embed_profile: Option<String>, deadline_secs: u64) -> Result<()
     let cwd = std::env::current_dir()?;
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
-    // Fail closed on a config.yaml that exists but does not parse
+    // Fail closed on a config.yaml that exists but cannot be read or parsed
     // (SPEC-013 "Corrupt config fails the index pass", GitHub #569): the
     // config drives the embedding profile, and silent defaulting would index
-    // under wrong assumptions. A *missing* config.yaml stays legal — a
-    // workspace restored from markdown alone must still index.
+    // under wrong assumptions. Existence is probed with `symlink_metadata`
+    // rather than `is_file`: a broken symlink or a directory still exists on
+    // disk and must reach `load_config` — whose own error then fails the
+    // pass — instead of being misread as "no config" (TOCTOU: the previous
+    // `is_file` check let any non-regular entry slip the gate). A *missing*
+    // config.yaml stays legal — a workspace restored from markdown alone
+    // must still index.
     let config_path = ws.join("config.yaml");
-    if config_path.is_file() {
-        workspace::load_config(&ws)
-            .map_err(|e| anyhow::anyhow!("cannot parse {}: {e}", config_path.display()))?;
+    match std::fs::symlink_metadata(&config_path) {
+        Ok(_) => {
+            workspace::load_config(&ws).map_err(|e| {
+                anyhow::anyhow!("cannot load config {}: {e}", config_path.display())
+            })?;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(anyhow::anyhow!(
+                "cannot load config {}: {e}",
+                config_path.display()
+            ));
+        }
     }
 
     let canonical = ws.canonicalize().unwrap_or_else(|_| ws.clone());
