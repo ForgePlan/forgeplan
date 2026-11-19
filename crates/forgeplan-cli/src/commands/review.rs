@@ -11,6 +11,9 @@ pub async fn run(id: &str) -> anyhow::Result<()> {
     // read comes from one capture instead of the retired `relations.lance`.
     // Hold one shared permit through selector resolution, review and rendering.
     let ws = common::find_workspace_path()?;
+    // SPEC-013 lazy sync: reconcile canonical markdown before the read lock —
+    // maintain_index takes the exclusive workspace lock per commit.
+    common::reconcile_workspace_for_read(&ws).await;
     let read_guard = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&ws).await?;
     let (_, store) = common::open_store_tolerating_constellation().await?;
 

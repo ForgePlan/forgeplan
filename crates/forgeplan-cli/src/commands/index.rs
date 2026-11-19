@@ -144,10 +144,31 @@ pub async fn run(embed_profile: Option<String>, deadline_secs: u64) -> Result<()
     let cwd = std::env::current_dir()?;
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
-    // Config is optional for a maintenance pass — a workspace restored
-    // from markdown alone (no config.yaml) must still index. The drain
-    // path below falls back to defaults the same way.
-    let _config = workspace::load_config(&ws).unwrap_or_default();
+    // Fail closed on a config.yaml that exists but cannot be read or parsed
+    // (SPEC-013 "Corrupt config fails the index pass", GitHub #569): the
+    // config drives the embedding profile, and silent defaulting would index
+    // under wrong assumptions. Existence is probed with `symlink_metadata`
+    // rather than `is_file`: a broken symlink or a directory still exists on
+    // disk and must reach `load_config` — whose own error then fails the
+    // pass — instead of being misread as "no config" (TOCTOU: the previous
+    // `is_file` check let any non-regular entry slip the gate). A *missing*
+    // config.yaml stays legal — a workspace restored from markdown alone
+    // must still index.
+    let config_path = ws.join("config.yaml");
+    match std::fs::symlink_metadata(&config_path) {
+        Ok(_) => {
+            workspace::load_config(&ws).map_err(|e| {
+                anyhow::anyhow!("cannot load config {}: {e}", config_path.display())
+            })?;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(anyhow::anyhow!(
+                "cannot load config {}: {e}",
+                config_path.display()
+            ));
+        }
+    }
 
     let canonical = ws.canonicalize().unwrap_or_else(|_| ws.clone());
     let capability = MaintainCapability::for_strict_maintenance(canonical);
@@ -230,12 +251,34 @@ async fn drain(
         .ok()
         .and_then(|config| config.embedding.map(|embedding| embedding.chunk_size))
         .unwrap_or(jobs::DEFAULT_BODY_PREFIX_CHARS);
-    let resolved = jobs::ResolvedProfile::open(
+    // Model bootstrap (SPEC-013, RFC-021 Phase 2.2): `index --embed-profile`
+    // is a permitted obtainer — warm the model on a cold cache before the
+    // profile resolve, so first use downloads instead of pointing at
+    // `setup --warm-model`.
+    let resolved = match jobs::ResolvedProfile::open(
         &cache_dir,
         jobs::DEFAULT_MODEL_REPO,
         facade::ENGINE_VERSION,
         body_prefix_chars,
-    )?;
+    ) {
+        Ok(resolved) => resolved,
+        Err(forgeplan_core::constellation::ConstellationError::ModelUnavailable { .. }) => {
+            if let Some(notice) = forgeplan_core::embed::first_run_notice() {
+                ui::info(&notice);
+            }
+            ui::info("Obtaining the embedding model (first use)...");
+            forgeplan_core::embed::Embedder::new()
+                .map_err(|e| anyhow::anyhow!("model bootstrap failed: {e}"))?;
+            jobs::ResolvedProfile::open(
+                &cache_dir,
+                jobs::DEFAULT_MODEL_REPO,
+                facade::ENGINE_VERSION,
+                body_prefix_chars,
+            )
+            .map_err(|e| anyhow::anyhow!("model obtained but profile still unresolvable: {e}"))?
+        }
+        Err(other) => return Err(other.into()),
+    };
     if resolved.profile.profile_id() != expected {
         anyhow::bail!(
             "--embed-profile {expected} does not match the profile the cached snapshot resolves \

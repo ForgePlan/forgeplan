@@ -2085,7 +2085,7 @@ fn coverage_and_backfill_on_a_migrated_workspace_use_canonical_markdown() {
 }
 
 #[test]
-fn migrated_get_and_search_serve_offline_edits_without_publishing() {
+fn migrated_get_and_search_serve_offline_edits_via_lazy_republish() {
     let tmp = TempDir::new().unwrap();
     let home = tmp.path().join("home");
     let ws = legacy_workspace(tmp.path(), &home);
@@ -2112,7 +2112,9 @@ fn migrated_get_and_search_serve_offline_edits_without_publishing() {
     assert!(got["body"].as_str().unwrap().contains("newofflinemarker"));
     assert!(!got["body"].as_str().unwrap().contains("oldofflinemarker"));
     assert_eq!(got["tags"], serde_json::json!(["captured-tag"]));
-    assert_eq!(got["persisted"], false);
+    // RFC-021 lazy-sync: get reconciles the offline edit into a fresh
+    // generation and reads it persisted — no ephemeral captured view.
+    assert_eq!(got["persisted"], true);
 
     for (query, expected) in [("newofflinemarker", true), ("oldofflinemarker", false)] {
         let searched = home_env(
@@ -2135,7 +2137,9 @@ fn migrated_get_and_search_serve_offline_edits_without_publishing() {
             expected,
         );
     }
-    assert_eq!(std::fs::read(current).unwrap(), published);
+    // The reconcile republished CURRENT.json — it differs from the pre-edit
+    // pointer by design. Legacy tables still must not appear.
+    assert_ne!(std::fs::read(&current).unwrap(), published);
     assert!(legacy_tables(&ws).is_empty());
 }
 

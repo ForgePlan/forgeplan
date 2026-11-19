@@ -7,6 +7,9 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
     let workspace = forgeplan_core::workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+    // SPEC-013 lazy sync: publish any file-first edits before this read —
+    // must run before the shared read lock is taken.
+    common::reconcile_workspace_for_read(&workspace).await;
     let permit = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&workspace).await?;
     let (record, relations, incoming, view_metadata) = if common::index_migrated(&workspace) {
         let selected =

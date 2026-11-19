@@ -442,6 +442,15 @@ impl ConstellationReadServer {
             Some(specs) => specs,
             None => return fail("no_scope", format!("no constellation named {name:?}")),
         };
+        // SPEC-013 lazy sync: reconcile each federated source BEFORE the
+        // scope pins its version token — `live_source_version` below reads
+        // the published manifest's source-set digest, so a file-first `.md`
+        // edit must land in the index first or the scope pins a stale
+        // witness. Failure degrades silently (the read-profile server holds
+        // no workspace lock and never errors a scope open on upkeep).
+        for spec in &specs {
+            crate::server::reconcile_source_for_read(spec).await;
+        }
         let handle = self.issue("scope");
         let mut versions = Vec::with_capacity(specs.len());
         let mut source_ids = Vec::with_capacity(specs.len());

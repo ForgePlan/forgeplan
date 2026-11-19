@@ -67,6 +67,9 @@ pub async fn run_scan(path: Option<&str>) -> anyhow::Result<()> {
 /// `forgeplan coverage` — show decision coverage per module
 pub async fn run_coverage() -> anyhow::Result<()> {
     let ws = common::find_workspace_path()?;
+    // SPEC-013 lazy sync: reconcile canonical markdown before the read lock —
+    // maintain_index takes the exclusive workspace lock per commit.
+    common::reconcile_workspace_for_read(&ws).await;
     let read_guard = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&ws).await?;
     let (_, store) = common::open_store_tolerating_constellation().await?;
     let project_root = ws.parent().unwrap_or(&ws);

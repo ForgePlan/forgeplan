@@ -32,7 +32,7 @@ updated: 2026-10-16
 | Author / integration recorder | Main / OMP, GPT |
 | Independent reviewer | S1AArchitectureReview / architect-reviewer / OMP / openai-codex/gpt-6-astra |
 | Worktree basis | /Users/explosovebit/Work/ForgePlan-Constellation-P0; feat/constellation-p0-contract; 6d121779c507c67d61131a51e7918c16f92d8879 |
-| Preparation boundary | EVID-173 только подготовка, не изменяется этим evidence |
+| Preparation boundary | EVID-218 только подготовка, не изменяется этим evidence |
 
 ## Structured Fields
 
@@ -69,7 +69,7 @@ MCP validate ранее: ADR/SPEC0MUST0SHOULD, RFC0MUST1SHOULD body-links-drift.
 
 ## Interpretation
 
-verdict=weakens относится к **готовности пройти обязательный S1-A admission**, не объявляет выбранный протокол опровергнутым. Отсутствующий ADI — фактическое невыполненное условие. Даже будущий положительный STATIC CONTRACT не будет runtime PASS или снятием auth/lifecycle gate. EVID-173 prep PASS не переносится на архитектуру и тем более код. Новое положительное доказательство после устранения причины должно сохранить историю этого отрицательного результата, не переписать его как будто ошибки не было.
+verdict=weakens относится к **готовности пройти обязательный S1-A admission**, не объявляет выбранный протокол опровергнутым. Отсутствующий ADI — фактическое невыполненное условие. Даже будущий положительный STATIC CONTRACT не будет runtime PASS или снятием auth/lifecycle gate. EVID-218 prep PASS не переносится на архитектуру и тем более код. Новое положительное доказательство после устранения причины должно сохранить историю этого отрицательного результата, не переписать его как будто ошибки не было.
 
 ## Congruence Level Justification
 
@@ -241,7 +241,7 @@ AC-1 и AC-3…AC-6 не объявлены выполненными. S2–S4 и
 - **S1-A: NOT ACCEPTED. S1-C: BLOCKED. Активация не разрешена.**
 - **Runtime: NOT RUN**, намеренно отложен до S1-V после всей S1-C.
 
-Этот отчёт предназначен для нового отдельного S1-A audit EVID. Сам EVID не создавал; EVID-173 остаётся evidence подготовки.
+Этот отчёт предназначен для нового отдельного S1-A audit EVID. Сам EVID не создавал; EVID-218 остаётся evidence подготовки.
 
 **Подпись:** `S1AArchitectureReview / OMP / openai-codex/gpt-6-astra`.
 
@@ -362,7 +362,7 @@ Blast radius остаётся локальным derived index и зависящ
 - **S1-A: NOT ACCEPTED. S1-C: BLOCKED.**
 - **Source/runtime/activation: не выполнялись.**
 
-Отчёт можно сохранить отдельно от предыдущей редакции review. EVID-173 не изменять; новый EVID мной не создавался.
+Отчёт можно сохранить отдельно от предыдущей редакции review. EVID-218 не изменять; новый EVID мной не создавался.
 
 **Подпись:** `S1AArchitectureReview / OMP / openai-codex/gpt-6-astra`.
 

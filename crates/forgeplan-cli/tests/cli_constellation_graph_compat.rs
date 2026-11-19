@@ -91,6 +91,36 @@ fn document(root: &Path, args: &[&str]) -> Value {
         )
     })
 }
+/// Reads that follow an offline `.md` edit: RFC-021 lazy-sync may republish
+/// CURRENT.json and append a new generation — the pointer/table invariants of
+/// `read_output` do not apply. What must still hold: success and no legacy
+/// table names created.
+fn read_ok_dirty(root: &Path, args: &[&str]) -> Output {
+    let out = run(root, args);
+    assert!(
+        out.status.success(),
+        "forgeplan {args:?} failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    for entry in tables(root) {
+        assert!(
+            !entry.starts_with("artifacts.lance") && !entry.starts_with("relations.lance"),
+            "{args:?} created a legacy table {entry}"
+        );
+    }
+    out
+}
+
+fn document_dirty(root: &Path, args: &[&str]) -> Value {
+    let out = read_ok_dirty(root, args);
+    serde_json::from_slice(&out.stdout).unwrap_or_else(|err| {
+        panic!(
+            "forgeplan {args:?}: {err}: {}",
+            String::from_utf8_lossy(&out.stdout)
+        )
+    })
+}
 
 fn artifact(
     root: &Path,
@@ -567,6 +597,20 @@ fn dispatch_json(root: &Path, extra: &[&str]) -> Value {
     result.as_object_mut().unwrap().remove("generated_at");
     result
 }
+fn dispatch_json_dirty(root: &Path, extra: &[&str]) -> Value {
+    let mut args = vec![
+        "dispatch", "--agents", "1", "--kind", "rfc", "--epic", "EPIC-001", "--json",
+    ];
+    args.extend_from_slice(extra);
+    let mut result = document_dirty(root, &args);
+    assert!(
+        result["generated_at"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty())
+    );
+    result.as_object_mut().unwrap().remove("generated_at");
+    result
+}
 
 #[test]
 fn dispatch_preserves_filters_claims_blockers_and_source_metadata() {
@@ -640,7 +684,7 @@ fn dispatch_preserves_filters_claims_blockers_and_source_metadata() {
 }
 
 #[test]
-fn migrated_reads_see_offline_source_changes_without_publishing() {
+fn migrated_reads_see_offline_source_changes_via_lazy_republish() {
     let roots = paired(seed_graph);
     let root = roots[1].path();
     let before = document(root, &["blocked", "RFC-001", "--json"]);
@@ -663,7 +707,9 @@ fn migrated_reads_see_offline_source_changes_without_publishing() {
         "parent_epic: EPIC-001\nlinks:\n  - target: PRD-002\n    relation: based_on\n",
         "A new offline dependency.",
     );
-    let blocked = document(root, &["blocked", "RFC-001", "--json"]);
+    // Post-edit reads run through the dirty path — reconcile republished
+    // the offline writes into a fresh generation.
+    let blocked = document_dirty(root, &["blocked", "RFC-001", "--json"]);
     assert_eq!(blocked["blocked"], false);
     let order = document(root, &["order", "--json"]);
     assert!(
@@ -688,7 +734,7 @@ fn migrated_reads_see_offline_source_changes_without_publishing() {
 }
 
 #[test]
-fn migrated_dispatch_uses_captured_frontmatter_after_source_rename_and_edit() {
+fn migrated_dispatch_uses_republished_frontmatter_after_source_rename_and_edit() {
     let roots = paired(seed_dispatch);
     let root = roots[1].path();
     let before = dispatch_json(root, &[]);
@@ -708,7 +754,7 @@ fn migrated_dispatch_uses_captured_frontmatter_after_source_rename_and_edit() {
         "Changed offline.",
     );
     std::fs::rename(&path, path.with_file_name("independently-named-source.md")).unwrap();
-    let after = dispatch_json(root, &[]);
+    let after = dispatch_json_dirty(root, &[]);
     assert_eq!(after["skipped_parse_errors"], 0);
     let bucket = after["buckets"][0].as_array().unwrap();
     assert!(bucket.contains(&json!("RFC-001")) && bucket.contains(&json!("RFC-002")));
@@ -719,7 +765,7 @@ fn migrated_dispatch_uses_captured_frontmatter_after_source_rename_and_edit() {
         original.replace("parent_epic: EPIC-001", "parent_epic: EPIC-002"),
     )
     .unwrap();
-    let filtered = dispatch_json(root, &[]);
+    let filtered = dispatch_json_dirty(root, &[]);
     assert_eq!(
         filtered["candidate_count"],
         after["candidate_count"].as_u64().unwrap() - 1
@@ -755,9 +801,15 @@ fn corrupt_capture_is_an_error_for_every_graph_consumer() {
             "{args:?} reported a false empty success"
         );
         assert!(!out.stderr.is_empty(), "{args:?} failed silently");
-        assert!(
-            serde_json::from_slice::<Value>(&out.stdout).is_err(),
-            "{args:?} emitted a fake report"
-        );
+        // P3 JSON envelope: a failed --json read may emit
+        // {"ok": false, "error": "…"} on stdout. What is forbidden is a fake
+        // report payload — any stdout that parses and is not the envelope.
+        let parsed = serde_json::from_slice::<Value>(&out.stdout);
+        if let Ok(v) = parsed {
+            assert_eq!(
+                v["ok"], false,
+                "{args:?} emitted a fake report instead of the error envelope"
+            );
+        }
     }
 }

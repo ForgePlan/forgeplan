@@ -665,6 +665,107 @@ pub(crate) async fn reconcile_after_canonical_write(
         },
     }
 }
+
+/// SPEC-013 / RFC-021 Phase 1 — lazy sync on read (MCP boundary).
+///
+/// Mirror of the CLI `reconcile_workspace_for_read` with the same contract:
+/// reconcile canonical markdown with the published Constellation index
+/// BEFORE the caller takes the workspace read lock, so a file-first
+/// `.md` edit is never served stale through an MCP read.
+///
+/// Behavior:
+/// * Legacy layout, incomplete capture, or no published generation →
+///   return; a read neither bootstraps an index nor errors on one that
+///   was never born.
+/// * Unchanged tree → the unlocked capture's `source_set_digest` +
+///   `config_digest` match the published manifest and the call returns —
+///   the no-op cost is one bounded scan.
+/// * Changed tree → one bounded `maintain_index` pass publishes the delta.
+/// * `IndexBusy` or any other failure → `tracing::warn!` and return; the
+///   read proceeds against the last published generation rather than
+///   erroring on a lock it cannot take.
+///
+/// CALLERS MUST invoke this BEFORE acquiring the workspace read lock:
+/// `maintain_index` re-acquires the workspace lock itself per storage
+/// commit, and a still-held shared guard turns that acquisition into a
+/// lock timeout.
+pub(crate) async fn reconcile_workspace_for_read(workspace: &Path) {
+    use forgeplan_core::constellation::{capture, facade, reconciler, storage};
+
+    if !facade::workspace_is_migrated(workspace) {
+        return;
+    }
+    let canonical = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_path_buf());
+    let index_root = canonical.join("lance");
+
+    // Gate pass: an unlocked capture answers "did the source move?" without
+    // taking the owner or the workspace lock. An incomplete or failed
+    // capture must not trigger a write from a read — the read path itself
+    // reports the diagnostic corpus honestly.
+    let request = capture::CaptureRequest::new(canonical.clone());
+    let captured = match capture::capture_source(&request, capture::CaptureLimits::default()).await
+    {
+        Ok(captured) if captured.is_complete() => captured,
+        _ => return,
+    };
+
+    let descriptor = match storage::read_current(&index_root) {
+        Ok(Some(descriptor)) => descriptor,
+        _ => return,
+    };
+    let published = match storage::read_manifest(&index_root, &descriptor) {
+        Ok(manifest) => manifest,
+        Err(_) => return,
+    };
+
+    // Digest equality is the whole no-op question: the source set AND the
+    // config the sections were measured under both match, so the pinned
+    // generation is current and no commit may happen.
+    if published.source_set_digest == captured.source_set_digest
+        && published.config_digest == captured.config_digest
+    {
+        return;
+    }
+
+    let plan = reconciler::plan_reconcile(&captured, Some(&published));
+    let changed = plan.count(reconciler::DeltaAction::Create)
+        + plan.count(reconciler::DeltaAction::Update)
+        + plan.count(reconciler::DeltaAction::Delete);
+
+    let capability = facade::MaintainCapability::for_strict_maintenance(canonical);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    match facade::maintain_index(&capability, capture::CaptureLimits::default(), deadline).await {
+        Ok(_) => {
+            tracing::info!("lazy-sync on read reconciled {changed} file(s)");
+        }
+        Err(forgeplan_core::constellation::ConstellationError::IndexBusy { .. }) => {
+            tracing::warn!("derived index is busy — reading the last published generation");
+        }
+        Err(error) => {
+            tracing::warn!(
+                "derived index reconcile failed ({error}) — reading the last published generation"
+            );
+        }
+    }
+}
+
+/// The Constellation-read-server twin of [`reconcile_workspace_for_read`]:
+/// reconcile one federated source's `.forgeplan` directory before a scope
+/// pins its version token at `constellation_open`.
+///
+/// `spec.path` already names the `.forgeplan` directory (resolve_source
+/// requires `looks_like_forgeplan_dir`), and `reconcile_workspace_for_read`
+/// takes the `.forgeplan` root — the same "workspace" the CLI helper sees
+/// from `find_workspace` — so the spec path is passed through, not stepped
+/// up. Stepping up would probe `<repo>/lance`, find nothing, and silently
+/// skip every federated reconcile.
+pub(crate) async fn reconcile_source_for_read(
+    spec: &forgeplan_core::constellation::federation::SourceSpec,
+) {
+    reconcile_workspace_for_read(&spec.path).await;
+}
 /// Drain semantic work queued by a canonical file-first write.
 ///
 /// Read the embedding profile after the canonical commit so this uses the
@@ -986,6 +1087,11 @@ impl ForgeplanServer {
         let (workspace_dir, resolved_via) = self
             .resolve_workspace_dir(param_workspace, DetectionPolicy::SoftFallback)
             .await?;
+        // SPEC-013 lazy sync: reconcile BEFORE the shared read lock exists —
+        // the maintenance pass takes the exclusive workspace lock per commit.
+        // Failure degrades to the last published generation, never to a read
+        // error (mirrors the CLI `reconcile_workspace_for_read`).
+        reconcile_workspace_for_read(&workspace_dir).await;
         let guard = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&workspace_dir)
             .await
             .map_err(safe_mcp_error)?;
@@ -1075,6 +1181,8 @@ impl ForgeplanServer {
         let (workspace_dir, resolved_via) = self
             .resolve_workspace_dir(param_workspace, DetectionPolicy::Strict)
             .await?;
+        // SPEC-013 lazy sync on read — see `resolve_read_source`.
+        reconcile_workspace_for_read(&workspace_dir).await;
         let guard = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&workspace_dir)
             .await
             .map_err(safe_mcp_error)?;
@@ -4027,6 +4135,8 @@ impl ForgeplanServer {
             Ok(resolved) => resolved,
             Err(error) => return read_source_error_result(error),
         };
+        // SPEC-013 lazy sync on read — reconcile before the read guard exists.
+        reconcile_workspace_for_read(&ws).await;
         let _read_guard =
             match forgeplan_core::workspace::lock::acquire_workspace_read_lock(&ws).await {
                 Ok(guard) => guard,
@@ -5061,6 +5171,8 @@ impl ForgeplanServer {
             Ok(resolved) => resolved,
             Err(error) => return read_source_error_result(error),
         };
+        // SPEC-013 lazy sync on read — reconcile before the read guard exists.
+        reconcile_workspace_for_read(&ws).await;
         let _read_guard =
             match forgeplan_core::workspace::lock::acquire_workspace_read_lock(&ws).await {
                 Ok(guard) => guard,
@@ -5700,6 +5812,8 @@ impl ForgeplanServer {
             Ok(r) => r,
             Err(e) => return Ok(safe_err_result("", e)),
         };
+        // SPEC-013 lazy sync on read — reconcile before the read guard exists.
+        reconcile_workspace_for_read(&resolved.workspace_dir).await;
         let read_guard = match forgeplan_core::workspace::lock::acquire_workspace_read_lock(
             &resolved.workspace_dir,
         )
@@ -10563,6 +10677,8 @@ impl ForgeplanServer {
             Ok(resolved) => resolved,
             Err(error) => return read_source_error_result(error),
         };
+        // SPEC-013 lazy sync on read — reconcile before the read guard exists.
+        reconcile_workspace_for_read(&ws).await;
         let _read_guard =
             match forgeplan_core::workspace::lock::acquire_workspace_read_lock(&ws).await {
                 Ok(guard) => guard,

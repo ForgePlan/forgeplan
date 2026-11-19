@@ -98,7 +98,7 @@ graph TD
     D -->|based_on| ADR016[ADR-016]
     D -.->|informs| ADR018[ADR-018]
     N[NOTE-053] -.->|informs| E
-    J[EVID-173] -.->|informs| N
+    J[EVID-218] -.->|informs| N
 ```
 
 ## Phases

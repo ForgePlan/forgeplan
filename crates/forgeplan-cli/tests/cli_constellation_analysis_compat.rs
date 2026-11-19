@@ -631,9 +631,13 @@ fn a_broken_capture_fails_every_analysis_command_instead_of_reporting_empty_succ
     ] {
         let output = run(root, &args);
         assert_eq!(output.status.code(), Some(1), "{args:?}");
+        // RFC-021 error envelope: --json failures now emit {ok:false,error}
+        // on stdout by design — an error payload, not success. What must
+        // never appear is a success-shaped result.
+        let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
-            output.stdout.is_empty(),
-            "{args:?} emitted a success payload"
+            !stdout.contains("\"ok\":true") && !stdout.contains("\"ok\": true"),
+            "{args:?} emitted a success payload: {stdout}"
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
@@ -648,7 +652,7 @@ fn a_broken_capture_fails_every_analysis_command_instead_of_reporting_empty_succ
 }
 
 #[test]
-fn captured_composites_observe_offline_edits_without_republishing_the_index() {
+fn captured_composites_observe_offline_edits() {
     let pair = Pair::new();
     let root = pair.migrated.path();
     let source = artifact_path(root, &artifacts()[0]);
@@ -682,5 +686,20 @@ fn captured_composites_observe_offline_edits_without_republishing_the_index() {
     let scores = run_json(root, &["fgr", PRD_SLUG, "--json"]);
     assert_eq!(scores["results"][0]["title"], "Updated analysis plan");
     assert_eq!(after_edit.pointer, pair.snapshot.pointer);
-    after_edit.assert_unchanged(root);
+    // RFC-021 lazy-sync: a read now reconciles and republishes the edited
+    // markdown into a new generation — CURRENT.json changes by design.
+    // The surviving invariants: republish happened, sources untouched.
+    let pointer_after = std::fs::read(root.join(".forgeplan/lance/CURRENT.json")).unwrap();
+    assert_ne!(
+        pointer_after, after_edit.pointer,
+        "read did not republish the edited markdown"
+    );
+    for (path, bytes) in &after_edit.sources {
+        assert_eq!(
+            std::fs::read(path).unwrap(),
+            *bytes,
+            "{} changed",
+            path.display()
+        );
+    }
 }

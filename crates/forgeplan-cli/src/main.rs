@@ -1174,7 +1174,11 @@ async fn main() -> std::process::ExitCode {
     match run().await {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("Error: {error:#}");
+            // SPEC-013 "JSON envelope on error path": when the invocation
+            // carried `--json`, stdout must stay parseable — the error goes
+            // out as `{ok:false,error:...}` there and as prose on stderr.
+            // Without the flag the original stderr-only behavior is kept.
+            forgeplan::json_envelope::report_error(&error);
             std::process::ExitCode::from(
                 forgeplan::commands::common::resolution_exit_code(&error).unwrap_or(1),
             )

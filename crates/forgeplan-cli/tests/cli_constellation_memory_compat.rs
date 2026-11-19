@@ -401,7 +401,7 @@ fn absent_category_author_and_legacy_timestamp_are_not_fabricated() {
 }
 
 #[test]
-fn captured_reads_sort_source_dates_and_observe_live_body_without_republishing() {
+fn captured_reads_sort_source_dates_and_observe_live_body_via_lazy_republish() {
     let workspace = Workspace::new(true);
     let source = |id: &str, date: Option<&str>, text: &str| {
         let date = date
@@ -420,6 +420,9 @@ fn captured_reads_sort_source_dates_and_observe_live_body_without_republishing()
     workspace.write("memory/mem-beta.md", &beta);
     workspace.write("memory/mem-gamma.md", &gamma);
     workspace.write("memory/mem-delta.md", &delta);
+    // The writes above happened after migration — the workspace is dirty,
+    // so the first read lazily republishes. `before` is the pre-publish
+    // pointer; `settled` is re-read after the reads below have published.
     let before = read_state(&workspace);
     let recalled = workspace.json(&["recall", "--json"]);
     assert_eq!(
@@ -454,7 +457,11 @@ fn captured_reads_sort_source_dates_and_observe_live_body_without_republishing()
         workspace.json(&["get", "mem-alpha", "--json"])["body"],
         "older body\n"
     );
-    assert_migrated_reads_unchanged(&workspace, &before);
+    // First read republished the dirty post-migration writes; the pointer has
+    // settled now and later reads must leave it alone.
+    let settled = read_state(&workspace);
+    assert_ne!(settled.0, before.0, "first read did not republish");
+    assert_migrated_reads_unchanged(&workspace, &settled);
 
     let edited = source(
         "mem-alpha",
@@ -476,7 +483,15 @@ fn captured_reads_sort_source_dates_and_observe_live_body_without_republishing()
             .contains("fresh   café body")
     );
     assert_eq!(std::fs::read_to_string(path).unwrap(), edited);
-    assert_migrated_reads_unchanged(&workspace, &before);
+    // RFC-021 lazy-sync: the reads above republished the offline edit into a
+    // fresh generation — CURRENT.json differs from `before` by design. Legacy
+    // tables must still not appear.
+    let after = read_state(&workspace);
+    if workspace.ws().join("lance/CURRENT.json").exists() {
+        assert_ne!(after.0, before.0, "reads did not republish the edit");
+        assert!(!workspace.ws().join("lance/artifacts.lance").exists());
+        assert!(!workspace.ws().join("lance/relations.lance").exists());
+    }
 }
 
 #[test]

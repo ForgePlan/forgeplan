@@ -56,19 +56,37 @@ pub async fn run() -> anyhow::Result<()> {
         .ok()
         .and_then(|config| config.embedding.map(|embedding| embedding.chunk_size))
         .unwrap_or(forgeplan_core::constellation::jobs::DEFAULT_BODY_PREFIX_CHARS);
-    let profile = forgeplan_core::constellation::jobs::ResolvedProfile::open(
+    // Model bootstrap (SPEC-013 "first semantic use bootstraps", RFC-021
+    // Phase 2.2): `embed` is a permitted obtainer, so a cold cache warms the
+    // model BEFORE profile resolution — otherwise `ResolvedProfile::open`
+    // refuses on "no cached snapshot" and the download path is never reached.
+    let resolved_profile = match forgeplan_core::constellation::jobs::ResolvedProfile::open(
         &cache_dir,
         forgeplan_core::constellation::jobs::DEFAULT_MODEL_REPO,
         facade::ENGINE_VERSION,
         body_prefix_chars,
-    )
-    .map_err(|e| match e {
-        ConstellationError::ModelUnavailable { detail } => {
-            anyhow::anyhow!("{detail}\nFix: forgeplan setup --warm-model")
+    ) {
+        Ok(resolved) => resolved,
+        Err(ConstellationError::ModelUnavailable { .. }) => {
+            // Warm the model, then re-resolve the profile from the snapshot
+            // the download just laid down — the published profile is still
+            // only ever the one whose checksums live on disk.
+            if let Some(notice) = forgeplan_core::embed::first_run_notice() {
+                ui::info(&notice);
+            }
+            ui::info("Obtaining the embedding model (first use)...");
+            Embedder::new().map_err(|e| anyhow::anyhow!("model bootstrap failed: {e}"))?;
+            forgeplan_core::constellation::jobs::ResolvedProfile::open(
+                &cache_dir,
+                forgeplan_core::constellation::jobs::DEFAULT_MODEL_REPO,
+                facade::ENGINE_VERSION,
+                body_prefix_chars,
+            )
+            .map_err(|e| anyhow::anyhow!("model obtained but profile still unresolvable: {e}"))?
         }
-        other => anyhow::anyhow!("{}", other),
-    })?
-    .profile;
+        Err(other) => return Err(anyhow::anyhow!("{}", other)),
+    };
+    let profile = resolved_profile.profile;
 
     // "Nothing to do" is a stored-binding answer. The precheck costs a scalar
     // scan and no weights; when it abstains (no cached snapshot, a busy owner)

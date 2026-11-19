@@ -165,7 +165,11 @@ impl Fixture {
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains(message), "forgeplan {args:?}: {stderr}");
-        assert!(output.stdout.is_empty(), "error emitted a success payload");
+        // P3 JSON envelope: a failed --json call may emit {"ok":false,…}
+        // on stdout. Forbidden is a success payload.
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
+            assert_eq!(v["ok"], false, "error emitted a success payload");
+        }
         output
     }
 

@@ -45,6 +45,8 @@ pub async fn run(
     };
 
     let ws = common::find_workspace_path()?;
+    // SPEC-013 lazy sync: publish file-first edits before the read lock.
+    common::reconcile_workspace_for_read(&ws).await;
     let permit = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&ws).await?;
     let read = if common::index_migrated(&ws) {
         Some(
@@ -100,7 +102,10 @@ async fn run_constellation(
     #[cfg(not(feature = "semantic-search"))]
     {
         let _ = (read, query, filter, limit, json);
-        anyhow::bail!("Semantic search requires a binary built with semantic-search");
+        anyhow::bail!(
+            "Semantic search requires a binary built with the `semantic-search` feature.\n\
+                       Fix: cargo install --git https://github.com/ForgePlan/forgeplan --features semantic-search"
+        );
     }
     #[cfg(feature = "semantic-search")]
     {
@@ -561,8 +566,8 @@ async fn run_semantic_only(
     {
         let _ = (query, filter, limit, json, permit);
         anyhow::bail!(
-            "Semantic search not available. Rebuild with: \
-             cargo build --features semantic-search\n\
+            "Semantic search requires a binary built with the `semantic-search` feature.\n\
+             Fix: cargo install --git https://github.com/ForgePlan/forgeplan --features semantic-search\n\
              For automatic fallback, use smart search (default) without --semantic."
         );
     }

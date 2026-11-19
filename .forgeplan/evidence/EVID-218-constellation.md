@@ -1,6 +1,6 @@
 ---
 depth: deep
-id: EVID-173
+id: EVID-218
 kind: evidence
 last_modified_at: 2026-10-16T18:43:09.639113+00:00
 last_modified_by: omp-coding-agent/1.0.0
@@ -11,7 +11,7 @@ status: draft
 title: Constellation — аудит регистрации и пакета подготовки
 ---
 
-# EVID-173: Constellation — аудит регистрации и пакета подготовки
+# EVID-218: Constellation — аудит регистрации и пакета подготовки
 
 | Field | Value |
 |---|---|
@@ -48,11 +48,11 @@ Task endpoint: orchestra-beta-forge-agent, ForgePlan kgYnhWodYw7kNbJMAK5q, Forge
 
 ### Артефакты
 
-Шесть новых draft: NOTE-053, EPIC-010, SPEC-008, RFC-015, ADR-028, EVID-173. Четыре прежних draft: PRD-085, PRD-081, ADR-018, SPEC-006 — меняется только добавленная секция «Constellation — граница поставки», прежние требования не сокращаются. S2-федерация не объявляется специфицированной в локальном SPEC-008. L16 разделяет semantic и no-feature, а не требует vectors от сборки без feature.
+Шесть новых draft: NOTE-053, EPIC-010, SPEC-008, RFC-015, ADR-028, EVID-218. Четыре прежних draft: PRD-085, PRD-081, ADR-018, SPEC-006 — меняется только добавленная секция «Constellation — граница поставки», прежние требования не сокращаются. S2-федерация не объявляется специфицированной в локальном SPEC-008. L16 разделяет semantic и no-feature, а не требует vectors от сборки без feature.
 
-Структурная схема содержит 10 запланированных направленных связей: EPIC-010 based_on PRD-085/PRD-081; SPEC-008 refines PRD-085; RFC-015 based_on SPEC-008/ADR-028; ADR-028 based_on ADR-003/ADR-016; ADR-028 informs ADR-018; NOTE-053 informs EPIC-010; EVID-173 informs NOTE-053. J не ссылается на реализацию. Прямые чтения подтвердили ровно эти 10 связей без дополнительных. Финальный validate всех 10 затронутых артефактов дал 0 MUST-ошибок; SHOULD/COULD сохранены в audit/artifact-alignment.json, не скрыты. У шести новых metadata=deep/draft; содержательные тела MCP и canonical Markdown совпадают. У четырёх прежних текст вне выделенной секции не изменён; git diff отдельно подтвердил неизменность четырёх защищённых active и tracked Rust/Cargo относительно HEAD.
+Структурная схема содержит 10 запланированных направленных связей: EPIC-010 based_on PRD-085/PRD-081; SPEC-008 refines PRD-085; RFC-015 based_on SPEC-008/ADR-028; ADR-028 based_on ADR-003/ADR-016; ADR-028 informs ADR-018; NOTE-053 informs EPIC-010; EVID-218 informs NOTE-053. J не ссылается на реализацию. Прямые чтения подтвердили ровно эти 10 связей без дополнительных. Финальный validate всех 10 затронутых артефактов дал 0 MUST-ошибок; SHOULD/COULD сохранены в audit/artifact-alignment.json, не скрыты. У шести новых metadata=deep/draft; содержательные тела MCP и canonical Markdown совпадают. У четырёх прежних текст вне выделенной секции не изменён; git diff отдельно подтвердил неизменность четырёх защищённых active и tracked Rust/Cargo относительно HEAD.
 
-Обнаружено расхождение canonical Markdown и MCP get для NOTE-053 и EVID-173 после прежнего CLI update --body. Восстановление выполняется полным forgeplan_update из канонического текста, с последующим сравнением MCP и файлов; проблема сообщена QA. Служебные YAML-поля шаблона сохраняются каноническим сериализатором; содержательная часть сравнивается отдельно после frontmatter. Metadata меняется только через API/CLI. Отдельное расхождение depth у EVID-173 после CLI update восстановлено адресным import ровно одного артефакта из предварительно экспортированной копии; MCP read-back подтвердил deep, draft и единственный исходящий informs к NOTE-053.
+Обнаружено расхождение canonical Markdown и MCP get для NOTE-053 и EVID-218 после прежнего CLI update --body. Восстановление выполняется полным forgeplan_update из канонического текста, с последующим сравнением MCP и файлов; проблема сообщена QA. Служебные YAML-поля шаблона сохраняются каноническим сериализатором; содержательная часть сравнивается отдельно после frontmatter. Metadata меняется только через API/CLI. Отдельное расхождение depth у EVID-218 после CLI update восстановлено адресным import ровно одного артефакта из предварительно экспортированной копии; MCP read-back подтвердил deep, draft и единственный исходящий informs к NOTE-053.
 
 ### Фактический ADI
 
