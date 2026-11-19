@@ -168,3 +168,4 @@ __pycache__/
 .worktrees/
 # Live constellation owner advisory locks (auto-expire)
 .forgeplan/.constellation-owner-*.lock
+.forgeplan/tgrep/
