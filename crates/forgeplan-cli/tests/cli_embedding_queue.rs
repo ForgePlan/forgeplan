@@ -249,6 +249,7 @@ fn queue_profile() -> EmbeddingProfile {
 /// `CURRENT.json` + the manifest still names every admitted job
 /// (SPEC-013 Phase 2.3 "enqueue survives kill").
 #[test]
+#[serial_test::serial]
 fn enqueued_jobs_survive_process_exit() {
     let workspace = Workspace::migrated();
     assert!(
@@ -311,6 +312,7 @@ fn enqueued_jobs_survive_process_exit() {
 /// them from the durable queue: the republished manifest's `pending_jobs` is
 /// empty (SPEC-013 Phase 2.3 "drain empties queue").
 #[test]
+#[serial_test::serial]
 fn completed_drain_empties_queue() {
     let workspace = Workspace::migrated();
     let prepared = workspace.admit_pending();
@@ -359,6 +361,7 @@ fn completed_drain_empties_queue() {
 /// pending in the manifest afterwards (SPEC-013 Phase 2.3 "skipped drain
 /// reports model absent").
 #[test]
+#[serial_test::serial]
 fn skipped_drain_reports_model_absent_and_keeps_jobs() {
     let workspace = Workspace::migrated();
     workspace.enable_embedding_config();
@@ -404,6 +407,7 @@ fn skipped_drain_reports_model_absent_and_keeps_jobs() {
 /// "first semantic use bootstraps", RFC-021 Phase 2.2). Offline, the obtain
 /// fails; what is asserted is which path failed.
 #[test]
+#[serial_test::serial]
 fn embed_profile_index_bootstraps_not_warm_model_hint() {
     let workspace = Workspace::migrated();
     workspace.enable_embedding_config();

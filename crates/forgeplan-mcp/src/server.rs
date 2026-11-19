@@ -755,18 +755,16 @@ pub(crate) async fn reconcile_workspace_for_read(workspace: &Path) {
 /// reconcile one federated source's `.forgeplan` directory before a scope
 /// pins its version token at `constellation_open`.
 ///
-/// `spec.path` names the `.forgeplan` directory itself while
-/// [`reconcile_workspace_for_read`] takes the workspace root, so this
-/// wrapper steps up one level first. Without that step the caller
-/// canonicalizes `.forgeplan` into the capability root and `maintain_index`
-/// reconciles a nested `lance/` that no reader ever opens.
+/// `spec.path` already names the `.forgeplan` directory (resolve_source
+/// requires `looks_like_forgeplan_dir`), and `reconcile_workspace_for_read`
+/// takes the `.forgeplan` root — the same "workspace" the CLI helper sees
+/// from `find_workspace` — so the spec path is passed through, not stepped
+/// up. Stepping up would probe `<repo>/lance`, find nothing, and silently
+/// skip every federated reconcile.
 pub(crate) async fn reconcile_source_for_read(
     spec: &forgeplan_core::constellation::federation::SourceSpec,
 ) {
-    let Some(workspace) = spec.path.parent() else {
-        return;
-    };
-    reconcile_workspace_for_read(workspace).await;
+    reconcile_workspace_for_read(&spec.path).await;
 }
 /// Drain semantic work queued by a canonical file-first write.
 ///
