@@ -61,6 +61,7 @@ the loop: `status`/`coverage`/`blindspots`/`orphans`/`decay`/`journal`/
 ### Internal
 
 - **PROB-086 / PROB-087 / ADR-021** record the dependency-vs-evidence double-count class (an outgoing edge into an evidence pack is harvested as evidence AND walked as a dependency), its rejected alternatives, and the measured blast radius. Eight E2E regressions land in `crates/forgeplan-cli/tests/cli_score_evidence_semantics.rs`.
+- **PRD-092 / RFC-021 / SPEC-013 / ADR-032 / EVID-219** — self-maintaining index arc: PRD defines the goal, RFC-021 the implementation contract (lazy sync + durable queue + model bootstrap), SPEC-013 the behavioral oracle, ADR-032 the first-use bootstrap policy, EVID-219 the verification record (cold-cache + SIGKILL).
 
 ### Added
 
