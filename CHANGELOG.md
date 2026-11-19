@@ -15,11 +15,22 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 - **`score_raw` and `type_modifier` on every evidence item** returned by `forgeplan score --json` and by the MCP `forgeplan_score` tool (`EvidenceDto`). They expose the own-merit score and the evidence-source deduction that separate it from the effective `score`, so a caller can reconcile an artifact's R_eff against the packs listed beneath it without reading the source. Both are `#[serde(default)]`, so a consumer that ignores them is unaffected.
 
+- **Self-maintaining read path (RFC-021 P1, #564)** — every read command (`get`, `list`, `search`, `coverage`, `review`, and the whole `open_read_source` family) now reconciles the index against on-disk markdown before taking the read lock. Edited, new, or deleted `.forgeplan/*.md` files are visible to the next CLI call with no manual `forgeplan index`; a digest gate makes the unchanged case a no-op. `reconciled: N file(s)` prints to stderr only when something actually changed. The MCP read boundary got the same treatment via `reconcile_source_for_read`.
+
+- **JSON error envelope (RFC-021 P3, ADR-024)** — any command invoked with `--json` that fails now prints `{ "ok": false, "error": "…" }` on stdout (with the human `Error:` line still on stderr), so scripted callers can parse failure output uniformly instead of special-casing `Error:` text.
+
+- **First-use model bootstrap (RFC-021 P2, ADR-032)** — `forgeplan embed` and `forgeplan index --embed-profile` now download the embedding model on a cold cache instead of refusing with `setup --warm-model`. Read-only paths (`search --semantic`, watch, git-sync, MCP queries) still never download — they reuse the cached model or report its absence.
 ### Changed
 
 - **`score` on an evidence item now carries the EFFECTIVE value** — what the weakest-link `min` consumes — rather than the pre-modifier raw value. For `test` and `measurement` packs (modifier 0.0) nothing moves; a `benchmark` pack now reports 0.1 lower and an `audit` pack 0.2 lower than before, on both the CLI `--json` and MCP surfaces. The pre-modifier number remains available as `score_raw`. Scripted consumers that compared `score` against a hard-coded expectation should re-baseline.
 
 ### Fixed
+
+- **`forgeplan index` is fail-closed on corrupt config** — an existing but unparseable `.forgeplan/config.yaml` aborts the index run naming the file, instead of silently defaulting every option.
+
+- **No-semantic builds name the missing feature** — `search --semantic` on a binary built without `semantic-search` now prints the feature name and a `Fix:` install hint, matching `embed`'s refusal contract.
+
+- **Embedding queue survives SIGKILL** — durable `pending_jobs` in the generation manifest are asserted stable across a hard process kill (self-reexec test: child admits, parent kills, the pending set is identical afterward).
 
 - **The evidence breakdown showed a number the score was not computed from** — the per-item line printed `raw_evidence_score` while the aggregate used `score_evidence_full`, which additionally subtracts the evidence-type modifier (`benchmark` −0.1, `audit` −0.2). An `audit` pack rendered as `= 0.5` directly above `R_eff: 0.30`, with nothing in the output to bridge the gap. The CLI text now names the deduction inline (`0.3 (audit −0.2)`), and CLI `--json` plus the MCP `EvidenceDto` gained `score_raw` and `type_modifier` so the arithmetic is reconstructible from the payload alone.
 
