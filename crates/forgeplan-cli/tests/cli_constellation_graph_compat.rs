@@ -755,9 +755,15 @@ fn corrupt_capture_is_an_error_for_every_graph_consumer() {
             "{args:?} reported a false empty success"
         );
         assert!(!out.stderr.is_empty(), "{args:?} failed silently");
-        assert!(
-            serde_json::from_slice::<Value>(&out.stdout).is_err(),
-            "{args:?} emitted a fake report"
-        );
+        // P3 JSON envelope: a failed --json read may emit
+        // {"ok": false, "error": "…"} on stdout. What is forbidden is a fake
+        // report payload — any stdout that parses and is not the envelope.
+        let parsed = serde_json::from_slice::<Value>(&out.stdout);
+        if let Ok(v) = parsed {
+            assert_eq!(
+                v["ok"], false,
+                "{args:?} emitted a fake report instead of the error envelope"
+            );
+        }
     }
 }
