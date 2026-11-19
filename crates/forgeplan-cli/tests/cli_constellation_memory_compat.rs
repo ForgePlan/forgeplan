@@ -420,6 +420,9 @@ fn captured_reads_sort_source_dates_and_observe_live_body_via_lazy_republish() {
     workspace.write("memory/mem-beta.md", &beta);
     workspace.write("memory/mem-gamma.md", &gamma);
     workspace.write("memory/mem-delta.md", &delta);
+    // The writes above happened after migration — the workspace is dirty,
+    // so the first read lazily republishes. `before` is the pre-publish
+    // pointer; `settled` is re-read after the reads below have published.
     let before = read_state(&workspace);
     let recalled = workspace.json(&["recall", "--json"]);
     assert_eq!(
@@ -454,7 +457,11 @@ fn captured_reads_sort_source_dates_and_observe_live_body_via_lazy_republish() {
         workspace.json(&["get", "mem-alpha", "--json"])["body"],
         "older body\n"
     );
-    assert_migrated_reads_unchanged(&workspace, &before);
+    // First read republished the dirty post-migration writes; the pointer has
+    // settled now and later reads must leave it alone.
+    let settled = read_state(&workspace);
+    assert_ne!(settled.0, before.0, "first read did not republish");
+    assert_migrated_reads_unchanged(&workspace, &settled);
 
     let edited = source(
         "mem-alpha",
