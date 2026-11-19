@@ -74,7 +74,7 @@ Rust checks у задач отражает эту политику: `NOT_RUN` у
 | S | SPEC-008 | specs/SPEC-008-constellation-0-0-embeddings.md |
 | R | RFC-015 | rfcs/RFC-015-constellation-0-0.md |
 | D | ADR-028 | adrs/ADR-028-constellation-rust.md |
-| J | EVID-173 | evidence/EVID-173-constellation.md |
+| J | EVID-218 | evidence/EVID-218-constellation.md |
 | N | NOTE-062 | notes/NOTE-062-constellation-minimax-rust.md |
 | D_GENERATION | ADR-029 | adrs/ADR-029-constellation-manifest.md |
 | J_S1A | EVID-174 | evidence/EVID-174-constellation-s1-a-review-adi-auth.md |
@@ -121,7 +121,7 @@ Forge Agent `7eea6f7ad3fc4b3196385e9d3e3cb856`. Ровно 29 задач, дуб
 
 Техническая связка передачи (поля, опции, все UID, результаты read-back) —
 `/Users/explosovebit/Work/ForgePlan/.local/planning/constellation-minimax/ORCHESTRA-MAP.json`.
-Аудит подготовки — **EVID-173**: авторские наблюдения, исходные независимые результаты и итоговый PrepGuardianGate PASS сохранены раздельно. Полный подписанный вердикт и хеши источников — `audit/review-guardian.json` и EVID-173. Таблица выше и Blocked by карты показывают текущие незакрытые условия. Прежние зависимости сохранены отдельно в planned_blocked_by карты и audit-срезах; выполненные условия не остаются живыми блокерами.
+Аудит подготовки — **EVID-218**: авторские наблюдения, исходные независимые результаты и итоговый PrepGuardianGate PASS сохранены раздельно. Полный подписанный вердикт и хеши источников — `audit/review-guardian.json` и EVID-218. Таблица выше и Blocked by карты показывают текущие незакрытые условия. Прежние зависимости сохранены отдельно в planned_blocked_by карты и audit-срезах; выполненные условия не остаются живыми блокерами.
 
 ## Подготовка и код разделены
 

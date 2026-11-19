@@ -281,8 +281,7 @@ fn cold_cache_embed_bootstraps_not_warm_model_hint() {
     // Offline + empty cache → the run cannot succeed; assert it reached the
     // bootstrap path rather than the "warm by hand" refusal.
     assert!(
-        stderr.contains("setup --warm-model") == false
-            && stdout.contains("setup --warm-model") == false,
+        !stderr.contains("setup --warm-model") && !stdout.contains("setup --warm-model"),
         "embed on cold cache must bootstrap, not refuse with the manual hint\n\
          stdout:\n{stdout}\nstderr:\n{stderr}"
     );

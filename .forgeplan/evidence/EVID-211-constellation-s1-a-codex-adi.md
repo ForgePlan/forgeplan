@@ -513,7 +513,7 @@ Rust, storage probe, runtime, модель, builds, tests и analyzers, запр
 
 Координатор может оформить принятие **статического контракта S1-A** после привязки этого отчёта и финальной schema validation к указанным bytes. Формальный reviewer verdict остаётся **CONCERNS** по zero-findings convention; его нельзя переписать в PASS от моего имени.
 
-Это **не разрешение начинать S1-C**, не завершение S1, не runtime Evidence и не активация ADR/RFC/SPEC. Для source dispatch по-прежнему требуется отдельное разрешение. Отчёт предназначен для **нового S1-A audit EVID**, без перезаписи подготовительного EVID-173.
+Это **не разрешение начинать S1-C**, не завершение S1, не runtime Evidence и не активация ADR/RFC/SPEC. Для source dispatch по-прежнему требуется отдельное разрешение. Отчёт предназначен для **нового S1-A audit EVID**, без перезаписи подготовительного EVID-218.
 
 **Подписано:** `S1AArchitectureReview / openai-codex/gpt-6-astra` — независимый read-only architecture review.
 

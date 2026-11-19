@@ -7,6 +7,7 @@ id: SPEC-013
 links:
 - target: prd-self-maintaining-derived-index-lazy-sync-kff438581336d5e91e7a2662055c61575
   relation: refines
+predicted_number: 13
 slug: spec-self-maintaining-index-behavioral-kb75e8c4dd214d20a5a0c66be7f58e3b6
 status: Draft
 title: Self-maintaining index behavioral contracts
