@@ -631,9 +631,13 @@ fn a_broken_capture_fails_every_analysis_command_instead_of_reporting_empty_succ
     ] {
         let output = run(root, &args);
         assert_eq!(output.status.code(), Some(1), "{args:?}");
+        // RFC-021 error envelope: --json failures now emit {ok:false,error}
+        // on stdout by design — an error payload, not success. What must
+        // never appear is a success-shaped result.
+        let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
-            output.stdout.is_empty(),
-            "{args:?} emitted a success payload"
+            !stdout.contains("\"ok\":true") && !stdout.contains("\"ok\": true"),
+            "{args:?} emitted a success payload: {stdout}"
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
