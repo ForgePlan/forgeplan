@@ -6,8 +6,25 @@ use forgeplan_core::hints::{self, Hint};
 use crate::commands::common;
 
 /// Show current session state.
-pub fn run_status() {
+pub fn run_status(json: bool) {
     let session = common::load_session();
+
+    if json {
+        // Mirrors the `forgeplan_session` MCP wire shape.
+        let hint = session.next_action_hint();
+        let payload = serde_json::json!({
+            "phase": session.phase.to_string(),
+            "active_artifact": session.active_artifact,
+            "route_depth": session.route_depth,
+            "enforced": session.is_enforced(),
+            "next_action": hint,
+            "_next_action": hint,
+            "phase_started_at": session.phase_started_at,
+            "history_count": session.history.len(),
+        });
+        println!("{payload}");
+        return;
+    }
 
     println!();
     println!("{}", style("Session State").bold());
