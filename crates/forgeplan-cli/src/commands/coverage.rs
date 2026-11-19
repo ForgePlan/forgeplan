@@ -65,7 +65,7 @@ pub async fn run_scan(path: Option<&str>) -> anyhow::Result<()> {
 }
 
 /// `forgeplan coverage` — show decision coverage per module
-pub async fn run_coverage() -> anyhow::Result<()> {
+pub async fn run_coverage(json: bool) -> anyhow::Result<()> {
     let ws = common::find_workspace_path()?;
     // SPEC-013 lazy sync: reconcile canonical markdown before the read lock —
     // maintain_index takes the exclusive workspace lock per commit.
@@ -74,7 +74,6 @@ pub async fn run_coverage() -> anyhow::Result<()> {
     let (_, store) = common::open_store_tolerating_constellation().await?;
     let project_root = ws.parent().unwrap_or(&ws);
 
-    println!("  Scanning codebase...");
     let mut modules = coverage::scan_modules(project_root).await?;
     let report = if let Some(store) = store {
         coverage::build_coverage(&mut modules, &store, &read_guard).await?
@@ -86,6 +85,37 @@ pub async fn run_coverage() -> anyhow::Result<()> {
         .await?;
         coverage::build_coverage_from_records(&mut modules, read.records())
     };
+
+    if json {
+        // Mirrors the `forgeplan_coverage` MCP wire shape: CoverageReport
+        // serializes straight through, plus the `_next_action` marker.
+        let next_action = if report.total_modules == 0 {
+            "No code modules detected. Coverage scans known languages (Rust/TS/Python).".to_string()
+        } else if report.uncovered_modules == 0 {
+            format!(
+                "All {} module(s) covered ({:.0}%). Strong architectural trace.",
+                report.total_modules, report.coverage_percent
+            )
+        } else {
+            format!(
+                "{}/{} module(s) covered ({:.0}%). Create ADR for the next blind spot: \
+                 `forgeplan_new kind=adr title=\"...\"`.",
+                report.covered_modules, report.total_modules, report.coverage_percent
+            )
+        };
+        let mut payload = serde_json::to_value(&report)?;
+        payload
+            .as_object_mut()
+            .expect("CoverageReport serializes to an object")
+            .insert(
+                "_next_action".to_string(),
+                serde_json::Value::String(next_action),
+            );
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(());
+    }
+
+    println!("  Scanning codebase...");
 
     println!();
     println!(

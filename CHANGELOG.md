@@ -25,6 +25,12 @@ the loop: `status`/`coverage`/`blindspots`/`orphans`/`decay`/`journal`/
 `session`/`gaps`/`export` emit the same JSON as their MCP twins.
 
 
+### Security
+
+- **RustSec sweep closed clean** — `rustls` 0.23.45 → 0.23.46 fixes four advisories (Brotli certificate decompression memory amplification, poisoned key-exchange records on unauthenticated ServerHello, TLS master secrets in `Session` Debug output, ECH rejection leaking buffered application data). `rmcp` 1.7.0 → 3.9.0 plus `pulldown-cmark`, `rustls-webpki`, `webpki-roots`, `tokio`, `zstd`/`zstd-safe`/`zstd-sys` bumps bring `cargo deny check advisories` back to **exit 0** (triage log SHA-256 `799fc05e…31b`, `docs/operations/dependabot-triage-2026-11-11.md`).
+- **`lru` (transitive via `tantivy` 0.24.x)** remains *accepted with justification* — no direct dependency, upstream pins the vulnerable line; revisit when `tantivy` admits the fixed line.
+- **npm/website alerts** remain *scheduled* under #485 / PR #442 — website dependencies ship no CLI/MCP or cargo-dist artifacts; the Astro migration is a separate tracked effort, not part of this cut.
+
 ### Added
 
 - **`score_raw` and `type_modifier` on every evidence item** returned by `forgeplan score --json` and by the MCP `forgeplan_score` tool (`EvidenceDto`). They expose the own-merit score and the evidence-source deduction that separate it from the effective `score`, so a caller can reconcile an artifact's R_eff against the packs listed beneath it without reading the source. Both are `#[serde(default)]`, so a consumer that ignores them is unaffected.
@@ -58,6 +64,7 @@ the loop: `status`/`coverage`/`blindspots`/`orphans`/`decay`/`journal`/
 
 ### Added
 
+- **Structured `--json` on the reporting surface (#571)** — `status`, `coverage`, `blindspots`, `decay`, `journal`, `session`, `gaps`, `export`, and the two new read-only subcommands `orphans` and `contradictions` now accept `--json` and emit the same payloads as their MCP twins (`StatusResponse`, `DecayResponse`, `forgeplan_blindspots`, `forgeplan_journal`, `forgeplan_session`, `forgeplan_orphans`, `forgeplan_contradictions`). `export --json` prints the bundle to stdout or, with `--output`, a write-confirmation object. Failures keep riding the `{ "ok": false, "error": "…" }` envelope; mutating commands keep text output.
 - ContextPack supports explicit source-qualified seeds, declared relation
   closure, complete source-text units, response byte caps and continuation.
   Source, traversal and delivery completeness are reported separately. Compact

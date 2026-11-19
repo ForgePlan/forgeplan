@@ -2,7 +2,7 @@ use forgeplan_core::hints::{self, Hint};
 
 use crate::commands::common;
 
-pub async fn run(output: Option<&str>) -> anyhow::Result<()> {
+pub async fn run(output: Option<&str>, json_flag: bool) -> anyhow::Result<()> {
     let (_ws, source, _read_guard) = common::open_read_source().await?;
     let cwd = std::env::current_dir()?;
 
@@ -85,6 +85,49 @@ pub async fn run(output: Option<&str>) -> anyhow::Result<()> {
         "artifacts": artifacts,
         "relations": relations,
     });
+
+    if json_flag {
+        // Mirrors `forgeplan_export`: no --output → the bundle itself plus
+        // `_next_action`; with --output → the write-confirmation object.
+        // --json never silently discards --output: both are honoured.
+        if let Some(output_path) = &output {
+            let full_path = if std::path::Path::new(*output_path).is_absolute() {
+                std::path::PathBuf::from(*output_path)
+            } else {
+                cwd.join(*output_path)
+            };
+            if let Some(parent) = full_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&full_path, serde_json::to_string_pretty(&data)?)?;
+            let safe_path = forgeplan_core::artifact::sanitize::sanitize_path_for_hint(
+                &full_path.display().to_string(),
+            );
+            let confirmation = serde_json::json!({
+                "artifacts": artifact_count,
+                "relations": relation_count,
+                "written_to": full_path.display().to_string(),
+                "_next_action": format!(
+                    "Exported to {safe_path}. Restore via `forgeplan import {safe_path}`."
+                ),
+            });
+            println!("{}", serde_json::to_string_pretty(&confirmation)?);
+        } else {
+            let mut payload = data;
+            payload
+                .as_object_mut()
+                .expect("export bundle is an object")
+                .insert(
+                    "_next_action".to_string(),
+                    serde_json::Value::String(format!(
+                        "Exported {artifact_count} artifacts + {relation_count} relations. \
+                     Save to disk: `forgeplan export --output backup.json`."
+                    )),
+                );
+            println!("{}", serde_json::to_string_pretty(&payload)?);
+        }
+        return Ok(());
+    }
 
     let json = serde_json::to_string_pretty(&data)?;
 

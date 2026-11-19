@@ -147,7 +147,11 @@ enum Commands {
         json: bool,
     },
     /// Show project status dashboard
-    Status,
+    Status {
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
+    },
     /// Add tags to an artifact
     Tag {
         /// Artifact ID (e.g. PRD-001)
@@ -311,6 +315,9 @@ enum Commands {
         /// Reset session to Idle
         #[arg(long)]
         reset: bool,
+        /// Output as JSON for machine consumption (status view only)
+        #[arg(long)]
+        json: bool,
     },
     /// Show checkbox progress for artifacts
     Progress {
@@ -344,7 +351,11 @@ enum Commands {
         json: bool,
     },
     /// Show evidence decay impact on R_eff scores
-    Decay,
+    Decay {
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
+    },
     /// Compare estimated vs actual hours — calibrate estimation accuracy
     CalibrateEstimate {
         /// Artifact ID to calibrate
@@ -576,7 +587,11 @@ enum Commands {
     #[command(subcommand)]
     Fpf(FpfCommands),
     /// Show pipeline compliance gaps by depth
-    Gaps,
+    Gaps {
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
+    },
     /// Show F-G-R quality scores (Formality, Granularity, Reliability)
     Fgr {
         /// Artifact ID (scores all if omitted)
@@ -596,6 +611,9 @@ enum Commands {
         /// Backfill "Affected Files" section into artifacts missing it
         #[arg(long)]
         backfill: bool,
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
     },
     /// Compute a parallel-safe work plan for N sub-agents (PRD-057 dispatcher)
     Dispatch {
@@ -633,7 +651,25 @@ enum Commands {
         json: bool,
     },
     /// Show blind spots — decisions without evidence, orphan artifacts
-    Blindspots,
+    Blindspots {
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
+    },
+    /// Issue #287 Phase C — surface brownfield orphans: uncovered use cases,
+    /// unverified invariants, orphan glossary terms, untriangulated hypotheses
+    Orphans {
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
+    },
+    /// Issue #287 Phase C — detect cross-artifact contradictions
+    /// (v1: hypothesis_duplicate via Jaccard on titles)
+    Contradictions {
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
+    },
     /// Issue #289 — detect pipeline anomalies (stuck drafts, orphan links,
     /// mis-typed based_on, etc.). Each entry carries severity + tier +
     /// suggested_resolution so orchestrators can dispatch fixes.
@@ -662,6 +698,9 @@ enum Commands {
         /// Show only at-risk decisions (no evidence, stale, low R_eff)
         #[arg(long)]
         risk: bool,
+        /// Output as JSON for machine consumption
+        #[arg(long)]
+        json: bool,
     },
     /// Show project health dashboard — gaps, risks, blind spots, next actions
     Health {
@@ -698,6 +737,11 @@ enum Commands {
         /// Output file path (default: .forgeplan/export.json)
         #[arg(long, short)]
         output: Option<String>,
+        /// Output as JSON for machine consumption — without --output prints
+        /// the export bundle to stdout; with --output prints the write
+        /// confirmation object.
+        #[arg(long)]
+        json: bool,
     },
     /// Import artifacts from JSON file
     Import {
@@ -1231,7 +1275,7 @@ async fn run() -> anyhow::Result<()> {
             tag,
             json,
         } => commands::list::run(r#type.as_deref(), status.as_deref(), tag.as_deref(), json).await,
-        Commands::Status => commands::status::run().await,
+        Commands::Status { json } => commands::status::run(json).await,
         Commands::Tag { id, tags } => commands::tag::run_add(&id, &tags).await,
         Commands::Untag { id, tags } => commands::tag::run_remove(&id, &tags).await,
         Commands::Discover { action } => match action {
@@ -1328,11 +1372,11 @@ async fn run() -> anyhow::Result<()> {
             .await
         }
         Commands::Stale { json } => commands::stale::run(json).await,
-        Commands::Session { reset } => {
+        Commands::Session { reset, json } => {
             if reset {
                 commands::session::run_reset();
             } else {
-                commands::session::run_status();
+                commands::session::run_status(json);
             }
             Ok(())
         }
@@ -1354,7 +1398,7 @@ async fn run() -> anyhow::Result<()> {
             .await
         }
         Commands::Claims { json } => commands::claims::run(json).await,
-        Commands::Decay => commands::decay::run().await,
+        Commands::Decay { json } => commands::decay::run(json).await,
         Commands::Calibrate { id } => commands::calibrate::run(id.as_deref()).await,
         Commands::CalibrateEstimate {
             id,
@@ -1392,11 +1436,11 @@ async fn run() -> anyhow::Result<()> {
         }
         Commands::Delete { id, yes } => commands::delete::run(&id, yes).await,
         Commands::Scan { path } => commands::coverage::run_scan(path.as_deref()).await,
-        Commands::Coverage { backfill } => {
+        Commands::Coverage { backfill, json } => {
             if backfill {
                 commands::coverage::run_backfill().await
             } else {
-                commands::coverage::run_coverage().await
+                commands::coverage::run_coverage(json).await
             }
         }
         Commands::Dispatch {
@@ -1419,14 +1463,18 @@ async fn run() -> anyhow::Result<()> {
         }
         Commands::Drift { json } => commands::drift::run(json).await,
         Commands::Blocked { id, json } => commands::blocked::run(id.as_deref(), json).await,
-        Commands::Blindspots => commands::blindspots::run().await,
+        Commands::Blindspots { json } => commands::blindspots::run(json).await,
+        Commands::Orphans { json } => commands::orphans::run(json).await,
+        Commands::Contradictions { json } => commands::contradictions::run(json).await,
         Commands::Anomalies {
             kind,
             severity,
             since,
             json,
         } => commands::anomalies::run(kind, severity, since, json).await,
-        Commands::Journal { r#type, risk } => commands::journal::run(r#type.as_deref(), risk).await,
+        Commands::Journal { r#type, risk, json } => {
+            commands::journal::run(r#type.as_deref(), risk, json).await
+        }
         Commands::Health {
             compact,
             json,
@@ -1479,12 +1527,12 @@ async fn run() -> anyhow::Result<()> {
                 commands::fpf::run_check(&id, verbose, json).await
             }
         },
-        Commands::Gaps => commands::gaps::run().await,
+        Commands::Gaps { json } => commands::gaps::run(json).await,
         Commands::Fgr { id, json } => commands::fgr::run(id.as_deref(), json).await,
         Commands::Capture { decision, context } => {
             commands::capture::run(&decision, context.as_deref()).await
         }
-        Commands::Export { output } => commands::export::run(output.as_deref()).await,
+        Commands::Export { output, json } => commands::export::run(output.as_deref(), json).await,
         Commands::Import { path, force } => commands::import_cmd::run(&path, force).await,
         Commands::ScanImport { path, dry_run } => {
             commands::scan_import::run(path.as_deref(), dry_run).await
