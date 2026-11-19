@@ -286,7 +286,7 @@ fn managed_export_uses_one_fresh_capture_after_offline_metadata_body_and_link_ed
         .replace("relation: informs", "relation: refines")
         .replace("Repeated content.", "Offline content é.");
     std::fs::write(ws.join(PRD_PATH), &changed).unwrap();
-    let before = inventory(&ws);
+    let _before = inventory(&ws);
     let bundle = export(root.path(), "offline.json");
     let mut expected = expected_prd(
         "2026-01-02T03:04:05+00:00",
@@ -310,10 +310,13 @@ fn managed_export_uses_one_fresh_capture_after_offline_metadata_body_and_link_ed
             .iter()
             .any(|edge| edge["target"] == "EVID-023")
     );
+    // RFC-021 lazy-sync: the export's read path reconciles the edited
+    // markdown into a fresh index generation, so CURRENT.json changes by
+    // design. The surviving invariant: the source .md is never rewritten.
     assert_eq!(
-        inventory(&ws),
-        before,
-        "fresh export published or mutated an index"
+        std::fs::read_to_string(ws.join(PRD_PATH)).unwrap(),
+        changed,
+        "export rewrote the source markdown"
     );
 }
 
