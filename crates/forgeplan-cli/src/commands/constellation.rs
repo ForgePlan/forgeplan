@@ -65,9 +65,21 @@ fn refuse_resolution(
                 "message": failure.message,
             }))?
         );
-    } else {
+        // The rich payload above IS the machine answer — richer than the
+        // generic `{"ok":false,"error":…}` envelope `main` would append on
+        // top of it via `report_error`. Returning `Err` here produced two
+        // JSON documents on stdout (SPEC-013 P3 regression). Keep the
+        // stderr side identical to the error path and exit directly.
         common::print_resolution_failure(&failure);
+        eprintln!("Error: {}", failure.message);
+        std::process::exit(match failure.code {
+            "not_found" => 3,
+            "conflicting_canonical_key" => 4,
+            "ambiguous" => 5,
+            _ => 1,
+        });
     }
+    common::print_resolution_failure(&failure);
     Err(common::resolution_failure_error(&failure))
 }
 
