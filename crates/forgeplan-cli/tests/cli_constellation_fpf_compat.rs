@@ -600,7 +600,20 @@ fn captured_reports_follow_file_edits_without_republishing_or_opening_shadow_tab
     assert!(dashboard.contains("3 artifacts total: 2 active, 1 draft"));
     let rules = fixture.json(&["fpf", "rules", "--json"]);
     assert_eq!(rules["count"], 3);
-    assert_eq!(read_state(&fixture.workspace()), before);
+    // RFC-021 lazy-sync: the reads above republished the edited markdown
+    // into a fresh generation — CURRENT.json changes by design. What must
+    // hold: no legacy shadow table was opened, and none was created.
+    let after = read_state(&fixture.workspace());
+    assert_ne!(
+        after.current, before.current,
+        "reads did not republish the edited markdown"
+    );
+    for entry in &after.entries {
+        assert!(
+            !entry.starts_with("artifacts.lance") && !entry.starts_with("relations.lance"),
+            "read created a legacy table {entry}"
+        );
+    }
     assert_eq!(
         std::fs::read_to_string(shadow.join("must-not-be-opened")).unwrap(),
         "not a legacy table"
