@@ -454,9 +454,8 @@ fn sigkill_child_admits_then_sleeps() {
     // TempDir. Re-pinning would substitute this process's own fresh TempDir —
     // a different path, hence a different `semantic_unavailable` fingerprint
     // and a `ProfileIncompatible` refusal at admission.
-    let workspace_root = PathBuf::from(
-        std::env::var("QUEUE_TEST_WS").expect("QUEUE_TEST_WS unset in child mode"),
-    );
+    let workspace_root =
+        PathBuf::from(std::env::var("QUEUE_TEST_WS").expect("QUEUE_TEST_WS unset in child mode"));
     let capability = MaintainCapability::for_strict_maintenance(
         workspace_root
             .join(".forgeplan")
@@ -505,11 +504,7 @@ fn sigkill_does_not_lose_pending_jobs() {
 
     let exe = std::env::current_exe().expect("no test binary path");
     let mut child = Command::new(exe)
-        .args([
-            "--exact",
-            "sigkill_child_admits_then_sleeps",
-            "--nocapture",
-        ])
+        .args(["--exact", "sigkill_child_admits_then_sleeps", "--nocapture"])
         .current_dir(&workspace.root)
         .env("QUEUE_TEST_CHILD", "1")
         .env("QUEUE_TEST_WS", &workspace.root)
