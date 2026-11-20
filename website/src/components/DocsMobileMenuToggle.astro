@@ -1,0 +1,108 @@
+---
+import { Icon } from '@astrojs/starlight/components';
+---
+
+<!-- A direct sibling of the sidebar pane, as required by Starlight's PageFrame. -->
+<button
+  type="button"
+  data-docs-mobile-menu-toggle
+  aria-expanded="false"
+  aria-label={Astro.locals.t('menuButton.accessibleLabel')}
+  aria-controls="starlight__sidebar"
+  class="sl-flex md:sl-hidden print:hidden"
+>
+  <Icon name="bars" class="open-menu" />
+  <Icon name="close" class="close-menu" />
+</button>
+
+<script>
+  let listeners: AbortController | undefined;
+
+  function setupMenu() {
+    listeners?.abort();
+    const button = document.querySelector<HTMLButtonElement>('[data-docs-mobile-menu-toggle]');
+    if (!button) return;
+
+    listeners = new AbortController();
+    const { signal } = listeners;
+    const setExpanded = (expanded: boolean) => {
+      button.setAttribute('aria-expanded', String(expanded));
+      document.body.toggleAttribute('data-mobile-menu-expanded', expanded);
+    };
+
+    // Reset state after a full load or an Astro locale/page navigation.
+    setExpanded(false);
+    button.addEventListener('click', () => {
+      setExpanded(button.getAttribute('aria-expanded') !== 'true');
+    }, { signal });
+    document.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape' || button.getAttribute('aria-expanded') !== 'true') return;
+      setExpanded(false);
+      button.focus();
+    }, { signal });
+  }
+
+  setupMenu();
+  document.addEventListener('astro:page-load', setupMenu);
+  document.addEventListener('astro:before-swap', () => {
+    listeners?.abort();
+    document.querySelector('[data-docs-mobile-menu-toggle]')?.setAttribute('aria-expanded', 'false');
+    document.body.removeAttribute('data-mobile-menu-expanded');
+  });
+</script>
+
+<style>
+  @layer starlight.core {
+    button {
+      position: fixed;
+      top: calc((var(--sl-nav-height) - var(--sl-menu-button-size)) / 2);
+      inset-inline-end: var(--sl-nav-pad-x);
+      z-index: var(--sl-z-index-navbar);
+      border: 0;
+      border-radius: 50%;
+      width: var(--sl-menu-button-size);
+      height: var(--sl-menu-button-size);
+      padding: 0.5rem;
+      background-color: var(--sl-color-white);
+      color: var(--sl-color-black);
+      box-shadow: var(--sl-shadow-md);
+      cursor: pointer;
+    }
+
+    button[aria-expanded='true'] {
+      background-color: var(--sl-color-gray-2);
+      box-shadow: none;
+    }
+
+    button[aria-expanded='true'] .open-menu {
+      display: none;
+    }
+
+    button:not([aria-expanded='true']) .close-menu {
+      display: none;
+    }
+
+    :global([data-theme='light']) button {
+      background-color: var(--sl-color-black);
+      color: var(--sl-color-white);
+    }
+
+    :global([data-theme='light']) button[aria-expanded='true'] {
+      background-color: var(--sl-color-gray-5);
+    }
+  }
+</style>
+
+<style is:global>
+  @layer starlight.core {
+    [data-mobile-menu-expanded] {
+      overflow: hidden;
+    }
+
+    @media (min-width: 50rem) {
+      [data-mobile-menu-expanded] {
+        overflow: auto;
+      }
+    }
+  }
+</style>

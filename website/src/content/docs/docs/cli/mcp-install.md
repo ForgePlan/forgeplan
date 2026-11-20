@@ -1,6 +1,6 @@
 ---
 title: forgeplan mcp install
-description: "Smart-merge Forgeplan into Claude Code, Cursor, or Windsurf MCP config - cross-platform, idempotent, brew-upgrade-safe."
+description: "Smart-merge Forgeplan into Claude Code, Cursor, or Windsurf MCP configuration."
 ---
 
 `forgeplan mcp install` writes the Forgeplan MCP server into a client's config file
@@ -20,7 +20,7 @@ Cross-platform: macOS, Linux, Windows (uses `dirs::home_dir()` and `PATHEXT` for
 
 ## When NOT to use
 
-- For per-tool config - there is nothing to configure, the server reads `./.forgeplan/`.
+- For selecting server profile or workspace policy - installation writes client configuration; configure and inspect the actual server launch separately.
 - For HTTP / network MCP - Forgeplan only ships stdio.
 - To remove Forgeplan from a client - edit the config file by hand; `install` only adds.
 
@@ -42,9 +42,7 @@ forgeplan mcp install [OPTIONS] --client <CLIENT>
   -V, --version                  Print version
 ```
 
-`--binary-path` and `--use-name` are mutually exclusive. By default the command resolves
-the running binary to a stable, non-versioned path (e.g. `/opt/homebrew/bin/forgeplan`,
-not the Cellar location), so `brew upgrade` does not break the entry.
+`--binary-path` and `--use-name` are mutually exclusive. Detection prefers a stable PATH entry only when it resolves to the same executable as the installer; otherwise it falls back to `current_exe`. Stability across upgrades is not unconditional. To keep a selected `0.39.0+constellation.s1.1` build separate from installed `0.38.0`, use its explicit absolute `--binary-path` and inspect the dry run.
 
 ## Examples
 
@@ -54,8 +52,7 @@ not the Cellar location), so `brew upgrade` does not break the entry.
 forgeplan mcp install --client claude
 ```
 
-Writes `~/.claude.json`. Default scope is `user`, so every project Claude Code opens
-sees Forgeplan tools.
+Writes a user-scoped entry in `~/.claude.json`; availability across projects still depends on the client loading and initializing it.
 
 ### Example 2: Cursor, project-only
 
@@ -63,8 +60,7 @@ sees Forgeplan tools.
 forgeplan mcp install --client cursor --scope project
 ```
 
-Writes `./.cursor/mcp.json`. Forgeplan only loads when this repo is the active workspace -
-useful when only some projects in a monorepo use Forgeplan.
+Writes `./.cursor/mcp.json` for project scope. The client's workspace and policy determine whether it is loaded.
 
 ### Example 3: Preview before writing
 
@@ -81,10 +77,7 @@ Prints the merged JSON with no filesystem changes. Inspect the diff, then re-run
 forgeplan mcp install --client cursor --use-name forgeplan
 ```
 
-Writes `"command": "forgeplan"` - relies on `$PATH` at MCP launch time. **Caveat for
-macOS GUI clients**: Claude Code Mac and Cursor app do **not** inherit shell PATH, so
-short names break unless you have set up `launchctl setenv PATH ...`. Default (absolute
-path) is the safer choice.
+Writes `"command": "forgeplan"` and relies on PATH at MCP launch time. GUI applications on macOS may not inherit the shell's PATH; an absolute executable path avoids that dependency. Inspect the client's actual environment rather than assuming a universal PATH value.
 
 ## Config files written
 
@@ -105,10 +98,7 @@ Windsurf has no per-project config; pass `--scope user` (the default).
 
 ## How it fits the workflow
 
-`mcp install` is the bridge between "binary is on disk" and "agent can call Forgeplan
-tools". After this succeeds, restart the client and the methodology surface
-(Shape → Validate → Code → Evidence → Activate) is available through `mcp__forgeplan__*`
-tools. Pair with `forgeplan health` after restart to confirm the server boots clean.
+`mcp install` writes configuration; it does not prove the client can start or call the server. It emits `args: ["serve"]` and preserves existing `env`. After restarting the client, verify its MCP initialization and tool inventory for the intended binary, profile, and workspace. A separate CLI `forgeplan health` call does not verify that MCP connection.
 
 ## See also
 
@@ -117,3 +107,41 @@ tools. Pair with `forgeplan health` after restart to confirm the server boots cl
 - [`forgeplan serve`](/docs/cli/serve/) - the underlying server reference
 - [MCP tools index](/docs/mcp/) - what the server exposes after install
 - [`forgeplan health`](/docs/cli/health/) - verify after the client restarts
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan mcp install --help`.
+
+```text
+Install forgeplan MCP config into a client (Claude / Cursor / Windsurf).
+
+Smart-merge: replaces command/args/transport, preserves existing `env`. Idempotent — safe to re-run.
+
+Usage: forgeplan mcp install [OPTIONS] --client <CLIENT>
+
+Options:
+  -c, --client <CLIENT>
+          Target client: claude, cursor, or windsurf
+
+  -s, --scope <SCOPE>
+          Config scope: user (global) or project (local). Default: user
+          
+          [default: user]
+
+      --binary-path <BINARY_PATH>
+          Override binary path (default: detected from current_exe)
+
+      --use-name <USE_NAME>
+          Use short name instead of absolute path: forgeplan or fpl. Requires PATH to include the binary's directory at MCP launch time. macOS GUI apps may not inherit shell PATH — use absolute path (the default) for maximum portability
+
+      --dry-run
+          Print proposed change without writing
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+```
+<!-- forgeplan-runtime:end -->

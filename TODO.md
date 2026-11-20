@@ -1,5 +1,10 @@
 # TODO — Forgeplan
 
+> **Граница снимка:** наблюдения health/backlog ниже сняты 2026-09-08 и не
+> являются повторной проверкой на 2026-10-23. Target source сейчас —
+> `0.39.0+constellation.s1.1`, опубликованный релиз — 0.38.0. Изменения
+> наблюдений явно помечены; старые чекбоксы не закрываются одним аудитом текста.
+
 > **История релизов**: `CHANGELOG.md` — единственный источник правды по тому, что
 > уже вышло. Этот файл больше не дублирует релизный лог (дублировал до
 > 2026-09-08 и не обновлялся два релиза подряд, пока CHANGELOG.md уходил вперёд).
@@ -22,7 +27,7 @@
 потому что инструмент уже нашёл проблему и назвал команду для починки.
 
 - [ ] **At-risk (R_eff ниже 0.3)**: `PRD-005 "Depth-Aware Validation"` (R_eff=0.00), `RFC-004 "Files-First Architecture"` (R_eff=0.10). Разобраться, почему — `forgeplan score PRD-005` / `forgeplan score RFC-004`.
-- [ ] **Сирота без связей**: `PROB-090` — `forgeplan link PROB-090 based_on <other>`.
+- [ ] **Сирота без связей** (наблюдение 2026-09-08): `PROB-090`. Текущий синтаксис: `forgeplan link PROB-090 <other> --relation based_on`; выбирать реальный target после проверки смысла связи.
 - [ ] **Рассогласование фазы** (10 артефактов, включая `PRD-082`, `PRD-083`, `PROB-083`) — `forgeplan phase <id>` для каждого.
 - [ ] **EvidencePack без структурных полей** — `EVID-033`, `EVID-034`, `EVID-035` оценены в CL0 (0.1) вместо реального вердикта. Это тот же класс дефекта, что был описан в апреле 2026 под другими ID (EVID-015/025/026/027, backlog "F6") — тогда почтили точечно, класс не закрыли. Стоит не просто дописать три файла, а решить, нужен ли `validate`-гейт, который ловит EvidencePack без `## Structured Fields` до того, как он попадёт в граф.
 
@@ -52,7 +57,7 @@
 
 ### P2 — Performance (из ROADMAP, категория 3)
 
-- [ ] Background embedding при первом запуске — по коду не найдено (`grep background.*embed` в `forgeplan-core/src` — 0 совпадений).
+- [ ] Background embedding при первом запуске — в поиске 2026-09-08 не найден; отсутствие regex-совпадений не доказывает отсутствие механизма. В scoped Constellation уже есть opt-in maintenance/embedding queue: нужны совместимая сборка, активный `config.embedding`, полный BGE-M3 cache и работающий full maintenance host. Это не обещание готовности сразу при старте; ручной `embed` не сохраняет конфигурацию.
 - [ ] Новый пункт (не было в апреле): холодный старт `search --semantic` вырос до ~2.0–2.7s (было ~1.5s), до 8.3s при вытесненных из кеша весах — плата за переход на `tract` (v0.35.0). Оценить, стоит ли кэшировать граф модели между запусками.
 - [ ] `forgeplan reindex` (не `embed`) — не проверялось, инкрементальный ли он сейчас; `embed` уже пропускает актуальные записи по content-hash (v0.36.0).
 
@@ -96,7 +101,7 @@
 
 - [ ] **1 STUB artifact** — `forgeplan health` показывал 2 STUB на момент этого измерения (было "1 STUB, unidentified" в старой версии файла); не идентифицирован, низкий приоритет.
 - [x] ~~**changelog commit_hash**: LanceDB schema migration для старых workspace~~ — похоже устарело: миграция v2→v3 (`crates/forgeplan-core/src/db/migrate.rs`) уже добавляет колонку `commit_hash`. Не переоткрывать без нового репродьюсера на свежем клоне.
-- [ ] **`--semantic` feature flag**: `search --semantic` требует сборки с фичей `semantic-search` — не проверялось, актуально ли это ограничение после перехода на `tract` (v0.35.0, который встроен во все 5 релизных бинарей по умолчанию).
+- [ ] **`--semantic` feature flag**: ограничение подтверждено исходниками: нужна сборка с `semantic-search`, модель и подходящий индекс/profile. `tract` не отменяет build feature; релизные бинарники её включают, plain Cargo build — нет. В Constellation forced semantic не обещает keyword fallback.
 
 ---
 
@@ -112,8 +117,9 @@ git tag --sort=-v:refname | head -5
 # артефакты + health signals
 <published-binary> health
 
-# тесты/команды/MCP-tools — счётчик на главной странице README.md
-grep -A5 'tracked artifacts' README.md
+# команды/MCP — help и tools/list matching binary; не старые README-счётчики
+<matching-binary> --help
+# вложенные --help и оба MCP catalogs проверяются отдельно; это не прогон handler
 
 # живой backlog
 gh issue list --state open --limit 100

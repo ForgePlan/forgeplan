@@ -2,6 +2,8 @@
 
 > Produces self-contained standalone documents (DDL, pseudo-code, SDL) with zero `file:line` references in final sections.
 
+> Proposed renderer, not a current core tool. SQL/SDL below are partial illustrations, requiring complete columns and referenced domains before a standalone rebuild. See [implementation status](../README.md#implementation-status-2026-10-23).
+
 ## Why this skill exists
 
 Docs that reference `services/v5.orders.service.js:3431` break when code is moved or deleted. A business documentation package must survive code deletion. C10 converts verified knowledge into standalone canonical form.
@@ -71,7 +73,7 @@ CREATE TYPE order_status AS ENUM (
 CREATE TABLE orders (
   id SERIAL PRIMARY KEY,
   code VARCHAR NOT NULL UNIQUE,
-  quote_id INT NOT NULL,
+  quote_id INT NOT NULL
   -- ... full column list from verified schema
 );
 -- ...
@@ -93,8 +95,8 @@ From `use-case.steps` + `invariants_invoked`:
 ### Flow
 
 1. Load order by id.
-2. IF order is null → fail with ORDER_NOT_FOUND.
-3. IF caller.company_id ∉ {order.cargo_owner_id, order.forwarder_id, order.operator_id} → fail with UNAUTHORIZED.
+2. IF order is null → fail with __NOT_FOUND__.
+3. IF caller.company_id ∉ {order.cargo_owner_id, order.forwarder_id, order.operator_id} → fail with __NOT_FOUND__ (same public error, matching the package's visibility example).
 4. Load the related sales_order.
 5. IF caller is a forwarder employee:
    a. Set order.status to FORWARDER_CONFIRMED.
@@ -128,9 +130,10 @@ enum Orders_StatusEnum {
   cargo_owner_confirmed
   forwarder_confirmed
   fulfillment
-  paid
+  rejected
   canceled
   completed
+  removed
 }
 
 type Orders_Order {
@@ -148,10 +151,7 @@ type Mutation {
 
 ### Cross-reference rule
 
-Final sections use stable IDs not file:lines:
-- Refer to glossary terms by `[term](../glossary.md#term-anchor)`.
-- Refer to invariants by `[INV-003](../invariants.md#inv-003)`.
-- Refer to use-cases by `[UC-007](../use-cases.md#uc-007)`.
+Final sections use stable IDs, with paths relative to the actual output location. From `canonical/orders/README.md`, use sibling `glossary.md`, `invariants.md` and `use-cases.md`; from `canonical/orders/pseudo-code/confirm.md`, use `../glossary.md`, `../invariants.md` and `../use-cases.md`. Resolve the destination's real heading anchor; a stable label alone does not make a broken link valid.
 
 ## Metric
 
@@ -177,7 +177,7 @@ See `references/render-ddl.md`, `references/render-pseudo-code.md`, `references/
 
 | Failure | Detection | Mitigation |
 |---|---|---|
-| DDL generates invalid SQL | Fail on `psql --check` | Regenerate with fix-up prompt |
+| DDL generates invalid SQL | Execution in the explicitly selected disposable PostgreSQL database fails | Regenerate with fix-up prompt; `psql --check` does not exist |
 | Pseudo-code contradicts scenarios | C11 validator flags | Route to C6 re-triangulation |
 | Missing canonical artifact | `forgeplan_blindspots` | Escalate to C7 interview |
 | Stale output | Factum changed after render | Re-render on change notification |

@@ -7,6 +7,12 @@ description: Полный цикл от идеи до продакшена - Obs
 
 Каждая нетривиальная задача следует этому жизненному циклу:
 
+Команды, ID, время и вывод ниже — иллюстрации workflow, не записанные
+измерения. `memory_recall`/`memory_retain` — MCP-инструменты клиента,
+не shell-команды; slash-команды принадлежат установленным плагинам.
+Проверенное покрытие совместимости CLI/full MCP и оставшиеся ограничения
+описаны в [справочнике Constellation](/ru/docs/reference/constellation/).
+
 ```
 OBSERVE → ROUTE → SHAPE → BUILD → PROVE → SHIP
 ```
@@ -34,7 +40,7 @@ flowchart LR
 
 ```bash
 # 1. Восстановить контекст из памяти
-memory_recall("project name")
+# Вызовите memory_recall в клиенте агента с вопросом о проекте
 
 # 2. Проверить состояние проекта
 forgeplan health
@@ -75,8 +81,9 @@ forgeplan route "add payment processing"
 # Создать артефакт
 forgeplan new prd "Payment Processing"
 
-# Заполнить ОБЯЗАТЕЛЬНЫЕ разделы: Problem, Goals, Non-Goals, Target Users, FR
+# Подготовьте prd-body.md вне .forgeplan/: Problem, Goals, Non-Goals, Target Users, FR, Related Artifacts
 # Каждое FR: "[Действующее лицо] может [возможность]" - без технических названий
+forgeplan update PRD-001 --body @prd-body.md
 
 # Валидация
 forgeplan validate PRD-001
@@ -88,14 +95,15 @@ forgeplan validate PRD-001
 Перед кодированием - проработайте альтернативы:
 
 ```bash
-forgeplan reason PRD-001
+forgeplan reason PRD-001 --save
 # → 3+ гипотезы
 # → Прогнозы для каждой
 # → Проверка доказательств
 ```
 
-Если все гипотезы сходятся → кодируйте с уверенностью.
-Если подходы конкурируют → обсудите с командой перед кодированием.
+Сравните настоящие альтернативы с доказательствами: сходство ответов модели
+не даёт высокой уверенности. Обсудите нерешённые компромиссы с командой.
+CLI требует настроенную LLM; `--save` сохраняет анализ в связанной Note.
 
 **Deep/Critical: ADI ОБЯЗАТЕЛЕН.** Пропуск является нарушением методологии.
 
@@ -135,16 +143,18 @@ pnpm test          # TypeScript
 
 ## Фаза 4: Prove
 
-Создайте доказательство того, что решение работает:
+Создайте доказательство реально выполненных проверок. Не выдавайте учебные
+число тестов или задержку за измерение без настоящего запуска:
 
 ```bash
 # Создать EvidencePack
 forgeplan new evidence "Payment: 15 tests pass, Stripe benchmark 200ms"
 
-# Добавьте структурированные поля в тело (ОБЯЗАТЕЛЬНО):
+# Подготовьте evidence-body.md вне .forgeplan/ с результатами и ОБЯЗАТЕЛЬНЫМИ полями:
 # verdict: supports
 # congruence_level: 3
 # evidence_type: test
+forgeplan update EVID-001 --body @evidence-body.md
 
 # Связь с решением
 forgeplan link EVID-001 PRD-001 --relation informs
@@ -155,7 +165,10 @@ forgeplan score PRD-001
 ```
 
 :::caution
-Без структурированных полей (verdict, congruence_level, evidence_type) парсер R_eff назначает CL0 = штраф 0.9. **Всегда добавляйте их.**
+Всегда указывайте verdict, congruence_level и evidence_type. При отсутствии
+или нераспознанном verdict/CL используется CL0 (штраф 0.9); evidence_type
+отдельно влияет на рекурсивную оценку. Code-claiming evidence также нужны
+реальные provenance-поля по правилам гейта проекта.
 :::
 
 ## Фаза 5: Ship
@@ -175,7 +188,7 @@ gh pr create --base dev --title "[PRD-001] Payment Processing"
 git checkout dev && git pull origin dev
 
 # 4. Сохранить в память
-memory_retain("Payment processing: implemented, 15 tests, R_eff=1.00")
+# В клиенте агента сохраните только реальный проверенный результат и ссылку на evidence
 
 # 5. Обновить прогресс
 # - Чекбоксы RFC: [x]
@@ -216,7 +229,10 @@ Explore → Identify → {
 
 ## Команда Forge-Cycle
 
-Команда `/forge-cycle` запускает все фазы автоматически:
+Шаблон `/forge-cycle` направляет оркестратора по фазам. Его slash-маркеры
+описывают эквивалентные операции, а не автоматический inline-вызов других
+навыков. Ниже — концептуальная карта фаз, не полный нумерованный список
+шагов текущего шаблона:
 
 ```
 /forge-cycle PRD-001

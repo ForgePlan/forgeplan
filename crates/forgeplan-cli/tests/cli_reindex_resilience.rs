@@ -39,98 +39,147 @@ fn new_artifact(tmp: &TempDir, kind: &str, title: &str) -> String {
     panic!("no ID parsed from new {kind}: {stdout}");
 }
 
-/// PROB-028 main trace — create an artifact, delete its `.md` file
-/// directly, run `forgeplan reindex`, и assert the LanceDB row gets
-/// trimmed AND `forgeplan get <id>` reports not-found.
+/// The document under `dir` that declares `<id>`.
+fn document_declaring(dir: &std::path::Path, id: &str) -> std::path::PathBuf {
+    for entry in std::fs::read_dir(dir).expect("directory").flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let declared = text
+            .lines()
+            .take(12)
+            .find_map(|line| line.strip_prefix("id: "))
+            .map(|value| value.trim().trim_matches('"').trim_matches('\''));
+        if declared == Some(id) {
+            return path;
+        }
+    }
+    panic!("no document declaring {id} in {}", dir.display());
+}
+fn index_snapshot(root: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    fn visit(
+        lance: &std::path::Path,
+        current: &std::path::Path,
+        entries: &mut Vec<(std::path::PathBuf, Vec<u8>)>,
+    ) {
+        for entry in std::fs::read_dir(current).expect("published index directory") {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let relative = path.strip_prefix(lance).unwrap().to_path_buf();
+            let kind = entry.file_type().unwrap();
+            if kind.is_dir() {
+                entries.push((relative, b"<directory>".to_vec()));
+                visit(lance, &path, entries);
+            } else if kind.is_file() {
+                entries.push((relative, std::fs::read(path).unwrap()));
+            } else if kind.is_symlink() {
+                let target = std::fs::read_link(path).unwrap();
+                entries.push((
+                    relative,
+                    format!("symlink:{}", target.display()).into_bytes(),
+                ));
+            }
+        }
+    }
+
+    let lance = root.join(".forgeplan/lance");
+    let mut entries = Vec::new();
+    visit(&lance, &lance, &mut entries);
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    entries
+}
+fn assert_not_listed(root: &std::path::Path, id: &str) {
+    let stdout = forgeplan()
+        .args(["list", "--json"])
+        .current_dir(root)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let output = String::from_utf8(stdout).unwrap();
+    let json_end = output.rfind(']').expect("list JSON array");
+    let records: serde_json::Value = serde_json::from_str(&output[..=json_end]).unwrap();
+    assert!(
+        !records
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|record| record["id"] == id),
+        "{id} must be absent from the published index: {records}"
+    );
+}
+
+/// A fully admitted row with an immutable before-image may be trimmed after
+/// source disappearance has been verified against a complete census.
 #[test]
-fn reindex_trims_orphan_after_md_file_deleted() {
+fn reindex_trims_a_proven_source_disappearance() {
     let tmp = TempDir::new().unwrap();
     init_workspace(&tmp);
 
     let prd = new_artifact(&tmp, "prd", "PROB-028 trace");
+    let before = index_snapshot(tmp.path());
+    std::fs::remove_file(document_declaring(
+        &tmp.path().join(".forgeplan/prds"),
+        &prd,
+    ))
+    .expect("the source document is on disk");
 
-    // Find the .md file и delete it directly (simulating git pull / manual rm).
-    let prds_dir = tmp.path().join(".forgeplan").join("prds");
-    let mut deleted_count = 0;
-    for entry in std::fs::read_dir(&prds_dir).unwrap().flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with(&prd) && name.ends_with(".md") {
-            std::fs::remove_file(entry.path()).unwrap();
-            deleted_count += 1;
-        }
-    }
-    assert_eq!(deleted_count, 1, "exactly one .md should match {prd}");
-
-    // Run reindex.
-    let reindex_out = forgeplan()
+    forgeplan()
         .args(["reindex"])
         .current_dir(tmp.path())
-        .output()
-        .unwrap();
-    assert!(
-        reindex_out.status.success(),
-        "reindex must not crash on missing file: {}",
-        String::from_utf8_lossy(&reindex_out.stderr)
+        .assert()
+        .success();
+    assert_ne!(
+        index_snapshot(tmp.path()),
+        before,
+        "a verified deletion must publish an index generation"
     );
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&reindex_out.stdout),
-        String::from_utf8_lossy(&reindex_out.stderr)
-    );
-    assert!(
-        combined.contains(&format!("DEL  {prd}")),
-        "Phase 2 must trim {prd}; got:\n{combined}"
-    );
-
-    // `forgeplan get` MUST now report not-found.
-    let get_out = forgeplan()
-        .args(["get", &prd])
-        .current_dir(tmp.path())
-        .output()
-        .unwrap();
-    assert!(
-        !get_out.status.success(),
-        "get on trimmed id must fail; got success"
-    );
+    assert_not_listed(tmp.path(), &prd);
 }
 
-/// PROB-028 resilience — when ONE file's sync fails, reindex MUST
-/// continue and Phase 2 trim MUST still run for OTHER missing rows.
-/// This is the bug shape that kept PRD-001/SPEC-001 orphans alive in
-/// the project workspace despite the trim logic existing.
+/// A supported delete command updates durable state; reindex must not resurrect
+/// the record.
 #[test]
-fn reindex_continues_after_per_file_error_and_still_trims_orphans() {
+fn supported_delete_survives_reindex() {
     let tmp = TempDir::new().unwrap();
     init_workspace(&tmp);
+    let prd = new_artifact(&tmp, "prd", "PROB-028 supported deletion");
 
-    // Create two PRDs. Delete one's .md file. Manipulate the other's
-    // frontmatter title to diverge от DB → triggers FileNotFound в
-    // sync_body_from_file (pre-fix abort point).
-    let prd_orphan = new_artifact(&tmp, "prd", "PROB-028 orphan target");
-    let prd_divergent = new_artifact(&tmp, "prd", "PROB-028 divergent title");
+    forgeplan()
+        .args(["delete", &prd, "--yes"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    forgeplan()
+        .args(["reindex"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
-    let prds_dir = tmp.path().join(".forgeplan").join("prds");
+    assert_not_listed(tmp.path(), &prd);
+}
 
-    // Delete orphan's file.
-    for entry in std::fs::read_dir(&prds_dir).unwrap().flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with(&prd_orphan) && name.ends_with(".md") {
-            std::fs::remove_file(entry.path()).unwrap();
-        }
-    }
-
-    // Touch divergent's body to force a Phase 1 sync attempt (otherwise it
-    // skips at "body matches"). We use append rather than full rewrite so
-    // frontmatter и body shape stay sane.
-    for entry in std::fs::read_dir(&prds_dir).unwrap().flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with(&prd_divergent) && name.ends_with(".md") {
-            let path = entry.path();
-            let mut content = std::fs::read_to_string(&path).unwrap();
-            content.push_str("\n\nAppended body for PROB-028 test.\n");
-            std::fs::write(&path, content).unwrap();
-        }
-    }
+/// Malformed mixed input cannot authorize trimming an unrelated absent row.
+#[test]
+fn reindex_mixed_malformed_input_does_not_mutate_the_index() {
+    let tmp = TempDir::new().unwrap();
+    init_workspace(&tmp);
+    let prd_missing = new_artifact(&tmp, "prd", "PROB-028 missing source");
+    let prd_malformed = new_artifact(&tmp, "prd", "PROB-028 malformed source");
+    let before = index_snapshot(tmp.path());
+    let source_dir = tmp.path().join(".forgeplan/prds");
+    std::fs::remove_file(document_declaring(&source_dir, &prd_missing))
+        .expect("the missing source is on disk");
+    std::fs::write(
+        document_declaring(&source_dir, &prd_malformed),
+        "not valid frontmatter",
+    )
+    .unwrap();
 
     let reindex_out = forgeplan()
         .args(["reindex"])
@@ -138,20 +187,12 @@ fn reindex_continues_after_per_file_error_and_still_trims_orphans() {
         .output()
         .unwrap();
     assert!(
-        reindex_out.status.success(),
-        "reindex must succeed even with mixed files; stderr={}",
-        String::from_utf8_lossy(&reindex_out.stderr)
+        !reindex_out.status.success(),
+        "malformed mixed input must not authorize deletion"
     );
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&reindex_out.stdout),
-        String::from_utf8_lossy(&reindex_out.stderr)
-    );
-
-    // Phase 2 MUST have run и trimmed the orphan despite any Phase 1
-    // per-file errors на the divergent record.
-    assert!(
-        combined.contains(&format!("DEL  {prd_orphan}")),
-        "Phase 2 trim must run after per-file errors; expected `DEL  {prd_orphan}` in:\n{combined}"
+    assert_eq!(
+        index_snapshot(tmp.path()),
+        before,
+        "mixed malformed input must leave the published index untouched"
     );
 }

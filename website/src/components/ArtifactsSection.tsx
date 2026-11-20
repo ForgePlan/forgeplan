@@ -7,11 +7,11 @@ const ARTIFACT_TYPES = [
   { id: 'ADR', name: 'ADR', desc: 'Why this approach', detail: 'Architecture Decision Record. Context, options considered, decision rationale. On Deep+: includes invariants and rollback plan.', lifecycle: 'draft → active → superseded', color: 'fg' },
   { id: 'Epic', name: 'Epic', desc: 'Group of work', detail: 'Aggregates PRDs, RFCs, ADRs. Tracks progress across children. Used for multi-week initiatives.', lifecycle: 'draft → active → deprecated', color: 'ember' },
   { id: 'Spec', name: 'Spec', desc: 'API contracts', detail: 'Exact interface definitions, data models, versioning. Delta-specs for changes: ADDED/MODIFIED/REMOVED.', lifecycle: 'draft → active → superseded', color: 'fg' },
-  { id: 'Problem', name: 'Problem', desc: 'Signal with context', detail: 'Bug, risk, or observation. Anti-Goodhart indicators prevent gaming metrics. Links to evidence for investigation.', lifecycle: 'draft → active → deprecated', color: 'ember' },
-  { id: 'Evidence', name: 'Evidence', desc: 'Test and prove', detail: 'Benchmark results, test output, audit findings. Verdict: supports/weakens/refutes. Congruence level CL0-CL3. Expires via valid_until.', lifecycle: 'draft → active', color: 'ember' },
+  { id: 'Problem', name: 'Problem', desc: 'Signal with context', detail: 'Bug, risk, or observation. Anti-Goodhart indicators record risks that a score alone may miss. Links to evidence for investigation.', lifecycle: 'draft → active → deprecated', color: 'ember' },
+  { id: 'Evidence', name: 'Evidence', desc: 'Test and assess', detail: 'Benchmark results, test output, audit findings. Verdict: supports/weakens/refutes. Congruence level CL0-CL3. Optional valid_until marks expiry.', lifecycle: 'draft → active', color: 'ember' },
   { id: 'Solution', name: 'Solution', desc: '2-3 variants compared', detail: 'Solution portfolio with weakest-link scoring. Each variant analyzed for strengths, risks, and evidence gaps.', lifecycle: 'draft → active → superseded', color: 'fg' },
-  { id: 'Note', name: 'Note', desc: 'Quick micro-decision', detail: 'Lightweight. Auto-expires in 90 days. No validation gate needed for activation. Perfect for tactical decisions.', lifecycle: 'draft → active → stale', color: 'dim' },
-  { id: 'Refresh', name: 'Refresh', desc: 'Re-evaluate stale', detail: 'Triggered when valid_until expires. Re-assess: is the decision still valid? Renew with new evidence or reopen as new artifact.', lifecycle: 'stale → refresh → renew/reopen', color: 'dim' },
+  { id: 'Note', name: 'Note', desc: 'Quick micro-decision', detail: 'Lightweight. Set valid_until when a review date is needed; there is no automatic 90-day expiry. Note activation skips the full validation gate.', lifecycle: 'draft → active → stale', color: 'dim' },
+  { id: 'Refresh', name: 'Refresh', desc: 'Re-evaluate stale', detail: 'Record a reassessment when a review is due. Expiry detection does not create this report or change persisted status. Renew or reopen explicitly.', lifecycle: 'stale → refresh → renew/reopen', color: 'dim' },
 ];
 
 export default function ArtifactsSection() {
@@ -64,7 +64,7 @@ export default function ArtifactsSection() {
 
             {/* Lifecycle */}
             <div style={{ opacity: fade(0.15) }}>
-              <p className="font-mono text-[10px] tracking-[2px] text-forge-dim mb-2">LIFECYCLE</p>
+              <p className="font-mono text-[10px] tracking-[2px] text-forge-dim mb-2">EXAMPLE LIFECYCLE / REVIEW FLOW</p>
               <div className="flex items-center gap-2">
                 {art.lifecycle.split(' → ').map((stage, si) => (
                   <span key={si} className="flex items-center gap-2">
@@ -92,10 +92,10 @@ export default function ArtifactsSection() {
           {/* Right: 2×5 grid of artifact cards */}
           <div className="flex flex-col p-4 lg:p-6 h-full">
             <p className="font-mono text-[11px] tracking-[3px] text-forge-ember mb-3" style={{ opacity: fade(0.02) }}>
-              10 ARTIFACT TYPES
+              10 ARTIFACT KINDS TO EXPLORE
             </p>
             <p className="text-xs text-forge-dim mb-4" style={{ opacity: fade(0.05) }}>
-              Every decision gets the right container. Click to explore.
+              A selection from the broader artifact model. Click to explore.
             </p>
 
             <div className="grid grid-cols-2 gap-0 flex-1">

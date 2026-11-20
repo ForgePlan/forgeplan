@@ -40,6 +40,10 @@ forgeplan new [OPTIONS] <KIND> <TITLE>
 
 Forgeplan runs a similarity check against existing artifacts and warns if the title looks like a duplicate. Pass `--allow-duplicate` / `--force` to bypass when you intentionally want a parallel artifact (e.g., a second PRD exploring the same domain from a different angle).
 
+Without `--allow-duplicate`, creation can also make a best-effort fetch/check
+against `origin/dev`. Duplicate confirmation is interactive only on a terminal;
+non-interactive callers receive an explicit refusal instead of a prompt.
+
 ## Examples
 
 ### Example 1: Create a PRD for a new feature
@@ -48,7 +52,7 @@ Forgeplan runs a similarity check against existing artifacts and warns if the ti
 forgeplan new prd "OAuth2 login"
 ```
 
-Produces `.forgeplan/prds/prd-NNN-oauth2-login.md` with the PRD template. Immediately open it and fill in Problem, Goals, Non-Goals, Target Users, Related, and Functional Requirements - then run `forgeplan validate PRD-NNN` to confirm 0 MUST errors before moving on.
+Produces a slug-named file such as `.forgeplan/prds/prd-oauth2-login.md`; use the path and ID actually returned. Fill the required sections, then validate. Do not recreate retired artifact tables.
 
 ### Example 2: Record a problem signal
 
@@ -56,7 +60,7 @@ Produces `.forgeplan/prds/prd-NNN-oauth2-login.md` with the PRD template. Immedi
 forgeplan new problem "Slow search on 10k+ artifacts"
 ```
 
-Creates a ProblemCard with Signal / Context / Goals / Anti-Goodhart indicators sections. ProblemCards don't need a design - fill Signal and Context, then link to any Evidence you already have. Problems don't require a validation gate for activation, so you can activate them as soon as the card is coherent.
+Creates a ProblemCard template. Fill required sections and link relevant evidence. Activation still uses the dedicated command and its kind/depth rules; a ProblemCard is not a universal validation bypass.
 
 ### Example 3: Attach a benchmark as evidence
 
@@ -66,7 +70,7 @@ forgeplan link EVID-NNN PRD-012 --relation informs
 forgeplan score PRD-012
 ```
 
-Evidence bodies MUST contain structured fields (`verdict`, `congruence_level`, `evidence_type`) - without them the R_eff parser falls back to CL0 and penalises the score. Link to the artifact the evidence supports, then re-score to see R_eff move.
+Supply structured `verdict` and `congruence_level` fields for evidence scoring. Missing or unrecognized scoring fields can yield CL0; `evidence_type` defaults to measurement when omitted. Link evidence to the supported artifact, then inspect the resulting score rather than assuming it must increase.
 
 ## How it fits the workflow
 
@@ -79,3 +83,24 @@ This command belongs in the [full artifact lifecycle](/docs/guides/first-artifac
 - [`forgeplan route`](/docs/cli/route/) - decide depth + pipeline before creating the artifact
 - [`forgeplan health`](/docs/cli/health/) - surface stubs and blind spots after creation
 - [Methodology: artifact model](/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan new --help`.
+
+```text
+Create a new artifact from template
+
+Usage: forgeplan new [OPTIONS] <KIND> <TITLE>
+
+Arguments:
+  <KIND>   Artifact kind: prd, epic, spec, rfc, adr, problem, solution, evidence, note, refresh
+  <TITLE>  Artifact title
+
+Options:
+      --allow-duplicate  Skip duplicate-detection prompt and create anyway [alias: --force]
+  -h, --help             Print help
+  -V, --version          Print version
+```
+<!-- forgeplan-runtime:end -->

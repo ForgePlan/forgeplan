@@ -1,9 +1,9 @@
 ---
 title: forgeplan_blocked
-description: "Показывает заблокированные артефакты и их невыполненные зависимости. Блокируют только черновики артефактов - устаревшие и замещённые считаются разрешёнными. Используются только структурные связи (based_on, refines, supersedes, contradicts)."
+description: "Показывает невыполненные структурные зависимости; active, deprecated и superseded считаются разрешёнными."
 ---
 
-Показывает артефакты, заблокированные невыполненными структурными зависимостями. Артефакт считается "заблокированным", когда он ссылается на другой артефакт (через `based_on`, `refines`, `supersedes` или `contradicts`), который всё ещё находится в состоянии `draft` - это означает, что предварительное решение ещё не было активировано. Предварительные условия в состоянии `deprecated` и `superseded` считаются разрешёнными, а не блокирующими.
+Показывает невыполненные структурные зависимости (`based_on`, `refines`, `supersedes`, `contradicts`). Обработчик считает существующие предварительные артефакты со статусами `active`, `deprecated`, `superseded` разрешёнными. Это не проверка только на draft: зависимость со статусом `stale` или отсутствующая цель тоже может остаться неразрешённой, несмотря на краткое “only draft” в каталоге ниже.
 
 **Категория**: Дашборды и Графы
 
@@ -20,23 +20,23 @@ description: "Показывает заблокированные артефак
 |---|---|---|---|
 | `id` | `string` | no | ID артефакта для проверки. Если пропущено, выводит список всех заблокированных артефактов. |
 
-_Источник схемы: `crates/forgeplan-mcp/src/types.rs::BlockedParams`_
+Полный зарегистрированный контракт, включая необязательный nullable-параметр `workspace`, приведён ниже. Без `id` проверяется всё рабочее пространство.
 
 ## Возвращает
+
+Учебный фрагмент ответа для одного заблокированного артефакта. `blocked_by` содержит строки ID, а не объекты зависимостей.
 
 ```json
 {
   "blocked": [
     {
       "id": "RFC-006",
-      "kind": "rfc",
-      "status": "draft",
-      "blocked_by": [
-        { "id": "PRD-039", "status": "draft", "relation": "based_on" }
-      ]
+      "blocked_by": ["PRD-039"]
     }
   ],
-  "total_blocked": 1
+  "ready_count": 0,
+  "blocked_count": 1,
+  "cycles": []
 }
 ```
 
@@ -56,7 +56,7 @@ _Источник схемы: `crates/forgeplan-mcp/src/types.rs::BlockedParams`
 
 1.  `forgeplan_blocked` - список заблокированных артефактов.
 2.  `forgeplan_get` для вышестоящего `blocked_by` - проверка его потребностей.
-3.  `forgeplan_activate` вышестоящего артефакта после прохождения валидации.
+3. Проверьте вышестоящий артефакт и выполните его условия активации перед `forgeplan_activate`: одной валидацией контракт активации не исчерпывается.
 4.  `forgeplan_blocked` снова - подтверждение, что нижестоящий артефакт теперь разблокирован.
 
 ## Эквивалент CLI
@@ -72,3 +72,48 @@ forgeplan blocked RFC-006
 -   [`forgeplan_graph`](/ru/docs/mcp/forgeplan_graph/) - визуализация графа.
 -   [`forgeplan_activate`](/ru/docs/mcp/forgeplan_activate/) - разблокировка нижестоящих артефактов путём активации черновика.
 -   [Руководство по методологии](/ru/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Снимок tools/list
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, профиль `full`.
+
+Show blocked artifacts and their unmet dependencies. Only draft artifacts block — deprecated and superseded are considered resolved. Uses structural relations only (based_on, refines, supersedes, contradicts).
+
+### Входные параметры
+
+| Имя | Обязателен | Тип | Описание |
+|---|---|---|---|
+| `id` | нет | string \| null | Optional artifact ID to check. If omitted, shows all blocked artifacts. |
+| `workspace` | нет | string \| null | Optional explicit workspace directory for this call. When set, the MCP<br>server resolves the `.forgeplan/` projection from this path instead of<br>the server's startup CWD. Use this when the calling agent is running<br>in a git worktree separate from the MCP server's launch directory.<br>PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "id": {
+      "description": "Optional artifact ID to check. If omitted, shows all blocked artifacts.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "workspace": {
+      "default": null,
+      "description": "Optional explicit workspace directory for this call. When set, the MCP\nserver resolves the `.forgeplan/` projection from this path instead of\nthe server's startup CWD. Use this when the calling agent is running\nin a git worktree separate from the MCP server's launch directory.\nPRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "BlockedParams",
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use console::style;
 
-use forgeplan_core::artifact::types::slugify;
+use forgeplan_core::artifact::types::ArtifactKind;
 use forgeplan_core::db::store::{ArtifactFilter, NewArtifact};
 use forgeplan_core::git::author::resolve_author;
 use forgeplan_core::hints::{self, Hint};
@@ -31,12 +31,7 @@ pub async fn run(
 }
 
 async fn run_remember(text: &str, category: &str) -> Result<()> {
-    let (workspace, _lock, store) = common::open_store_locked().await?;
-
-    // Generate slug from first 50 chars
-    let slug_source: String = text.chars().take(50).collect();
-    let slug = slugify(&slug_source);
-    let id = format!("mem-{}", slug);
+    let (workspace, lock, store) = common::open_store_locked_checked(&[]).await?;
 
     // Title = first 80 chars
     let title: String = text.chars().take(80).collect();
@@ -59,39 +54,60 @@ async fn run_remember(text: &str, category: &str) -> Result<()> {
     // way the previous unquoted `author: cli` line would have.
     let author = resolve_author(&workspace, None).await;
 
-    let body = format!(
-        "---\nid: \"{}\"\nkind: memory\ncategory: {}\nstatus: active\ndepth: tactical\ntitle: \"{}\"\ncreated: {}\nauthor: \"{}\"\n---\n\n{}",
-        id,
-        category,
-        title.replace('"', "\\\""),
-        now,
-        author,
-        text
-    );
-
-    // Create in LanceDB
-    let artifact = NewArtifact {
-        id: id.clone(),
-        kind: "memory".to_string(),
-        status: "active".to_string(),
-        title: title.clone(),
-        body: body.clone(),
-        depth: "tactical".to_string(),
-        // Same value as the frontmatter above — single resolution, no drift.
-        author: Some(author.clone()),
-        parent_epic: None,
-        valid_until: None,
-        // C1: memory artifacts have no tags at creation; users add via `forgeplan tag`.
-        tags: Vec::new(),
+    let build = |id: &str, _number: u32, canonical_key: &str| -> anyhow::Result<NewArtifact> {
+        let body = format!(
+            "---\nid: \"{}\"\nslug: {}\nkind: memory\ncategory: {}\nstatus: active\ndepth: tactical\ntitle: \"{}\"\ncreated: {}\nauthor: \"{}\"\n---\n\n{}",
+            id,
+            canonical_key,
+            category,
+            title.replace('"', "\\\""),
+            now,
+            author,
+            text
+        );
+        Ok(NewArtifact {
+            canonical_key: canonical_key.to_string(),
+            id: id.to_string(),
+            kind: "memory".to_string(),
+            status: "active".to_string(),
+            title: title.clone(),
+            body,
+            depth: "tactical".to_string(),
+            author: Some(author.clone()),
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        })
     };
-    // PRD-073 file-first: helper writes file first, then syncs to LanceDB.
-    projection::create_artifact_with_projection(
-        &projection::MutationContext::new(&workspace, &store),
-        &artifact,
+    common::ensure_ordinary_mutation_allowed(&workspace)?;
+    let created = forgeplan_core::artifact::id_alloc::create_artifact_with_minted_key(
+        &workspace,
+        &lock,
+        store.as_ref(),
+        &ArtifactKind::Memory,
+        3,
+        &title,
+        &build,
     )
-    .await?;
+    .await
+    .map_err(|e| common::describe_possible_legacy_partial_commit(store.is_some(), e))?;
+    let id = created.id;
+    let canonical_key = created.canonical_key;
+
+    if store.is_none() {
+        common::note_constellation_owns_index();
+        // Lock must drop before reconcile — it re-acquires the same lock per
+        // storage commit, and a held guard would time the capture out.
+        drop(lock);
+        common::reconcile_after_file_mutation(&workspace).await;
+    } else {
+        drop(store);
+        drop(lock);
+        common::drain_legacy_semantic_after_mutation(&workspace).await?;
+    }
 
     println!("  Remembered: {} — \"{}\"", style(&id).bold(), title);
+    println!("  Key: {}", canonical_key);
 
     // PRD-071: list memories so the agent can immediately confirm storage
     // or chain into recall.
@@ -103,13 +119,24 @@ async fn run_remember(text: &str, category: &str) -> Result<()> {
 }
 
 async fn run_list() -> Result<()> {
-    let store = common::store().await?;
+    let (_workspace, source, _read_guard) = common::open_read_source().await?;
 
     let filter = ArtifactFilter {
         kind: Some("memory".to_string()),
         status: None,
     };
-    let records = store.list_records(Some(&filter)).await?;
+    let stored;
+    let records: Vec<_> = match &source {
+        common::ReadSource::Legacy(store) => {
+            stored = store.list_records(&_read_guard, Some(&filter)).await?;
+            stored.iter().collect()
+        }
+        common::ReadSource::Captured(read) => read
+            .records()
+            .iter()
+            .filter(|record| record.kind == "memory")
+            .collect(),
+    };
 
     if records.is_empty() {
         println!("  No memories found.");
@@ -186,21 +213,53 @@ async fn run_list() -> Result<()> {
 }
 
 async fn run_forget(id: &str) -> Result<()> {
-    let (ws, _lock, store) = common::open_store_locked().await?;
+    let (ws, lock, store) = common::open_store_locked_checked(&[(id, true)]).await?;
 
-    // Verify it exists and is a memory
-    let record = store
-        .get_record(id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Memory '{}' not found", id))?;
+    // Verify it exists and is a memory. On a migrated workspace the
+    // authoritative answer comes from the canonical markdown (what
+    // `resolve_artifact_path` binds) and a fresh capture of it, not from a
+    // legacy row.
+    let record = match &store {
+        Some(store) => store
+            .get_record(&lock, id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Memory '{}' not found", id))?,
+        None => {
+            let read =
+                forgeplan_core::constellation::facade::open_workspace_read_with_permit(&ws, &lock)
+                    .await?;
+            let canonical = read
+                .resolve_id(id)
+                .ok_or_else(|| anyhow::anyhow!("Memory '{}' not found", id))?;
+            read.get_record(&canonical)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Memory '{}' not found", id))?
+        }
+    };
 
     if record.kind != "memory" {
         anyhow::bail!("'{}' is not a memory (kind: {})", id, record.kind);
     }
 
     // PRD-073 file-first: helper removes file first, then cascades DB.
-    projection::delete_artifact_with_projection(&projection::MutationContext::new(&ws, &store), id)
-        .await?;
+    // With a `None` sink the same helper removes the canonical markdown and
+    // stops there — reconcile drops the derived row.
+    common::ensure_ordinary_mutation_allowed(&ws)?;
+    projection::delete_artifact_with_projection(
+        &projection::MutationContext::new(&ws, &lock, store.as_ref()),
+        id,
+    )
+    .await?;
+
+    if store.is_none() {
+        common::note_constellation_owns_index();
+        drop(lock);
+        common::reconcile_after_file_mutation(&ws).await;
+    } else {
+        drop(store);
+        drop(lock);
+        common::drain_legacy_semantic_after_mutation(&ws).await?;
+    }
 
     println!("  Forgotten: {}", style(id).bold());
 

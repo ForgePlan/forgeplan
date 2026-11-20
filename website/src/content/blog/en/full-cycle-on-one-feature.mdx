@@ -1,6 +1,6 @@
 ---
 title: "The full cycle on a single feature - from a one-liner in chat to a decision that opens itself for review a year later"
-description: "Six months ago, one line in chat: 'we need streaming for model responses.' Today, a connected set of five artifacts marked active, with measured trust and explicit review conditions. The series capstone: the path from that line to a decision, in seven steps on one real task."
+description: "A historical worked narrative follows a streaming feature from a chat message through requirements, alternatives, evidence and review. The example's outputs and measurements are not a verified current CLI transcript."
 slug: full-cycle-on-one-feature
 lang: en
 publishedAt: 2026-05-24
@@ -14,6 +14,8 @@ seriesDescription: "The single-decision cycle · 8 posts on discipline for archi
 translations:
   ru: full-cycle-on-one-feature
 ---
+
+> **Historical example; clarification added 2026-10-23.** The Vault story, IDs, timings, percentile figures, conversion changes and terminal outputs below have no linked run receipts or raw data. They are an uncorroborated author narrative, not evidence that those artifacts exist in this repository or that the feature caused the conversion change. The cover is schematic (its “18 months” is not the story's six-month interval). Current product behavior is distinguished below; do not copy the narrative as a tested acceptance procedure.
 
 ## Context
 
@@ -51,43 +53,41 @@ The project manager spends 30-40 minutes filling in:
 
 ## Step 3. Validating the PRD
 
-`forgeplan validate PRD-018`. Three checks run automatically.
+`forgeplan validate PRD-018` is the structural completeness check. The following three concerns describe the example's desired review, not three guaranteed automated checks.
 
 The first - document format. Are all 13 sections filled in? Are metrics expressed as numbers? Is implementation leaking into requirements?
 
-The second - consistency with existing specifications. Does anything in the new requirements conflict with the current API schema?
+The second concern is consistency with existing specifications. A human or a separately supported semantic review must compare the requirements with the API schema; structural validation alone does not establish that.
 
 The third - sufficient alternatives (for the ADI step coming next). This check doesn't run yet; it comes at the ADR stage.
 
 The command returns one remark: "PRD-018: functional requirement FR-7 contains the phrase 'handle errors reasonably' without specifying what 'reasonably' means." The project manager opens the section and replaces it with: "on model provider error, return a message to the user - 'Service temporarily unavailable, try again in a minute' - with response code 503."
 
-Running `forgeplan validate PRD-018` again - all three checks are green.
-
-This is the guard against the situation "by the document everything is done, but the user says - it doesn't work." The check doesn't let through phrases that can be interpreted two different ways.
+In the narrative, the team fixes the ambiguity and repeats validation. Even a result with zero MUST findings is not proof that every ambiguity or behavioral defect has been found.
 
 ## Step 4. Three-version architecture analysis
 
-`forgeplan reason PRD-018`. The command generates three implementation options with testable consequences. This is what Forgeplan calls **ADI** (Architectural Decision Intelligence) - an automated prompt that forces the team to produce at least three competing hypotheses, each with a concrete prediction that can be falsified by a measurement.
+`forgeplan reason PRD-018` requires a configured LLM provider. **ADI** is **Abduction → Deduction → Induction**: propose rivals, derive testable consequences, then revise using evidence. The product prompt requests three or more approaches; generated text is not itself a measurement or an enforced hypothesis-count guarantee.
 
 - **Version 1**: SSE (Server-Sent Events) over standard HTTP. Testable consequence: if we pick SSE, p95 first-token should be ≤ 800 ms on staging under current load. Measurement: build a 100-line prototype, run a load test.
 - **Version 2**: WebSockets. Testable consequence: if we pick WebSockets, p95 first-token should be comparable to SSE, but connection management (heartbeat, reconnect) adds complexity. Measurement: same prototype, but through a WebSocket library.
-- **Version 3**: HTTP/2 server push. Testable consequence: if we pick HTTP/2 push, p95 first-token may be 50-100 ms lower than SSE, but requires HTTP/2 end-to-end from client to server. Measurement: prototype + infrastructure check.
+- **Historical candidate 3**: HTTP/2 server push. This comparison was technically misleading: [RFC 9113 §8.4](https://www.rfc-editor.org/rfc/rfc9113.html#section-8.4) concerns promised responses to additional requests, not delivery of tokens in the current response. Do not treat it as a drop-in SSE alternative or infer a 50–100 ms gain.
 
-The team spends half a day on three prototypes. Results:
+The original narrative assigned the following numbers to its prototypes. They are retained as uncorroborated illustration, not a reproducible transport benchmark:
 
 - SSE: p95 first-token 180 ms. Implementation - 80 lines. No additional infrastructure.
 - WebSockets: p95 first-token 170 ms. Implementation - 250 lines (including reconnect logic).
 - HTTP/2 push: p95 first-token 140 ms. But the proxy in front of our servers strips push. No proxy support - no push.
 
-Version 1 (SSE) wins on the result-to-complexity ratio. Version 3 (HTTP/2 push) is theoretically faster, but requires reworking the infrastructure - not justified for a 40 ms difference. Version 2 (WebSockets) is no faster than SSE but three times more complex - no reason to choose it.
+The narrative chooses SSE for simplicity. Its 180 versus 170 ms numbers do not show equal latency, nor do line counts establish a universal complexity ratio. The HTTP/2 push comparison cannot establish a 40 ms streaming advantage.
 
 ## Step 5. Recording the architectural decision
 
-`forgeplan new adr "Use SSE for streaming model responses"`. This creates `ADR-012` with six sections - the **DDR** (Detailed Decision Record) format described in post 4 of this series.
+`forgeplan new adr "Use SSE for streaming model responses"` creates an ADR template; IDs depend on the workspace. The six fields below are the local DDR writing convention, not the exact generated ADR schema.
 
 - **Context**: streaming is needed for model responses; target metric - p95 first-token ≤ 800 ms; team of 4 engineers, infrastructure - standard HTTP stack.
 - **Alternatives considered**: SSE; WebSockets; HTTP/2 server push.
-- **Evidence**: three measurements on staging (one per option), all with CL3 (our own measurement on our own load). **CL3** is the highest congruence level - evidence gathered in your own context, on your own system, with no incentive to distort.
+- **Evidence**: illustrative staging comparisons. Owning a staging environment does not automatically make evidence CL3 for a production claim, and ownership does not eliminate bias. Record workload, environment and claim scope before assigning congruence.
 - **Decision**: use SSE for streaming model responses.
 - **Rejected alternatives**: WebSockets - three times more complex implementation for the same result; HTTP/2 push - requires reworking proxy infrastructure, 40 ms savings not justified.
 - **Conditions for reopening**: reopen if p95 first-token exceeds 600 ms under production load (200 ms margin to the target metric); OR if traffic to the streaming endpoint grows fivefold; OR in 12 months regardless.
@@ -98,7 +98,7 @@ The developer picks up ADR-012, RFC-007 (describing the implementation in phases
 
 After going live - a load test in production. Measurements: p95 first-token - 220 ms. p99 - 380 ms. p99.9 - 750 ms. The "abandonment during response wait" metric drops from 12% to 3% over two weeks.
 
-`forgeplan new evidence "SSE streaming endpoint production benchmark"`. This creates `EVID-001` with three evaluation axes - what Forgeplan calls the **R_eff** (effective reliability) scoring: each piece of evidence is rated on Formality (F), Granularity (G), and Reliability (R), then penalized for congruence gap between where evidence was gathered and where the decision applies.
+`forgeplan new evidence "SSE streaming endpoint production benchmark"` creates a template. The following 0–9 F/G/R values are the article's teaching rubric, not fields that `new` measures or the R_eff algorithm. Product scoring needs body fields such as `verdict`, `congruence_level` and `evidence_type`, plus actual results and provenance.
 
 - F = 8 (rigorously specified, metrics clearly defined).
 - G = 9 (detailed numbers, percentile breakdown).
@@ -109,29 +109,29 @@ After going live - a load test in production. Measurements: p95 first-token - 22
 
 ## Step 7. Activation and the point of no return
 
-`forgeplan score ADR-012`. The command shows: R_eff = 0.89. All three quality checks - green.
+`forgeplan score ADR-012` produces the real report for that workspace. The original illustrative 0.89 cannot be derived from the 8/9/8 rubric above: the recursive scorer uses verdict, CL, evidence type and dependencies. Read its factors instead of treating this narrative number as expected output.
 
-`forgeplan activate ADR-012`. The file moves to active state. Direct editing is locked - changes are only possible through `forgeplan supersede`.
+`forgeplan activate ADR-012` attempts the gated status transition. It does not lock the Markdown file: active body/title updates are technically supported. Supersede records replacement of a decision; it is not the only possible edit operation.
 
 Same file, but now with tags: status "active," activation date, link to evidence, link to review conditions. The record becomes part of the project's official decision history.
 
-`forgeplan health` - shows: 87 decisions in the project, 0 without evidence, 0 without review conditions, 0 orphans (records without links). A healthy graph. The same report six months from now will show which decisions are approaching their review date.
+`forgeplan health` summarizes documented gaps and risks. The original 87/0/0/0 figures are illustrative, not a captured result; a healthy report does not establish business-metric monitoring or that every review condition is satisfied.
 
 ## Six months later
 
-Six months passed. Traffic to the streaming endpoint grew sevenfold. p95 first-token gradually climbed from 220 ms to 580 ms. ADR-012's review condition is close to triggering (threshold: 600 ms).
+In the story, traffic grows sevenfold and p95 rises from 220 to 580 ms. The fivefold-traffic condition has **already** been met even though the 600 ms latency threshold has not.
 
-`forgeplan stale` - the command shows ADR-012 as "approaching review condition." The project manager gets a notification in chat.
+`forgeplan stale` detects expired `valid_until` dates, not approaching latency thresholds. A person or separately configured monitoring must notice the traffic condition and notify the team; the command does not provide that chat integration.
 
 The team sits down, opens ADR-012, reads the old alternatives. They look different now:
 
 - WebSockets - still more complex, won't help with latency.
-- HTTP/2 push - over six months the proxy infrastructure was upgraded for other reasons and now supports push. The 40 ms savings may provide the margin needed.
+- HTTP/2 push remains a different mechanism from response-body streaming; a proxy upgrade alone does not validate the claimed 40 ms saving.
 - SSE - current option, but needs hot-path optimization.
 
-Two choices: either `forgeplan renew ADR-012` (extend with an updated review condition and an optimized implementation), or `forgeplan supersede ADR-012 --by ADR-019` (create ADR-019 switching to HTTP/2 push; ADR-012 is marked "superseded by ADR-019").
+Review is explicit. For an active decision, `forgeplan reopen ADR-012 --reason "Traffic exceeded the recorded fivefold threshold"` creates a **new draft** with lineage and deprecates the old record. Alternatively, once a separately prepared replacement exists, `forgeplan supersede ADR-012 --by ADR-019` records that replacement; it does not create ADR-019.
 
-The team picks the first path - update the SSE implementation with an optimized hot path. Measurement shows p95 first-token at 280 ms. ADR-012 is updated through `forgeplan renew` with a new review condition (threshold 700 ms) and a link to new evidence.
+The story's revised SSE result of 280 ms and proposed 700 ms threshold remain illustrative and require fresh evidence. `renew` extends `valid_until` with `--reason` and `--until` under its stored-status transition guard; detecting an overdue active record does not make active→active renewal legal, and renewing is not a code change or a new measurement.
 
 The cycle closes. The decision made six months ago didn't turn into a monument. It opened itself for review, was updated, and is alive again.
 
@@ -142,7 +142,7 @@ I described seven steps and one invisible boundary - the transition from "active
 What I did **not** show in this capstone:
 
 - Parallel work by multiple teams on different PRDs within one Epic.
-- Conflicts when two developers pick up linked ADRs - and how the claim/release mechanism separates them.
+- Coordination when developers work on linked ADRs: claims are advisory intent markers, not file-access locks or a conflict-free execution guarantee.
 - Cases where a decision has to be rolled back and made again (via `forgeplan reopen`).
 - Cases where the review condition was wrong, and the team learns to write triggers more precisely.
 
@@ -154,11 +154,11 @@ Each of the seven steps has a portion of work for AI and a portion of work for a
 
 - Step 1 (routing): AI recommends the depth level. The human checks that the recommendation matches the actual task.
 - Step 2 (PRD): AI produces the first draft of all 13 sections. The human fills in the content, metrics, and scope.
-- Step 3 (validation): fully automated. The human fixes the remarks.
+- Step 3 (validation): automated structural checks plus human semantic review.
 - Step 4 (ADI): AI generates three hypotheses with testable consequences. The human runs the measurements and interprets the results.
 - Step 5 (ADR): AI fills in the six-section structure. The human writes the real reason for rejecting each alternative - often internal team context that never surfaces in public documentation.
-- Step 6 (evidence): AI templates the evidence file. The human sets the F/G/R scores and the congruence level.
-- Step 7 (activation): fully automated. The human confirms the final step.
+- Step 6 (evidence): AI can draft a template; the human supplies real results, provenance, verdict, type and congruence.
+- Step 7 (activation): automated gates check defined conditions; the human retains responsibility for the decision and its unsupported uses.
 
 If AI completes all seven steps at 100% - you don't have a decision cycle, you have seven polished files that nobody will be able to make sense of in a year. If AI does 0% - you're burning the two days of work that could have taken an hour. The baseline rule: AI generates structure and drafts, the human adds substance and context.
 
@@ -177,8 +177,8 @@ Full list:
 7. [POS terminal for methodologies](/blog/forgeplan-pos-terminal) - what Forgeplan is
 8. This post (series capstone)
 
-The series is complete. The site has ten interactive walkthroughs that go deeper on each step: a 3D graph of artifacts for one project, a task-depth routing calculator, a DDR template, the delta format for specifications, the R_eff formula in action. The walkthroughs hub is [/guides](/guides). Navigation is "if you're looking for X - start with Y."
+The [guides catalog](/guides) contains the current selection of lessons and demonstrations, including a graph, routing calculator and DDR example. Browser examples are teaching models, not live CLI output or measured project evidence.
 
-If you want to try Forgeplan on your own task - it's on GitHub under an open license. Local, no cloud, no subscription. One binary, installs in a minute. The `.forgeplan/` directory lives in your code repository; sync is through git, just like everything else.
+Forgeplan's local artifact files can be versioned with git. The reasoning command needs a configured provider, and local semantic search needs a compatible build and model cache; “local” does not mean every operation needs no setup, network or provider authentication.
 
 Thanks for reading the series to the end.

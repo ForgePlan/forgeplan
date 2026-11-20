@@ -28,16 +28,27 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
 
     let kind: ArtifactKind = kind_str.parse().map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    let (workspace, _lock, store) = common::open_store_locked().await?;
+    let (workspace, _lock, store) = common::open_store_locked_checked(&[]).await?;
 
     // Duplicate guard (FR-001 of PRD-043): warn before creating an artifact
-    // whose title closely matches an existing one of the same kind.
+    // whose title closely matches an existing one of the same kind. On a
+    // constellation-migrated workspace (store == None) the markdown scan is
+    // the source of truth already — same filter shape, no store.
     let template_key_for_filter = kind.template_key().to_string();
-    let filter = ArtifactFilter {
-        kind: Some(template_key_for_filter.clone()),
-        status: None,
+    let existing = match &store {
+        Some(store) => {
+            let filter = ArtifactFilter {
+                kind: Some(template_key_for_filter.clone()),
+                status: None,
+            };
+            store.list_artifacts(&_lock, Some(&filter)).await?
+        }
+        None => forgeplan_core::artifact::store::list_artifacts(&workspace)
+            .await?
+            .into_iter()
+            .filter(|s| s.kind == template_key_for_filter)
+            .collect(),
     };
-    let existing = store.list_artifacts(Some(&filter)).await?;
     if let Some((dup_id, dup_title, dup_score)) = find_duplicate(&existing, title) {
         if allow_duplicate {
             eprintln!(
@@ -79,11 +90,9 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
         }
     }
 
-    // PROB-067: id allocation moves under a cross-worktree per-kind lock
-    // with post-write collision detection. We compute the slug now (it
-    // depends only on title), then defer id resolution + projection
-    // write to `id_alloc::allocate_and_create_artifact` which invokes
-    // our build closure under the lock for each retry attempt.
+    // The canonical key depends only on the kind and title, so the shared
+    // creator mints it before reserving the display number and renders the
+    // artifact under the key-named path.
     let prefix = kind.prefix().trim_end_matches('-').to_uppercase();
     let template_key = kind.template_key();
     let template = get_embedded_template(template_key)
@@ -91,7 +100,7 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
 
     let slug = slug_from_kind_title(&kind, title)
-        .with_context(|| format!("failed to build canonical slug from title {:?}", title))?;
+        .unwrap_or_else(|_| format!("{}-document", kind.prefix().trim_end_matches('-')));
 
     // PROB-060 / SPEC-005 Phase 1.3 — pre-create remote slug uniqueness check.
     //
@@ -152,19 +161,16 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
         _ => "standard",
     };
 
-    // PROB-067: allocate id + write file under a cross-worktree per-kind
-    // lock with post-write collision detection. The build closure renders
-    // the template + augments frontmatter for the id assigned by the
-    // allocator; on retry the closure is called again with a higher id,
-    // ensuring no stale rendering bleeds into the retried artifact.
+    // The shared creator mints the canonical key before reserving the display
+    // number. This closure renders the template with that reserved number;
+    // publication uses the key-named file and refuses an existing key.
     let title_owned = title.to_string();
     let today_owned = today.clone();
     let template_key_owned = template_key.to_string();
     let prefix_owned = prefix.clone();
-    let slug_owned = slug.clone();
     let template_owned: String = template.to_string();
     let depth_owned = depth.to_string();
-    let build = move |id: &str, number: u32| -> anyhow::Result<NewArtifact> {
+    let build = move |id: &str, number: u32, canonical_key: &str| -> anyhow::Result<NewArtifact> {
         let nnn = id
             .split('-')
             .next_back()
@@ -176,7 +182,7 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
         vars.insert("Title".to_string(), title_owned.clone());
         let mut rendered = render_template(&template_owned, &vars);
         rendered = rendered.replace("YYYY-MM-DD", &today_owned);
-        rendered = augment_frontmatter_with_id_fields(&rendered, &slug_owned, number)
+        rendered = augment_frontmatter_with_id_fields(&rendered, canonical_key, number)
             .with_context(|| format!("failed to augment frontmatter for {id}"))?;
         let heading_pattern = format!("# {}-{}: ", prefix_owned, nnn);
         if let Some(pos) = rendered.find(&heading_pattern) {
@@ -191,6 +197,7 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
             }
         }
         Ok(NewArtifact {
+            canonical_key: canonical_key.to_string(),
             id: id.to_string(),
             kind: template_key_owned.clone(),
             status: "draft".to_string(),
@@ -203,19 +210,53 @@ pub async fn run(kind_str: &str, title: &str, allow_duplicate: bool) -> Result<(
             tags: Vec::new(),
         })
     };
-    let allocated = forgeplan_core::artifact::id_alloc::allocate_and_create_artifact(
-        &workspace, &store, &kind, 3, &build,
+    // `_lock` is the workspace lock this command already holds for the whole
+    // mutation. It is threaded into id_alloc so the canonical markdown
+    // write happens under that same serialization — NOT the per-kind
+    // id-alloc lock id_alloc takes internally, which guards a different
+    // thing on a different lock file.
+    common::ensure_ordinary_mutation_allowed(&workspace)?;
+    let allocated = forgeplan_core::artifact::id_alloc::create_artifact_with_minted_key(
+        &workspace,
+        &_lock,
+        store.as_ref(),
+        &kind,
+        3,
+        title,
+        &build,
     )
     .await
-    .with_context(|| format!("PROB-067 id-alloc failed for kind {prefix}"))?;
+    .with_context(|| format!("canonical-key creation failed for kind {prefix}"))
+    .map_err(|e| common::describe_possible_legacy_partial_commit(store.is_some(), e))?;
     let id = allocated.id;
+    let canonical_key = allocated.canonical_key;
     let filepath = allocated.filepath;
 
-    // Log creation in change_log
-    common::log_change(&store, &id, "create", "cli").await;
+    common::log_change(
+        &workspace,
+        &_lock,
+        store.as_ref(),
+        &canonical_key,
+        &id,
+        "create",
+        "cli",
+    )
+    .await;
+    if store.is_none() {
+        common::note_constellation_owns_index();
+        // Lock must drop before reconcile — see
+        // `common::reconcile_after_file_mutation`.
+        drop(_lock);
+        common::reconcile_after_file_mutation(&workspace).await;
+    } else {
+        drop(store);
+        drop(_lock);
+        common::drain_legacy_semantic_after_mutation(&workspace).await?;
+    }
 
     println!("  Created: {}", filepath.display());
     println!("  ID:      {}", id);
+    println!("  Key:     {}", canonical_key);
     println!("  Kind:    {}", template_key);
     println!("  Title:   {}", title);
 
@@ -308,6 +349,7 @@ mod tests {
 
     fn rec(id: &str, title: &str) -> ArtifactSummary {
         ArtifactSummary {
+            canonical_key: id.to_string(),
             id: id.to_string(),
             title: title.to_string(),
             kind: "prd".to_string(),

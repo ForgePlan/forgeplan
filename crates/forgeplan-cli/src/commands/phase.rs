@@ -8,7 +8,6 @@
 use console::style;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::phase;
-use forgeplan_core::workspace;
 
 use crate::commands::common;
 
@@ -19,29 +18,19 @@ use crate::commands::common;
 /// `current_phase: unknown` -- never an error. Phase tracking is advisory
 /// and never blocks other tools.
 pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
-    let cwd = std::env::current_dir()?;
-    let ws = workspace::find_workspace(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+    let (ws, _source, canonical, display, _read_guard) = common::open_selected_source(id).await?;
+    // A read does not migrate: the keyed reader finds a state file written
+    // before the key existed and answers from it, and renaming it belongs to
+    // the writer that holds the workspace lock.
 
-    // Phase 2.5 (PROB-060) — accept slug or display id form. If the artifact
-    // exists, resolve to canonical id so state file lookup works for slug
-    // input (closes silent "unknown" false-positive). If the artifact does
-    // NOT exist, fall back to raw id: PRD-056 advisory contract requires
-    // `phase` to work on raw IDs and never error on missing artifacts.
-    let store = common::store().await?;
-    let canonical = store
-        .resolve_id(id)
-        .await?
-        .unwrap_or_else(|| id.to_string());
-
-    match phase::store::read_phase(&ws, &canonical).await? {
-        Some(state) => print_state(&state, json),
-        None => print_unknown(&canonical, json),
+    match phase::store::read_phase_for(&ws, &canonical, &display).await? {
+        Some(state) => print_state(&state, &display, &canonical, json),
+        None => print_unknown(&display, &canonical, json),
     }
     Ok(())
 }
 
-fn print_state(state: &phase::PhaseState, json: bool) {
+fn print_state(state: &phase::PhaseState, display_id: &str, canonical_key: &str, json: bool) {
     // PRD-071 contract: derive a single Next: action from the state. If a
     // suggested next phase exists, point at the full advance command. Else
     // (terminal phase) emit no action — handled as Done. terminal status.
@@ -50,7 +39,7 @@ fn print_state(state: &phase::PhaseState, json: bool) {
         hints_vec.push(
             Hint::suggestion(format!("Advance to {}", next.as_str())).with_action(format!(
                 "forgeplan phase-advance {} --to {}",
-                state.artifact_id,
+                display_id,
                 next.as_str()
             )),
         );
@@ -59,7 +48,8 @@ fn print_state(state: &phase::PhaseState, json: bool) {
     if json {
         // Full state -- history included.
         let payload = serde_json::json!({
-            "artifact_id": state.artifact_id,
+            "artifact_id": display_id,
+            "canonical_key": canonical_key,
             "workflow_type": format!("{:?}", state.workflow_type).to_lowercase(),
             "current_phase": state.current_phase.as_str(),
             "advanced_at": state.advanced_at,
@@ -83,7 +73,7 @@ fn print_state(state: &phase::PhaseState, json: bool) {
     let workflow = format!("{:?}", state.workflow_type).to_lowercase();
     println!(
         "{} phase: {} (workflow: {})",
-        style(&state.artifact_id).bold(),
+        style(display_id).bold(),
         style(current).cyan().bold(),
         workflow,
     );
@@ -123,7 +113,7 @@ fn print_state(state: &phase::PhaseState, json: bool) {
         Some(next) => println!(
             "  suggested next: {} (override: `forgeplan phase-advance {} --to <phase>`)",
             style(next.as_str()).yellow(),
-            state.artifact_id,
+            display_id,
         ),
         None => println!("  terminal phase -- no further advancement recommended"),
     }
@@ -135,16 +125,17 @@ fn print_state(state: &phase::PhaseState, json: bool) {
     }
 }
 
-fn print_unknown(id: &str, json: bool) {
+fn print_unknown(display_id: &str, canonical_key: &str, json: bool) {
     // PRD-071 contract: bootstrap the phase tracking by suggesting a `shape` advance.
     let hints_vec = vec![
         Hint::suggestion("Start phase tracking")
-            .with_action(format!("forgeplan phase-advance {} --to shape", id)),
+            .with_action(format!("forgeplan phase-advance {} --to shape", display_id)),
     ];
 
     if json {
         let payload = serde_json::json!({
-            "artifact_id": id,
+            "artifact_id": display_id,
+            "canonical_key": canonical_key,
             "current_phase": "unknown",
             "workflow_type": "greenfield",
             "history": Vec::<serde_json::Value>::new(),
@@ -159,7 +150,7 @@ fn print_unknown(id: &str, json: bool) {
     }
     println!(
         "{} phase: {} (no state file)",
-        style(id).bold(),
+        style(display_id).bold(),
         style("unknown").dim(),
     );
     println!(

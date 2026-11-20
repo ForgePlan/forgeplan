@@ -1,28 +1,28 @@
 ---
 title: forgeplan discover complete
-description: "Завершает сессию обнаружения и выдаёт рекомендованные артефакты (ProblemCard, PRD, Note) для создания"
+description: "Помечает сессию исследования завершённой и рекомендует проверку состояния."
 ---
 
-`forgeplan discover complete <SESSION_ID>` закрывает сессию обнаружения в brownfield-проекте. Она помечает запись сессии как завершённую, запускает проход рекомендаций по всем накопленным результатам и выводит список **предлагаемых артефактов** - обычно ProblemCard, PRD, Note, а иногда и ADR - для создания пользователем с помощью `forgeplan new`.
+`forgeplan discover complete <SESSION_ID>` помечает сохранённую сессию завершённой. CLI печатает число находок, время завершения и подсказку `forgeplan health`. Она не группирует и не объединяет находки, не выбирает глубину артефактов и не выдаёт команды `forgeplan new`.
 
-Здесь конвейер brownfield-проекта превращает необработанные результаты в реальное состояние методологии.
+Последующий разбор и выбор артефактов выполняются отдельно.
 
 ## Когда использовать
 
-- **После того как агент завершил обход исходных уровней** и `discover show` сообщает о достаточном покрытии.
+- **После согласованного обзора исходников** — изучите `discover show`; число находок не доказывает достаточное покрытие.
 - **В конце спринта по онбордингу** - кристаллизуйте всё изученное в артефакты.
-- **Когда вы хотите остановить сессию и зафиксировать всё, что было найдено до сих пор** - частичные сессии всё равно выдают рекомендации.
+- **При остановке частичного обзора** — завершение фиксирует состояние, но не подтверждает полноту исследования.
 
 ## Когда НЕ использовать
 
 - Пока агент всё ещё активно отправляет результаты - дождитесь, пока он завершит работу.
-- Для отмены без сохранения - отката нет; после завершения предложения выдаются.
+- Для отката находок — завершение не удаляет находки и не отменяет уже созданные артефакты.
 - Для уже завершённой сессии - идемпотентно, но бессмысленно.
 
 ## Использование
 
 ```text
-forgeplan discover complete <SESSION_ID> [OPTIONS]
+forgeplan discover complete <SESSION_ID>
 ```
 
 ## Аргументы
@@ -41,50 +41,70 @@ forgeplan discover complete <SESSION_ID> [OPTIONS]
 ## Примеры
 
 ```bash
-forgeplan discover complete disc-001
+# Замените SESSION_ID значением из start/list
+forgeplan discover complete SESSION_ID
 
 # Полный цикл онбординга
 forgeplan init -y
-forgeplan discover start
-# ... агент работает ...
-forgeplan discover show disc-001
-forgeplan discover complete disc-001
-# → предложения выведены; создайте те, которые вы принимаете
-forgeplan new prob "Несоответствие аутентификации между документацией и кодом"
+forgeplan discover start "Пример проекта"
+# Агент читает источники и сообщает находки через MCP
+forgeplan discover show SESSION_ID
+forgeplan discover complete SESSION_ID
+# Отдельные решения оператора, не автоматически выданные предложения:
+forgeplan new problem "Несоответствие аутентификации между документацией и кодом"
 forgeplan new prd  "Унифицированный загрузчик конфигурации"
 ```
 
-## Что делает проход рекомендаций
+## Разбор находок после завершения
 
-По завершении движок:
+Ниже предлагается работа человека или агента, а не поведение этой CLI-команды:
 
-1.  **Группирует результаты** по категориям (решения, инварианты, расхождения, технический долг, риски, владение).
-2.  **Удаляет дубликаты** - объединяет результаты, ссылающиеся на один и тот же модуль/концепцию.
-3.  **Сопоставляет категории с типами артефактов** - расхождения → ProblemCard, важные решения → ADR, пробелы → PRD, наблюдения → Note.
-4.  **Предлагает глубину** - тактическая / стандартная / глубокая на основе радиуса поражения и эвристики обратимости.
-5.  **Выдаёт предложения** в виде списка команд `forgeplan new`, которые пользователь может принять, отредактировать или пропустить.
+1. Сгруппируйте находки по категориям и источникам.
+2. Проверьте дублирование и противоречия по одному модулю.
+3. Решите, какие находки обосновывают Problem, ADR, PRD или Note.
+4. Выберите глубину по действующим правилам маршрутизации.
+5. Явно создайте принятые артефакты.
 
-Пользователь сохраняет контроль: предложения выводятся, а не создаются автоматически.
+CLI завершения не выполняет эти шаги и не создаёт последующие артефакты.
 
 ## Как это вписывается
 
 `discover complete` - это **точка передачи** от обнаружения к обычному жизненному циклу Forgeplan:
 
 ```
-discover start → (findings) → discover complete → proposals
+discover start → находки агента → discover complete → ручной разбор
                                                     ↓
-                          forgeplan new prob/prd/adr/note ...
+                          forgeplan new problem/prd/adr/note ...
                                                     ↓
-                          validate → reason → activate
+                          validate → reason → code/evidence → activate
 ```
 
 Отсюда проект проходит через стандартный цикл Shape → Validate → ADI → Code → Evidence → Activate, как и любая greenfield-работа.
 
 ## См. также
 
--   [`forgeplan discover`](/docs/cli/discover/) - родительская команда + обзор конвейера
--   [`forgeplan discover show`](/docs/cli/discover-show/) - проверка покрытия перед завершением
--   [`forgeplan discover list`](/docs/cli/discover-list/) - индекс сессий
--   [`forgeplan new`](/docs/cli/new/) - создание предлагаемых артефактов
--   [`forgeplan validate`](/docs/cli/validate/) - следующий шаг после new
--   [Руководство по методологии](/docs/methodology/overview/)
+- [`forgeplan discover`](/ru/docs/cli/discover/) - обзор сессий
+- [`forgeplan discover show`](/ru/docs/cli/discover-show/) - находки перед завершением
+- [`forgeplan discover list`](/ru/docs/cli/discover-list/) - список сессий
+- [`forgeplan new`](/ru/docs/cli/new/) - явное создание выбранных артефактов
+- [`forgeplan validate`](/ru/docs/cli/validate/) - следующий шаг после заполнения
+- [Методология](/ru/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan discover complete --help`.
+
+```text
+Mark a discovery session as completed
+
+Usage: forgeplan discover complete <SESSION_ID>
+
+Arguments:
+  <SESSION_ID>  Session ID to complete
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

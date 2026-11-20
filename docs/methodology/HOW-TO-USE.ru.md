@@ -4,6 +4,15 @@
 
 > Практический гайд. Без воды. Только правила и примеры.
 
+> Область: принятые конвенции авторинга и учебные агентские сценарии, не
+> универсальное enforcement или измеренные результаты. Layout `docs/<kind>/`
+> ниже — пример самостоятельной ручной документации. Managed артефакты Forgeplan
+> живут в `.forgeplan/<kind>/`; create/update/link выполняют через CLI/MCP, не
+> копированием шаблонов в этот каталог. Используйте реальные возвращённые ID.
+> Slash-командам нужна установка в host. Native policies этим гайдом не меняются.
+> CLI `validate` работает на legacy и migrated Constellation layout; full MCP
+> validation также проверен. Границы проверки см. в [оговорках пилота](../operations/CONSTELLATION-PILOT.ru.md).
+
 ---
 
 ## Правило #1: Не создавай артефакты ради артефактов
@@ -52,7 +61,7 @@
 ### Tactical — "просто сделай"
 ```
 Ситуация: баг-фикс, мелкая правка, очевидное решение
-Создавай: ничего. Максимум — Note (3-5 предложений, auto-expires 90 дней)
+Создавай: ничего. Максимум — Note (3-5 предложений; 90 дней — рекомендуемый review interval, не auto-expiry)
 Пример: "Поменять цвет кнопки на #3B82F6"
 ```
 
@@ -140,7 +149,7 @@
 FR-001: Реализовать кэширование
 
 # ✅ ХОРОШО: [Actor] can [capability]
-FR-001: User can receive API responses within 200ms due to Redis caching
+FR-001: User can receive API responses within 200ms
 ```
 
 ```markdown
@@ -164,12 +173,14 @@ FR-003: User can persist and query structured data with ACID guarantees
 ## Правило #6: Связи между артефактами
 
 ### Как связывать:
-В секции "Related Artifacts" каждого документа:
+Таблица — проза для читателя. Для managed артефактов создайте также typed edge
+через `forgeplan link SOURCE TARGET --relation based_on` по смыслу;
+одна таблица не гарантирует синхронизацию графа.
 
 ```markdown
 | Artifact | Relation |
 |----------|----------|
-| EPIC-001 | parent |
+| EPIC-001 | Epic membership (`parent_epic` metadata, не typed relation) |
 | PRD-001  | based_on |
 | ADR-001  | informs |
 ```
@@ -177,7 +188,7 @@ FR-003: User can persist and query structured data with ACID guarantees
 ### Типы связей:
 | Relation | Значение | Пример |
 |----------|---------|--------|
-| `parent` | Входит в | PRD-001 → EPIC-001 |
+| `parent_epic` metadata | Входит в Epic (не значение `--relation`) | PRD-001 → EPIC-001 |
 | `based_on` | Основано на | RFC-001 → PRD-001 |
 | `informs` | Влияет на | ADR-001 → PRD-001 |
 | `supersedes` | Заменяет | ADR-005 → ADR-002 |
@@ -185,7 +196,7 @@ FR-003: User can persist and query structured data with ACID guarantees
 
 ### Правило направления:
 **Ребёнок ссылается на родителя**, не наоборот:
-- PRD указывает на Epic (parent)
+- PRD фиксирует Epic membership (`parent_epic`, не relation `parent`)
 - RFC указывает на PRD (based_on)
 - ADR указывает на RFC (informs)
 
@@ -198,7 +209,7 @@ FR-003: User can persist and query structured data with ACID guarantees
 Задай себе:
 1. Что должно быть истинным, если это решение верно?
 2. Какой самый сильный аргумент ПРОТИВ?
-3. Все ли доказательства из этой сессии? (→ CL1, penalty 0.4)
+3. Все ли доказательства из этой сессии? Проверьте независимость; CL1/0.4 здесь — локальная шкала, не автоматическое назначение.
 4. Что пойдёт не так с вероятностью <10%?
 5. Где самое слабое звено?
 
@@ -206,7 +217,7 @@ FR-003: User can persist and query structured data with ACID guarantees
 
 ### Adversarial Review — для важных PRD и ADR:
 
-Правило: ревьюер ОБЯЗАН найти проблемы. 0 проблем = ревью не засчитано.
+Native `/forge-cycle` предписывает находить issues и повторять review, если их нет; эта policy сохраняется. Это не доказательство наличия дефектов. Сообщайте подтверждённые findings и scope; не выдумывайте дефект ради квоты.
 
 **Когда**: Deep+ артефакты. Не нужно для tactical/standard.
 
@@ -214,37 +225,42 @@ FR-003: User can persist and query structured data with ACID guarantees
 
 R_eff = min(evidence_scores). Trust = самое слабое звено. Min идёт только по текущей эвиденции — пакеты с терминальным статусом (`superseded`/`deprecated`) исключаются (ADR-020).
 
+Явный recursive score учитывает также evidence-type modifiers и зависимости;
+flat captured scores могут отличаться. Expired items получают 0.1 раньше
+арифметики verdict. См. [QUALITY-GATES.ru.md](QUALITY-GATES.ru.md).
+
 **Когда**: есть EvidencePack артефакты с verdict и CL. Не нужно если нет формальных evidence.
 
 ---
 
 ## Правило #8: Lifecycle — что делать с артефактами после создания
 
-### Обновление:
-- Меняешь status по мере прогресса (Draft → Review → Approved → ...)
-- Обновляешь `updated` дату в frontmatter
-- Заполняешь Progress bars в RFC (checkboxes → процент)
+### Обновление и завершение
 
-### Закрытие:
-- PRD: Implemented → Closed (когда фича в проде)
-- RFC: все фазы ✅ → status: Implemented
-- ADR: не "закрывается" — живёт пока valid_until не истечёт
+- Core lifecycle kinds сохраняют `draft`, `active`, `superseded`, `deprecated`
+  и `stale`. У других типов lifecycle может отличаться или отсутствовать.
+  Review/Approved/Implemented/Closed — процесс, не значения stored status.
+- Для полного prose body и progress checkboxes используйте
+  `forgeplan update ID --body @file`; canonical артефакты напрямую не редактируйте.
+- Завершение кода/checklists автоматически артефакт не активирует.
+  `activate` имеет отдельные validation/length/evidence/stub gates.
 
-### Superseding (замена):
-```markdown
-# В новом ADR:
-| Artifact | Relation |
-|----------|----------|
-| ADR-002 | supersedes |
+### Superseding
 
-# В старом ADR — поменяй status:
-status: Superseded
+```bash
+forgeplan supersede ADR-002 --by ADR-003
 ```
 
-### Stale (истёк valid_until):
-1. Создай RefreshReport: `docs/refresh/REF-001-review-adr-002.md`
-2. Оцени: всё ещё актуально?
-3. Либо reaffirm (обнови valid_until), либо supersede новым ADR
+Команда выполняет lifecycle transition и replacement link; одной записи
+`status: Superseded` или prose-таблицы недостаточно.
+
+### Expiry и review
+
+`valid_until` — необязательная дата. Detection показывает просроченные записи,
+но status не переписывает. Проверьте решение и evidence, затем используйте
+применимую lifecycle-команду. `renew ID --reason TEXT --until YYYY-MM-DD`
+проверяет stored status; просроченный `active` не становится `stale` автоматически.
+`reopen` создаёт новый draft и deprecates прежний active/stale, не сбрасывает его на месте.
 
 ---
 
@@ -315,7 +331,7 @@ status: Superseded
 
 ---
 
-## Пример: полный цикл на реальной задаче
+## Пример: иллюстративная задача PDF export
 
 **Задача**: "Добавить экспорт отчётов в PDF"
 
@@ -340,14 +356,14 @@ docs/rfcs/RFC-001-pdf-export-design.md
 **Шаг 4**: Нужен ADR? → Есть выбор (wkhtmltopdf vs weasyprint vs browser-based) → Да
 ```
 docs/adrs/ADR-001-pdf-library.md
-- Decision: weasyprint (pure Python, CSS-based)
+- Decision: weasyprint (Python-based, CSS layout; native dependencies требуют отдельной оценки)
 - Alternative: wkhtmltopdf (binary dependency, deprecated)
-- Alternative: Headless Chrome (heavy, 200MB)
+- Alternative: Headless Chrome (browser runtime; footprint зависит от packaging)
 ```
 
-**Шаг 5**: Делаю по фазам из RFC. Закрываю RFC когда все фазы ✅.
-
-Готово. Три документа, полный audit trail, < 1 часа на документацию.
+**Шаг 5**: Выполните RFC phases и отразите завершение как progress процесса,
+не выдуманный lifecycle status. Библиотеки и сроки здесь иллюстративны;
+выпуск PDF-функции или измеренное время документации не заявлены.
 
 ---
 
@@ -355,7 +371,7 @@ docs/adrs/ADR-001-pdf-library.md
 
 ### Что это
 
-`/forge-cycle` — команда для AI агентов (Claude Code), которая запускает **полный FPF-aligned цикл разработки** от идеи до PR. Одна команда заменяет 8 ручных шагов.
+`/forge-cycle` — локальный Claude Code prompt, направляющий цикл разработки, не Rust executor и не гарантия автоматического завершения.
 
 ### Когда использовать
 
@@ -365,7 +381,7 @@ docs/adrs/ADR-001-pdf-library.md
 | Новая задача без PRD | `/forge-cycle "добавить экспорт в PDF"` |
 | Следующая задача из backlog | `/forge-cycle` (подхватит P0 из TODO.md) |
 
-### Как работает (8 фаз)
+### Как работает (девять numbered phases, 0–8)
 
 ```
 /forge-cycle "Добавить экспорт отчётов в PDF"
@@ -376,7 +392,7 @@ docs/adrs/ADR-001-pdf-library.md
 ```bash
 forgeplan health       # blind spots, orphans
 forgeplan stale        # expired evidence
-forgeplan fpf          # explore/investigate/exploit suggestions
+forgeplan fpf dashboard # explore/investigate/exploit suggestions
 ```
 
 Агент фиксирует наблюдение:
@@ -425,7 +441,7 @@ Skills: rust-expert, m01-ownership, m06-error-handling
 3. **Induction**: WLNK (самый слабый failure mode) + Reversibility (что проще откатить)
 4. **Выбор**: max(reversibility) + max(WLNK strength)
 
-Спрашивает юзера **только** если решение необратимо (DB schema, public API).
+Native Build stop conditions включают также одинаково слабые варианты и влияние на другие PRD/сквозные вопросы. Локальная шкала не отменяет authorization и не является универсальным FPF selection algorithm.
 
 #### Phase 4: AUDIT — adversarial review
 
@@ -434,7 +450,7 @@ Skills: rust-expert, m01-ownership, m06-error-handling
 Skills: rust-expert, m06-error-handling (minimum 2)
 ```
 
-Reviewer **обязан** найти проблемы. 0 findings → пере-review с более глубоким фокусом.
+Native prompt сохраняет квоту findings и повторное review. Это предписание policy, не доказательство существования дефектов; гайд её не меняет и outstanding native gate не закрывает.
 
 #### Phase 5: FIXES
 
@@ -548,6 +564,10 @@ forgeplan health    # новое состояние
 - Конфликты → FPF auto-resolve (reversible + WLNK)
 - Audit < 5 findings → auto-fix
 - Evidence + activate → auto если R_eff > 0
+
+Это intent native prompt, не достаточные runtime-условия: активация всё равно
+проверяет применимые gates и authority. LOC/findings thresholds — локальные
+конвенции, не измеренные границы безопасности.
 
 Спрашивает юзера **только**:
 - Необратимое решение (DB schema, public API)

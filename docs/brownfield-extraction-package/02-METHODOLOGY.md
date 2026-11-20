@@ -2,23 +2,25 @@
 
 > This is the **canonical policy** for how to think about brownfield business logic extraction. All skills in this package follow it.
 
+This is policy for the **proposed extraction package**, not a replacement for native Forgeplan validation or gates. See the [current implementation boundary](README.md#implementation-status-2026-10-23).
+
 ## The core distinction
 
 Brownfield documentation has **two independent tiers** that must never be confused:
 
 ### Tier 1 — Factum
 **What the code actually does, provable by reading it.**
-- Deterministic, reproducible via `grep` / `Read` / `Read-AST`.
+- Claims can be checked against a pinned source revision; extraction itself can still be incomplete or mistaken.
 - Example: "Orders.status is an ENUM of 9 values (see models/Order.js:82-91)."
 - Example: "The `_confirm` method sets status to 'forwarder_confirmed' when `user.company.type_company === 'forwarder'`."
 - Example: "invoice_status = max(0, paid - total) then normalize to 'paid' | 'invoiced' | 'partially_paid'."
 
-Confidence of factum: **100%** (if the extraction is correct). Verification = re-grep.
+Factum is a source-backed claim, not an automatic **100% confidence** result. Verification requires reading the relevant implementation and its context at the recorded revision; a repeated grep match alone is not proof of behavior.
 
 ### Tier 2 — Intent
 **Why the business chose to implement it this way.**
 - Non-deterministic. Multiple plausible explanations exist.
-- Example: "Orders require dual confirmation because Russian freight law requires both the carrier and the shipper to commit before fulfillment."
+- Unverified hypothesis example: "Dual confirmation may reflect a freight-law requirement." No legal citation is supplied; this is not a statement of law.
 - Example: "The `gratis` concept applies when the carrier offers the route for free to a specific cargo owner due to long-term partnership."
 
 Confidence of intent: **variable, tracked explicitly**.
@@ -31,8 +33,8 @@ Without separation, documentation becomes **untrustworthy**:
 - When reality changes (e.g., Domain Owner contradicts a hypothesis), there's no way to find and update dependent claims.
 
 With separation:
-- Factum layer is **eternally valid** (as long as code matches).
-- Intent layer is **probabilistic** and updatable.
+- Factum claims remain traceable to the recorded source revision; they must be rechecked when scope or code changes.
+- Intent claims remain uncertain and updatable; confidence labels are not calibrated probabilities.
 - Each intent claim has a traceable confidence and verification status.
 
 ## Confidence taxonomy (applied to every intent claim)
@@ -53,6 +55,8 @@ For each uncertain piece of business meaning, agents run:
 
 ### 1. Abduction — generate hypotheses
 Given an observation (code pattern), produce **≥ 3 candidate explanations**. Diversity matters — include plausible alternatives, not just the most obvious one.
+
+The ≥3-alternatives requirement is this package's local anti-anchoring rule. Current upstream FPF requires serious rival consideration, not a universal three-hypothesis statistical threshold; see [ADI and F–G–R terminology](GLOSSARY.md#adi-cycle).
 
 Example:
 > Observation: `_cancel` only cascades cancellation to shoulders/points/cargo when `order.status === 'forwarder_confirmed'`.
@@ -163,7 +167,7 @@ Skills operate on specific transitions:
 
 ## Integration with forgeplan
 
-Forgeplan artifact kinds map to tiers:
+The original design maps kinds to tiers as follows. **This table is not the implemented tier policy**: the target validator derives `factum` from glossary/use-case/invariant/scenario/domain-model kinds and `intent` from hypothesis, regardless of an overridden `tier` field (`crates/forgeplan-core/src/validation/rules.rs`).
 
 | Tier | Forgeplan kinds |
 |---|---|

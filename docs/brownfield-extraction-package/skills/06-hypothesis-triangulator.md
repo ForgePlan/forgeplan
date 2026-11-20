@@ -2,6 +2,8 @@
 
 > Validates hypotheses against multiple independent sources to assign confidence scores.
 
+> Proposed skill design. Evidence categories and quotas are review heuristics, not calibrated probabilities. Domain Owner answers do not bypass the current native hypothesis transition rules. See [implementation status](../README.md#implementation-status-2026-10-23).
+
 ## Why this skill exists
 
 Hypotheses from C3 are initially `drafted`. Without triangulation, agents can't tell a strong hypothesis from a weak one. Docs end up mixing solid claims with guesses.
@@ -30,7 +32,7 @@ Additionally, triangulation reports:
 ### Source 1: Git history
 - `git log --all --follow <file>` — when did feature arrive?
 - `git log -p --grep '<term>'` — was feature name ever mentioned in commit messages?
-- `git blame <file> <line>` — who added this guard? When?
+- `git blame -L <start>,<end> -- <file>` — which revision last changed these lines? This does not by itself establish the original business intent.
 - Signals:
   - Added all at once → coherent design (supports structural hypothesis).
   - Added incrementally → evolutionary fix (supports incremental / bugfix hypothesis).
@@ -161,7 +163,7 @@ Triangulation:
 - Legacy docs: no mention.
 - Comment: explicit TODO → strong signal.
 - Naming: no signal.
-- Result: 2 aligned sources (git + comment) → `inferred`. Park for Domain Owner: "What should duration be for LO stevedores?"
+- Result: git blame and the comment expose **one underlying TODO signal**, not two independent corroborating sources. At most weak `inferred` support; park for the Domain Owner: "What should duration be for LO stevedores?"
 
 ## Testing
 

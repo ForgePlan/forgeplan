@@ -18,7 +18,7 @@ Patches an existing artifact's body and/or frontmatter metadata in-place. This i
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `id` | `string` | yes | Artifact ID to update. |
-| `status` | `string` | no | New status: `draft`, `active`, `superseded`, `deprecated`. |
+| `status` | `string` or `null` | no | The schema enum lists `draft`, `active`, `superseded`, `deprecated`, but the handler permits only a direct `draft` write. Use lifecycle tools for the other values. |
 | `title` | `string` | no | New title. |
 | `body` | `string` | no | New body content (full markdown replacement). |
 
@@ -26,16 +26,16 @@ _Schema source: `crates/forgeplan-mcp/src/server.rs::UpdateParams`_
 
 ## Returns
 
-The updated artifact record with new `updated_at`. The markdown projection on disk is re-rendered automatically. If `status` is set to a value that requires a lifecycle gate (e.g. `active`), the call is rejected - the agent must use `forgeplan_activate` instead.
+Returns `id`, `message`, `status`, and `title`, with workspace trace and reconciliation information. Canonical Markdown is updated first; `index_pending` reports derived-index reconciliation separately. `active`, `superseded`, and `deprecated` status writes are rejected even though the schema advertises those enum values. Omitting all update fields, or passing them all as `null`, produces “Nothing to update.”
 
-Example response shape:
+Illustrative response excerpt:
 
 ```json
 {
-  "ok": true,
   "id": "PRD-042",
-  "updated_at": "2026-04-11T10:02:14Z",
-  "changed": ["title", "body"]
+  "message": "Updated successfully",
+  "status": "draft",
+  "title": "Authentication and session system"
 }
 ```
 
@@ -59,7 +59,7 @@ With typical agent context:
 
 ## CLI equivalent
 
-- Direct markdown edits (no single-command equivalent - CLI users edit `.forgeplan/*/*.md` and rely on auto-projection).
+- [`forgeplan update`](/docs/cli/update/) - for example, `forgeplan update PRD-042 --title "Authentication and session system"` or `forgeplan update PRD-042 --body @body.md`. The CLI also exposes `--depth`; the MCP schema does not.
 
 ## See also
 
@@ -67,3 +67,89 @@ With typical agent context:
 - [`forgeplan_activate`](/docs/mcp/forgeplan_activate/) - the correct path for `draft → active`
 - [`forgeplan_validate`](/docs/mcp/forgeplan_validate/) - verify after the edit
 - [`forgeplan_supersede`](/docs/mcp/forgeplan_supersede/) - replace instead of edit
+
+<!-- forgeplan-runtime:start -->
+## Captured tools/list
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, profile `full`.
+
+Update artifact metadata (status, title) and/or body. Re-renders markdown projection after update.
+
+### Input parameters
+
+| Name | Required | Type | Description |
+|---|---|---|---|
+| `body` | no | string \| null | New body content |
+| `id` | yes | string | Artifact ID to update |
+| `status` | no | StatusKind \| null | New status |
+| `title` | no | string \| null | New title |
+| `workspace` | no | string \| null | Optional explicit workspace directory for this call. When set, the MCP<br>server resolves the `.forgeplan/` projection from this path instead of<br>the server's startup CWD. Use this when the calling agent is running<br>in a git worktree separate from the MCP server's launch directory.<br>PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "$defs": {
+    "StatusKind": {
+      "enum": [
+        "draft",
+        "active",
+        "superseded",
+        "deprecated"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "body": {
+      "default": null,
+      "description": "New body content",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "id": {
+      "description": "Artifact ID to update",
+      "type": "string"
+    },
+    "status": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StatusKind"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "New status"
+    },
+    "title": {
+      "default": null,
+      "description": "New title",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "workspace": {
+      "default": null,
+      "description": "Optional explicit workspace directory for this call. When set, the MCP\nserver resolves the `.forgeplan/` projection from this path instead of\nthe server's startup CWD. Use this when the calling agent is running\nin a git worktree separate from the MCP server's launch directory.\nPRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "title": "UpdateParams",
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

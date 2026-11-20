@@ -442,6 +442,20 @@ fn init_force_backfills_gitkeep_and_secrets_env_in_existing_workspace() {
         .assert()
         .success();
 
+    let index = fp_dir.join("lance");
+    assert!(
+        index
+            .join(forgeplan_core::db::migrate::IDENTITY_V5_MARKER_FILE)
+            .is_file(),
+        "a workspace with no prior index must initialize its managed identity-v5 generation"
+    );
+    for table in forgeplan_core::constellation::manifest::LEGACY_TABLES {
+        assert!(
+            !index.join(format!("{table}.lance")).exists(),
+            "fresh initialization must not create legacy table {table}"
+        );
+    }
+
     // Post-state: every artifact subdir got its .gitkeep + secrets.env
     // template was created.
     for dir in ARTIFACT_DIRS {

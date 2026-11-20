@@ -12,15 +12,15 @@ This is the CLI version of [`forgeplan_undo_last`](/docs/mcp/forgeplan_undo_last
 ## When to use
 
 - Right after a `forgeplan delete` / `supersede` / `deprecate` you regret - undo, then redo correctly.
-- The user says "undo that" without specifying the artifact ID - `undo-last` figures it out from the log.
+- User authorizes undo without an ID - inspect the receipt candidate before reversing an unrelated operation.
 - Reversing an LLM hallucination that triggered a destructive action.
-- After spotting an unexpected destructive call in [`forgeplan activity-stats`](/docs/cli/activity-stats/) - run `undo-last` to reverse it.
+- After inspecting a destructive call in [`forgeplan activity`](/docs/cli/activity/) and identifying its recovery receipt.
 
 ## When NOT to use
 
 - You know the exact artifact ID to restore - [`forgeplan restore <ID>`](/docs/cli/restore/) is more precise (no chance of reversing the wrong operation).
-- More than 30 days have passed - receipts are deleted after 30 days and cannot be replayed. Reconstruct from `git log` instead.
-- The mistake was a typo or wrong title (not a destructive operation) - edit the file directly, then run `forgeplan scan-import`.
+- Beyond the default 30-day receipt TTL - recovery may be refused; use preserved history or backups.
+- A typo/title change is not a destructive receipt operation - use `update`, then appropriate `index`/`reindex` if needed.
 
 ## Usage
 
@@ -63,6 +63,9 @@ forgeplan undo-last --json | jq '.restored, .op_reversed'
 
 Returns JSON, then extracts the restored artifact ID and the type of operation that was reversed. Useful when `undo-last` is part of a recovery script that needs to log what it actually did.
 
+On migrated layouts inspect `index_pending`, `warnings` and `relations_skipped`.
+A successful canonical restore does not guarantee immediate derived publication.
+
 ## How it fits the workflow
 
 Use after a destructive operation goes wrong (`delete`, `supersede`, or `deprecate`). Run `undo-last` to reverse the most recent one; repeat the call to undo earlier ones in order. Once you know the specific ID, switch to [`forgeplan restore <ID>`](/docs/cli/restore/) - it targets a single artifact instead of walking the stack newest-first.
@@ -74,3 +77,21 @@ Use after a destructive operation goes wrong (`delete`, `supersede`, or `depreca
 - [`forgeplan activity`](/docs/cli/activity/) - inspect the destructive-op timeline
 - [`forgeplan delete`](/docs/cli/delete/) - the soft-delete this reverses
 - [CLI overview](/docs/cli/)
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan undo-last --help`.
+
+```text
+Reverse the most recent destructive operation (delete, supersede, or deprecate) by reading the soft-delete trash and applying restore to the most recently written non-consumed receipt. If no matching receipt is found, returns an error with guidance; the tool never guesses
+
+Usage: forgeplan undo-last [OPTIONS]
+
+Options:
+      --within-hours <WITHIN_HOURS>  Time window (hours) to search for the last destructive op (1..=720, default 24) [default: 24]
+      --json                         Output as JSON for machine consumption
+  -h, --help                         Print help
+  -V, --version                      Print version
+```
+<!-- forgeplan-runtime:end -->

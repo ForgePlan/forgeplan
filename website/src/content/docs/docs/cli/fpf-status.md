@@ -3,7 +3,7 @@ title: forgeplan fpf status
 description: "Show FPF knowledge base status - source, ingested section count, staleness"
 ---
 
-`forgeplan fpf status` reports the health of the local **First Principles Framework** knowledge base: where it was loaded from, how many sections are in LanceDB, when it was last ingested, and whether it's stale relative to the shipped spec.
+`forgeplan fpf status` compares the Markdown file count at the default installed FPF source path with the ingested section count. It reports counts, not revision or embedding readiness.
 
 Think of it as `forgeplan health` for the FPF KB specifically.
 
@@ -48,20 +48,21 @@ forgeplan fpf status       # → ingested, N sections
 
 ## What you see
 
-Typical fields reported:
+Reported fields:
 
-- **Source** - path / version of the FPF spec that was ingested.
-- **Ingested sections** - number of rows in the `fpf_kb` LanceDB table.
-- **Last ingest** - timestamp (or "never").
-- **Staleness** - whether the shipped spec is newer than the ingested data.
-- **Semantic search** - whether the `semantic-search` feature is enabled and embeddings are present.
+- **Source / Files** - default skill path and Markdown count, when found.
+- **Ingested** - section count and total lines, or empty/not initialized.
+- **Status** - `STALE` if the nonzero source count differs; otherwise `UP TO DATE`.
+
+Matching counts do not detect edits within files. The command does not remember
+an arbitrary previous `--path`, display last-ingest time, or prove semantic availability.
 
 ## How it fits
 
-`fpf status` is a **gate command**: it answers the yes/no question "is my FPF KB usable right now?" before you run `fpf search`, `fpf check`, or `forgeplan reason --fpf`.
+Use this as inspection, not a semantic readiness gate.
 
 ```
-fpf ingest  →  fpf status (verify)  →  fpf search / reason --fpf
+fpf ingest → fpf status (counts) → inspect/search the intended corpus
 ```
 
 ## See also
@@ -70,3 +71,19 @@ fpf ingest  →  fpf status (verify)  →  fpf search / reason --fpf
 - [`forgeplan fpf ingest`](/docs/cli/fpf-ingest/) - populate or refresh the KB
 - [`forgeplan fpf list`](/docs/cli/fpf-list/) - content-level browse
 - [`forgeplan health`](/docs/cli/health/) - project-level counterpart
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan fpf status --help`.
+
+```text
+Show FPF knowledge base status — source, ingested count, staleness
+
+Usage: forgeplan fpf status
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

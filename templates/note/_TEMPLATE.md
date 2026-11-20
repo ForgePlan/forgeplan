@@ -11,9 +11,9 @@ updated: YYYY-MM-DD
 
 | Field | Value |
 |-------|-------|
-| Status | Active |
+| Status | Draft |
 | Created | YYYY-MM-DD |
-| Valid Until | {auto: +90 days} |
+| Valid Until | {выбрать срок при необходимости; записать valid_until во frontmatter} |
 | Context | {grouping tag} |
 
 ## Note

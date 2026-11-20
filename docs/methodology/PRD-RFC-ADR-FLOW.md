@@ -2,6 +2,11 @@
 
 # PRD → RFC → ADR Flow — Decision Tree
 
+This is an authoring/process convention. Slash commands require the corresponding
+host commands or skills; they are not Rust CLI subcommands. Timelines and role
+assignments are examples, not enforcement. Use `forgeplan new`/`link` for managed
+artifacts and the captured interface contract for your workspace layout.
+
 ## Quick Decision: Which Document to Create?
 
 ```
@@ -109,7 +114,7 @@ You have a task. Start here:
 | Implement in phases | — | `/sprint` |
 | Verify quality | — | `/audit` |
 
-## Artifact Lifecycle
+## Process Stages (Not Persisted Artifact Status)
 
 ```
              Draft
@@ -128,7 +133,15 @@ You have a task. Start here:
    Implemented ─→ verify ─→ Closed
 ```
 
+The diagram describes team process, not legal `status` values. Persisted states
+are `draft`, `active`, `superseded`, `deprecated`, `stale`; `review` does not change
+status. Implementation completion does not automatically activate an artifact.
+
 ## Linking Rules
+
+The arrows express conceptual relationships, not additional `--relation` values.
+Use `based_on`, `informs`, `refines`, `contradicts`, `supersedes` as appropriate;
+Epic membership also has `parent_epic`.
 
 | Link | Description | Example |
 |------|-------------|---------|

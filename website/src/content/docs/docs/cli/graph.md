@@ -5,8 +5,10 @@ description: "Generate a Mermaid dependency graph of linked artifacts"
 
 Emit a Mermaid-format dependency graph of all linked artifacts. Unlike
 [`tree`](/docs/cli/tree/), which only shows parent/child hierarchy, `graph`
-renders every typed link (`informs`, `supersedes`, `blocks`, `relates_to`,
-etc.) as an edge - the full decision DAG.
+renders typed links such as `informs`, `based_on`, `refines` and `supersedes`,
+plus `parent_epic` edges labelled `belongs_to`. Cycles can exist; this is not guaranteed to be a DAG.
+
+`constellation graph` is the separate federated interface.
 
 ## When to use
 
@@ -52,7 +54,8 @@ forgeplan graph > deps.mmd
 Render to PNG with mermaid-cli:
 
 ```bash
-forgeplan graph > deps.mmd && mmdc -i deps.mmd -o deps.png
+forgeplan graph | sed '/^Next:/d' > deps.mmd
+mmdc -i deps.mmd -o deps.png
 ```
 
 JSON for a custom UI:
@@ -63,7 +66,8 @@ forgeplan graph --json | jq '.edges | length'
 
 ## Output interpretation
 
-Standard output is Mermaid `graph TD` syntax:
+The renderer emits `graph LR`; text stdout can also contain a trailing `Next:` hint.
+The following is a hand-authored illustration, not exact command output:
 
 ```
 graph TD
@@ -80,17 +84,14 @@ Conventions:
 
 | Syntax          | Meaning                                            |
 |-----------------|----------------------------------------------------|
-| `A --> B`       | Parent/child (structural)                          |
-| `A -.informs.-> B` | Typed edge from link frontmatter                |
-| `A -.supersedes.-> B` | Lifecycle edge, newer supersedes older       |
-| Node label      | `<ID><br/><title>`                                 |
+| `belongs_to` | Child-to-parent edge from `parent_epic` |
+| Typed edge label | Relation recorded on the edge |
+| Node identifier | Artifact ID; the renderer does not load title labels |
 
-Active artifacts get a solid outline; superseded/deprecated ones get a dashed
-outline (if your renderer supports the class definitions emitted at the top
-of the graph).
-
-With `--json`, the envelope is `{ nodes: [...], edges: [...] }` - ready for
-Cytoscape, D3, or any graph library.
+Styles use artifact kind and hypothesis verification state, not general lifecycle
+status. JSON contains `edges` with `from`, `to` and `relation`, plus
+`brownfield_only` and `_next_action`; there is no `nodes` array. In this handler
+`--brownfield-only` filters Mermaid rendering, not the JSON edge list.
 
 ### Example rendered diagram
 
@@ -121,3 +122,21 @@ blocked →  unresolved dependencies (planning)
 - [`forgeplan order`](/docs/cli/order/) - topological order
 - [`forgeplan blocked`](/docs/cli/blocked/) - blocking dependencies
 - [`forgeplan link`](/docs/cli/link/) - create typed edges
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan graph --help`.
+
+```text
+Generate mermaid dependency graph of linked artifacts
+
+Usage: forgeplan graph [OPTIONS]
+
+Options:
+      --json             Output as JSON for machine consumption
+      --brownfield-only  Issue #287 Phase F: filter edges to brownfield kinds only (UC / GLOS / INV / SCEN / HYP / DM). Pipeline edges (PRD / RFC / ADR / EPIC / SPEC) are dropped from output. Domain-model subgraph clusters are preserved
+  -h, --help             Print help
+  -V, --version          Print version
+```
+<!-- forgeplan-runtime:end -->

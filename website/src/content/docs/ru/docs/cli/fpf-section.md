@@ -13,8 +13,8 @@ description: "Показать конкретный раздел FPF по ID (н
 
 ## Когда НЕ использовать
 
-- Для обнаружения - используйте [`forgeplan fpf search`](/docs/cli/fpf-search/), если вы ещё не знаете ID раздела.
-- Для полного индекса - используйте [`forgeplan fpf list`](/docs/cli/fpf-list/).
+- Для поиска без известного ID — [`forgeplan fpf search`](/ru/docs/cli/fpf-search/).
+- Для списка разделов — [`forgeplan fpf list`](/ru/docs/cli/fpf-list/).
 
 ## Использование
 
@@ -39,22 +39,22 @@ forgeplan fpf section [OPTIONS] <ID>
 ## Примеры
 
 ```bash
-# Trust Calculus (раздел FPF B.3, который определяет семантику R_eff)
+# Прочитайте Trust Calculus загруженной ревизии; отличайте его от адаптации R_eff в ForgePlan
 forgeplan fpf section B.3
 
 # Только первые 500 символов, если вам нужна только суть
 forgeplan fpf section B.3 --summary
 
-# Рассуждения о поиске/использовании
+# Другой раздел по ID; проверьте заголовок в загруженной ревизии
 forgeplan fpf section B.4
 
-# Цикл ADI
-forgeplan fpf section C.1
+# Abduction–Deduction–Induction (ADI), FPF B.5
+forgeplan fpf section B.5
 ```
 
 ## Как это работает
 
-Разделы являются атомарной единицей базы знаний FPF. Именно их ранжирует `fpf search`, их разбивает на части `fpf ingest`, на них ссылается `fpf check` при объяснении, почему правило сработало, и их `forgeplan reason --fpf` использует в качестве контекста.
+Разделы извлекаются через `fpf search`, загружаются через `fpf ingest` и цитируются правилами FPF. ADI описан в B.5. `forgeplan reason --fpf` подставляет подходящие разделы FPF в промпт ADI, но на мигрированном workspace legacy-корпус FPF выведен из эксплуатации, поэтому этот путь сообщает, что разделов FPF нет, и не открывает выведенное хранилище. R_eff ForgePlan — адаптация продукта, не арифметика, предписанная текущим upstream B.3.
 
 Типичный рабочий процесс:
 
@@ -67,7 +67,27 @@ forgeplan new adr "Evidence grading policy"
 
 ## Смотрите также
 
-- [`forgeplan fpf`](/docs/cli/fpf/) - родительская команда
-- [`forgeplan fpf search`](/docs/cli/fpf-search/) - найти разделы по содержимому
-- [`forgeplan fpf list`](/docs/cli/fpf-list/) - все разделы с первого взгляда
-- [Руководство по методологии](/docs/methodology/overview/)
+- [`forgeplan fpf`](/ru/docs/cli/fpf/) - родительская команда
+- [`forgeplan fpf search`](/ru/docs/cli/fpf-search/) - поиск разделов
+- [`forgeplan fpf list`](/ru/docs/cli/fpf-list/) - список разделов
+- [Методология](/ru/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan fpf section --help`.
+
+```text
+Show a specific FPF section
+
+Usage: forgeplan fpf section [OPTIONS] <ID>
+
+Arguments:
+  <ID>  Section ID (e.g. "B.3", "C.2.2")
+
+Options:
+      --summary  Show summary only (first 500 chars)
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

@@ -23,11 +23,11 @@
 //!
 //! | `ForgeplanOp` | Internal API |
 //! |---|---|
-//! | `Ingest`   | `ingest::IngestEngine::apply` + idempotent draft writes |
-//! | `New`      | `db::store::LanceStore::create_artifact` + projection |
+//! | `Ingest`   | `ingest::IngestEngine::apply` + file-first draft writes |
+//! | `New`      | `projection::create_artifact_with_projection` |
 //! | `Validate` | `validation::validate` (count MUST errors) |
-//! | `Activate` | `lifecycle::activate` |
-//! | `Search`   | `db::store::LanceStore::search_body` |
+//! | `Activate` | shared lifecycle gates + canonical status projection |
+//! | `Search`   | owning read source's `search_body` |
 //!
 //! # `step.input` contract
 //!
@@ -51,25 +51,28 @@ use serde_yaml::Value as YamlValue;
 
 use super::{DispatchError, DispatchOutcome, Dispatcher};
 use crate::artifact::types::ArtifactKind;
+use crate::constellation::capture::CaptureLimits;
+use crate::constellation::facade::{
+    MaintainCapability, ensure_ordinary_mutation_allowed, maintain_index,
+    open_workspace_read_with_permit, resolve_workspace_selector_with_permit, workspace_is_migrated,
+};
 use crate::db::store::{LanceStore, NewArtifact};
+use crate::ingest::idempotency::{PlannedAction, PlannedDraft, draft_artifact_kind, plan_drafts};
 use crate::ingest::{
-    ArtifactTargetKind, IngestArtifactDraft, IngestEngine, IngestOptions, Mapping, ParsedSource,
-    SourceSpec, parser_for,
+    IngestArtifactDraft, IngestEngine, IngestOptions, Mapping, ParsedSource, SourceSpec, parser_for,
 };
 use crate::lifecycle;
 use crate::playbook::types::{Delegation, ForgeplanOp, Step};
-use crate::projection;
+use crate::projection::{self, MutationContext};
 use crate::template::{get_embedded_template, render_template};
 use crate::validation::{self, Severity};
+use crate::workspace::lock::{WorkspaceLock, acquire_workspace_lock};
 
 /// FR-5: Production forgeplan_core dispatcher (internal bridge).
 ///
-/// Holds only the workspace root: every op opens a fresh [`LanceStore`]
-/// handle. `LanceStore` is not [`Clone`] and lazy-opens via
-/// [`LanceStore::open`], so per-call construction is the path of least
-/// surprise — and the cost (one `lancedb::connect` + `open_table`) is
-/// negligible compared to the actual op work (markdown render, validation
-/// scan, full-table grep).
+/// Each operation selects the index owner before opening a read source or
+/// mutation sink. Migrated workspaces use one canonical capture and file-first
+/// writes; only legacy workspaces open a [`LanceStore`].
 pub struct ForgeplanCoreDispatcher {
     /// Path to the workspace root (the `.forgeplan/` directory). All ops
     /// resolve relative paths from here.
@@ -255,11 +258,57 @@ impl Dispatcher for ForgeplanCoreDispatcher {
 // Op handlers
 // =====================================================================
 
-/// Open the workspace store with a unified Transport-error mapping.
-async fn open_store(workspace_root: &Path) -> Result<LanceStore, DispatchError> {
-    LanceStore::open(workspace_root)
+/// Select ownership before opening: a migrated index has no legacy sink.
+async fn open_legacy_sink(
+    workspace_root: &Path,
+    lock: &WorkspaceLock,
+) -> Result<Option<LanceStore>, DispatchError> {
+    if workspace_is_migrated(workspace_root) {
+        return Ok(None);
+    }
+    LanceStore::open_for_write(workspace_root, lock)
         .await
-        .map_err(|e| DispatchError::Transport(format!("LanceStore::open failed: {e}")))
+        .map(Some)
+        .map_err(|e| DispatchError::Transport(format!("LanceStore::open_for_write failed: {e}")))
+}
+
+/// The canonical edit already stands. Publication errors must not disguise
+/// that success, and the caller must release its workspace lock first.
+async fn reconcile_after_mutation(workspace_root: &Path) {
+    let canonical = match workspace_root.canonicalize() {
+        Ok(path) => path,
+        Err(error) => {
+            tracing::warn!(%error, "native playbook write stands; run `forgeplan index` to publish it");
+            return;
+        }
+    };
+    let capability = MaintainCapability::for_strict_maintenance(canonical);
+    if let Err(error) = maintain_index(
+        &capability,
+        CaptureLimits::default(),
+        std::time::Instant::now() + std::time::Duration::from_secs(120),
+    )
+    .await
+    {
+        tracing::warn!(%error, "native playbook write stands; run `forgeplan index` to publish it");
+    }
+}
+
+/// The workspace guard must already be released: the drain takes its own lock.
+async fn drain_after_legacy_mutation(workspace_root: &Path, outcome: &mut DispatchOutcome) {
+    if let Err(error) = LanceStore::drain_identity_semantic_backlog(workspace_root).await {
+        outcome.success = false;
+        let detail = format!(
+            "canonical mutation may have committed; semantic backlog drain failed: {error:#}"
+        );
+        match &mut outcome.stderr {
+            Some(stderr) => {
+                stderr.push_str("; ");
+                stderr.push_str(&detail);
+            }
+            None => outcome.stderr = Some(detail),
+        }
+    }
 }
 
 async fn run_ingest(
@@ -267,7 +316,7 @@ async fn run_ingest(
     mapping_path: &Path,
     source_path: &Path,
     dry_run: bool,
-    _update: bool,
+    update: bool,
 ) -> Result<DispatchOutcome, DispatchError> {
     if !mapping_path.exists() {
         return Ok(DispatchOutcome::failure(format!(
@@ -331,25 +380,165 @@ async fn run_ingest(
         });
     }
 
-    let store = open_store(workspace_root).await?;
-    let mut last_path: Option<PathBuf> = None;
-    let mut write_errors: Vec<String> = Vec::new();
-    for draft in &report.drafts {
-        match write_ingest_draft(workspace_root, &store, draft).await {
-            Ok(p) => last_path = Some(p),
-            Err(e) => write_errors.push(format!("{}: {}", draft.title, e)),
-        }
+    if !report.errors.is_empty() {
+        return Ok(DispatchOutcome::failure(format!(
+            "ingest engine: {:?}",
+            report.errors
+        )));
     }
-
-    Ok(DispatchOutcome {
-        success: write_errors.is_empty() && report.errors.is_empty(),
+    if report.drafts.is_empty() {
+        return Ok(DispatchOutcome::success());
+    }
+    let lock = acquire_workspace_lock(workspace_root)
+        .await
+        .map_err(|e| DispatchError::Transport(format!("workspace lock: {e}")))?;
+    let kinds: Vec<_> = report
+        .drafts
+        .iter()
+        .map(|draft| draft_artifact_kind(&draft.kind))
+        .collect();
+    let allocation =
+        crate::artifact::id_alloc::acquire_allocation_guard(workspace_root, &lock, &kinds)
+            .await
+            .map_err(|e| DispatchError::Transport(format!("allocator lock: {e}")))?;
+    let before_store = if workspace_is_migrated(workspace_root) {
+        None
+    } else {
+        Some(
+            LanceStore::open(workspace_root)
+                .await
+                .map_err(|e| DispatchError::Transport(format!("legacy read: {e}")))?,
+        )
+    };
+    let before = match plan_drafts(
+        workspace_root,
+        &lock,
+        &allocation,
+        before_store.as_ref(),
+        &report.drafts,
+        update,
+        None,
+    )
+    .await
+    {
+        Ok(plan) => plan,
+        Err(error) => {
+            return Ok(DispatchOutcome::failure(format!(
+                "ingest preflight: {error:#}"
+            )));
+        }
+    };
+    drop(before_store);
+    if before
+        .iter()
+        .all(|draft| matches!(draft.action, PlannedAction::Skip { .. }))
+    {
+        return Ok(DispatchOutcome::success());
+    }
+    ensure_ordinary_mutation_allowed(workspace_root)
+        .map_err(|e| DispatchError::Transport(format!("mutation refused: {e}")))?;
+    let store = match open_legacy_sink(workspace_root, &lock).await {
+        Ok(store) => store,
+        Err(error) => {
+            return Ok(DispatchOutcome::failure(format!(
+                "index preparation failed; legacy migration may be partial: {error}"
+            )));
+        }
+    };
+    let migrated = store.is_none();
+    let plan = plan_drafts(
+        workspace_root,
+        &lock,
+        &allocation,
+        store.as_ref(),
+        &report.drafts,
+        update,
+        Some(&before),
+    )
+    .await;
+    let mut last_path = None;
+    let mut write_errors = Vec::new();
+    let mut attempted = false;
+    match plan {
+        Ok(plan) => {
+            let ctx = MutationContext::new(workspace_root, &lock, store.as_ref());
+            for (draft, planned) in report.drafts.iter().zip(&plan) {
+                if matches!(planned.action, PlannedAction::Skip { .. }) {
+                    continue;
+                }
+                if let Err(error) = ensure_ordinary_mutation_allowed(workspace_root) {
+                    write_errors.push(format!("mutation refused: {error}"));
+                    break;
+                }
+                attempted = true;
+                match write_ingest_draft(&ctx, &allocation, draft, planned).await {
+                    Ok(path) => last_path = Some(path),
+                    Err(error) => {
+                        write_errors.push(format!(
+                            "{}: {error:#}; canonical mutation may have committed",
+                            draft.title
+                        ));
+                        break;
+                    }
+                }
+            }
+            if write_errors.is_empty() {
+                for (draft, planned) in report.drafts.iter().zip(&plan) {
+                    let key = match &planned.action {
+                        PlannedAction::Skip { .. } => continue,
+                        PlannedAction::Create { key, .. } | PlannedAction::Update { key, .. } => {
+                            key
+                        }
+                    };
+                    for link in &planned.links {
+                        if let Err(error) = ensure_ordinary_mutation_allowed(workspace_root) {
+                            write_errors.push(format!("mutation refused: {error}"));
+                            break;
+                        }
+                        attempted = true;
+                        if let Err(error) = projection::add_link_with_projection(
+                            &ctx,
+                            key,
+                            &link.target,
+                            &link.relation,
+                        )
+                        .await
+                        {
+                            write_errors.push(format!(
+                                "{}: {error}; canonical mutation may have committed",
+                                draft.title
+                            ));
+                            break;
+                        }
+                    }
+                    if !write_errors.is_empty() {
+                        break;
+                    }
+                }
+            }
+        }
+        Err(error) => write_errors.push(format!(
+            "ingest preflight changed after index preparation: {error:#}"
+        )),
+    }
+    drop(store);
+    drop(allocation);
+    drop(lock);
+    let mut outcome = DispatchOutcome {
+        success: write_errors.is_empty(),
         output_path: last_path,
         stderr: if write_errors.is_empty() {
             None
         } else {
             Some(write_errors.join("; "))
         },
-    })
+    };
+    if migrated && attempted {
+        reconcile_after_mutation(workspace_root).await;
+    } else if !migrated {
+        drain_after_legacy_mutation(workspace_root, &mut outcome).await;
+    }
+    Ok(outcome)
 }
 
 /// Walk `source_path` (file or dir) and parse every file matching one of
@@ -499,55 +688,54 @@ fn glob_match_inner(p: &[char], pi: usize, t: &[char], ti: usize) -> bool {
 }
 
 async fn write_ingest_draft(
-    workspace_root: &Path,
-    store: &LanceStore,
+    ctx: &MutationContext<'_>,
+    allocation: &crate::artifact::id_alloc::AllocationGuard,
     draft: &IngestArtifactDraft,
+    planned: &PlannedDraft,
 ) -> anyhow::Result<PathBuf> {
-    // `ArtifactTargetKind` is `#[non_exhaustive]` cross-crate but seen as
-    // closed inside this crate; #[allow] keeps the wildcard so external
-    // consumers stay forward-compatible if a new variant lands.
-    #[allow(unreachable_patterns)]
-    let kind = match draft.kind {
-        ArtifactTargetKind::Prd => ArtifactKind::Prd,
-        ArtifactTargetKind::Adr => ArtifactKind::Adr,
-        ArtifactTargetKind::Epic => ArtifactKind::Epic,
-        ArtifactTargetKind::Note => ArtifactKind::Note,
-        ArtifactTargetKind::Spec => ArtifactKind::Spec,
-        ArtifactTargetKind::Problem => ArtifactKind::ProblemCard,
-        _ => ArtifactKind::Note,
+    let (expected_id, key) = match &planned.action {
+        PlannedAction::Skip { .. } => anyhow::bail!("cannot write a skipped draft"),
+        PlannedAction::Update { key, .. } => {
+            let resolved = crate::artifact::documents::resolve_in_workspace(ctx.workspace, key)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("ingest target '{key}' is missing"))?;
+            projection::update_body_with_projection(ctx, key, &draft.body).await?;
+            return Ok(ctx.workspace.join(resolved.relative_path));
+        }
+        PlannedAction::Create { id, key } => (id, key),
     };
+    let kind = draft_artifact_kind(&draft.kind);
     let template_key = kind.template_key();
-    let prefix = kind.prefix().trim_end_matches('-').to_uppercase();
-    let id = store.next_id(&prefix).await?;
-
-    let new = NewArtifact {
-        id: id.clone(),
-        kind: template_key.to_string(),
-        status: "draft".to_string(),
-        title: draft.title.clone(),
-        body: draft.body.clone(),
-        depth: "tactical".to_string(),
-        author: None,
-        parent_epic: None,
-        valid_until: None,
-        tags: vec![format!("source=ingest:{}", draft.rule_id)],
+    let build = |id: &str, _number: u32, key: &str| -> anyhow::Result<NewArtifact> {
+        Ok(NewArtifact {
+            canonical_key: key.to_string(),
+            id: id.to_string(),
+            kind: template_key.to_string(),
+            status: "draft".to_string(),
+            title: draft.title.clone(),
+            body: draft.body.clone(),
+            depth: "tactical".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: vec![format!("source=ingest:{}", draft.rule_id)],
+        })
     };
-    store.create_artifact(&new).await?;
-    let path = projection::render_projection(
-        workspace_root,
-        &id,
-        template_key,
-        &draft.title,
-        "draft",
-        "tactical",
-        None,
-        None,
-        None,
-        &draft.body,
-        &[],
+    let created = crate::artifact::id_alloc::create_artifact_with_prepared_key(
+        crate::artifact::id_alloc::PreparedKeyRequest {
+            workspace: ctx.workspace,
+            guard: ctx.guard,
+            allocation,
+            store: ctx.legacy_sink,
+            kind: &kind,
+            digits: 3,
+            canonical_key: key.clone(),
+            expected_id,
+            build: &build,
+        },
     )
     .await?;
-    Ok(path)
+    Ok(created.filepath)
 }
 
 async fn run_new(
@@ -567,13 +755,6 @@ async fn run_new(
         }
     };
 
-    let store = open_store(workspace_root).await?;
-    let prefix = kind.prefix().trim_end_matches('-').to_uppercase();
-    let id = store
-        .next_id(&prefix)
-        .await
-        .map_err(|e| DispatchError::Transport(format!("next_id: {e}")))?;
-
     let template_key = kind.template_key();
     let template = match get_embedded_template(template_key) {
         Some(t) => t,
@@ -583,14 +764,24 @@ async fn run_new(
             )));
         }
     };
-    let nnn = id.split('-').next_back().unwrap_or("001").to_string();
-    let mut vars = HashMap::new();
-    vars.insert("NNN".to_string(), nnn);
-    vars.insert("title".to_string(), title.to_string());
-    vars.insert("Title".to_string(), title.to_string());
-    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    let mut rendered = render_template(template, &vars);
-    rendered = rendered.replace("YYYY-MM-DD", &today);
+    let lock = acquire_workspace_lock(workspace_root)
+        .await
+        .map_err(|e| DispatchError::Transport(format!("workspace lock: {e}")))?;
+    ensure_ordinary_mutation_allowed(workspace_root)
+        .map_err(|e| DispatchError::Transport(format!("mutation refused: {e}")))?;
+    let store = match open_legacy_sink(workspace_root, &lock).await {
+        Ok(store) => store,
+        Err(error) => {
+            return Ok(DispatchOutcome::failure(format!(
+                "index preparation failed; legacy migration may be partial: {error}"
+            )));
+        }
+    };
+    if store.is_none() {
+        open_workspace_read_with_permit(workspace_root, &lock)
+            .await
+            .map_err(|e| DispatchError::Transport(format!("canonical source: {e}")))?;
+    }
 
     let depth = match kind {
         ArtifactKind::Note
@@ -601,71 +792,117 @@ async fn run_new(
         _ => "standard",
     };
 
-    let artifact = NewArtifact {
-        id: id.clone(),
-        kind: template_key.to_string(),
-        status: "draft".to_string(),
-        title: title.to_string(),
-        body: rendered.clone(),
-        depth: depth.to_string(),
-        author: None,
-        parent_epic: None,
-        valid_until: None,
-        tags: Vec::new(),
+    let build = |id: &str, _number: u32, key: &str| -> anyhow::Result<NewArtifact> {
+        let nnn = id.split('-').next_back().unwrap_or("001").to_string();
+        let mut vars = HashMap::new();
+        vars.insert("NNN".to_string(), nnn);
+        vars.insert("title".to_string(), title.to_string());
+        vars.insert("Title".to_string(), title.to_string());
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let mut rendered = render_template(template, &vars);
+        rendered = rendered.replace("YYYY-MM-DD", &today);
+        Ok(NewArtifact {
+            canonical_key: key.to_string(),
+            id: id.to_string(),
+            kind: template_key.to_string(),
+            status: "draft".to_string(),
+            title: title.to_string(),
+            body: rendered,
+            depth: depth.to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        })
     };
-    if let Err(e) = store.create_artifact(&artifact).await {
-        return Ok(DispatchOutcome::failure(format!(
-            "create_artifact failed: {e}"
-        )));
-    }
-
-    let path = projection::render_projection(
+    // One creation mechanism: mint the canonical key, reserve the display
+    // number under the shared per-kind ledger, and publish the document
+    // under its key.
+    ensure_ordinary_mutation_allowed(workspace_root)
+        .map_err(|e| DispatchError::Transport(format!("mutation refused: {e}")))?;
+    let created = crate::artifact::id_alloc::create_artifact_with_minted_key(
         workspace_root,
-        &id,
-        template_key,
+        &lock,
+        store.as_ref(),
+        &kind,
+        3,
         title,
-        "draft",
-        depth,
-        None,
-        None,
-        None,
-        &rendered,
-        &[],
+        &build,
     )
-    .await
-    .map_err(|e| DispatchError::Transport(format!("projection: {e}")))?;
-
-    Ok(DispatchOutcome {
-        success: true,
-        output_path: Some(path),
-        stderr: None,
-    })
+    .await;
+    let migrated = store.is_none();
+    drop(store);
+    drop(lock);
+    let mut outcome = match created {
+        Ok(created) => DispatchOutcome {
+            success: true,
+            output_path: Some(created.filepath),
+            stderr: None,
+        },
+        Err(error) => DispatchOutcome::failure(format!(
+            "create_artifact failed (canonical mutation may have committed): {error}"
+        )),
+    };
+    if migrated {
+        reconcile_after_mutation(workspace_root).await;
+    } else {
+        drain_after_legacy_mutation(workspace_root, &mut outcome).await;
+    }
+    Ok(outcome)
 }
 
 async fn run_validate(workspace_root: &Path, id: &str) -> Result<DispatchOutcome, DispatchError> {
-    let store = open_store(workspace_root).await?;
-    let record = match store
-        .get_record(id)
+    let validate_record =
+        |record: &crate::db::store::ArtifactRecord,
+         fm: &crate::artifact::frontmatter::Frontmatter| {
+            let kind = record
+                .kind
+                .parse::<ArtifactKind>()
+                .unwrap_or(ArtifactKind::Note);
+            let depth = record
+                .depth
+                .parse()
+                .unwrap_or(crate::artifact::types::Mode::Standard);
+            validation::validate(&record.id, &record.body, fm, &kind, &depth)
+        };
+    let lock = acquire_workspace_lock(workspace_root)
         .await
-        .map_err(|e| DispatchError::Transport(format!("get_record: {e}")))?
-    {
-        Some(r) => r,
-        None => {
-            return Ok(DispatchOutcome::failure(format!(
-                "artifact not found: {id}"
-            )));
+        .map_err(|e| DispatchError::Transport(format!("workspace lock: {e}")))?;
+    let result = if workspace_is_migrated(workspace_root) {
+        let read = open_workspace_read_with_permit(workspace_root, &lock)
+            .await
+            .map_err(|e| DispatchError::Transport(format!("canonical source: {e}")))?;
+        match read.resolve_artifact(id) {
+            Ok(Some(resolved)) => read
+                .get_record_by_key(&resolved.identity.canonical_key)
+                .map(|record| validate_record(record, &read.frontmatter_map_with_links(record))),
+            Ok(None) => None,
+            Err(error) => return Ok(DispatchOutcome::failure(format!("validate: {error}"))),
+        }
+    } else {
+        let store = LanceStore::open(workspace_root)
+            .await
+            .map_err(|e| DispatchError::Transport(format!("legacy read: {e}")))?;
+        match store
+            .get_record(&lock, id)
+            .await
+            .map_err(|e| DispatchError::Transport(format!("get_record: {e}")))?
+        {
+            Some(record) => {
+                let fm = store
+                    .frontmatter_map_with_links(&lock, &record)
+                    .await
+                    .map_err(|e| DispatchError::Transport(format!("frontmatter: {e}")))?;
+                Some(validate_record(&record, &fm))
+            }
+            None => None,
         }
     };
-    let kind = record
-        .kind
-        .parse::<ArtifactKind>()
-        .unwrap_or(ArtifactKind::Note);
-    let depth = record
-        .depth
-        .parse()
-        .unwrap_or(crate::artifact::types::Mode::Standard);
-    let fm = record.frontmatter_map();
-    let result = validation::validate(&record.id, &record.body, &fm, &kind, &depth);
+    let Some(result) = result else {
+        return Ok(DispatchOutcome::failure(format!(
+            "artifact not found: {id}"
+        )));
+    };
     let must_errors: Vec<String> = result
         .findings
         .iter()
@@ -694,9 +931,48 @@ async fn run_activate(
     id: &str,
     force: bool,
 ) -> Result<DispatchOutcome, DispatchError> {
-    let store = open_store(workspace_root).await?;
-    match lifecycle::activate(&store, id, force).await {
-        Ok(result) => Ok(DispatchOutcome {
+    let lock = acquire_workspace_lock(workspace_root)
+        .await
+        .map_err(|e| DispatchError::Transport(format!("workspace lock: {e}")))?;
+    let key = match resolve_workspace_selector_with_permit(workspace_root, &lock, id).await {
+        Ok(Some(resolved)) => resolved.identity.canonical_key,
+        Ok(None) => {
+            return Ok(DispatchOutcome::failure(format!(
+                "Artifact not found: {id}"
+            )));
+        }
+        Err(error) => return Ok(DispatchOutcome::failure(format!("activate: {error}"))),
+    };
+    let read = open_workspace_read_with_permit(workspace_root, &lock)
+        .await
+        .map_err(|e| DispatchError::Transport(format!("canonical source: {e}")))?;
+    ensure_ordinary_mutation_allowed(workspace_root)
+        .map_err(|e| DispatchError::Transport(format!("mutation refused: {e}")))?;
+    let store = match open_legacy_sink(workspace_root, &lock).await {
+        Ok(store) => store,
+        Err(error) => {
+            return Ok(DispatchOutcome::failure(format!(
+                "index preparation failed; legacy migration may be partial: {error}"
+            )));
+        }
+    };
+    ensure_ordinary_mutation_allowed(workspace_root)
+        .map_err(|e| DispatchError::Transport(format!("mutation refused: {e}")))?;
+    let result = lifecycle::canonical::activate_captured(
+        &MutationContext::new(workspace_root, &lock, store.as_ref()),
+        &read,
+        &key,
+        force,
+    )
+    .await;
+    let migrated = store.is_none();
+    drop(store);
+    drop(lock);
+    if migrated && result.is_ok() {
+        reconcile_after_mutation(workspace_root).await;
+    }
+    let mut outcome = match result {
+        Ok(result) => DispatchOutcome {
             success: true,
             output_path: None,
             stderr: if result.must_errors.is_empty() {
@@ -707,9 +983,15 @@ async fn run_activate(
                     result.must_errors.len()
                 ))
             },
-        }),
-        Err(e) => Ok(DispatchOutcome::failure(format!("activate: {e}"))),
+        },
+        Err(e) => DispatchOutcome::failure(format!(
+            "activate failed (canonical mutation may have committed): {e}"
+        )),
+    };
+    if !migrated {
+        drain_after_legacy_mutation(workspace_root, &mut outcome).await;
     }
+    Ok(outcome)
 }
 
 async fn run_search(
@@ -717,11 +999,23 @@ async fn run_search(
     query: &str,
     kind_filter: Option<&str>,
 ) -> Result<DispatchOutcome, DispatchError> {
-    let store = open_store(workspace_root).await?;
-    let hits = store
-        .search_body(query, kind_filter)
+    let lock = acquire_workspace_lock(workspace_root)
         .await
-        .map_err(|e| DispatchError::Transport(format!("search_body: {e}")))?;
+        .map_err(|e| DispatchError::Transport(format!("workspace lock: {e}")))?;
+    let hits = if workspace_is_migrated(workspace_root) {
+        open_workspace_read_with_permit(workspace_root, &lock)
+            .await
+            .map_err(|e| DispatchError::Transport(format!("canonical source: {e}")))?
+            .search_body(query, kind_filter)
+    } else {
+        let store = LanceStore::open(workspace_root)
+            .await
+            .map_err(|e| DispatchError::Transport(format!("legacy read: {e}")))?;
+        store
+            .search_body(&lock, query, kind_filter)
+            .await
+            .map_err(|e| DispatchError::Transport(format!("search_body: {e}")))?
+    };
     let json: Vec<serde_json::Value> = hits
         .iter()
         .map(|r| {
@@ -765,10 +1059,10 @@ mod tests {
     async fn setup_workspace() -> (TempDir, PathBuf) {
         let dir = TempDir::new().expect("tempdir");
         let ws = init_workspace(dir.path(), "phase6-fcd-test").expect("init");
-        // `LanceStore::init` creates the artifacts/relations/... tables;
-        // `open` (which the dispatcher uses internally) requires them to
-        // already exist, so seeding once up front is necessary.
-        let _ = LanceStore::init(&ws).await.expect("lance init");
+        let lock = acquire_workspace_lock(&ws).await.expect("init lock");
+        let store = LanceStore::init_new(&ws, &lock).await.expect("lance init");
+        drop(store);
+        drop(lock);
         (dir, ws)
     }
 
@@ -794,6 +1088,127 @@ mod tests {
             m.insert(YamlValue::String((*k).to_string()), v.clone());
         }
         YamlValue::Mapping(m)
+    }
+
+    #[tokio::test]
+    async fn activation_rechecks_selector_after_prior_admission() {
+        let (_dir, ws) = setup_workspace().await;
+        let created = run_new(&ws, "note", "Admission race").await.unwrap();
+        assert!(created.success, "{:?}", created.stderr);
+        let path = created.output_path.unwrap();
+        let original = std::fs::read(&path).unwrap();
+        let guard = acquire_workspace_lock(&ws).await.unwrap();
+        let admitted = resolve_workspace_selector_with_permit(&ws, &guard, "NOTE-001")
+            .await
+            .unwrap()
+            .unwrap();
+        drop(guard);
+
+        let duplicate = path.with_file_name("duplicate-admission-race.md");
+        std::fs::write(&duplicate, &original).unwrap();
+        let outcome = run_activate(&ws, &admitted.identity.canonical_key, false)
+            .await
+            .unwrap();
+        assert!(!outcome.success);
+        let message = outcome.stderr.unwrap();
+        assert!(message.contains("claimed by 2 documents"), "{message}");
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(std::fs::read(&duplicate).unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn failed_semantic_drain_reports_already_committed_output() {
+        let (_dir, ws) = setup_workspace().await;
+        let mut outcome = run_new(&ws, "note", "Committed before drain")
+            .await
+            .unwrap();
+        assert!(outcome.success, "{:?}", outcome.stderr);
+        let path = outcome.output_path.clone().unwrap();
+        let committed = std::fs::read(&path).unwrap();
+        std::fs::write(ws.join("config.yaml"), "invalid: [\n").unwrap();
+        drain_after_legacy_mutation(&ws, &mut outcome).await;
+        assert!(!outcome.success);
+        assert_eq!(outcome.output_path.as_ref(), Some(&path));
+        assert!(
+            outcome
+                .stderr
+                .unwrap()
+                .contains("semantic backlog drain failed")
+        );
+        assert_eq!(std::fs::read(path).unwrap(), committed);
+    }
+
+    #[cfg(not(feature = "semantic-search"))]
+    #[tokio::test]
+    async fn new_reports_semantic_failure_after_canonical_commit() {
+        let (_dir, ws) = setup_workspace().await;
+        let config = ws.join("config.yaml");
+        let original = std::fs::read_to_string(&config).unwrap();
+        std::fs::write(
+            &config,
+            format!("{original}\nembedding:\n  model: bge-m3\n"),
+        )
+        .unwrap();
+
+        let outcome = run_new(&ws, "note", "Semantic failure").await.unwrap();
+        assert!(!outcome.success, "semantic drain unexpectedly succeeded");
+        let path = outcome
+            .output_path
+            .expect("committed output remains visible");
+        assert!(
+            std::fs::read_to_string(path)
+                .unwrap()
+                .contains("Semantic failure")
+        );
+        assert!(
+            outcome
+                .stderr
+                .unwrap()
+                .contains("semantic backlog drain failed")
+        );
+    }
+
+    #[tokio::test]
+    async fn dry_run_does_not_touch_or_create_the_workspace() {
+        let dir = TempDir::new().unwrap();
+        let ws = dir.path().join("missing-workspace");
+        let mapping = dir.path().join("mapping.yaml");
+        let source = dir.path().join("source.md");
+        std::fs::write(
+            &mapping,
+            r#"
+schema_version: "1.0"
+name: dry-run-test
+title: "Dry run test"
+compat_spec_version: "c4-architecture: ^1.0"
+source_kind: c4-documentation
+target_kind: forge
+sources:
+  - pattern: "*.md"
+    type: markdown
+    parser: front_matter_plus_sections
+rules:
+  - id: note
+    when:
+      file_glob: "*.md"
+    target: { kind: note }
+    fields:
+      title: "Dry run"
+      summary: "Test"
+    sources_section:
+      include: true
+      format: "{path}:{line_start}-{line_end}"
+      precision: line
+      source_hash: true
+"#,
+        )
+        .unwrap();
+        std::fs::write(&source, "# Input\n\nText\n").unwrap();
+        let outcome = run_ingest(&ws, &mapping, &source, true, false)
+            .await
+            .unwrap();
+        assert!(outcome.success, "{:?}", outcome.stderr);
+        assert!(!ws.exists());
     }
 
     /// Construction defaults to cwd-relative workspace root.
@@ -871,14 +1286,16 @@ mod tests {
         let new_outcome = d.dispatch(&new_step).await.expect("seed new");
         assert!(new_outcome.success);
         // Pull the actual ID from the store — projection path encodes it.
+        let read_lock = acquire_workspace_lock(&ws).await.expect("read lock");
         let store = LanceStore::open(&ws).await.expect("reopen");
-        let summaries = store.list_artifacts(None).await.expect("list");
+        let summaries = store.list_artifacts(&read_lock, None).await.expect("list");
         let id = summaries
             .iter()
             .find(|s| s.kind == "note")
             .expect("note exists")
             .id
             .clone();
+        drop(read_lock);
 
         let val_input = yaml_map(&[("id", YamlValue::String(id.clone()))]);
         let val_step = make_step("val-1", ForgeplanOp::Validate, Some(val_input));
@@ -917,15 +1334,17 @@ mod tests {
         let new_step = make_step("seed-act", ForgeplanOp::New, Some(new_input));
         d.dispatch(&new_step).await.expect("seed new");
 
+        let read_lock = acquire_workspace_lock(&ws).await.expect("read lock");
         let store = LanceStore::open(&ws).await.expect("reopen");
         let id = store
-            .list_artifacts(None)
+            .list_artifacts(&read_lock, None)
             .await
             .expect("list")
             .into_iter()
             .find(|s| s.kind == "note")
             .expect("note")
             .id;
+        drop(read_lock);
 
         let act_input = yaml_map(&[("id", YamlValue::String(id.clone()))]);
         let act_step = make_step("act-1", ForgeplanOp::Activate, Some(act_input));
@@ -933,8 +1352,13 @@ mod tests {
         assert!(outcome.success, "stderr: {:?}", outcome.stderr);
 
         // Confirm status flipped in the store.
+        let read_lock = acquire_workspace_lock(&ws).await.expect("read lock");
         let store2 = LanceStore::open(&ws).await.expect("reopen2");
-        let after = store2.get_record(&id).await.expect("get").expect("exists");
+        let after = store2
+            .get_record(&read_lock, &id)
+            .await
+            .expect("get")
+            .expect("exists");
         assert_eq!(after.status, "active");
     }
 

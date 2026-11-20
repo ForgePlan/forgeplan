@@ -1,25 +1,34 @@
+use std::borrow::Cow;
+
+use forgeplan_core::db::store::ArtifactRecord;
 use forgeplan_core::depth;
 use forgeplan_core::hints::{self, Hint};
 
 use crate::commands::common;
 
 pub async fn run(id: Option<&str>) -> anyhow::Result<()> {
-    let store = common::store().await?;
-    let records = store.list_records(None).await?;
+    let (workspace, source, _read_guard) = common::open_read_source().await?;
+    let records: Cow<'_, [ArtifactRecord]> = match &source {
+        common::ReadSource::Legacy(store) => {
+            Cow::Owned(store.list_records(&_read_guard, None).await?)
+        }
+        common::ReadSource::Captured(read) => Cow::Borrowed(read.records()),
+    };
 
-    if records.is_empty() {
+    if records.is_empty() && id.is_none() {
         println!("No artifacts found.");
         return Ok(());
     }
 
     let to_check: Vec<_> = if let Some(target_id) = id {
-        let upper = target_id.to_uppercase();
+        let (canonical, _) =
+            common::resolve_required_identity(&source, &workspace, target_id).await?;
         records
-            .into_iter()
-            .filter(|r| r.id.to_uppercase() == upper)
+            .iter()
+            .filter(|record| record.canonical_key == canonical)
             .collect()
     } else {
-        records
+        records.iter().collect()
     };
 
     if to_check.is_empty()
@@ -36,11 +45,15 @@ Fix: forgeplan list",
     let mut first_escalation_id: Option<String> = None;
 
     for record in &to_check {
-        let link_count = store
-            .get_relations(&record.id)
-            .await
-            .unwrap_or_default()
-            .len();
+        let link_count = match &source {
+            common::ReadSource::Legacy(store) => store
+                .get_relations(&_read_guard, &record.canonical_key)
+                .await?
+                .len(),
+            common::ReadSource::Captured(read) => {
+                read.get_relations_by_key(&record.canonical_key).len()
+            }
+        };
         let result = depth::suggest_depth(record, link_count);
 
         if id.is_some() || result.escalation_needed {

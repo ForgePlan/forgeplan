@@ -1,5 +1,4 @@
 use forgeplan_core::artifact::frontmatter::Frontmatter;
-use forgeplan_core::db::store::NewArtifact;
 use forgeplan_core::hints::{self, Hint};
 use forgeplan_core::projection;
 use forgeplan_core::validation::rules::check_stub_detailed;
@@ -29,8 +28,32 @@ fn build_frontmatter(id: &str, kind: &str, status: &str, title: &str) -> Frontma
     fm
 }
 
+fn import_preflight_error(error: anyhow::Error) -> anyhow::Error {
+    use forgeplan_core::artifact::canonical_key::ResolveError;
+    let resolve = error.downcast_ref::<ResolveError>().or_else(|| {
+        match error.downcast_ref::<forgeplan_core::import_plan::ImportPlanError>() {
+            Some(forgeplan_core::import_plan::ImportPlanError::Resolve(resolve)) => Some(resolve),
+            _ => None,
+        }
+    });
+    if let Some(resolve) = resolve {
+        let (input, candidates) = match resolve {
+            ResolveError::Ambiguous { input, candidates } => {
+                (input.as_str(), candidates.as_slice())
+            }
+            ResolveError::ConflictingCanonicalKey { key, candidates } => {
+                (key.as_str(), candidates.as_slice())
+            }
+            ResolveError::InvalidSelector { input } => (input.as_str(), &[][..]),
+            ResolveError::IncompleteCapture { .. } => ("", &[][..]),
+        };
+        let outcome = forgeplan_mcp::convert::Resolution::from(Err(resolve.clone()));
+        return common::refuse_resolution(input, &outcome, candidates);
+    }
+    error
+}
+
 pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
-    let (ws, _lock, store) = common::open_store_locked().await?;
     let cwd = std::env::current_dir()?;
 
     let full_path = if std::path::Path::new(path).is_absolute() {
@@ -65,198 +88,185 @@ pub async fn run(path: &str, force: bool) -> anyhow::Result<()> {
             e
         )
     })?;
-    let data: serde_json::Value = serde_json::from_str(&json).map_err(|e| {
+    let mut data: serde_json::Value = serde_json::from_str(&json).map_err(|e| {
         anyhow::anyhow!(
             "Invalid export JSON: {}\nFix: forgeplan export --output backup.json",
             e
         )
     })?;
 
-    let artifacts = data["artifacts"].as_array().ok_or_else(|| {
+    // Preserve CLI normalization and the active-stub gate before freezing the
+    // batch. The planner validates every resulting artifact and relation.
+    let artifacts = data["artifacts"].as_array_mut().ok_or_else(|| {
         anyhow::anyhow!(
-            "Missing 'artifacts' array in export file\n\
-             Fix: forgeplan export --output backup.json"
+            "Missing 'artifacts' array in export file\nFix: forgeplan export --output backup.json"
         )
     })?;
-
-    let mut imported = 0usize;
-    let mut skipped = 0usize;
-    let mut downgraded = 0usize;
-
+    let mut downgraded_flags = Vec::with_capacity(artifacts.len());
     for art in artifacts {
-        let raw_id = art["id"].as_str().unwrap_or_default();
-        if raw_id.is_empty() {
+        let Some(object) = art.as_object_mut() else {
+            downgraded_flags.push(false);
             continue;
-        }
-
-        // PROB-060 / SPEC-005 Phase 2.6 (CD-6) — bulk resolve each id in
-        // the payload. Hand-edited JSON exports may carry slugs instead of
-        // display ids; resolve_id maps them onto the canonical DB form.
-        // Resolver returning None just means the id is novel — fall back
-        // to the raw input so the new artifact gets created as-is.
-        let canonical = store.resolve_id(raw_id).await?;
-        let id_owned: String;
-        let id: &str = if let Some(c) = canonical {
-            id_owned = c;
-            id_owned.as_str()
-        } else {
-            raw_id
         };
-
-        let existing = store.get_record(id).await?;
-        if existing.is_some() && !force {
-            skipped += 1;
-            continue;
-        }
-
-        // HIGH-6 (Round-1 audit, CWE-639 / data corruption): when the
-        // resolver maps `prd-foo` (slug) onto an existing PRD-001 row,
-        // a payload claiming `"kind": "rfc"` would otherwise delete the
-        // PRD and create an `id="PRD-001", kind="rfc"` row — kind/id
-        // incoherent. Refuse the import outright with an actionable
-        // remediation hint. The check fires before the destructive
-        // delete-then-create so the existing artifact stays intact.
-        if let Some(existing_record) = &existing {
-            let raw_kind_for_check = art["kind"].as_str().unwrap_or("");
-            if !raw_kind_for_check.is_empty() && existing_record.kind != raw_kind_for_check {
-                anyhow::bail!(
-                    "Import would change kind of {} from {} to {}\n\
-                     Fix: change `kind` в payload или use a different `id`",
-                    id,
-                    existing_record.kind,
-                    raw_kind_for_check
-                );
-            }
-        }
-
-        if existing.is_some() {
-            // PRD-073 audit H3: routed through helper so the markdown
-            // projection is removed in lockstep with the LanceDB row.
-            // Fixes the previous bypass where re-import via `--force`
-            // left the OLD file on disk while the OLD row was deleted.
-            projection::delete_artifact_with_projection(
-                &projection::MutationContext::new(&ws, &store),
-                id,
-            )
-            .await?;
-        }
-
-        // Validate kind against known types
-        let raw_kind = art["kind"].as_str().unwrap_or("note");
-        let kind_str = if raw_kind
+        let id = object
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let kind = object
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("note")
+            .to_string();
+        let kind = if kind
             .parse::<forgeplan_core::artifact::types::ArtifactKind>()
             .is_err()
         {
-            eprintln!(
-                "  Warning: unknown kind '{}' for {}, defaulting to note",
-                raw_kind, id
-            );
-            "note"
+            eprintln!("  Warning: unknown kind '{kind}' for {id}, defaulting to note");
+            "note".to_string()
         } else {
-            raw_kind
+            kind
         };
-        let raw_status = art["status"].as_str().unwrap_or("draft");
-        let status_str = if !matches!(raw_status, "draft" | "active" | "superseded" | "deprecated")
-        {
-            eprintln!(
-                "  Warning: unknown status '{}' for {}, defaulting to draft",
-                raw_status, id
-            );
-            "draft"
+        let status = object
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("draft")
+            .to_string();
+        let status = if matches!(
+            status.as_str(),
+            "draft" | "active" | "superseded" | "deprecated"
+        ) {
+            status
         } else {
-            raw_status
+            eprintln!("  Warning: unknown status '{status}' for {id}, defaulting to draft");
+            "draft".to_string()
         };
-
-        let title = art["title"].as_str().unwrap_or("").to_string();
-        let body = art["body"].as_str().unwrap_or("").to_string();
-
-        // F3: Stub gate — prevent importing active artifacts with stub content.
-        // Without --force, downgrade to draft to force reviewers through the
-        // activate() gate instead of silently bypassing it.
-        let final_status = if status_str == "active" {
-            let fm = build_frontmatter(id, kind_str, status_str, &title);
-            if let Some(report) = check_stub_detailed(&body, &fm) {
-                if force {
-                    eprintln!(
-                        "  Warning: {} is a stub ({} markers) but --force bypasses gate, importing as active",
-                        id, report.count
-                    );
-                    status_str.to_string()
-                } else {
-                    eprintln!(
-                        "⚠ Importing {}: stub detected ({} markers). Downgrading to draft.",
-                        id, report.count
-                    );
-                    downgraded += 1;
-                    "draft".to_string()
-                }
+        let body = object.get("body").and_then(|v| v.as_str()).unwrap_or("");
+        let title = object.get("title").and_then(|v| v.as_str()).unwrap_or("");
+        let is_stub = status == "active"
+            && check_stub_detailed(body, &build_frontmatter(&id, &kind, &status, title)).is_some();
+        downgraded_flags.push(is_stub && !force);
+        object.insert("kind".into(), kind.into());
+        object.insert(
+            "status".into(),
+            if is_stub && !force {
+                "draft".into()
             } else {
-                status_str.to_string()
-            }
-        } else {
-            status_str.to_string()
-        };
-
-        let new_artifact = NewArtifact {
-            id: id.to_string(),
-            kind: kind_str.to_string(),
-            status: final_status,
-            title,
-            body,
-            depth: art["depth"].as_str().unwrap_or("standard").to_string(),
-            author: art["author"].as_str().map(String::from),
-            parent_epic: art["parent_epic"].as_str().map(String::from),
-            valid_until: art["valid_until"].as_str().map(String::from),
-            tags: art["tags"]
-                .as_array()
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default(),
-        };
-
-        // PRD-073 audit H3: helper writes the markdown projection FIRST,
-        // then syncs the LanceDB row. Previous direct `store.create_artifact`
-        // call left every imported artifact in DB-only state with no
-        // markdown file backing — breaking ADR-003 invariant the moment
-        // import completed.
-        projection::create_artifact_with_projection(
-            &projection::MutationContext::new(&ws, &store),
-            &new_artifact,
-        )
-        .await?;
-        imported += 1;
+                status.into()
+            },
+        );
     }
 
-    // PRD-073 H6 (audit follow-up): batch helper deduplicates pre-sync +
-    // post-render per unique participant. For a 100-link bundle this is
-    // ~2×U LanceDB+file ops vs the naive 6×N (audit measurement).
-    let link_triples: Vec<(String, String, String)> = data["relations"]
-        .as_array()
-        .map(|relations| {
-            relations
-                .iter()
-                .filter_map(|rel| {
-                    let source = rel["source"].as_str()?;
-                    let target = rel["target"].as_str()?;
-                    let relation = rel["relation"].as_str().unwrap_or("informs");
-                    if source.is_empty() || target.is_empty() {
-                        return None;
-                    }
-                    Some((source.to_string(), target.to_string(), relation.to_string()))
-                })
-                .collect()
+    let (ws, lock) = common::open_workspace_locked().await?;
+    let migrated = common::index_migrated(&ws);
+    let before_store = if migrated {
+        None
+    } else {
+        Some(forgeplan_core::db::store::LanceStore::open(&ws).await?)
+    };
+    let plan =
+        forgeplan_core::import_plan::plan_import(&ws, &lock, before_store.as_ref(), &data, force)
+            .await
+            .map_err(import_preflight_error)?;
+    let downgraded = plan
+        .actions()
+        .iter()
+        .zip(&downgraded_flags)
+        .filter(|(item, flag)| {
+            **flag
+                && !matches!(
+                    &item.action,
+                    forgeplan_core::import_plan::ImportAction::Skip { .. }
+                )
         })
-        .unwrap_or_default();
-    let relations_attempted = link_triples.len();
-    let relations_imported = projection::add_links_batch_with_projection(
-        &projection::MutationContext::new(&ws, &store),
-        &link_triples,
-    )
-    .await
-    .unwrap_or(0);
+        .count();
+    let mut skipped = 0usize;
+    let mut imported = 0usize;
+    let links: Vec<_> = plan
+        .relations()
+        .iter()
+        .chain(plan.embedded_relations())
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let relations_attempted = links.len();
+    let has_writes = plan.actions().iter().any(|item| {
+        !matches!(
+            &item.action,
+            forgeplan_core::import_plan::ImportAction::Skip { .. }
+        )
+    }) || relations_attempted != 0;
+    if has_writes {
+        common::ensure_ordinary_mutation_allowed(&ws)?;
+    }
+    let store = if migrated {
+        None
+    } else if has_writes {
+        drop(before_store);
+        Some(
+            forgeplan_core::db::store::LanceStore::open_for_write(&ws, &lock)
+                .await
+                .map_err(|e| {
+                    e.context("import index preparation failed; legacy migration may be partial")
+                })?,
+        )
+    } else {
+        before_store
+    };
+    plan.verify(&ws, store.as_ref())
+        .await
+        .map_err(import_preflight_error)?;
+    let mut attempted = false;
+    let batch: anyhow::Result<usize> = async {
+        let ctx = projection::MutationContext::new(&ws, &lock, store.as_ref());
+        for item in plan.actions() {
+            match &item.action {
+                forgeplan_core::import_plan::ImportAction::Skip { .. } => {
+                    skipped += 1;
+                    continue;
+                }
+                forgeplan_core::import_plan::ImportAction::Replace { .. } => {
+                    attempted = true;
+                    projection::delete_artifact_with_projection(&ctx, &item.artifact.canonical_key)
+                        .await?;
+                }
+                forgeplan_core::import_plan::ImportAction::Create => {}
+            }
+            attempted = true;
+            projection::import_artifact_with_projection(&ctx, &item.artifact).await?;
+            imported += 1;
+        }
+        if links.is_empty() {
+            return Ok(0);
+        }
+        attempted = true;
+        Ok(projection::import_links_with_projection(&ctx, &links).await?)
+    }
+    .await;
+    drop(plan);
+    drop(store);
+    drop(lock);
+    let drain = if attempted && !migrated {
+        common::drain_legacy_semantic_after_mutation(&ws).await
+    } else {
+        Ok(())
+    };
+    if attempted && migrated {
+        common::note_constellation_owns_index();
+        common::reconcile_after_file_mutation(&ws).await;
+    }
+    let relations_imported = match (batch, drain) {
+        (Ok(count), Ok(())) => count,
+        (Err(error), Ok(())) if attempted => {
+            return Err(error.context("import failed; canonical files may be partially committed"));
+        }
+        (Err(error), Ok(())) => return Err(error),
+        (Ok(_), Err(error)) => return Err(error),
+        (Err(error), Err(drain_error)) => return Err(error.context(format!(
+            "canonical files may be partially committed; semantic backlog pending: {drain_error:#}"
+        ))),
+    };
 
     println!(
         "Imported {} artifacts ({} skipped, {} stubs downgraded to draft), {} of {} relations applied",

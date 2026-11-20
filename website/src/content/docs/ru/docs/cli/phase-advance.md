@@ -1,9 +1,9 @@
 ---
 title: forgeplan phase-advance
-description: "Manually advance (or set) the advisory phase marker for an artifact and record an immutable transition entry. Out-of-order jumps allowed."
+description: "Установить рекомендательную фазу и записать переход, в том числе вне порядка."
 ---
 
-`forgeplan phase-advance` переводит артефакт на следующую методологическую фазу (Shape, Validate, Adi, Code, Test, Audit, Evidence, Done) и записывает переход в `.forgeplan/state/<id>.yaml` с timestamp и опциональной причиной. История только дописывается - однажды записанное нельзя отредактировать или удалить, можно только добавить новую запись.
+`forgeplan phase-advance` устанавливает указанную фазу и дописывает переход с timestamp в `.forgeplan/state/<id>.yaml`. Это соглашение API, не защищённый от изменений журнал: файл можно изменить через файловую систему, а история ограничена 1024 записями.
 
 Это **рекомендательный** слой: команда не проверяет, имеет ли смысл прыжок (можно перескочить с Shape сразу в Done) - переходы вне порядка разрешены by design, это удобно для тривиальных фиксов или для исторического заполнения старых артефактов. Строгая проверка порядка планируется в более позднем PRD под EPIC-005.
 
@@ -19,7 +19,7 @@ description: "Manually advance (or set) the advisory phase marker for an artifac
 ## Когда НЕ использовать
 
 - Как структурный гейт (что-то, что блокирует другие команды) - `phase-advance` только пишет маркер. Для реальной блокировки используйте [`forgeplan validate`](/ru/docs/cli/validate/).
-- Чтобы переименовать фазу или переписать историю - записи неизменяемые. Добавьте новую запись с корректирующим `--reason`.
+- Для переписывания событий - добавьте корректирующую причину; это не immutable-хранилище.
 - Без `--reason`, когда прыжок неочевиден - через полгода во время аудита вы не вспомните, почему так сделали.
 
 ## Использование
@@ -52,7 +52,7 @@ forgeplan phase-advance [OPTIONS] --to <TO> <ID>
 forgeplan phase-advance PRD-057 --to test --reason "FR tests green"
 ```
 
-Записывает переход с короткой причиной. Причина сохраняется навсегда - будущие аудиты смогут точно понять, почему артефакт сдвинулся.
+Записывает переход и причину. История ограничена; для длительного аудита сохраняйте независимые доказательства.
 
 ### Пример 2: Прыжок вперёд для тривиального фикса
 
@@ -70,7 +70,7 @@ forgeplan phase-advance PRD-001 --to validate
 forgeplan phase-advance PRD-001 --to code --reason "backfilled from git history"
 ```
 
-Проводит артефакт, созданный до появления отслеживания фаз, через фазы - чтобы он корректно отображался в текущих отчётах. Причина в финальном переходе объясняет, откуда взялись данные.
+Переходы записываются с текущим временем, не историческими датами. В причинах явно отмечайте реконструкцию по Git-истории.
 
 ## Место в рабочем процессе
 
@@ -82,3 +82,25 @@ forgeplan phase-advance PRD-001 --to code --reason "backfilled from git history"
 - [`forgeplan phase`](/ru/docs/cli/phase/) - чтение текущего состояния и истории
 - [`forgeplan activate`](/ru/docs/cli/activate/) - гейт активации методологии
 - [Руководство по методологии](/ru/docs/methodology/overview/) - Shape → Validate → Code → Evidence → Activate
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan phase-advance --help`.
+
+```text
+Manually advance (or set) the advisory phase marker for an artifact. Appends a transition to the history. Does NOT validate phase ordering -- advisory layer allows out-of-order jumps (e.g. direct `done` override). Full phase enforcement lands in a later PRD under EPIC-005. Use when auto-advancement missed a transition or when reclassifying workflow state
+
+Usage: forgeplan phase-advance [OPTIONS] --to <TO> <ID>
+
+Arguments:
+  <ID>  Artifact ID to advance
+
+Options:
+      --to <TO>          Target phase: shape, validate, adi, code, test, audit, evidence, done [possible values: shape, validate, adi, code, test, audit, evidence, done]
+      --reason <REASON>  Optional reason / justification (recorded in history)
+      --json             Output as JSON for machine consumption
+  -h, --help             Print help
+  -V, --version          Print version
+```
+<!-- forgeplan-runtime:end -->

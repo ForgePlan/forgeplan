@@ -12,11 +12,13 @@ translations:
   ru: markdown-source-of-truth
 ---
 
+> **Historical scope, clarified 23 October 2026.** This is the author's migration account, not a fresh test report. EVID-094 records four rounds, 56 findings, 15 helpers and a corrected whitespace-aware pre-migration count of 45 (34 CLI + 11 MCP), distinct from the article's earlier 32-site count. Its final verification says 1866 passed; this article's 1995-test snapshot is not that run. The per-round split, durations, fuzz-score/grade story and performance claim below were not independently established by that receipt and remain unverified recollections. `pub(crate)` restricts access across crate boundaries, not every internal misuse or file edit.
+
 ### The invariant in one sentence
 
 In ForgePlan, **markdown files in `.forgeplan/{prds,adrs,specs,rfcs,evidence,...}/*.md` are the source of truth. The LanceDB index is derived and rebuildable.**
 
-Every artifact mutation flows from markdown into LanceDB, never the reverse. If LanceDB and markdown disagree, markdown wins, and `forgeplan scan-import` rebuilds LanceDB from the on-disk files.
+Canonical artifact content is authoritative in Markdown. For Constellation, `forgeplan index` publishes a derived index from it; legacy layouts use `forgeplan reindex`. `scan-import` imports external Markdown and is not a canonical-index rebuild. Derived vectors and cached scores have their own computation paths.
 
 This is ADR-003. It's the single most load-bearing architectural decision in the project. It's also the one we almost lost - twice.
 
@@ -30,7 +32,7 @@ Two-way sync between markdown and a vector DB is a tar pit. The failure modes ar
 2. **Stale markdown** - code path mutates the index without writing the markdown, the file becomes a fossil, `git diff` lies, code review can't catch the drift.
 3. **Conflict on regenerate** - index has data the markdown doesn't, regeneration overwrites it, work is silently lost.
 
-We picked one-way: markdown is authoritative, LanceDB is a cache. The cache can be deleted at any time and rebuilt with `forgeplan scan-import`. This is also why `.forgeplan/lance/` and `.forgeplan/.fastembed_cache/` are gitignored - they're derived artifacts.
+We picked one-way authority: Markdown is the record, LanceDB the derived index. Rebuilding requires the command matching the layout above; this is not advice to delete a live index or model cache. The historical gitignored cache paths do not make the complete environment reproducible from source alone.
 
 The CLI and MCP server enforce this through a single discipline: **never call `LanceStore::create_artifact / update_* / delete_* / add_relation / delete_relation` directly from `commands/*.rs` or `server.rs`**. All mutations go through `forgeplan_core::projection::sync_file_to_store` and `render_projection`.
 
@@ -56,7 +58,7 @@ I logged this as PROB-048. I scoped a fix as PRD-073, with three phases:
 
 Refactoring is the easy part. Refactoring without regression is the hard part. I ran four adversarial audit rounds, each with two AI agents (a security reviewer and a code reviewer), each instructed to find at least three issues. Zero findings = re-spawn (suspect superficial review).
 
-Round-by-round:
+The author's retrospective round-by-round reconstruction (unverified split; EVID-094 supports the aggregate 56, not this table's allocation):
 
 | Round | Findings closed | What broke |
 |-------|------------------|------------|
@@ -66,7 +68,7 @@ Round-by-round:
 | R4 | 6 | Final cleanup; one dead function in `journal/`, two stale doc comments |
 | **Total** | **56** | - |
 
-The regression guard sealed it. `tests/adr_003_invariant.rs` is a single integration test that walks the source tree, counts direct `LanceStore::create_artifact / update_* / delete_*` calls in `commands/` and `server.rs`, and fails the build if the count rises above the floor (currently 0). It's ten lines of code. It is the single most important ten lines in the repo.
+The guard `crates/forgeplan-cli/tests/adr_003_invariant.rs` contains separate CLI and MCP checks, with zero baselines. It scans recognized direct store calls in command sources and production `server.rs`; it is not one ten-line test or a general proof of all file-first ordering. The cross-crate `pub(crate)` restriction complements that source-scanning ratchet.
 
 The compile-time piece (`pub(crate)`) blocks new violations. The runtime test (the regression guard) blocks regressions in case someone adds a new module under `commands/` and forgets the rule. Belt and suspenders.
 
@@ -86,7 +88,7 @@ This is why ForgePlan's CLAUDE.md has explicit red lines and why every multi-age
 
 **Three: dogfooding stress-tests the methodology.**
 
-The whole point of ForgePlan is "every decision leaves a trail." PROB-048's resolution lives in `.forgeplan/problems/PROB-048-*.md`. PRD-073 is in `.forgeplan/prds/`. The four audit-round summaries are EvidencePacks. EVID-094 (the closing pack) scored R_eff=0.80, grade A. That's not perfect; one piece of evidence on the post-Phase-4 fuzz benchmark hasn't been re-run since v0.28. The decay is honest. The artifact graph reflects it.
+PROB-048, PRD-073 and EVID-094 preserve the migration trail. EVID-094 declares `congruence_level: 2` and records its method and limitations; it is not evidence for the 0.80/grade-A fuzz-decay story. Current score expiry is a date-based step to 0.1, not a measured gradual decline caused by an unrerun fuzz benchmark.
 
 When I teach this story in the cohort, I run `forgeplan get PRD-073` live. The students see the FRs marked complete, the linked EvidencePack, the R_eff score, the closing note. The methodology is not a slide deck. It's the file the tool reads.
 
@@ -94,13 +96,13 @@ When I teach this story in the cohort, I run `forgeplan get PRD-073` live. The s
 
 Post-Phase-4, the `forgeplan-core::store` module looks like this:
 
-- All `create_*`, `update_*`, `delete_*`, `add_relation`, `delete_relation` mutators are `pub(crate)`.
-- 15 helper functions in `forgeplan_core::projection` wrap the canonical flows: `sync_file_to_store`, `render_projection`, `apply_link_change`, etc.
-- The canonical CLI command for a one-shot mutation is `crates/forgeplan-cli/src/commands/deprecate.rs` - 40 lines, no direct store access, every step routed through projection.
+- The eleven artifact/relation mutators covered by the migration are restricted across crate boundaries; derived `update_embedding` and `update_r_eff_score` remain intentional exceptions.
+- EVID-094 lists nine mutation helpers and six sync-from-file helpers, plus later batch/soft-delete helpers. It does not establish an `apply_link_change` API.
+- `crates/forgeplan-cli/src/commands/deprecate.rs` is a project reference for lifecycle writes, not a fixed forty-line API contract.
 - New contributors get a compile error on day one if they try to shortcut.
 - The regression guard is part of every CI run.
 
-`cargo test` ran 1995 tests at the time of writing, 0 failures, 0 warnings on both feature configurations. The lockdown didn't slow anything down measurably; it removed an entire class of bugs.
+The article reported a later 1995-test snapshot. EVID-094's recorded final run was 1866 passed / 0 failed, not newly rerun here. No before/after timing benchmark in that receipt establishes a measurable performance effect; the demonstrated scope was removal of the tracked mutation bypasses.
 
 ### What I'd tell another founder building methodology tooling
 

@@ -1,6 +1,6 @@
 ---
 title: forgeplan_fpf_list
-description: "List every FPF (First Principles Framework) knowledge-base section. Returns the full catalogue of 204 sections as a flat table of {id, title, summary} so the agent can pick what to fetch next via forgeplan_fpf_section."
+description: "List the FPF sections actually ingested in this workspace, with section_id, title, and line_count."
 ---
 
 Returns the complete catalogue of FPF knowledge-base sections - the hierarchical taxonomy behind Forgeplan's reasoning engine. Each section is a small, self-contained piece of the First Principles Framework (ADI cycle, trust calculus, bounded contexts, explore/investigate/exploit, etc.). `forgeplan_fpf_list` is the agent's index: browse it, decide which sections look relevant, then pull full content via `forgeplan_fpf_section` or search contents via `forgeplan_fpf_search`.
@@ -10,22 +10,21 @@ Returns the complete catalogue of FPF knowledge-base sections - the hierarchical
 ## When an agent calls this
 
 - First call of a session when the agent needs to remember what FPF topics exist at all.
-- Before `forgeplan_fpf_section` - confirm the exact ID of a section (e.g. `B.3` for Trust Calculus).
+- Before `forgeplan_fpf_section` - confirm the exact ID and title from the returned catalog.
 - When the user asks "does FPF have anything to say about X?" and the agent wants to scan titles before committing to a vector search.
-- As a sanity check after `forgeplan fpf ingest` - the list should return ~204 sections on a fresh ingest.
+- After `forgeplan fpf ingest` - inspect the actual catalog; the count depends on the ingested corpus, not a fixed 204-section contract.
 
 ## What you get back
 
-A flat array of sections, each with:
+An object with `total`, `sections`, and a next-action hint. Each section summary has:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | `string` | Section ID, e.g. `A.1`, `B.3`, `C.2.2`. |
-| `title` | `string` | Human-readable title. |
-| `summary` | `string` | 1–2 sentence abstract of the section. |
-| `chapter` | `string` | Parent chapter (`A`, `B`, `C`, …). |
+| `section_id` | `string` | Section ID to use with `forgeplan_fpf_section`. |
+| `title` | `string` | Title from the ingested source. |
+| `line_count` | `integer` | Stored section line count. |
 
-The list is ordered by ID so related sections sit next to each other.
+The tool reads the auxiliary FPF table without creating or ingesting it. A workspace with no FPF table returns an empty catalog; other read failures remain errors.
 
 ## Input parameters
 
@@ -33,19 +32,13 @@ _No input parameters. Call this tool with an empty object `{}`._
 
 ## Returns
 
+Illustrative empty-catalog response excerpt:
+
 ```json
-{
-  "total": 204,
-  "sections": [
-    { "id": "A.1", "chapter": "A", "title": "Why First Principles",
-      "summary": "Motivation for the framework; contrast with heuristic reasoning." },
-    { "id": "B.3", "chapter": "B", "title": "Trust Calculus",
-      "summary": "How evidence decays, congruence levels, R_eff weakest-link rule." },
-    { "id": "C.2.2", "chapter": "C", "title": "Explore / Investigate / Exploit",
-      "summary": "Three action buckets keyed to R_eff thresholds." }
-  ]
-}
+{ "total": 0, "sections": [] }
 ```
+
+Use the returned IDs and titles; this reference does not assign invented headings or summaries to upstream FPF section numbers.
 
 ## Example invocation
 
@@ -58,7 +51,7 @@ _No input parameters. Call this tool with an empty object `{}`._
 ```
 forgeplan_fpf_list
    ↓ pick interesting IDs
-forgeplan_fpf_section { id: "B.3" }    ← full content of one section
+forgeplan_fpf_section { id: "<returned-section-id>" } ← full content of one section
    or
 forgeplan_fpf_search  { query: "…" }   ← content-level search (keyword or BGE-M3)
 ```
@@ -73,3 +66,29 @@ forgeplan_fpf_search  { query: "…" }   ← content-level search (keyword or BG
 - [`forgeplan_fpf_section`](/docs/mcp/forgeplan_fpf_section/) - fetch full body of one section
 - [`forgeplan_fpf_search`](/docs/mcp/forgeplan_fpf_search/) - keyword / semantic search
 - [`forgeplan_fpf_rules`](/docs/mcp/forgeplan_fpf_rules/) - rules derived from the framework
+
+<!-- forgeplan-runtime:start -->
+## Captured tools/list
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, profile `full`.
+
+List all available FPF (First Principles Framework) sections in the knowledge base.
+
+### Input parameters
+
+| Name | Required | Type | Description |
+|---|---|---|---|
+| — | — | — | No parameters. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "properties": {},
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

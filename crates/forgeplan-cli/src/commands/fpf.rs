@@ -2,7 +2,8 @@ use std::env;
 use std::path::PathBuf;
 
 use console::style;
-use forgeplan_core::db::store::{FpfChunk, LanceStore};
+use forgeplan_core::db::auxiliary::AuxiliaryStore;
+use forgeplan_core::db::store::FpfChunk;
 use forgeplan_core::fpf;
 use forgeplan_core::fpf::ext::rules::Rule;
 use forgeplan_core::fpf::knowledge;
@@ -11,16 +12,17 @@ use forgeplan_core::workspace;
 
 use crate::ui;
 
+use super::common::{self, ReadSource};
+
 /// FPF Dashboard (original command, now `forgeplan fpf dashboard`)
 pub async fn run_dashboard() -> anyhow::Result<()> {
-    let cwd = env::current_dir()?;
-    let ws = workspace::find_workspace(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
-
-    let store = LanceStore::open(&ws).await?;
+    let (ws, source, _read_guard) = common::open_read_source().await?;
     let config = workspace::load_config(&ws).map_err(|e| anyhow::anyhow!("Config error: {e}"))?;
     let fpf_config = config.fpf.as_ref();
-    let dashboard = fpf::dashboard(&store, fpf_config).await?;
+    let dashboard = match &source {
+        ReadSource::Legacy(store) => fpf::dashboard(store, &_read_guard, fpf_config).await?,
+        ReadSource::Captured(read) => fpf::dashboard_captured(read, fpf_config).await?,
+    };
     print!("{dashboard}");
 
     // PRD-071 contract: dashboard view → likely next is to drill into rules
@@ -38,7 +40,7 @@ pub async fn run_ingest(path: Option<&str>) -> anyhow::Result<()> {
     let cwd = env::current_dir()?;
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
-
+    let lock = workspace::lock::acquire_workspace_lock(&ws).await?;
     let fpf_path = match path {
         Some(p) => PathBuf::from(p),
         None => knowledge::default_fpf_path().ok_or_else(|| {
@@ -58,12 +60,15 @@ pub async fn run_ingest(path: Option<&str>) -> anyhow::Result<()> {
     let chunks = knowledge::ingest_fpf_directory(&fpf_path).await?;
     println!("  Parsed {} sections", chunks.len());
 
-    // Use init() to ensure fpf_spec table exists
-    let store = LanceStore::init(&ws).await?;
+    // Only the `fpf_spec` table is this command's to create. `LanceStore::init`
+    // would also create `artifacts`/`evidence`/`relations`, which the
+    // constellation protocol retired on this workspace — recreating them puts a
+    // shadow index beside the real one that no later step can remove.
+    let store = AuxiliaryStore::open_or_create(&ws, &lock).await?;
 
     // Clear existing FPF data and re-ingest
     if store.has_fpf() {
-        store.clear_fpf().await?;
+        store.clear_fpf(&lock).await?;
     }
 
     // Convert IngestChunk to FpfChunk
@@ -123,7 +128,7 @@ pub async fn run_ingest(path: Option<&str>) -> anyhow::Result<()> {
     let embeddings: Option<Vec<Vec<f32>>> = None;
 
     let count = store
-        .insert_fpf_chunks(&fpf_chunks, embeddings.as_deref())
+        .insert_fpf_chunks(&lock, &fpf_chunks, embeddings.as_deref())
         .await?;
     #[cfg(feature = "semantic-search")]
     println!("  Ingested {} FPF sections with embeddings", count);
@@ -156,7 +161,7 @@ pub async fn run_ingest(path: Option<&str>) -> anyhow::Result<()> {
 /// so tests can assert on which failure mode was hit.
 #[cfg_attr(not(feature = "semantic-search"), allow(dead_code))]
 pub async fn try_semantic_search<F>(
-    store: &LanceStore,
+    store: &AuxiliaryStore,
     query: &str,
     limit: usize,
     encoder: F,
@@ -190,9 +195,9 @@ pub async fn run_search(query: &str, limit: usize, semantic: bool) -> anyhow::Re
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
 
-    let store = LanceStore::open(&ws).await?;
-
-    // PRD-042 FR-003: Semantic search with graceful fallback to keyword.
+    // Read-only: never create the table. A workspace that never ingested has
+    // to answer "nothing found", not gain an empty KB as a side effect.
+    let store = AuxiliaryStore::open_existing(&ws).await?;
     // Sprint 13.7 wave 2 C2: match MCP parity — ANY runtime failure in the
     // semantic path (embedder init, encode, vector search) degrades to
     // keyword search with a warning on stderr instead of bubbling up.
@@ -200,9 +205,15 @@ pub async fn run_search(query: &str, limit: usize, semantic: bool) -> anyhow::Re
         #[cfg(feature = "semantic-search")]
         {
             let encoder = |q: &str| -> anyhow::Result<Vec<f32>> {
-                let mut embedder = forgeplan_core::embed::Embedder::new()
-                    .map_err(|e| anyhow::anyhow!("failed to initialize embedder: {e}"))?;
-                embedder
+                // Cached-only, verified snapshot: a search must never be the
+                // thing that starts a 2.1 GB download. Ingest is where weights
+                // are obtained; a query reads what ingest left behind.
+                let mut model = forgeplan_core::embed::CachedSnapshot::open(
+                    forgeplan_core::constellation::jobs::DEFAULT_MODEL_NAME,
+                )
+                .map_err(|e| anyhow::anyhow!("failed to open the cached model: {e}"))?;
+                model
+                    .embedder
                     .embed(q)
                     .map_err(|e| anyhow::anyhow!("failed to encode query: {e}"))
             };
@@ -280,7 +291,7 @@ pub async fn run_section(id: &str, summary: bool) -> anyhow::Result<()> {
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
 
-    let store = LanceStore::open(&ws).await?;
+    let store = AuxiliaryStore::open_existing(&ws).await?;
     let chunk = store
         .get_fpf_section(id)
         .await?
@@ -343,7 +354,7 @@ pub async fn run_status() -> anyhow::Result<()> {
     }
 
     // Check ingested
-    let store = LanceStore::open(&ws).await?;
+    let store = AuxiliaryStore::open_existing(&ws).await?;
     let mut hints_vec: Vec<Hint> = Vec::new();
     if store.has_fpf() {
         let sections = store.list_fpf_sections().await?;
@@ -422,8 +433,12 @@ pub async fn run_list() -> anyhow::Result<()> {
     let ws = workspace::find_workspace(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
 
-    let store = LanceStore::open(&ws).await?;
-    let sections = store.list_fpf_sections().await?;
+    let store = AuxiliaryStore::open_existing(&ws).await?;
+    let sections = if store.has_fpf() {
+        store.list_fpf_sections().await?
+    } else {
+        Vec::new()
+    };
 
     if sections.is_empty() {
         println!("  No FPF sections loaded. Run `forgeplan fpf ingest` first.");
@@ -468,14 +483,12 @@ fn style_action(action: &str) -> String {
 
 /// `forgeplan fpf rules [--flat] [--json]`
 pub async fn run_rules(flat: bool, json: bool) -> anyhow::Result<()> {
-    let cwd = env::current_dir()?;
-    let ws = workspace::find_workspace(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+    let (ws, read_source, _read_guard) = common::open_read_source().await?;
     let config = workspace::load_config(&ws).map_err(|e| anyhow::anyhow!("Config error: {e}"))?;
     let fpf_config = config.fpf.as_ref();
 
-    let (rules, source) = fpf::active_rules(fpf_config);
-    let source_label = match source {
+    let (rules, rule_source) = fpf::active_rules(fpf_config);
+    let source_label = match rule_source {
         fpf::RuleSource::Config => "Config",
         fpf::RuleSource::Default => "Default",
     };
@@ -484,7 +497,7 @@ pub async fn run_rules(flat: bool, json: bool) -> anyhow::Result<()> {
     // the `<id>` placeholder. Pick the first PRD / RFC / ADR available so the
     // suggested command is runnable verbatim. Empty workspace falls back to
     // the conventional `PRD-NNN` value-to-fill placeholder used elsewhere.
-    let example_id = pick_example_artifact_id(&ws).await;
+    let example_id = pick_example_artifact_id(&read_source, &_read_guard).await;
 
     let hints_vec = vec![
         Hint::info("Test rules against an artifact")
@@ -614,20 +627,32 @@ pub async fn run_rules(flat: bool, json: bool) -> anyhow::Result<()> {
 /// most often want to check rules against. Falls back to `PRD-NNN`
 /// (value-to-fill placeholder, allowed by the contract) when the workspace
 /// is empty so the hint stays runnable-shape.
-async fn pick_example_artifact_id(ws: &std::path::Path) -> String {
-    let store = match LanceStore::open(ws).await {
-        Ok(s) => s,
-        Err(_) => return "PRD-NNN".to_string(),
-    };
+async fn pick_example_artifact_id(
+    source: &ReadSource,
+    read_guard: &dyn forgeplan_core::workspace::lock::WorkspaceReadPermit,
+) -> String {
     for kind in ["prd", "rfc", "adr"] {
-        let filter = forgeplan_core::db::store::ListFilter {
-            kind: Some(kind.to_string()),
-            status: None,
+        let id = match source {
+            ReadSource::Legacy(store) => {
+                let filter = forgeplan_core::db::store::ListFilter {
+                    kind: Some(kind.to_string()),
+                    status: None,
+                };
+                store
+                    .list_records(read_guard, Some(&filter))
+                    .await
+                    .ok()
+                    .and_then(|records| records.into_iter().next())
+                    .map(|record| record.canonical_key)
+            }
+            ReadSource::Captured(read) => read
+                .records()
+                .iter()
+                .find(|record| record.kind == kind)
+                .map(|record| record.canonical_key.clone()),
         };
-        if let Ok(records) = store.list_records(Some(&filter)).await
-            && let Some(first) = records.first()
-        {
-            return first.id.clone();
+        if let Some(id) = id {
+            return id;
         }
     }
     "PRD-NNN".to_string()
@@ -648,29 +673,29 @@ fn truncate(s: &str, max: usize) -> String {
 
 /// `forgeplan fpf check <id> [--verbose] [--json]`
 pub async fn run_check(id: &str, verbose: bool, json: bool) -> anyhow::Result<()> {
-    let cwd = env::current_dir()?;
-    let ws = workspace::find_workspace(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
-    let store = LanceStore::open(&ws).await?;
+    let (ws, source, _read_guard) = common::open_read_source().await?;
     let config = workspace::load_config(&ws).map_err(|e| anyhow::anyhow!("Config error: {e}"))?;
     let fpf_config = config.fpf.as_ref();
-
-    let result = match fpf::check_artifact_against_rules(&store, id, fpf_config).await {
+    let (canonical, _) = common::resolve_required_identity(&source, &ws, id).await?;
+    let id = canonical.as_str();
+    let checked = match &source {
+        ReadSource::Legacy(store) => {
+            fpf::check_artifact_against_rules(store, &_read_guard, id, fpf_config).await
+        }
+        ReadSource::Captured(read) => {
+            fpf::check_artifact_against_rules_captured(read, id, fpf_config).await
+        }
+    };
+    let result = match checked {
         Ok(Some(r)) => r,
         Ok(None) => {
             ui::error_hint(
                 &format!("Artifact '{id}' not found"),
-                "forgeplan list --kind prd",
+                "forgeplan list --type prd",
             );
             std::process::exit(1);
         }
-        Err(_) => {
-            ui::error_hint(
-                &format!("Failed to check artifact '{id}'"),
-                "forgeplan health",
-            );
-            std::process::exit(1);
-        }
+        Err(error) => return Err(error),
     };
 
     // PRD-071 contract: derive Next: from the winning rule's action — EXPLOIT
@@ -815,17 +840,24 @@ mod tests {
 
     // ── Sprint 13.7 wave 2 C3: fallback helper tests ────────────
 
-    async fn make_fpf_store() -> (tempfile::TempDir, LanceStore) {
+    /// The knowledge base this command owns — no legacy store, so these tests
+    /// exercise the same path a migrated workspace takes.
+    async fn make_fpf_store() -> (
+        tempfile::TempDir,
+        forgeplan_core::workspace::lock::WorkspaceLock,
+        AuxiliaryStore,
+    ) {
         let tmp = tempfile::TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
-        let store = LanceStore::init(&ws).await.unwrap();
-        (tmp, store)
+        let lock = workspace::lock::acquire_workspace_lock(&ws).await.unwrap();
+        let store = AuxiliaryStore::open_or_create(&ws, &lock).await.unwrap();
+        (tmp, lock, store)
     }
 
     #[tokio::test]
     async fn semantic_fallback_on_embedder_init_fail() {
         // Encoder simulates Embedder::new() failing (e.g. model download error).
-        let (_tmp, store) = make_fpf_store().await;
+        let (_tmp, _lock, store) = make_fpf_store().await;
         let encoder =
             |_q: &str| -> anyhow::Result<Vec<f32>> { Err(anyhow::anyhow!("embedder init failed")) };
         let err = try_semantic_search(&store, "trust", 5, encoder)
@@ -841,7 +873,7 @@ mod tests {
     #[tokio::test]
     async fn semantic_fallback_on_encode_fail() {
         // Encoder simulates embed() failing on a valid embedder.
-        let (_tmp, store) = make_fpf_store().await;
+        let (_tmp, _lock, store) = make_fpf_store().await;
         let encoder = |_q: &str| -> anyhow::Result<Vec<f32>> {
             Err(anyhow::anyhow!("failed to encode query"))
         };
@@ -857,7 +889,7 @@ mod tests {
         // Encoder returns an invalid-dim vector, which makes
         // search_fpf_by_vector fail with the dim-mismatch check. The helper
         // must propagate that error so the caller can fall back.
-        let (_tmp, store) = make_fpf_store().await;
+        let (_tmp, _lock, store) = make_fpf_store().await;
         let encoder = |_q: &str| -> anyhow::Result<Vec<f32>> { Ok(vec![0.0f32; 512]) };
         let err = try_semantic_search(&store, "q", 5, encoder)
             .await
@@ -873,7 +905,7 @@ mod tests {
     async fn semantic_success_returns_results() {
         // Happy path through the helper: seed 2 chunks, encoder returns a
         // valid 1024-dim vector, and the helper returns the store results.
-        let (_tmp, store) = make_fpf_store().await;
+        let (_tmp, lock, store) = make_fpf_store().await;
         let dim = forgeplan_core::db::schema::EMBEDDING_DIM as usize;
         let chunks = vec![
             FpfChunk {
@@ -902,7 +934,7 @@ mod tests {
         let mut e2 = vec![0.0f32; dim];
         e2[1] = 1.0;
         store
-            .insert_fpf_chunks(&chunks, Some(&[e1.clone(), e2]))
+            .insert_fpf_chunks(&lock, &chunks, Some(&[e1.clone(), e2]))
             .await
             .unwrap();
         let encoder = move |_q: &str| -> anyhow::Result<Vec<f32>> { Ok(e1.clone()) };

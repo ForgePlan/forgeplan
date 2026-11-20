@@ -1,6 +1,8 @@
 # Artifact kind: `scenario`
 
-> An executable specification of a use case in Gherkin Given/When/Then form, optionally with a Mermaid sequence diagram.
+> A test specification of a use case in Gherkin Given/When/Then form, optionally with a Mermaid sequence diagram. Execution also requires a runner and implemented step definitions.
+
+> Proposed schema and illustrative TripSales example, not a current validator contract. The manual-run statement below is retained as a dated example claim without a supplied run receipt; it is not independently verified here. See [implementation status](../README.md#implementation-status-2026-10-23).
 
 ## Purpose
 
@@ -58,7 +60,7 @@ lifecycle_state: "active" | "needs_update" | "deprecated"
 
 ## Example (TripSales)
 
-```markdown
+````markdown
 ---
 kind: scenario
 id: SC-042
@@ -149,7 +151,7 @@ sequenceDiagram
 - Invariants: INV-003, INV-005, INV-012.
 - Terms: forwarder_confirmed (TERM-012), cargo_owner_confirmed (TERM-013), forwarder (TERM-005).
 - Related scenarios: SC-043 (cancel), SC-051 (reject).
-```
+````
 
 ## Validation rules
 
@@ -175,4 +177,4 @@ sequenceDiagram
 
 ## Freshness
 
-On use-case change → scenarios auto-flag `needs_update`. On invariant change → scenarios verifying it flag too.
+Proposed freshness behavior: use-case or invariant changes flag dependent scenarios `needs_update`. This automated C8 workflow is not supplied by the current core tools.

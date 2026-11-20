@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
@@ -10,13 +10,19 @@ use chrono::Utc;
 use futures::StreamExt;
 use lancedb::Table;
 use lancedb::connection::Connection;
-use lancedb::query::{ExecutableQuery, QueryBase};
+use lancedb::query::{ExecutableQuery, QueryBase, Select};
 
 use crate::projection::MutationError;
 
+use crate::artifact::canonical_key::{
+    ArtifactCandidate, canonical_key_from_document, resolve_artifact,
+};
 use crate::artifact::store::ArtifactSummary;
 use crate::changelog::ChangeLogEntry;
+use crate::db::auxiliary::verify_table_manifests;
+pub(crate) use crate::db::legacy_repair::VerifiedLegacyIndex;
 use crate::db::{convert, migrate, schema};
+use crate::workspace::lock::{WorkspaceLock, WorkspaceReadPermit};
 
 /// Validate that an artifact ID is safe for use in SQL-like filters AND
 /// safe to compose into filesystem paths (audit 2026-05-01 #1 — was a
@@ -46,6 +52,47 @@ pub fn validate_artifact_id(id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Validate a *link target* — everything [`validate_artifact_id`] accepts,
+/// plus a qualified cross-source reference `KEY@qualifier` (Constellation
+/// stage 4: `ADR-001@src:b7d6…` or `ADR-001@<path-fragment>`).
+///
+/// A qualified target names an artifact that lives in a *different*
+/// workspace. The relation row stores the ref verbatim in this
+/// workspace's `links:` frontmatter and relations table — nothing here
+/// opens, resolves, or writes the foreign workspace.
+///
+/// The qualifier charset is `[A-Za-z0-9._:-]`, deliberately tighter than
+/// "anything after the `@`":
+///
+/// * `:` admits `src:` source ids, `.` `_` `-` admit path fragments like
+///   `ws-b` or `forge.plan`.
+/// * No whitespace, quotes, `'`/`"`, `/`, `\`, or a second `@` — the
+///   stored string is later interpolated into LanceDB delete-filter
+///   predicates (`target_id = '{target}'`) and rendered into YAML
+///   frontmatter, so the same no-operator-no-quote discipline as
+///   [`validate_artifact_id`] applies.
+///
+/// The *key* half stays under the strict artifact-id rule — qualified
+/// refs name a real artifact on the far side, not an arbitrary string.
+pub fn validate_link_target(id: &str) -> anyhow::Result<()> {
+    if validate_artifact_id(id).is_ok() {
+        return Ok(());
+    }
+    if let Some((key, qualifier)) = id.split_once('@')
+        && validate_artifact_id(key).is_ok()
+        && !qualifier.is_empty()
+        && qualifier
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '-'))
+    {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "Link target is neither a valid artifact ID nor a qualified 'KEY@qualifier' \
+         reference (qualifier allowed: a-z, A-Z, 0-9, ., _, :, -): '{id}'"
+    )
+}
+
 /// Storage-layer filter for listing artifacts by kind/status.
 ///
 /// Semantically distinct from the composable query DSL in
@@ -65,10 +112,43 @@ pub struct ListFilter {
 #[allow(dead_code)]
 pub type ArtifactFilter = ListFilter;
 
+/// The canonical key a row is stored under.
+///
+/// ADR-030: a document's key is the slug its frontmatter declares when that
+/// slug is valid, and its display id when it declares none. A caller that
+/// already knows the key passes it; a caller that does not gets the rule
+/// applied to the document the row carries.
+///
+/// The result is never empty: a row without a key cannot be addressed, so an
+/// absent key falls back to the display id rather than to "".
+pub fn canonical_key_of(canonical_key: &str, display_id: &str, document: &str) -> String {
+    let prepared = canonical_key.trim();
+    if !prepared.is_empty() {
+        return prepared.to_string();
+    }
+    let derived = canonical_key_from_document(display_id, document);
+    if derived.is_empty() {
+        display_id.to_string()
+    } else {
+        derived
+    }
+}
+
 /// Minimal artifact data for creation.
 #[derive(Debug, Default)]
 pub struct NewArtifact {
     pub id: String,
+    /// The canonical key — the document's permanent identity (ADR-030).
+    ///
+    /// The `id` field stays the *display* id (`PRD-074`): a human-facing
+    /// alias that may repeat inside a workspace and across projects. This
+    /// field is the identity a row is keyed by and a reference resolves to.
+    ///
+    /// Schema v5 stores the key in its own `canonical_key` column, and that
+    /// column is the merge key of every upsert. A caller that leaves the
+    /// field empty gets the ADR-030 rule applied to `body` — see
+    /// [`canonical_key_of`].
+    pub canonical_key: String,
     pub kind: String,
     pub status: String,
     pub title: String,
@@ -86,6 +166,18 @@ pub struct NewArtifact {
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ArtifactRecord {
     pub id: String,
+    /// The canonical key — the document's permanent identity (ADR-030).
+    ///
+    /// `id` remains the display id (`PRD-074`): an alias that may repeat.
+    /// This is the key a row is identified by and a reference resolves to.
+    ///
+    /// `#[serde(default)]` so an export bundle written before the key
+    /// existed still loads. An absent field means "this payload predates the
+    /// key" — it never means "mint a new one" (SPEC-009: the absence of the
+    /// field does not mean create a new key). The import path derives the key
+    /// from the saved document instead.
+    #[serde(default)]
+    pub canonical_key: String,
     pub kind: String,
     pub status: String,
     pub title: String,
@@ -110,6 +202,92 @@ pub struct ArtifactRecord {
     pub embedding: Option<Vec<f32>>,
 }
 
+/// One source reconciliation change, keyed by the stable identity rather than
+/// by a display id that may be shared or change over time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdentityV5ReconcileChange {
+    pub canonical_key: String,
+    pub display_id: String,
+    pub action: &'static str,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct IdentityReconcileBoundaryHook {
+    reached: tokio::sync::Notify,
+    resume: tokio::sync::Notify,
+}
+
+#[cfg(test)]
+static IDENTITY_RECONCILE_BOUNDARY_HOOKS: std::sync::LazyLock<
+    std::sync::Mutex<BTreeMap<PathBuf, Arc<IdentityReconcileBoundaryHook>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(BTreeMap::new()));
+
+#[cfg(test)]
+async fn wait_at_identity_reconcile_test_boundary(workspace: &Path) {
+    let hook = IDENTITY_RECONCILE_BOUNDARY_HOOKS
+        .lock()
+        .unwrap()
+        .get(workspace)
+        .cloned();
+    if let Some(hook) = hook {
+        hook.reached.notify_one();
+        hook.resume.notified().await;
+    }
+}
+
+fn identity_v5_reconcile_changes(
+    before: Vec<ArtifactRecord>,
+    after: Vec<ArtifactRecord>,
+) -> anyhow::Result<Vec<IdentityV5ReconcileChange>> {
+    let index = |records: Vec<ArtifactRecord>| -> anyhow::Result<BTreeMap<String, ArtifactRecord>> {
+        let mut indexed = BTreeMap::new();
+        for record in records {
+            if record.canonical_key.is_empty()
+                || indexed
+                    .insert(record.canonical_key.clone(), record)
+                    .is_some()
+            {
+                anyhow::bail!("identity-v5 reconciliation returned duplicate or empty keys");
+            }
+        }
+        Ok(indexed)
+    };
+    let before = index(before)?;
+    let after = index(after)?;
+    let keys: std::collections::BTreeSet<_> = before.keys().chain(after.keys()).cloned().collect();
+    let mut changes = Vec::new();
+    for canonical_key in keys {
+        match (before.get(&canonical_key), after.get(&canonical_key)) {
+            (None, Some(record)) => changes.push(IdentityV5ReconcileChange {
+                canonical_key,
+                display_id: record.id.clone(),
+                action: "create",
+            }),
+            (Some(record), None) => changes.push(IdentityV5ReconcileChange {
+                canonical_key,
+                display_id: record.id.clone(),
+                action: "delete",
+            }),
+            (Some(old), Some(new))
+                if old.id != new.id
+                    || old.kind != new.kind
+                    || old.status != new.status
+                    || old.title != new.title
+                    || old.body.trim() != new.body.trim() =>
+            {
+                changes.push(IdentityV5ReconcileChange {
+                    canonical_key,
+                    display_id: new.id.clone(),
+                    action: "update",
+                });
+            }
+            _ => {}
+        }
+    }
+    Ok(changes)
+}
+
 /// Vector search result: an artifact record paired with its distance from the query.
 ///
 /// `distance` is the raw value from LanceDB (L2 or cosine distance).
@@ -130,6 +308,171 @@ impl VectorSearchHit {
     }
 }
 
+#[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
+type SemanticTestBackend = Arc<dyn Fn(&str) -> anyhow::Result<Vec<f32>> + Send + Sync>;
+
+#[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
+fn semantic_test_backends()
+-> &'static std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, SemanticTestBackend>> {
+    static BACKENDS: std::sync::LazyLock<
+        std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, SemanticTestBackend>>,
+    > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    &BACKENDS
+}
+
+/// Removes the workspace-specific test backend when dropped.
+#[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
+pub struct SemanticTestBackendGuard {
+    workspace: std::path::PathBuf,
+    backend: SemanticTestBackend,
+}
+
+#[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
+impl Drop for SemanticTestBackendGuard {
+    fn drop(&mut self) {
+        if let Ok(mut backends) = semantic_test_backends().lock()
+            && backends
+                .get(&self.workspace)
+                .is_some_and(|backend| Arc::ptr_eq(backend, &self.backend))
+        {
+            backends.remove(&self.workspace);
+        }
+    }
+}
+
+/// Install an in-process backend only for a test workspace and its guard's lifetime.
+#[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
+pub fn install_semantic_backend_for_test(
+    workspace: &Path,
+    embed: SemanticTestBackend,
+) -> anyhow::Result<SemanticTestBackendGuard> {
+    let workspace = workspace.canonicalize()?;
+    let mut backends = semantic_test_backends()
+        .lock()
+        .map_err(|_| anyhow::anyhow!("semantic test backend registry is poisoned"))?;
+    if backends.contains_key(&workspace) {
+        anyhow::bail!("a semantic test backend is already installed for this workspace");
+    }
+    backends.insert(workspace.clone(), embed.clone());
+    Ok(SemanticTestBackendGuard {
+        workspace,
+        backend: embed,
+    })
+}
+
+#[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
+pub(crate) fn semantic_backend_for_test(
+    workspace: &Path,
+) -> anyhow::Result<Option<SemanticTestBackend>> {
+    let workspace = workspace.canonicalize()?;
+    Ok(semantic_test_backends()
+        .lock()
+        .map_err(|_| anyhow::anyhow!("semantic test backend registry is poisoned"))?
+        .get(&workspace)
+        .cloned())
+}
+
+#[cfg(test)]
+fn verify_identity_vector_provenance(
+    record: &ArtifactRecord,
+    profile: &migrate::IdentityV5EmbeddingProvenance,
+) -> anyhow::Result<()> {
+    if profile.profile_digest != migrate::identity_profile_digest(profile) {
+        anyhow::bail!("semantic profile fingerprint is inconsistent");
+    }
+    let vector = record
+        .embedding
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("semantic result has no vector"))?;
+    if vector.len() != profile.dimension
+        || vector.iter().any(|value| !value.is_finite())
+        || !vector.iter().any(|value| *value != 0.0)
+    {
+        anyhow::bail!("semantic result vector has invalid dimension or values");
+    }
+    let input_digest = migrate::identity_input_digest(&record.embedding_text(profile.chunk_size));
+    if profile.input_digests.get(&record.canonical_key) != Some(&input_digest)
+        || profile.vector_digests.get(&record.canonical_key)
+            != Some(&migrate::identity_vector_digest(vector))
+    {
+        anyhow::bail!(
+            "semantic result '{}' does not match its pinned input and vector provenance",
+            record.canonical_key
+        );
+    }
+    Ok(())
+}
+
+#[cfg(feature = "semantic-search")]
+pub(crate) fn verify_row_local_semantic_provenance(
+    batch: &RecordBatch,
+    row: usize,
+    record: &ArtifactRecord,
+    profile: &migrate::IdentityV5EmbeddingProvenance,
+) -> anyhow::Result<()> {
+    if get_string(batch, "semantic_state", row).as_deref() != Some("ready") {
+        anyhow::bail!(
+            "semantic embedding for '{}' is pending recomputation",
+            record.canonical_key
+        );
+    }
+    let vector = record.embedding.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "ready semantic row '{}' has no vector",
+            record.canonical_key
+        )
+    })?;
+    if profile.profile_digest != migrate::identity_profile_digest(profile)
+        || vector.len() != profile.dimension
+        || vector.iter().any(|value| !value.is_finite())
+        || !vector.iter().any(|value| *value != 0.0)
+        || get_string(batch, "semantic_profile_digest", row).as_deref()
+            != Some(profile.profile_digest.as_str())
+        || get_string(batch, "semantic_input_digest", row).as_deref()
+            != Some(
+                migrate::identity_input_digest(&record.embedding_text(profile.chunk_size)).as_str(),
+            )
+        || get_string(batch, "semantic_vector_digest", row).as_deref()
+            != Some(migrate::identity_vector_digest(vector).as_str())
+    {
+        anyhow::bail!(
+            "semantic row '{}' does not match its pinned input and vector provenance",
+            record.canonical_key
+        );
+    }
+    Ok(())
+}
+
+// Match projection's body comparison: line endings and the renderer's one
+// trailing newline are not source drift.
+#[cfg(feature = "semantic-search")]
+fn semantic_canonical_body(body: &str) -> std::borrow::Cow<'_, str> {
+    if body.contains("\r\n") {
+        let mut normalized = body.replace("\r\n", "\n");
+        if normalized.ends_with('\n') {
+            normalized.pop();
+        }
+        std::borrow::Cow::Owned(normalized)
+    } else {
+        std::borrow::Cow::Borrowed(body.strip_suffix('\n').unwrap_or(body))
+    }
+}
+
+#[cfg(feature = "semantic-search")]
+fn semantic_random_token() -> anyhow::Result<String> {
+    use rand::TryRngCore;
+    use std::fmt::Write;
+    let mut bytes = [0u8; 16];
+    rand::rngs::OsRng
+        .try_fill_bytes(&mut bytes)
+        .map_err(|error| anyhow::anyhow!("cannot create semantic job token: {error}"))?;
+    let mut token = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(&mut token, "{byte:02x}")?;
+    }
+    Ok(token)
+}
+
 impl ArtifactRecord {
     /// Build the text used for embedding: title + first `chunk_size` chars of body.
     ///
@@ -144,6 +487,7 @@ impl ArtifactRecord {
     /// Convert to a lightweight ArtifactSummary (drops body and most metadata).
     pub fn to_summary(&self) -> ArtifactSummary {
         ArtifactSummary {
+            canonical_key: self.canonical_key.clone(),
             id: self.id.clone(),
             title: self.title.clone(),
             kind: self.kind.clone(),
@@ -152,11 +496,31 @@ impl ArtifactRecord {
     }
 
     /// Reconstruct YAML frontmatter fields as a BTreeMap for serialization.
+    ///
+    /// ADR-030: `id` stays the display alias and `slug` carries the
+    /// canonical key — the identity a reference resolves to. The two are
+    /// distinct on purpose: the alias may repeat, the key may not.
+    ///
+    /// The terms are the ones the rest of the codebase uses:
+    /// [`crate::artifact::frontmatter::slug_from_frontmatter`] reads the
+    /// `slug` field as the canonical key, and
+    /// [`crate::artifact::canonical_key::canonical_key_from_document`]
+    /// derives the same key from a document that declares it. A round trip
+    /// through [`crate::artifact::frontmatter::render_frontmatter`] and
+    /// back therefore hands the same key over — it never rewrites it.
+    ///
+    /// This map is a reconstruction for validation and comparison; it is
+    /// never rendered into a Markdown file, so no document is rewritten by
+    /// it.
     pub fn frontmatter_map(&self) -> BTreeMap<String, serde_yaml::Value> {
         use serde_yaml::Value;
 
         let mut map = BTreeMap::new();
         map.insert("id".to_string(), Value::String(self.id.clone()));
+        map.insert(
+            "slug".to_string(),
+            Value::String(canonical_key_of(&self.canonical_key, &self.id, &self.body)),
+        );
         map.insert("kind".to_string(), Value::String(self.kind.clone()));
         map.insert("status".to_string(), Value::String(self.status.clone()));
         map.insert("title".to_string(), Value::String(self.title.clone()));
@@ -190,6 +554,60 @@ impl ArtifactRecord {
         }
         map
     }
+}
+
+/// #446 — [`ArtifactRecord::frontmatter_map`] plus the artifact's real
+/// outgoing edges merged in as a `links` sequence.
+///
+/// Extracted from [`LanceStore::frontmatter_map_with_links`] so the
+/// constellation read path ([`crate::constellation::workspace_read`]) builds
+/// the SAME map from its captured edges. Two builders here would be two
+/// answers to "what does validation see", and `body-links-drift` would fire on
+/// one layout and not the other.
+///
+/// `relations` is the edge list the caller's own read source observed —
+/// `LanceStore::get_relations` on a legacy layout, `WorkspaceRead::get_relations`
+/// on a migrated one. An empty list yields the link-less map, which is the
+/// documented degrade-not-refuse behaviour.
+pub fn frontmatter_map_with_links_from(
+    record: &ArtifactRecord,
+    relations: &[(String, String)],
+) -> BTreeMap<String, serde_yaml::Value> {
+    use serde_yaml::{Mapping, Value};
+
+    let mut map = record.frontmatter_map();
+    // The document's own frontmatter is the source of truth for what it
+    // declares. Its `links` are written in the ids a reader knows, while the
+    // relations table holds the same edges under canonical keys — comparing
+    // one against the other reported a drift that does not exist. The
+    // declaration wins; the table is the fallback for a record whose body
+    // carries no frontmatter at all.
+    if let Ok((body_fm, _)) = crate::artifact::frontmatter::parse_frontmatter(&record.body)
+        && let Some(links) = body_fm.get("links")
+    {
+        map.insert("links".to_string(), links.clone());
+        return map;
+    }
+    if relations.is_empty() {
+        return map;
+    }
+    let seq: Vec<Value> = relations
+        .iter()
+        .map(|(target, relation)| {
+            let mut entry = Mapping::new();
+            entry.insert(
+                Value::String("target".into()),
+                Value::String(target.clone()),
+            );
+            entry.insert(
+                Value::String("relation".into()),
+                Value::String(relation.clone()),
+            );
+            Value::Mapping(entry)
+        })
+        .collect();
+    map.insert("links".to_string(), Value::Sequence(seq));
+    map
 }
 
 /// Fingerprint of the exact text that feeds the embedding: title, then body.
@@ -412,7 +830,16 @@ fn canonicalize_tag(raw: &str) -> String {
 
 /// LanceDB-backed artifact store.
 pub struct LanceStore {
-    _db: Connection,
+    _db: Option<Connection>,
+    /// The workspace this index belongs to.
+    ///
+    /// The rows know which documents exist in the index; the workspace knows
+    /// which documents exist at all. A link may name a document whose row is
+    /// not written yet, and only the workspace can say which key that
+    /// document has.
+    workspace: PathBuf,
+    identity_v5: bool,
+    table_generation: [crate::constellation::durability::PhysicalIdentity; 3],
     artifacts: Table,
     #[allow(dead_code)]
     evidence: Table,
@@ -449,40 +876,225 @@ pub struct LanceStore {
     refresh_call_count: std::sync::atomic::AtomicU64,
 }
 
+/// One document of the workspace, as the scan found it on disk.
+///
+/// The Markdown is the only place that knows a document's key, and a link
+/// may name a document whose row is not written yet. This is what the scan
+/// answers for every document of the workspace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceDocument {
+    /// The document's canonical key — the slug its frontmatter declares, and
+    /// its display id when it declares none.
+    pub canonical_key: String,
+    /// The display id the document declares.
+    pub display_id: String,
+    /// The document's title.
+    pub title: String,
+    /// The document's path, relative to the workspace.
+    pub relative_path: String,
+}
+
+/// Every document of the workspace, read from the Markdown.
+///
+/// This is the one scan of the workspace's documents. Both the endpoint
+/// resolution and the surfaces that name a document read from here, so two
+/// surfaces cannot disagree about which document a name means.
+pub async fn workspace_documents(workspace: &Path) -> anyhow::Result<Vec<WorkspaceDocument>> {
+    let mut documents: Vec<WorkspaceDocument> = Vec::new();
+    for (relative_path, bytes) in migrate::read_identity_source_files(workspace).await? {
+        let path = workspace.join(&relative_path);
+        let text = std::str::from_utf8(&bytes)
+            .map_err(|err| anyhow::anyhow!("{} is not valid UTF-8: {err}", path.display()))?;
+        let (frontmatter, _body) =
+            crate::artifact::frontmatter::parse_frontmatter_borrowed(text)
+                .map_err(|reason| anyhow::anyhow!("{} cannot be read: {reason}", path.display()))?;
+        let display_id = frontmatter
+            .get("id")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("{} has no valid id", path.display()))?;
+        documents.push(WorkspaceDocument {
+            canonical_key: canonical_key_of("", display_id, text),
+            display_id: display_id.to_string(),
+            title: frontmatter
+                .get("title")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            relative_path,
+        });
+    }
+    documents.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    Ok(documents)
+}
+
+/// The canonical keys of the workspace's documents, by the display id they
+/// declare.
+///
+/// A display id several documents declare stays ambiguous — the map holds
+/// every candidate, and the caller that needs one document says so.
+pub fn document_keys_by_display(documents: &[WorkspaceDocument]) -> BTreeMap<String, Vec<String>> {
+    let mut by_display: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for document in documents {
+        by_display
+            .entry(document.display_id.clone())
+            .or_default()
+            .push(document.canonical_key.clone());
+    }
+    by_display
+}
+
+/// The canonical key a declared link endpoint names.
+///
+/// A qualified cross-source reference is not a local selector and keeps its
+/// bytes. A display id exactly one document declares becomes that
+/// document's key. A display id several documents declare stays ambiguous —
+/// it keeps its bytes, and the resolver reports it rather than picking one.
+pub fn declared_endpoint_key(endpoint: &str, by_display: &BTreeMap<String, Vec<String>>) -> String {
+    if endpoint.contains('@') {
+        return endpoint.to_string();
+    }
+    match by_display.get(endpoint) {
+        Some(keys) if keys.len() == 1 => keys[0].clone(),
+        _ => endpoint.to_string(),
+    }
+}
+
+/// Refuse a damaged table before LanceDB reads one of its manifests.
+///
+/// `lance` derives the manifest length by subtracting the offset it reads
+/// from the manifest footer (`lance-4.0.0/src/dataset.rs:612`), so damaged
+/// manifest bytes abort the process instead of failing the open. A missing
+/// table stays missing: the guard speaks about damage only.
+pub(crate) async fn verify_manifests(lance_dir: &Path, tables: &[&str]) -> anyhow::Result<()> {
+    for table in tables {
+        verify_table_manifests(&lance_dir.join(format!("{table}.lance")), table).await?;
+    }
+    Ok(())
+}
+
+#[cfg(any(unix, windows))]
+fn table_generation(
+    lance: &Path,
+    names: &migrate::LegacyTableNames,
+) -> anyhow::Result<[crate::constellation::durability::PhysicalIdentity; 3]> {
+    let identity = |name: &str| {
+        let path = lance.join(format!("{name}.lance"));
+        let metadata = std::fs::symlink_metadata(&path)?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            anyhow::bail!("identity table {} is not a real directory", path.display());
+        }
+        crate::constellation::durability::physical_identity_of_path(&path).map_err(|error| {
+            anyhow::anyhow!("cannot identify identity table {}: {error}", path.display())
+        })
+    };
+    Ok([
+        identity(&names.artifacts)?,
+        identity(&names.relations)?,
+        identity(&names.evidence)?,
+    ])
+}
+
+#[cfg(not(any(unix, windows)))]
+fn table_generation(
+    _lance: &Path,
+    _names: &migrate::LegacyTableNames,
+) -> anyhow::Result<[crate::constellation::durability::PhysicalIdentity; 3]> {
+    anyhow::bail!("physical table identity is unavailable on this platform")
+}
+
 impl LanceStore {
-    /// Connect to an existing LanceDB workspace (tables must already exist).
-    /// Runs idempotent schema migrations on every open.
-    pub async fn open(workspace_path: &Path) -> anyhow::Result<Self> {
-        let lance_dir = workspace_path.join("lance");
-        let db = lancedb::connect(lance_dir.to_str().ok_or_else(|| {
+    fn writer_connection(&self) -> anyhow::Result<&Connection> {
+        self._db
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("writer connection requires a guarded write handle"))
+    }
+
+    async fn connect_for_write(
+        workspace: &Path,
+        guard: &WorkspaceLock,
+    ) -> anyhow::Result<Connection> {
+        guard.matches_workspace(workspace)?;
+        let lance_dir = workspace.join("lance");
+        lancedb::connect(lance_dir.to_str().ok_or_else(|| {
             anyhow::anyhow!(
                 "LanceDB path contains non-UTF-8 characters: {:?}",
                 lance_dir
             )
         })?)
         .execute()
-        .await?;
+        .await
+        .map_err(Into::into)
+    }
 
-        let artifacts = db.open_table("artifacts").execute().await?;
-        let evidence = db.open_table("evidence").execute().await?;
-        let relations = db.open_table("relations").execute().await?;
-        let fpf_spec = db.open_table("fpf_spec").execute().await.ok();
+    /// Connect to an existing LanceDB workspace without modifying its tables.
+    pub async fn open(workspace_path: &Path) -> anyhow::Result<Self> {
+        let lance_dir = workspace_path.join("lance");
+        migrate::ensure_legacy_layout(&lance_dir)?;
 
-        // Ensure change_log table exists (migration for older workspaces)
-        migrate::ensure_change_log(&db).await?;
-        let change_log = db.open_table("change_log").execute().await.ok();
+        // Schema v5 (ADR-030): a workspace whose identity-v5 migration has
+        // been published keeps its rows in the three tables the readiness
+        // marker names. A damaged marker is an explicit error — the store
+        // never falls back to the pre-migration index.
+        let names = migrate::resolve_legacy_table_names(&lance_dir)?;
+        let generation = table_generation(&lance_dir, &names)?;
 
-        // Run migrations (idempotent — safe on every open)
-        migrate::run_migrations(
-            &artifacts,
-            &relations,
-            change_log.as_ref(),
-            fpf_spec.as_ref(),
+        verify_manifests(
+            &lance_dir,
+            &[
+                names.artifacts.as_str(),
+                names.evidence.as_str(),
+                names.relations.as_str(),
+                "fpf_spec",
+                "change_log",
+            ],
         )
         .await?;
 
+        let artifacts = crate::constellation::lance_tables::open_existing_native_table(
+            &lance_dir.join(format!("{}.lance", names.artifacts)),
+            &names.artifacts,
+        )
+        .await?;
+        if migrate::read_identity_v5_marker(&lance_dir)?
+            .and_then(|marker| marker.semantic)
+            .is_some()
+        {
+            let schema = artifacts.schema().await?;
+            for name in migrate::SEMANTIC_COLUMNS {
+                let field = schema.field_with_name(name).map_err(|_| {
+                    anyhow::anyhow!("published semantic column '{name}' is missing")
+                })?;
+                if field.data_type() != &arrow_schema::DataType::Utf8 || !field.is_nullable() {
+                    anyhow::bail!("published semantic column '{name}' has an incompatible type");
+                }
+            }
+        }
+        let evidence = crate::constellation::lance_tables::open_existing_native_table(
+            &lance_dir.join(format!("{}.lance", names.evidence)),
+            &names.evidence,
+        )
+        .await?;
+        let relations = crate::constellation::lance_tables::open_existing_native_table(
+            &lance_dir.join(format!("{}.lance", names.relations)),
+            &names.relations,
+        )
+        .await?;
+        let fpf_spec =
+            super::auxiliary::open_optional_existing_table(&lance_dir, "fpf_spec").await?;
+        let change_log =
+            super::auxiliary::open_optional_existing_table(&lance_dir, "change_log").await?;
+        if migrate::resolve_legacy_table_names(&lance_dir)? != names
+            || table_generation(&lance_dir, &names)? != generation
+        {
+            anyhow::bail!("identity tables changed while opening; retry with a fresh handle");
+        }
+
         Ok(Self {
-            _db: db,
+            _db: None,
+            identity_v5: names.artifacts == migrate::IDENTITY_V5_ARTIFACTS_TABLE,
+            table_generation: generation,
+            workspace: workspace_path.to_path_buf(),
             artifacts,
             evidence,
             relations,
@@ -494,9 +1106,129 @@ impl LanceStore {
         })
     }
 
-    /// Create tables if they don't exist, then open the store.
-    pub async fn init(workspace_path: &Path) -> anyhow::Result<Self> {
+    /// Migrate an existing legacy index under the caller's workspace guard.
+    pub async fn migrate_identity_v5(
+        workspace: &Path,
+        guard: &WorkspaceLock,
+    ) -> anyhow::Result<migrate::IdentityV5Report> {
+        migrate::run_identity_v5_migration(workspace, guard).await
+    }
+
+    /// Explicitly initialize files without an existing identity index.
+    /// Existing identity datasets cannot be treated as empty input.
+    pub async fn init_from_markdown(
+        workspace: &Path,
+        guard: &WorkspaceLock,
+    ) -> anyhow::Result<migrate::IdentityV5Report> {
+        migrate::run_identity_v5_initialization(workspace, guard, true).await
+    }
+
+    /// Prepare a legacy index under the caller's workspace lock and return a
+    /// freshly opened v5 handle. A missing legacy index is not a new workspace.
+    pub async fn open_for_write(
+        workspace_path: &Path,
+        _lock: &crate::workspace::lock::WorkspaceLock,
+    ) -> anyhow::Result<Self> {
+        #[cfg(windows)]
+        anyhow::bail!("legacy identity writes are unavailable on Windows");
+        _lock.matches_workspace(workspace_path)?;
+        let lance = workspace_path.join("lance");
+        migrate::ensure_legacy_layout(&lance)?;
+        if migrate::read_identity_v5_marker(&lance)?.is_none() {
+            let has_legacy_tables = ["artifacts", "relations", "evidence"]
+                .iter()
+                .any(|name| lance.join(format!("{name}.lance")).exists());
+            if has_legacy_tables {
+                for name in ["artifacts", "relations", "evidence"] {
+                    let path = lance.join(format!("{name}.lance"));
+                    let metadata = std::fs::metadata(&path).map_err(|error| {
+                        anyhow::anyhow!(
+                            "legacy index table {} is unavailable: {error}",
+                            path.display()
+                        )
+                    })?;
+                    if !metadata.is_dir() {
+                        anyhow::bail!("legacy index table {} is not a directory", path.display());
+                    }
+                }
+                let legacy = Self::open(workspace_path).await?;
+                let db = Self::connect_for_write(workspace_path, _lock).await?;
+                super::auxiliary::check_identity_change_log(&db).await?;
+                drop(legacy);
+                drop(db);
+                migrate::run_identity_v5_migration(workspace_path, _lock).await?;
+            } else {
+                // A missing or empty lance directory on a workspace that holds
+                // canonical Markdown is a fresh index, not a missing index —
+                // bootstrap identity-v5 directly from the Markdown source.
+                migrate::run_identity_v5_initialization(workspace_path, _lock, true).await?;
+            }
+        }
+        let verified = Self::open(workspace_path).await?;
+        let db = Self::connect_for_write(workspace_path, _lock).await?;
+        migrate::prepare_identity_semantic_protocol(workspace_path, &db, _lock).await?;
+        super::auxiliary::prepare_identity_change_log(&db).await?;
+        if let Some(table) = &verified.fpf_spec {
+            migrate::migrate_fpf_spec(table).await?;
+        }
+        drop(verified);
+        let mut store = Self::open(workspace_path).await?;
+        store._db = Some(db);
+        store.ensure_identity_v5_writable(_lock)?;
+        Ok(store)
+    }
+    /// Initialize an empty legacy workspace while its caller holds the
+    /// workspace mutation lock. Existing Markdown or non-stage tables are
+    /// not treated as a new workspace.
+    pub async fn init_new(
+        workspace_path: &Path,
+        _lock: &crate::workspace::lock::WorkspaceLock,
+    ) -> anyhow::Result<Self> {
+        #[cfg(windows)]
+        anyhow::bail!("legacy identity initialization is unavailable on Windows");
+        _lock.matches_workspace(workspace_path)?;
         let lance_dir = workspace_path.join("lance");
+        migrate::ensure_legacy_layout(&lance_dir)?;
+        tokio::fs::create_dir_all(&lance_dir).await?;
+        if migrate::read_identity_v5_marker(&lance_dir)?.is_some() {
+            anyhow::bail!("workspace already has a published identity-v5 index");
+        }
+        let db = lancedb::connect(
+            lance_dir
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("non-UTF-8 LanceDB path"))?,
+        )
+        .execute()
+        .await?;
+        let tables = db.table_names().execute().await?;
+        if tables.iter().any(|name| {
+            ![
+                migrate::IDENTITY_V5_ARTIFACTS_TABLE,
+                migrate::IDENTITY_V5_RELATIONS_TABLE,
+                migrate::IDENTITY_V5_EVIDENCE_TABLE,
+            ]
+            .contains(&name.as_str())
+        }) {
+            anyhow::bail!("workspace is not new: existing Lance tables require migration");
+        }
+        if !migrate::read_identity_v5_source(workspace_path)
+            .await?
+            .documents
+            .is_empty()
+        {
+            anyhow::bail!("workspace is not new: existing Markdown requires migration");
+        }
+        migrate::run_identity_v5_migration(workspace_path, _lock).await?;
+        Self::init(workspace_path, _lock).await
+    }
+
+    /// Create tables if they don't exist, then open the store.
+    pub async fn init(workspace_path: &Path, guard: &WorkspaceLock) -> anyhow::Result<Self> {
+        #[cfg(windows)]
+        anyhow::bail!("legacy identity initialization is unavailable on Windows");
+        guard.matches_workspace(workspace_path)?;
+        let lance_dir = workspace_path.join("lance");
+        migrate::ensure_legacy_layout(&lance_dir)?;
         tokio::fs::create_dir_all(&lance_dir).await?;
 
         let db = lancedb::connect(lance_dir.to_str().ok_or_else(|| {
@@ -508,26 +1240,64 @@ impl LanceStore {
         .execute()
         .await?;
         let existing_tables = db.table_names().execute().await?;
+        if migrate::read_identity_v5_marker(&lance_dir)?.is_none()
+            && !["artifacts", "relations", "evidence"]
+                .iter()
+                .any(|name| existing_tables.iter().any(|existing| existing == name))
+        {
+            anyhow::bail!(
+                "uninitialized legacy index; initialize a new workspace under its mutation lock"
+            );
+        }
+
+        // Schema v5 (ADR-030): the tables this workspace owns are the ones
+        // the readiness marker names, so `init` on a migrated workspace does
+        // not resurrect the pre-migration tables it stopped using.
+        let names = migrate::resolve_legacy_table_names(&lance_dir)?;
+        if names.artifacts == migrate::IDENTITY_V5_ARTIFACTS_TABLE {
+            for name in [&names.artifacts, &names.relations, &names.evidence] {
+                if !existing_tables.contains(name) {
+                    anyhow::bail!("published identity-v5 table '{name}' is missing");
+                }
+            }
+        } else if ["artifacts", "relations", "evidence"]
+            .iter()
+            .any(|name| existing_tables.iter().any(|existing| existing == name))
+            && ["artifacts", "relations", "evidence"]
+                .iter()
+                .any(|name| !existing_tables.iter().any(|existing| existing == name))
+        {
+            anyhow::bail!("legacy index is incomplete; refusing to create missing tables");
+        }
+        if names.artifacts != migrate::IDENTITY_V5_ARTIFACTS_TABLE {
+            return Self::open(workspace_path).await;
+        }
 
         // Create artifacts table if not present
-        if !existing_tables.contains(&"artifacts".to_string()) {
+        if !existing_tables.contains(&names.artifacts) {
             let schema = schema::artifacts_schema();
             let batch = empty_artifacts_batch(schema.clone())?;
-            db.create_table("artifacts", vec![batch]).execute().await?;
+            db.create_table(&names.artifacts, vec![batch])
+                .execute()
+                .await?;
         }
 
         // Create evidence table if not present
-        if !existing_tables.contains(&"evidence".to_string()) {
+        if !existing_tables.contains(&names.evidence) {
             let schema = schema::evidence_schema();
             let batch = empty_evidence_batch(schema.clone())?;
-            db.create_table("evidence", vec![batch]).execute().await?;
+            db.create_table(&names.evidence, vec![batch])
+                .execute()
+                .await?;
         }
 
         // Create relations table if not present
-        if !existing_tables.contains(&"relations".to_string()) {
+        if !existing_tables.contains(&names.relations) {
             let schema = schema::relations_schema();
             let batch = empty_relations_batch(schema.clone())?;
-            db.create_table("relations", vec![batch]).execute().await?;
+            db.create_table(&names.relations, vec![batch])
+                .execute()
+                .await?;
         }
 
         // Create fpf_spec table if not present
@@ -544,14 +1314,30 @@ impl LanceStore {
             db.create_table("change_log", vec![batch]).execute().await?;
         }
 
-        let artifacts = db.open_table("artifacts").execute().await?;
-        let evidence = db.open_table("evidence").execute().await?;
-        let relations = db.open_table("relations").execute().await?;
-        let fpf_spec = db.open_table("fpf_spec").execute().await.ok();
-        let change_log = db.open_table("change_log").execute().await.ok();
+        verify_manifests(
+            &lance_dir,
+            &[
+                names.artifacts.as_str(),
+                names.evidence.as_str(),
+                names.relations.as_str(),
+                "fpf_spec",
+                "change_log",
+            ],
+        )
+        .await?;
+
+        let artifacts = db.open_table(&names.artifacts).execute().await?;
+        let evidence = db.open_table(&names.evidence).execute().await?;
+        let relations = db.open_table(&names.relations).execute().await?;
+        let fpf_spec = Some(db.open_table("fpf_spec").execute().await?);
+        let change_log = Some(db.open_table("change_log").execute().await?);
+        let generation = table_generation(&lance_dir, &names)?;
 
         Ok(Self {
-            _db: db,
+            _db: Some(db),
+            identity_v5: names.artifacts == migrate::IDENTITY_V5_ARTIFACTS_TABLE,
+            table_generation: generation,
+            workspace: workspace_path.to_path_buf(),
             artifacts,
             evidence,
             relations,
@@ -561,6 +1347,19 @@ impl LanceStore {
             #[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
             refresh_call_count: std::sync::atomic::AtomicU64::new(0),
         })
+    }
+
+    /// Initialize a fresh pre-identity-v5 fixture for downstream tests.
+    ///
+    /// This is unavailable in release builds. It refuses an existing
+    /// identity-v5 owner, source Markdown, or Lance data.
+    #[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
+    pub async fn init_legacy_for_test(
+        workspace_path: &Path,
+        guard: &WorkspaceLock,
+    ) -> anyhow::Result<Self> {
+        migrate::initialize_legacy_workspace_for_test(workspace_path, guard).await?;
+        Self::open(workspace_path).await
     }
 
     /// Refresh every open `Table` handle to the latest manifest version.
@@ -607,7 +1406,10 @@ impl LanceStore {
     /// all-or-nothing but requires `&mut self` or `Arc<Mutex<…>>`
     /// interior mutability — a larger refactor deferred to the retry-budget
     /// redesign (see deferred PROB after PROB-074 audit closure).
-    pub async fn refresh(&self) -> anyhow::Result<()> {
+    pub async fn refresh(&self, permit: &dyn WorkspaceReadPermit) -> anyhow::Result<()> {
+        if self.identity_generation_changed(permit)? {
+            anyhow::bail!("identity index generation changed; reopen the store before reading");
+        }
         // Pre-flight version check — skip refresh entirely if every
         // mandatory table is already at its on-disk (latest) version.
         // `Table::version()` reads the in-memory version tag; for a
@@ -794,11 +1596,16 @@ impl LanceStore {
     /// Uses `tokio::time::sleep` (NOT `std::thread::sleep`) so the retry
     /// loop cooperates with the async runtime — blocking the executor
     /// thread on a backoff would starve sibling MCP tool calls.
-    pub async fn with_retry_on_stale<F, Fut, T>(&self, op: F) -> anyhow::Result<T>
+    pub async fn with_retry_on_stale<F, Fut, T>(
+        &self,
+        permit: &dyn WorkspaceReadPermit,
+        op: F,
+    ) -> anyhow::Result<T>
     where
         F: Fn() -> Fut,
         Fut: std::future::Future<Output = anyhow::Result<T>> + Send,
     {
+        self.refresh(permit).await?;
         // Worst-case path: initial attempt + (RETRY_ATTEMPTS - 1) retries.
         // We track the last error across attempts so RetryExhausted can
         // carry it as the chained source on giving up.
@@ -849,7 +1656,7 @@ impl LanceStore {
                             "LanceStore: skipping refresh (within {}ms debounce, PROB-075 F-3)",
                             REFRESH_DEBOUNCE_MS
                         );
-                    } else if let Err(refresh_err) = self.refresh().await {
+                    } else if let Err(refresh_err) = self.refresh(permit).await {
                         // refresh() failed — propagate immediately rather
                         // than burn the rest of the budget. The original
                         // stale error is preserved via the chain.
@@ -890,8 +1697,12 @@ impl LanceStore {
     /// directly without coupling them to the projection pipeline they're
     /// not exercising.
     #[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
-    pub async fn create_artifact_for_test(&self, artifact: &NewArtifact) -> anyhow::Result<String> {
-        self.create_artifact(artifact).await
+    pub async fn create_artifact_for_test(
+        &self,
+        guard: &WorkspaceLock,
+        artifact: &NewArtifact,
+    ) -> anyhow::Result<String> {
+        self.create_artifact(guard, artifact).await
     }
 
     /// Test-only escape hatch for raw relation insertion. Same rationale as
@@ -899,18 +1710,23 @@ impl LanceStore {
     #[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
     pub async fn add_relation_for_test(
         &self,
+        guard: &WorkspaceLock,
         source: &str,
         target: &str,
         relation: &str,
     ) -> anyhow::Result<()> {
-        self.add_relation(source, target, relation).await
+        self.add_relation(guard, source, target, relation).await
     }
 
     /// Test-only escape hatch for raw artifact deletion. Same rationale as
     /// `create_artifact_for_test`.
     #[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
-    pub async fn delete_artifact_for_test(&self, id: &str) -> anyhow::Result<()> {
-        self.delete_artifact(id).await
+    pub async fn delete_artifact_for_test(
+        &self,
+        guard: &WorkspaceLock,
+        id: &str,
+    ) -> anyhow::Result<()> {
+        self.delete_artifact(guard, id).await
     }
 
     /// Test-only escape hatch — backdate the `created_at` column for an
@@ -921,14 +1737,19 @@ impl LanceStore {
     #[cfg(any(test, all(feature = "test-helpers", debug_assertions)))]
     pub async fn set_created_at_for_test(
         &self,
+        guard: &WorkspaceLock,
         id: &str,
         created_at_rfc3339: &str,
     ) -> anyhow::Result<()> {
+        self.ensure_identity_v5_writable(guard)?;
         // Verify the artifact exists before the silent LanceDB update.
-        if self.get_record(id).await?.is_none() {
+        if self.get_record(guard, id).await?.is_none() {
             anyhow::bail!("Cannot set created_at: artifact '{}' not found", id);
         }
-        let predicate = format!("id = '{}'", id.replace('\'', "''"));
+        let Some(key) = self.resolve_canonical_key(guard, id).await? else {
+            anyhow::bail!("Cannot set created_at: artifact '{}' not found", id);
+        };
+        let predicate = format!("canonical_key = '{}'", key.replace('\'', "''"));
         self.artifacts
             .update()
             .only_if(predicate)
@@ -941,8 +1762,768 @@ impl LanceStore {
         Ok(())
     }
 
+    /// Seed a fully profile-bound vector in a test workspace, never in release.
+    #[cfg(test)]
+    pub async fn seed_semantic_vector_for_test(
+        &self,
+        guard: &WorkspaceLock,
+        id: &str,
+        vector: &[f32],
+    ) -> anyhow::Result<()> {
+        self.ensure_identity_v5_writable(guard)?;
+        if vector.len() != schema::EMBEDDING_DIM as usize
+            || vector.iter().any(|value| !value.is_finite())
+            || !vector.iter().any(|value| *value != 0.0)
+        {
+            anyhow::bail!("invalid test semantic vector");
+        }
+        let record = self
+            .get_record(guard, id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("test semantic artifact not found"))?;
+        let profile = migrate::test_identity_profile(&self.workspace)?;
+        migrate::publish_identity_semantic_profile(&self.workspace, &profile, guard)?;
+        let input = migrate::identity_input_digest(&record.embedding_text(profile.chunk_size));
+        let vector_digest = migrate::identity_vector_digest(vector);
+        let literal = format!(
+            "[{}]",
+            vector
+                .iter()
+                .map(|value| format!("{value:?}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let result = self
+            .artifacts
+            .update()
+            .only_if(format!(
+                "canonical_key = '{}'",
+                record.canonical_key.replace('\'', "''")
+            ))
+            .column("embedding", literal)
+            .column("semantic_input_digest", format!("'{input}'"))
+            .column(
+                "semantic_profile_digest",
+                format!("'{}'", profile.profile_digest),
+            )
+            .column("semantic_vector_digest", format!("'{vector_digest}'"))
+            .column("semantic_state", "'ready'")
+            .column("semantic_job_id", "NULL")
+            .column("semantic_attempt_token", "NULL")
+            .execute()
+            .await?;
+        if result.rows_updated != 1 {
+            anyhow::bail!("test semantic seed matched {} rows", result.rows_updated);
+        }
+        Ok(())
+    }
+
+    /// Resolve a selector to the canonical key of the one row it names.
+    ///
+    /// ADR-030 makes the display id an *alias*: a repeatable, human-facing
+    /// name. The legacy index therefore resolves an alias through the shared
+    /// resolver ([`crate::artifact::canonical_key::resolve_artifact`]) fed
+    /// with this index's own rows, and every filter, upsert and mutation
+    /// then addresses the row by `canonical_key = '…'`.
+    ///
+    /// The resolver is the one the capture side uses too, so both layouts
+    /// agree on which document a selector names — including the rule that a
+    /// numeric-shaped key does not outrank a competing display alias.
+    ///
+    /// `Ok(None)` means that no row matches. Resolver refusals remain errors
+    /// carrying their `ResolveError` type, so ambiguity and key collisions
+    /// cannot be reported as absence.
+    pub async fn resolve_canonical_key(
+        &self,
+        permit: &dyn WorkspaceReadPermit,
+        selector: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let candidates = self.alias_candidates(permit).await?;
+        match resolve_artifact(selector, &candidates) {
+            Ok(Some(resolved)) => Ok(Some(resolved.identity.canonical_key)),
+            Ok(None) => Ok(None),
+            Err(problem) => Err(anyhow::Error::new(problem)),
+        }
+    }
+
+    /// The display id a selector names.
+    ///
+    /// The history rows carry the display id, so a selector given in any
+    /// legacy route — the display id, a lower-case form of it, or the
+    /// canonical key — has to arrive at the same description. A selector that
+    /// names more than one document, or none, yields `None`: the caller then
+    /// keeps the bytes it was given rather than choosing a document.
+    pub async fn resolve_display_id(
+        &self,
+        permit: &dyn WorkspaceReadPermit,
+        selector: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let candidates = self.alias_candidates(permit).await?;
+        match resolve_artifact(selector, &candidates) {
+            Ok(Some(resolved)) => Ok(Some(resolved.identity.display_id)),
+            Ok(None) => Ok(None),
+            Err(problem) => Err(anyhow::Error::new(problem)),
+        }
+    }
+
+    /// This index's own rows as resolver candidates.
+    ///
+    /// Only the three columns the resolver reads are pulled: a resolution
+    /// must not drag every document body through the pipe.
+    async fn alias_candidates(
+        &self,
+        permit: &dyn WorkspaceReadPermit,
+    ) -> anyhow::Result<Vec<ArtifactCandidate>> {
+        self.refresh(permit).await?;
+        if !self.identity_v5 {
+            return Ok(workspace_documents(&self.workspace)
+                .await?
+                .into_iter()
+                .map(|doc| ArtifactCandidate {
+                    canonical_key: doc.canonical_key,
+                    display_id: doc.display_id,
+                    title: doc.title,
+                    relative_path: doc.relative_path.into(),
+                })
+                .collect());
+        }
+        let stream = self
+            .artifacts
+            .query()
+            .select(Select::columns(&["id", "canonical_key", "title"]))
+            .execute()
+            .await?;
+        let batches = collect_batches(stream).await?;
+        let candidates = candidates_from_batches(&batches, false);
+        if candidates.len() != batches.iter().map(RecordBatch::num_rows).sum::<usize>() {
+            anyhow::bail!("identity-v5 artifacts contain an invalid identity");
+        }
+        Ok(candidates)
+    }
+
+    async fn legacy_record(
+        &self,
+        permit: &dyn WorkspaceReadPermit,
+        selector: &str,
+    ) -> anyhow::Result<Option<ArtifactRecord>> {
+        let candidates = self.alias_candidates(permit).await?;
+        let Some(resolved) = resolve_artifact(selector, &candidates)? else {
+            return Ok(None);
+        };
+        let identity = resolved.identity;
+        if candidates
+            .iter()
+            .filter(|candidate| candidate.display_id == identity.display_id)
+            .count()
+            != 1
+        {
+            anyhow::bail!(
+                "legacy index cannot distinguish display id '{}'",
+                identity.display_id
+            );
+        }
+        let predicate = format!("id = '{}'", identity.display_id.replace('\'', "''"));
+        let batches =
+            collect_batches(self.artifacts.query().only_if(predicate).execute().await?).await?;
+        if batches.iter().map(RecordBatch::num_rows).sum::<usize>() > 1 {
+            anyhow::bail!(
+                "legacy index contains duplicate rows for '{}'",
+                identity.display_id
+            );
+        }
+        for batch in &batches {
+            if batch.num_rows() == 1 {
+                let mut record = extract_record(batch, 0)
+                    .ok_or_else(|| anyhow::anyhow!("legacy artifact row has no id"))?;
+                record.canonical_key = identity.canonical_key;
+                return Ok(Some(record));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Inspect a v4 row by display id without consulting Markdown. This is
+    /// for recovery preflight only: a v4 row alone cannot establish a canonical
+    /// identity. Duplicate aliases and malformed rows are errors.
+    pub async fn legacy_record_by_display_id(
+        &self,
+        permit: &dyn WorkspaceReadPermit,
+        display_id: &str,
+    ) -> anyhow::Result<Option<ArtifactRecord>> {
+        self.refresh(permit).await?;
+        if self.identity_v5 {
+            anyhow::bail!("raw legacy display lookup requires a v4 handle");
+        }
+        let display_id = display_id.trim();
+        if display_id.is_empty() {
+            anyhow::bail!("legacy display id is empty");
+        }
+        let batches = collect_batches(self.artifacts.query().execute().await?).await?;
+        let mut found = None;
+        for batch in &batches {
+            for row in 0..batch.num_rows() {
+                for field in [
+                    "id",
+                    "kind",
+                    "status",
+                    "title",
+                    "depth",
+                    "created_at",
+                    "updated_at",
+                ] {
+                    required_utf8(batch, row, "legacy artifacts", field)?;
+                }
+                required_large_utf8(batch, row, "legacy artifacts", "body")?;
+                if get_f64(batch, "r_eff_score", row).is_none() {
+                    anyhow::bail!("legacy artifact row has invalid score");
+                }
+                if required_utf8(batch, row, "legacy artifacts", "id")?
+                    .eq_ignore_ascii_case(display_id)
+                {
+                    if found.is_some() {
+                        anyhow::bail!("legacy index contains duplicate rows for '{display_id}'");
+                    }
+                    found = Some(
+                        extract_record(batch, row)
+                            .ok_or_else(|| anyhow::anyhow!("legacy artifact row has no id"))?,
+                    );
+                }
+            }
+        }
+        Ok(found)
+    }
+    /// Whether this handle was opened on the published v5 tables.
+    pub fn uses_identity_v5(&self) -> bool {
+        self.identity_v5
+    }
+
+    /// Workspace whose lock and source own this handle.
+    pub fn workspace_path(&self) -> &Path {
+        &self.workspace
+    }
+
+    /// Whether a cache must reopen this handle under the held read permit.
+    pub fn identity_generation_changed(
+        &self,
+        permit: &dyn WorkspaceReadPermit,
+    ) -> anyhow::Result<bool> {
+        permit.matches_workspace(&self.workspace)?;
+        let lance = self.workspace.join("lance");
+        let names = migrate::resolve_legacy_table_names(&lance)?;
+        Ok(
+            (names.artifacts == migrate::IDENTITY_V5_ARTIFACTS_TABLE) != self.identity_v5
+                || table_generation(&lance, &names)? != self.table_generation,
+        )
+    }
+
+    /// Check before changing either the index or its Markdown source.
+    pub fn ensure_identity_v5_writable(&self, guard: &WorkspaceLock) -> anyhow::Result<()> {
+        #[cfg(windows)]
+        anyhow::bail!("legacy identity writes are unavailable on Windows");
+        guard.matches_workspace(&self.workspace)?;
+        if self.identity_generation_changed(guard)? {
+            anyhow::bail!("identity index generation changed; reopen before writing");
+        }
+        let marker = migrate::read_identity_v5_marker(&self.workspace.join("lance"))?;
+        if !self.identity_v5
+            || marker
+                .as_ref()
+                .is_none_or(|marker| marker.semantic.is_none())
+        {
+            anyhow::bail!(
+                "identity-v5 semantic protocol is not published; reopen for a verified write"
+            );
+        }
+        let lance = self.workspace.join("lance");
+        for name in [
+            migrate::IDENTITY_V5_ARTIFACTS_TABLE,
+            migrate::IDENTITY_V5_RELATIONS_TABLE,
+            migrate::IDENTITY_V5_EVIDENCE_TABLE,
+        ] {
+            let path = lance.join(format!("{name}.lance"));
+            let metadata = std::fs::metadata(&path).map_err(|error| {
+                anyhow::anyhow!(
+                    "published identity-v5 table {} is unavailable: {error}",
+                    path.display()
+                )
+            })?;
+            if !metadata.is_dir() {
+                anyhow::bail!(
+                    "published identity-v5 table {} is not a directory",
+                    path.display()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Finish one journal-bound legacy repair before ordinary reads resume.
+    pub async fn reconcile_legacy_repair(workspace: &Path, journal_id: &str) -> anyhow::Result<()> {
+        #[cfg(windows)]
+        anyhow::bail!("legacy identity repair is unavailable on Windows");
+        crate::db::legacy_repair::reconcile_legacy_repair(workspace, journal_id).await
+    }
+    /// Reconcile a complete identity-v5 source census against its published
+    /// rows through the immutable fixed-table rebuild transaction.
+    pub async fn reconcile_identity_v5_source(
+        workspace: &Path,
+    ) -> anyhow::Result<Vec<IdentityV5ReconcileChange>> {
+        #[cfg(windows)]
+        anyhow::bail!("identity-v5 source reconciliation is unavailable on Windows");
+        loop {
+            if let Some(transaction) = migrate::pending_legacy_semantic_rebuild(workspace)? {
+                let owner = crate::workspace::lock::acquire_legacy_semantic_rebuild_lock(
+                    workspace,
+                    &transaction,
+                )
+                .await?;
+                migrate::resume_legacy_semantic_rebuild(workspace, &owner, &transaction).await?;
+                drop(owner);
+                continue;
+            }
+            let guard = crate::workspace::lock::acquire_workspace_lock(workspace).await?;
+            let store = Self::open_for_write(workspace, &guard).await?;
+            if !store.identity_v5 {
+                anyhow::bail!("source reconciliation requires a published identity-v5 index");
+            }
+            let source = migrate::read_identity_v5_source(workspace).await?;
+            if migrate::verify_identity_v5_source(&source).is_blocked() {
+                anyhow::bail!("source reconciliation requires a complete, unambiguous census");
+            }
+            let before = store.list_records(&guard, None).await?;
+            let needs_reconcile = migrate::identity_source_reconcile_needed(
+                workspace,
+                store.writer_connection()?,
+                &source,
+            )
+            .await?;
+            if !needs_reconcile {
+                if migrate::read_identity_v5_source(workspace)
+                    .await?
+                    .source_digest
+                    != source.source_digest
+                {
+                    anyhow::bail!("canonical source changed during reconciliation scan");
+                }
+                drop(store);
+                drop(guard);
+                return Ok(Vec::new());
+            }
+            let (transaction, rows) = migrate::prepare_identity_source_reconcile(
+                workspace,
+                &guard,
+                store.writer_connection()?,
+                &source,
+            )
+            .await?;
+            let mut after = Vec::new();
+            for batch in &rows[0] {
+                for row in 0..batch.num_rows() {
+                    after.push(extract_record(batch, row).ok_or_else(|| {
+                        anyhow::anyhow!("prepared reconcile artifact row is malformed")
+                    })?);
+                }
+            }
+            let changes = identity_v5_reconcile_changes(before, after)?;
+            drop(store);
+            drop(guard);
+            let owner = crate::workspace::lock::acquire_legacy_semantic_rebuild_lock(
+                workspace,
+                &transaction,
+            )
+            .await?;
+            migrate::resume_legacy_semantic_rebuild(workspace, &owner, &transaction).await?;
+            drop(owner);
+            #[cfg(test)]
+            wait_at_identity_reconcile_test_boundary(workspace).await;
+            return Ok(changes);
+        }
+    }
+
+    /// Reconcile the legacy semantic backlog after a canonical mutation.
+    /// The caller must release its workspace guard before invoking this method.
+    pub async fn drain_identity_semantic_backlog(workspace: &Path) -> anyhow::Result<()> {
+        #[cfg(windows)]
+        anyhow::bail!("legacy identity reconciliation is unavailable on Windows");
+        loop {
+            if let Some(transaction) = migrate::pending_legacy_semantic_rebuild(workspace)? {
+                let owner = crate::workspace::lock::acquire_legacy_semantic_rebuild_lock(
+                    workspace,
+                    &transaction,
+                )
+                .await?;
+                migrate::resume_legacy_semantic_rebuild(workspace, &owner, &transaction).await?;
+                drop(owner);
+                continue;
+            }
+            let guard = crate::workspace::lock::acquire_workspace_lock(workspace).await?;
+            let store = Self::open_for_write(workspace, &guard).await?;
+            let (source, needs_rebuild) = store.scan_identity_structure(&guard).await?;
+            if needs_rebuild {
+                migrate::prepare_legacy_semantic_rebuild(
+                    workspace,
+                    &guard,
+                    store.writer_connection()?,
+                    &source,
+                )
+                .await?;
+                drop(store);
+                drop(guard);
+                continue;
+            }
+            let marker = migrate::read_identity_v5_marker(&workspace.join("lance"))?
+                .ok_or_else(|| anyhow::anyhow!("identity-v5 readiness is missing"))?;
+            let config = crate::workspace::load_config(workspace)?;
+            if config.embedding.is_none() && marker.embeddings.is_none() {
+                return Ok(());
+            }
+            #[cfg(not(feature = "semantic-search"))]
+            {
+                let _ = (store, guard);
+                anyhow::bail!("configured semantic embedding backend is unavailable in this build");
+            }
+            #[cfg(feature = "semantic-search")]
+            {
+                return store
+                    .drain_identity_semantic_locked(&guard, marker.embeddings.is_some())
+                    .await;
+            }
+        }
+    }
+
+    /// Compare a complete captured corpus with two table reads, not one source
+    /// census and several SQL queries per document. The caller verifies the
+    /// source digest again after this pass while retaining the workspace guard.
+    async fn sync_identity_snapshot(
+        &self,
+        guard: &WorkspaceLock,
+        source: &migrate::IdentityV5Source,
+    ) -> anyhow::Result<bool> {
+        use crate::constellation::capture::{OutgoingEdge, parse_artifact_file};
+        use std::collections::BTreeSet;
+
+        let comparison = crate::projection::ProjectionBatch::new(guard, self)?;
+        let candidates = migrate::identity_v5_candidates(source);
+        let chunk_size = crate::workspace::load_config(&self.workspace)?
+            .embedding
+            .map(|embedding| embedding.chunk_size)
+            .unwrap_or(crate::constellation::jobs::DEFAULT_BODY_PREFIX_CHARS);
+        let expected: BTreeMap<_, _> = source
+            .documents
+            .iter()
+            .map(|document| (document.canonical_key.as_str(), document))
+            .collect();
+        if expected.len() != source.documents.len() {
+            anyhow::bail!("semantic source repeats a canonical key");
+        }
+        let mut relations: BTreeMap<String, BTreeSet<OutgoingEdge>> = BTreeMap::new();
+        let mut differs = false;
+        for batch in collect_batches(self.relations.query().execute().await?).await? {
+            for row in 0..batch.num_rows() {
+                let from = required_utf8(&batch, row, "relations", "source_id")?;
+                let to = required_utf8(&batch, row, "relations", "target_id")?;
+                let relation = required_utf8(&batch, row, "relations", "relation_type")?;
+                required_utf8(&batch, row, "relations", "created_at")?;
+                if !relations
+                    .entry(from.to_string())
+                    .or_default()
+                    .insert(OutgoingEdge::new(to, relation))
+                {
+                    // Old indexes can hold repeated rows of the same logical
+                    // edge. Rebuild them transactionally, without editing files.
+                    differs = true;
+                }
+            }
+        }
+        let mut seen = BTreeSet::new();
+        let mut records = Vec::with_capacity(expected.len());
+        let mut membership_differs = false;
+        for batch in collect_batches(self.artifacts.query().execute().await?).await? {
+            for row in 0..batch.num_rows() {
+                let key = required_utf8(&batch, row, "artifacts", "canonical_key")?;
+                required_utf8(&batch, row, "artifacts", "title")?;
+                required_large_utf8(&batch, row, "artifacts", "body")?;
+                if !seen.insert(key.to_string()) {
+                    anyhow::bail!("semantic index repeats canonical key '{key}'");
+                }
+                let record = extract_record(&batch, row)
+                    .ok_or_else(|| anyhow::anyhow!("semantic index contains an invalid row"))?;
+                if record.canonical_key != key {
+                    anyhow::bail!("semantic index row has a mismatched key");
+                }
+                membership_differs |= !expected.contains_key(key);
+                records.push(record);
+            }
+        }
+        if membership_differs {
+            // A staged rebuild must verify removed rows and delete intents
+            // before projection sync can erase any of their original edges.
+            comparison.revalidate()?;
+            return Ok(true);
+        }
+        if differs {
+            // Check the original logical edge set before any repair writes.
+            // Do not use the full rebuild validator here: a simultaneous
+            // external body edit is writable drift, not an invalid edge.
+            for (from, stored) in &relations {
+                let document = expected.get(from.as_str()).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "semantic rebuild relation from '{from}' differs from canonical source"
+                    )
+                })?;
+                let declared = document
+                    .links
+                    .iter()
+                    .map(|(target, relation)| {
+                        Ok(OutgoingEdge::new(
+                            migrate::resolve_reference(&candidates, target)?,
+                            relation,
+                        ))
+                    })
+                    .collect::<anyhow::Result<BTreeSet<_>>>()?;
+                if let Some(edge) = stored.difference(&declared).next() {
+                    anyhow::bail!(
+                        "semantic rebuild relation from '{from}' {edge:?} differs from canonical source"
+                    );
+                }
+            }
+        }
+        let empty_edges = BTreeSet::new();
+        for record in records {
+            let key = record.canonical_key.as_str();
+            let document = expected[key];
+            let parsed = parse_artifact_file(
+                &document.relative_path,
+                Arc::<[u8]>::from(document.full_text.as_bytes()),
+                chunk_size,
+            )
+            .map_err(|diagnostic| anyhow::anyhow!("{diagnostic}"))?;
+            let drift = crate::projection::compare_projection_with_snapshot(
+                &comparison,
+                &record,
+                crate::projection::ProjectionSnapshot {
+                    parsed: &parsed,
+                    candidates: &candidates,
+                    stored_edges: relations.get(key).unwrap_or(&empty_edges),
+                    chunk_size,
+                },
+            )
+            .await?;
+            if !drift.unwritable.is_empty() {
+                anyhow::bail!(
+                    "semantic source '{key}' has unwritable projection drift: {:?}",
+                    drift.unwritable
+                );
+            }
+        }
+        comparison.revalidate()?;
+        Ok(differs || seen.len() != expected.len())
+    }
+
+    async fn scan_identity_structure(
+        &self,
+        guard: &WorkspaceLock,
+    ) -> anyhow::Result<(migrate::IdentityV5Source, bool)> {
+        guard.matches_workspace(&self.workspace)?;
+        let source = migrate::read_identity_v5_source(&self.workspace).await?;
+        if migrate::verify_identity_v5_source(&source).is_blocked() {
+            anyhow::bail!("semantic source capture contains duplicate or unmappable identities");
+        }
+        let differs = self.sync_identity_snapshot(guard, &source).await?;
+        if migrate::read_identity_v5_source(&self.workspace)
+            .await?
+            .source_digest
+            != source.source_digest
+        {
+            anyhow::bail!("canonical source changed during semantic structural scan");
+        }
+        Ok((
+            source,
+            differs || migrate::has_identity_delete_intents(&self.workspace)?,
+        ))
+    }
+
+    #[cfg(feature = "semantic-search")]
+    async fn strict_semantic_rescan(&self, guard: &WorkspaceLock) -> anyhow::Result<String> {
+        guard.matches_workspace(&self.workspace)?;
+        let source = migrate::read_identity_v5_source(&self.workspace).await?;
+        let report = migrate::verify_identity_v5_source(&source);
+        if report.is_blocked() {
+            anyhow::bail!("semantic source capture contains duplicate or unmappable identities");
+        }
+        if self.sync_identity_snapshot(guard, &source).await? {
+            anyhow::bail!("semantic index has extra, duplicate or missing canonical rows");
+        }
+        let after = migrate::read_identity_v5_source(&self.workspace).await?;
+        if after.source_digest != source.source_digest {
+            anyhow::bail!("canonical source changed during semantic rescan");
+        }
+        Ok(source.source_digest)
+    }
+
+    #[cfg(feature = "semantic-search")]
+    async fn drain_identity_semantic_locked(
+        &self,
+        guard: &crate::workspace::lock::WorkspaceLock,
+        existing_profile: bool,
+    ) -> anyhow::Result<()> {
+        let workspace = self.workspace.clone();
+        let profile = tokio::task::spawn_blocking(move || {
+            migrate::configured_identity_profile(&workspace, existing_profile)
+        })
+        .await??
+        .ok_or_else(|| anyhow::anyhow!("semantic profile is not configured"))?;
+        let source_digest = self.strict_semantic_rescan(guard).await?;
+        migrate::publish_identity_semantic_profile(&self.workspace, &profile, guard)?;
+        let batches = collect_batches(self.artifacts.query().execute().await?).await?;
+        let mut work: Vec<(String, String, String, String, String)> = Vec::new();
+        for batch in &batches {
+            for row in 0..batch.num_rows() {
+                let record = extract_record(batch, row)
+                    .ok_or_else(|| anyhow::anyhow!("semantic index contains an invalid row"))?;
+                let state = get_string(batch, "semantic_state", row);
+                if state.as_deref().is_some_and(|value| {
+                    !["ready", "pending", "running", "failed"].contains(&value)
+                }) {
+                    anyhow::bail!("unknown semantic job state for '{}'", record.canonical_key);
+                }
+                let text = record.embedding_text(profile.chunk_size);
+                let input_digest = migrate::identity_input_digest(&text);
+                let row_profile = get_string(batch, "semantic_profile_digest", row);
+                if state.as_deref() == Some("ready")
+                    && row_profile.as_deref() == Some(profile.profile_digest.as_str())
+                {
+                    verify_row_local_semantic_provenance(batch, row, &record, &profile)?;
+                    continue;
+                }
+                let job = semantic_random_token()?;
+                let attempt = semantic_random_token()?;
+                let predicate = format!(
+                    "canonical_key = '{}' AND title = '{}' AND body = '{}'",
+                    record.canonical_key.replace('\'', "''"),
+                    record.title.replace('\'', "''"),
+                    record.body.replace('\'', "''")
+                );
+                let result = self
+                    .artifacts
+                    .update()
+                    .only_if(predicate)
+                    .column("semantic_input_digest", format!("'{input_digest}'"))
+                    .column(
+                        "semantic_profile_digest",
+                        format!("'{}'", profile.profile_digest),
+                    )
+                    .column("semantic_vector_digest", "NULL")
+                    .column("semantic_job_id", format!("'{job}'"))
+                    .column("semantic_attempt_token", format!("'{attempt}'"))
+                    .column("semantic_state", "'running'")
+                    .execute()
+                    .await?;
+                if result.rows_updated != 1 {
+                    anyhow::bail!(
+                        "semantic job claim changed {} rows for '{}'",
+                        result.rows_updated,
+                        record.canonical_key
+                    );
+                }
+                work.push((record.canonical_key, input_digest, job, attempt, text));
+            }
+        }
+        if !work.is_empty() {
+            let inputs = work.iter().map(|entry| entry.4.clone()).collect::<Vec<_>>();
+            let workspace = self.workspace.clone();
+            let pinned = profile.clone();
+            let vectors = tokio::task::spawn_blocking(move || {
+                migrate::embed_identity_batch(&workspace, &pinned, &inputs)
+            })
+            .await??;
+            if vectors.len() != work.len() {
+                anyhow::bail!("semantic backend returned the wrong number of vectors");
+            }
+            if migrate::read_identity_v5_source(&self.workspace)
+                .await?
+                .source_digest
+                != source_digest
+            {
+                anyhow::bail!("canonical source changed during semantic embedding");
+            }
+            let marker = migrate::read_identity_v5_marker(&self.workspace.join("lance"))?
+                .ok_or_else(|| {
+                    anyhow::anyhow!("identity-v5 marker disappeared during embedding")
+                })?;
+            if marker
+                .semantic
+                .as_ref()
+                .and_then(|semantic| semantic.active_profile_digest.as_deref())
+                != Some(profile.profile_digest.as_str())
+            {
+                anyhow::bail!("semantic profile changed during embedding");
+            }
+            for ((key, input, job, attempt, _), vector) in work.iter().zip(vectors) {
+                let predicate = format!(
+                    "canonical_key = '{}' AND semantic_input_digest = '{input}' AND semantic_profile_digest = '{}' AND semantic_job_id = '{job}' AND semantic_attempt_token = '{attempt}' AND semantic_state = 'running'",
+                    key.replace('\'', "''"),
+                    profile.profile_digest
+                );
+                let literal = format!(
+                    "[{}]",
+                    vector
+                        .iter()
+                        .map(|value| format!("{value:?}"))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                );
+                let result = self
+                    .artifacts
+                    .update()
+                    .only_if(predicate)
+                    .column("embedding", literal)
+                    .column(
+                        "semantic_vector_digest",
+                        format!("'{}'", migrate::identity_vector_digest(&vector)),
+                    )
+                    .column("semantic_state", "'ready'")
+                    .column("semantic_attempt_token", "NULL")
+                    .execute()
+                    .await?;
+                if result.rows_updated != 1 {
+                    anyhow::bail!(
+                        "semantic completion changed {} rows for '{key}'; stale result was not published",
+                        result.rows_updated
+                    );
+                }
+            }
+        }
+        if migrate::read_identity_v5_source(&self.workspace)
+            .await?
+            .source_digest
+            != source_digest
+        {
+            anyhow::bail!("canonical source changed before semantic completion");
+        }
+        let final_rows = collect_batches(self.artifacts.query().execute().await?).await?;
+        for batch in &final_rows {
+            for row in 0..batch.num_rows() {
+                let record = extract_record(batch, row)
+                    .ok_or_else(|| anyhow::anyhow!("semantic index contains an invalid row"))?;
+                verify_row_local_semantic_provenance(batch, row, &record, &profile)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Insert a new artifact, returning its ID.
-    pub(crate) async fn create_artifact(&self, artifact: &NewArtifact) -> anyhow::Result<String> {
+    ///
+    /// Schema v5: the row is keyed by its canonical key. The insert is an
+    /// upsert on that key (`merge_insert(&["canonical_key"])`) and the
+    /// duplicate guard asks the key, not the display id — two documents may
+    /// share a display alias, none may share a key.
+    pub(crate) async fn create_artifact(
+        &self,
+        guard: &WorkspaceLock,
+        artifact: &NewArtifact,
+    ) -> anyhow::Result<String> {
+        self.ensure_identity_v5_writable(guard)?;
         // Validate ID format — prevent path traversal and SQL injection
         if !artifact
             .id
@@ -955,28 +2536,76 @@ impl LanceStore {
             );
         }
 
-        // Guard: check for duplicate ID
-        if self.get_artifact(&artifact.id).await?.is_some() {
-            anyhow::bail!("Artifact '{}' already exists", artifact.id);
+        // The key the row is stored under. Never empty.
+        let canonical_key = canonical_key_of(&artifact.canonical_key, &artifact.id, &artifact.body);
+
+        // Guard: a canonical key is taken. The display id may repeat; the
+        // key may not.
+        if self
+            .resolve_canonical_key(guard, &canonical_key)
+            .await?
+            .is_some()
+        {
+            anyhow::bail!(
+                "Artifact '{}' already exists (canonical key '{}')",
+                artifact.id,
+                canonical_key
+            );
         }
 
         let now = Utc::now().to_rfc3339();
         let batch = convert::artifact_to_batch(artifact, &now)?;
-
-        self.artifacts.add(vec![batch]).execute().await?;
+        let schema = schema::artifacts_schema();
+        let reader = Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema));
+        let mut builder = self.artifacts.merge_insert(&["canonical_key"]);
+        builder
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        builder.execute(reader).await.map_err(|e| {
+            anyhow::anyhow!(
+                "create_artifact: merge_insert failed for canonical key '{}': {}",
+                canonical_key,
+                e
+            )
+        })?;
         Ok(artifact.id.clone())
     }
 
     /// Get a single artifact by ID. Returns None if not found.
+    ///
+    /// The `id` argument is a *selector*: a canonical key, a display alias,
+    /// or a legacy slug. It is resolved to the row's canonical key first
+    /// (see [`Self::resolve_canonical_key`]) and the row is then read by
+    /// `canonical_key = '…'` — the display id is an alias, never the key.
     ///
     /// PROB-074: wrapped in [`Self::with_retry_on_stale`] so the
     /// `forgeplan_link` MCP path (which calls this to validate source
     /// existence before writing the relation) does not surface a raw lance
     /// error when an external `forgeplan reindex` invalidated the handle
     /// between MCP-server startup and this call.
-    pub async fn get_artifact(&self, id: &str) -> anyhow::Result<Option<ArtifactSummary>> {
-        let filter = format!("id = '{}'", id.replace('\'', "''"));
-        self.with_retry_on_stale(|| async {
+    pub async fn get_artifact(
+        &self,
+        permit: &dyn WorkspaceReadPermit,
+        id: &str,
+    ) -> anyhow::Result<Option<ArtifactSummary>> {
+        permit.matches_workspace(&self.workspace)?;
+        if !self.identity_v5 {
+            return Ok(self
+                .legacy_record(permit, id)
+                .await?
+                .map(|record| ArtifactSummary {
+                    canonical_key: record.canonical_key,
+                    id: record.id,
+                    title: record.title,
+                    kind: record.kind,
+                    status: record.status,
+                }));
+        }
+        self.with_retry_on_stale(permit, || async {
+            let Some(key) = self.resolve_canonical_key(permit, id).await? else {
+                return Ok(None);
+            };
+            let filter = format!("canonical_key = '{}'", key.replace('\'', "''"));
             let batches = collect_batches(
                 self.artifacts
                     .query()
@@ -1001,8 +2630,24 @@ impl LanceStore {
     /// List artifacts with optional kind/status filter.
     pub async fn list_artifacts(
         &self,
+        permit: &dyn WorkspaceReadPermit,
         filter: Option<&ArtifactFilter>,
     ) -> anyhow::Result<Vec<ArtifactSummary>> {
+        permit.matches_workspace(&self.workspace)?;
+        if !self.identity_v5 {
+            return Ok(self
+                .list_records(permit, filter)
+                .await?
+                .into_iter()
+                .map(|record| ArtifactSummary {
+                    canonical_key: record.canonical_key,
+                    id: record.id,
+                    title: record.title,
+                    kind: record.kind,
+                    status: record.status,
+                })
+                .collect());
+        }
         // Pre-build the SQL `only_if` predicate from the filter once so the
         // retry closure does not need to re-borrow the filter reference
         // (closure has `Fn` bound — PROB-074 fix).
@@ -1017,7 +2662,7 @@ impl LanceStore {
             conditions.join(" AND ")
         });
 
-        self.with_retry_on_stale(|| async {
+        self.with_retry_on_stale(permit, || async {
             let mut query = self.artifacts.query();
             if let Some(p) = predicate.as_deref()
                 && !p.is_empty()
@@ -1041,14 +2686,21 @@ impl LanceStore {
     }
 
     /// Update artifact updated_at (and optionally status/title).
+    ///
+    /// The row is addressed by its canonical key; `id` is a selector.
     pub(crate) async fn update_artifact(
         &self,
+        guard: &WorkspaceLock,
         id: &str,
         status: Option<&str>,
         title: Option<&str>,
     ) -> anyhow::Result<()> {
+        self.ensure_identity_v5_writable(guard)?;
+        let Some(key) = self.resolve_canonical_key(guard, id).await? else {
+            anyhow::bail!("Artifact '{}' not found", id);
+        };
         let now = Utc::now().to_rfc3339();
-        let predicate = format!("id = '{}'", id.replace('\'', "''"));
+        let predicate = format!("canonical_key = '{}'", key.replace('\'', "''"));
         let mut builder = self
             .artifacts
             .update()
@@ -1058,20 +2710,35 @@ impl LanceStore {
             builder = builder.column("status", format!("'{}'", s.replace('\'', "''")));
         }
         if let Some(t) = title {
-            builder = builder.column("title", format!("'{}'", t.replace('\'', "''")));
+            builder = builder
+                .column("title", format!("'{}'", t.replace('\'', "''")))
+                .column("embedding", "NULL")
+                .column("semantic_input_digest", "NULL")
+                .column("semantic_profile_digest", "NULL")
+                .column("semantic_vector_digest", "NULL")
+                .column("semantic_job_id", "NULL")
+                .column("semantic_attempt_token", "NULL")
+                .column("semantic_state", "'pending'");
         }
         builder.execute().await?;
         Ok(())
     }
 
     /// Update the valid_until column of an artifact (ADR-005: renew).
+    ///
+    /// The row is addressed by its canonical key; `id` is a selector.
     pub(crate) async fn update_valid_until(
         &self,
+        guard: &WorkspaceLock,
         id: &str,
         valid_until: &str,
     ) -> anyhow::Result<()> {
+        self.ensure_identity_v5_writable(guard)?;
+        let Some(key) = self.resolve_canonical_key(guard, id).await? else {
+            anyhow::bail!("Artifact '{}' not found", id);
+        };
         let now = Utc::now().to_rfc3339();
-        let predicate = format!("id = '{}'", id.replace('\'', "''"));
+        let predicate = format!("canonical_key = '{}'", key.replace('\'', "''"));
         self.artifacts
             .update()
             .only_if(predicate)
@@ -1086,9 +2753,20 @@ impl LanceStore {
     }
 
     /// Update the depth column of an artifact.
-    pub(crate) async fn update_depth(&self, id: &str, depth: &str) -> anyhow::Result<()> {
+    ///
+    /// The row is addressed by its canonical key; `id` is a selector.
+    pub(crate) async fn update_depth(
+        &self,
+        guard: &WorkspaceLock,
+        id: &str,
+        depth: &str,
+    ) -> anyhow::Result<()> {
+        self.ensure_identity_v5_writable(guard)?;
+        let Some(key) = self.resolve_canonical_key(guard, id).await? else {
+            anyhow::bail!("Artifact '{}' not found", id);
+        };
         let now = Utc::now().to_rfc3339();
-        let predicate = format!("id = '{}'", id.replace('\'', "''"));
+        let predicate = format!("canonical_key = '{}'", key.replace('\'', "''"));
         self.artifacts
             .update()
             .only_if(predicate)
@@ -1100,18 +2778,27 @@ impl LanceStore {
     }
 
     /// Update r_eff_score for an artifact. Verifies the artifact exists first.
-    pub async fn update_r_eff_score(&self, id: &str, score: f64) -> anyhow::Result<()> {
+    pub async fn update_r_eff_score(
+        &self,
+        guard: &WorkspaceLock,
+        id: &str,
+        score: f64,
+    ) -> anyhow::Result<()> {
+        self.ensure_identity_v5_writable(guard)?;
         let score = if score.is_nan() {
             0.0
         } else {
             score.clamp(0.0, 1.0)
         };
         // Verify artifact exists before update (LanceDB update is silent no-op on missing ID)
-        if self.get_record(id).await?.is_none() {
+        if self.get_record(guard, id).await?.is_none() {
             anyhow::bail!("Cannot update R_eff: artifact '{}' not found", id);
         }
+        let Some(key) = self.resolve_canonical_key(guard, id).await? else {
+            anyhow::bail!("Cannot update R_eff: artifact '{}' not found", id);
+        };
         let now = Utc::now().to_rfc3339();
-        let predicate = format!("id = '{}'", id.replace('\'', "''"));
+        let predicate = format!("canonical_key = '{}'", key.replace('\'', "''"));
         self.artifacts
             .update()
             .only_if(predicate)
@@ -1137,19 +2824,77 @@ impl LanceStore {
     /// permanently lost from the LanceDB index (only recoverable via
     /// `forgeplan scan-import` from the markdown source of truth).
     ///
-    /// We now use `Table::merge_insert(&["id"])` with
+    /// We now use `Table::merge_insert(&["canonical_key"])` with
     /// `when_matched_update_all` + `when_not_matched_insert_all`, which
     /// LanceDB executes as a single transactional operation against the
     /// underlying Lance dataset. Either the new row is committed or the
     /// previous row remains intact — there is no observable intermediate
-    /// state. Concurrent merge_inserts on the same `id` are serialized by
+    /// state. Concurrent merge_inserts on the same key are serialized by
     /// Lance's optimistic-concurrency commit loop with retries.
     ///
+    /// Schema v5: the merge key is the canonical key, not the display id. Two
+    /// documents may share a display alias; none may share a key.
+    ///
     /// See Sprint 13.3 audit finding H3 for context.
-    async fn replace_record(&self, record: &ArtifactRecord) -> anyhow::Result<()> {
+    pub(crate) async fn replace_record(
+        &self,
+        guard: &WorkspaceLock,
+        record: &ArtifactRecord,
+    ) -> anyhow::Result<()> {
+        self.ensure_identity_v5_writable(guard)?;
         validate_artifact_id(&record.id)?;
         let schema = schema::artifacts_schema();
         let tags_slices: Vec<&[String]> = vec![record.tags.as_slice()];
+        let canonical_key = canonical_key_of(&record.canonical_key, &record.id, &record.body);
+        let existing = collect_batches(
+            self.artifacts
+                .query()
+                .only_if(format!(
+                    "canonical_key = '{}'",
+                    canonical_key.replace('\'', "''")
+                ))
+                .execute()
+                .await?,
+        )
+        .await?;
+        let mut old_row = None;
+        for batch in &existing {
+            for row in 0..batch.num_rows() {
+                if old_row.replace(batch.slice(row, 1)).is_some() {
+                    anyhow::bail!("duplicate canonical key '{canonical_key}'");
+                }
+            }
+        }
+        if let Some(vector) = &record.embedding {
+            let previous = old_row.as_ref().and_then(|row| extract_record(row, 0));
+            if previous.as_ref().is_none_or(|old| {
+                old.title != record.title
+                    || old.body != record.body
+                    || old.embedding.as_ref() != Some(vector)
+            }) {
+                anyhow::bail!("cannot replace an artifact with an unbound semantic vector");
+            }
+            if old_row
+                .as_ref()
+                .and_then(|row| get_string(row, "semantic_state", 0))
+                .as_deref()
+                != Some("ready")
+            {
+                anyhow::bail!("cannot preserve a vector without ready row-local provenance");
+            }
+        }
+        let semantic = |name: &str| -> Arc<dyn arrow_array::Array> {
+            if record.embedding.is_some()
+                && let Some(column) = old_row.as_ref().and_then(|row| row.column_by_name(name))
+            {
+                return column.clone();
+            }
+            Arc::new(StringArray::from(vec![if name == "semantic_state" {
+                Some("pending")
+            } else {
+                None
+            }]))
+        };
         let batch = RecordBatch::try_new(
             schema.clone(),
             vec![
@@ -1170,19 +2915,27 @@ impl LanceStore {
                 Arc::new(StringArray::from(vec![record.body_hash.as_deref()])),
                 convert::make_embedding_col_from_option(record.embedding.as_deref()),
                 Arc::new(convert::build_tags_list_array(tags_slices)),
+                Arc::new(StringArray::from(vec![canonical_key.as_str()])),
+                semantic("semantic_input_digest"),
+                semantic("semantic_profile_digest"),
+                semantic("semantic_vector_digest"),
+                semantic("semantic_job_id"),
+                semantic("semantic_attempt_token"),
+                semantic("semantic_state"),
             ],
         )?;
 
         let reader = Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema));
-        let mut builder = self.artifacts.merge_insert(&["id"]);
+        let mut builder = self.artifacts.merge_insert(&["canonical_key"]);
         builder
             .when_matched_update_all(None)
             .when_not_matched_insert_all();
         builder.execute(reader).await.map_err(|e| {
             anyhow::anyhow!(
-                "replace_record: merge_insert failed for '{}': {}. \
+                "replace_record: merge_insert failed for '{}' (canonical key '{}'): {}. \
                  Run `forgeplan scan-import` to rebuild the index from markdown if data is missing.",
                 record.id,
+                canonical_key,
                 e
             )
         })?;
@@ -1196,9 +2949,14 @@ impl LanceStore {
     /// PROB-026 fix: previously tags were stored as-is (case-sensitive,
     /// spaces allowed, no validation). Now canonicalized for consistent
     /// filtering and display.
-    pub(crate) async fn add_tags(&self, id: &str, new_tags: &[String]) -> anyhow::Result<()> {
+    pub(crate) async fn add_tags(
+        &self,
+        guard: &WorkspaceLock,
+        id: &str,
+        new_tags: &[String],
+    ) -> anyhow::Result<()> {
         let mut record = self
-            .get_record(id)
+            .get_record(guard, id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", id))?;
         let before = record.tags.len();
@@ -1217,14 +2975,19 @@ impl LanceStore {
             return Ok(());
         }
         record.updated_at = Utc::now().to_rfc3339();
-        self.replace_record(&record).await
+        self.replace_record(guard, &record).await
     }
 
     /// Remove the given tags from an existing artifact. Unknown tags are
     /// silently ignored. Returns error if the artifact does not exist.
-    pub(crate) async fn remove_tags(&self, id: &str, to_remove: &[String]) -> anyhow::Result<()> {
+    pub(crate) async fn remove_tags(
+        &self,
+        guard: &WorkspaceLock,
+        id: &str,
+        to_remove: &[String],
+    ) -> anyhow::Result<()> {
         let mut record = self
-            .get_record(id)
+            .get_record(guard, id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Artifact '{}' not found", id))?;
         let before = record.tags.len();
@@ -1233,7 +2996,7 @@ impl LanceStore {
             return Ok(());
         }
         record.updated_at = Utc::now().to_rfc3339();
-        self.replace_record(&record).await
+        self.replace_record(guard, &record).await
     }
 
     /// List artifacts matching a tag filter.
@@ -1244,8 +3007,12 @@ impl LanceStore {
     ///
     /// Matching is done Rust-side after a full scan (LanceDB list column
     /// filtering is not uniformly supported).
-    pub async fn list_by_tag(&self, tag_filter: &str) -> anyhow::Result<Vec<ArtifactRecord>> {
-        let all = self.list_records(None).await?;
+    pub async fn list_by_tag(
+        &self,
+        permit: &dyn WorkspaceReadPermit,
+        tag_filter: &str,
+    ) -> anyhow::Result<Vec<ArtifactRecord>> {
+        let all = self.list_records(permit, None).await?;
         let matched: Vec<ArtifactRecord> = all
             .into_iter()
             .filter(|r| crate::search::filter::has_tag_predicate(&r.tags, tag_filter))
@@ -1254,32 +3021,55 @@ impl LanceStore {
     }
 
     /// Delete an artifact by ID.
-    pub(crate) async fn delete_artifact(&self, id: &str) -> anyhow::Result<()> {
+    ///
+    /// The row is addressed by its canonical key; `id` is a selector.
+    pub(crate) async fn delete_artifact(
+        &self,
+        guard: &WorkspaceLock,
+        id: &str,
+    ) -> anyhow::Result<()> {
+        self.ensure_identity_v5_writable(guard)?;
         validate_artifact_id(id)?;
-        let predicate = format!("id = '{}'", id.replace('\'', "''"));
+        let Some(key) = self.resolve_canonical_key(guard, id).await? else {
+            anyhow::bail!("Artifact '{}' not found", id);
+        };
+        let predicate = format!("canonical_key = '{}'", key.replace('\'', "''"));
         self.artifacts.delete(&predicate).await?;
         Ok(())
     }
 
     /// Add a relation between two artifacts. Rejects duplicates.
+    ///
+    /// Schema v5: `source_id` and `target_id` hold **canonical keys**. Both
+    /// endpoints are resolved through the shared resolver, so a caller that
+    /// holds a display alias still writes a keyed edge. A target that names
+    /// no row in this workspace — a forward reference, a qualified
+    /// `KEY@qualifier` cross-source ref — keeps its declared bytes: it is an
+    /// edge with a diagnostic, not a dropped row.
     pub(crate) async fn add_relation(
         &self,
+        guard: &WorkspaceLock,
         source: &str,
         target: &str,
         relation: &str,
     ) -> anyhow::Result<()> {
+        self.ensure_identity_v5_writable(guard)?;
         validate_artifact_id(source)?;
-        validate_artifact_id(target)?;
+        // The target may be a qualified cross-source ref (`KEY@qualifier`,
+        // stage 4) — stored verbatim, never resolved against this store.
+        validate_link_target(target)?;
+        let source_key = self.resolve_endpoint(guard, source).await?;
+        let target_key = self.resolve_endpoint(guard, target).await?;
         // Self-link guard (PROB-019)
-        if source.eq_ignore_ascii_case(target) {
+        if source_key.eq_ignore_ascii_case(&target_key) {
             anyhow::bail!("Self-link not allowed: {} cannot link to itself", source);
         }
 
         // Dedup: check if relation already exists
-        let existing = self.get_relations(source).await?;
+        let existing = self.get_relations(guard, &source_key).await?;
         let duplicate = existing
             .iter()
-            .any(|(t, r)| t.eq_ignore_ascii_case(target) && r == relation);
+            .any(|(t, r)| t.eq_ignore_ascii_case(&target_key) && r == relation);
         if duplicate {
             anyhow::bail!(
                 "Relation already exists: {} --{}--> {}",
@@ -1290,20 +3080,64 @@ impl LanceStore {
         }
 
         let now = Utc::now().to_rfc3339();
-        let batch = convert::relation_to_batch(source, target, relation, &now)?;
+        let batch = convert::relation_to_batch(&source_key, &target_key, relation, &now)?;
 
         self.relations.add(vec![batch]).execute().await?;
         Ok(())
     }
 
+    /// The canonical key an edge endpoint is stored under.
+    ///
+    /// A qualified cross-source ref (`KEY@qualifier`) is not a selector at
+    /// all and keeps its declared bytes. Every other endpoint resolves to
+    /// the key of the row it names, or keeps its declared bytes when it names
+    /// no row — a forward reference stays an edge instead of disappearing.
+    async fn resolve_endpoint(
+        &self,
+        permit: &dyn WorkspaceReadPermit,
+        endpoint: &str,
+    ) -> anyhow::Result<String> {
+        permit.matches_workspace(&self.workspace)?;
+        if endpoint.contains('@') {
+            return Ok(endpoint.to_string());
+        }
+        let candidates = self.alias_candidates(permit).await?;
+        if let Some(found) =
+            crate::artifact::canonical_key::resolve_structural_target(endpoint, &candidates)?
+        {
+            return Ok(found.identity.canonical_key);
+        }
+        // The row is not written yet, but the document may be: a bulk
+        // reindex writes the rows in file order and a link may name a
+        // document that comes later. The workspace knows the key, so the
+        // edge is stored under it instead of under a display id that no
+        // key-based query can match.
+        let documents = workspace_documents(&self.workspace).await?;
+        let candidates = crate::artifact::documents::candidates_from_documents(&documents);
+        Ok(
+            crate::artifact::canonical_key::resolve_structural_target(endpoint, &candidates)?
+                .map(|found| found.identity.canonical_key)
+                .unwrap_or_else(|| endpoint.to_string()),
+        )
+    }
+
     /// Remove ALL relations where artifact is source or target (cascade on delete).
-    /// Uses case-insensitive matching via `lower()` for consistency with Rust-side checks.
-    pub(crate) async fn delete_relations_for_artifact(&self, id: &str) -> anyhow::Result<()> {
+    ///
+    /// Schema v5: the endpoints are canonical keys, so the comparison is
+    /// exact — a canonical key is lowercase by construction and the old
+    /// `lower()` folding would only hide a mismatch.
+    pub(crate) async fn delete_relations_for_artifact(
+        &self,
+        guard: &WorkspaceLock,
+        id: &str,
+    ) -> anyhow::Result<()> {
+        self.ensure_identity_v5_writable(guard)?;
         validate_artifact_id(id)?;
-        let lower_id = id.to_ascii_lowercase().replace('\'', "''");
+        let key = self.resolve_endpoint(guard, id).await?;
         let filter = format!(
-            "lower(source_id) = '{}' OR lower(target_id) = '{}'",
-            lower_id, lower_id
+            "source_id = '{}' OR target_id = '{}'",
+            key.replace('\'', "''"),
+            key.replace('\'', "''")
         );
         self.relations.delete(&filter).await?;
         Ok(())
@@ -1312,14 +3146,18 @@ impl LanceStore {
     /// Remove a specific relation between two artifacts.
     pub(crate) async fn delete_relation(
         &self,
+        guard: &WorkspaceLock,
         source: &str,
         target: &str,
         relation: &str,
     ) -> anyhow::Result<()> {
+        self.ensure_identity_v5_writable(guard)?;
+        let source_key = self.resolve_endpoint(guard, source).await?;
+        let target_key = self.resolve_endpoint(guard, target).await?;
         let filter = format!(
             "source_id = '{}' AND target_id = '{}' AND relation_type = '{}'",
-            source.replace('\'', "''"),
-            target.replace('\'', "''"),
+            source_key.replace('\'', "''"),
+            target_key.replace('\'', "''"),
             relation.replace('\'', "''"),
         );
         self.relations.delete(&filter).await?;
@@ -1329,15 +3167,37 @@ impl LanceStore {
     /// Get all relations for an artifact (as source).
     /// Returns Vec<(target_id, relation_type)>.
     ///
+    /// Schema v5: `source_id` holds the source's canonical key, so the
+    /// selector is resolved to that key before the filter is built.
+    ///
     /// PROB-074: wrapped in [`Self::with_retry_on_stale`] so
     /// `forgeplan_graph`, `forgeplan_score`, and other callers that hit
     /// the relations table do not surface a raw lance error when the handle
     /// is stale after an external `forgeplan reindex`. Filter string is
     /// pre-built outside the closure (borrowck: `Fn` bound requires
     /// captured values to be `Clone`-able or pre-computed strings).
-    pub async fn get_relations(&self, id: &str) -> anyhow::Result<Vec<(String, String)>> {
-        let filter = format!("source_id = '{}'", id.replace('\'', "''"));
-        self.with_retry_on_stale(|| async {
+    pub async fn get_relations(
+        &self,
+        permit: &dyn WorkspaceReadPermit,
+        id: &str,
+    ) -> anyhow::Result<Vec<(String, String)>> {
+        permit.matches_workspace(&self.workspace)?;
+        if !self.identity_v5 {
+            let Some(key) = self.resolve_canonical_key(permit, id).await? else {
+                return Ok(Vec::new());
+            };
+            return Ok(self
+                .get_all_relations(permit)
+                .await?
+                .into_iter()
+                .filter_map(|(source, target, relation)| {
+                    (source == key).then_some((target, relation))
+                })
+                .collect());
+        }
+        let source_key = self.resolve_endpoint(permit, id).await?;
+        let filter = format!("source_id = '{}'", source_key.replace('\'', "''"));
+        self.with_retry_on_stale(permit, || async {
             let batches = collect_batches(
                 self.relations
                     .query()
@@ -1384,43 +3244,54 @@ impl LanceStore {
     /// renders and `forgeplan link` writes — so the warning now agrees with
     /// what the user can check by eye.
     ///
-    /// A failed relations read degrades to the link-less map rather than
-    /// failing validation outright; that restores the old behaviour for that
-    /// one record instead of refusing to validate it.
     pub async fn frontmatter_map_with_links(
         &self,
+        permit: &dyn WorkspaceReadPermit,
         record: &ArtifactRecord,
-    ) -> BTreeMap<String, serde_yaml::Value> {
-        use serde_yaml::{Mapping, Value};
-
-        let mut map = record.frontmatter_map();
-        let Ok(relations) = self.get_relations(&record.id).await else {
-            return map;
+    ) -> anyhow::Result<BTreeMap<String, serde_yaml::Value>> {
+        // The edges are held under the canonical key; the display id is an
+        // alias two documents may share. Reading them by the alias would give
+        // this rule an empty set and make it warn on a correctly linked
+        // document — the very failure #446 describes.
+        let key = if record.canonical_key.trim().is_empty() {
+            record.id.as_str()
+        } else {
+            record.canonical_key.as_str()
         };
-        if relations.is_empty() {
-            return map;
-        }
-        let seq: Vec<Value> = relations
-            .into_iter()
-            .map(|(target, relation)| {
-                let mut entry = Mapping::new();
-                entry.insert(Value::String("target".into()), Value::String(target));
-                entry.insert(Value::String("relation".into()), Value::String(relation));
-                Value::Mapping(entry)
-            })
-            .collect();
-        map.insert("links".to_string(), Value::Sequence(seq));
-        map
+        let relations = self.get_relations(permit, key).await?;
+        Ok(frontmatter_map_with_links_from(record, &relations))
     }
 
     /// Get incoming relations where this artifact is the TARGET.
     /// Returns Vec<(source_id, relation_type)>.
     ///
+    /// Schema v5: `target_id` holds the target's canonical key, so the
+    /// selector is resolved to that key before the filter is built.
+    ///
     /// PROB-074: wrapped in [`Self::with_retry_on_stale`] — same rationale
     /// as [`Self::get_relations`]. Filter pre-built outside the closure.
-    pub async fn get_incoming_relations(&self, id: &str) -> anyhow::Result<Vec<(String, String)>> {
-        let filter = format!("target_id = '{}'", id.replace('\'', "''"));
-        self.with_retry_on_stale(|| async {
+    pub async fn get_incoming_relations(
+        &self,
+        permit: &dyn WorkspaceReadPermit,
+        id: &str,
+    ) -> anyhow::Result<Vec<(String, String)>> {
+        permit.matches_workspace(&self.workspace)?;
+        if !self.identity_v5 {
+            let Some(key) = self.resolve_canonical_key(permit, id).await? else {
+                return Ok(Vec::new());
+            };
+            return Ok(self
+                .get_all_relations(permit)
+                .await?
+                .into_iter()
+                .filter_map(|(source, target, relation)| {
+                    (target == key).then_some((source, relation))
+                })
+                .collect());
+        }
+        let target_key = self.resolve_endpoint(permit, id).await?;
+        let filter = format!("target_id = '{}'", target_key.replace('\'', "''"));
+        self.with_retry_on_stale(permit, || async {
             let batches = collect_batches(
                 self.relations
                     .query()
@@ -1458,12 +3329,27 @@ impl LanceStore {
 
     /// Get a single artifact by ID as a full record. Returns None if not found.
     ///
+    /// The `id` argument is a *selector* — a canonical key, a display alias,
+    /// or a legacy slug. It is resolved to the row's canonical key and the
+    /// row is then read by `canonical_key = '…'`.
+    ///
     /// PROB-074: wrapped in [`Self::with_retry_on_stale`] so an external
     /// `forgeplan reindex` that invalidated this handle's manifest does
     /// not surface as a `lance error: Not found` on the next read.
-    pub async fn get_record(&self, id: &str) -> anyhow::Result<Option<ArtifactRecord>> {
-        let filter = format!("id = '{}'", id.replace('\'', "''"));
-        self.with_retry_on_stale(|| async {
+    pub async fn get_record(
+        &self,
+        permit: &dyn WorkspaceReadPermit,
+        id: &str,
+    ) -> anyhow::Result<Option<ArtifactRecord>> {
+        permit.matches_workspace(&self.workspace)?;
+        if !self.identity_v5 {
+            return self.legacy_record(permit, id).await;
+        }
+        self.with_retry_on_stale(permit, || async {
+            let Some(key) = self.resolve_canonical_key(permit, id).await? else {
+                return Ok(None);
+            };
+            let filter = format!("canonical_key = '{}'", key.replace('\'', "''"));
             let batches = collect_batches(
                 self.artifacts
                     .query()
@@ -1484,76 +3370,99 @@ impl LanceStore {
         })
         .await
     }
+    /// Fetch a record by an already-resolved canonical key. Unlike
+    /// [`Self::get_record`], this method never interprets the key as a selector.
+    pub async fn get_record_by_canonical_key(
+        &self,
+        permit: &dyn WorkspaceReadPermit,
+        canonical_key: &str,
+    ) -> anyhow::Result<Option<ArtifactRecord>> {
+        permit.matches_workspace(&self.workspace)?;
+        if !self.identity_v5 {
+            return self.legacy_record(permit, canonical_key).await;
+        }
+        self.with_retry_on_stale(permit, || async {
+            let filter = format!("canonical_key = '{}'", canonical_key.replace('\'', "''"));
+            let batches =
+                collect_batches(self.artifacts.query().only_if(filter).execute().await?).await?;
+            for batch in &batches {
+                for row in 0..batch.num_rows() {
+                    let Some(record) = extract_record(batch, row) else {
+                        continue;
+                    };
+                    if record.canonical_key == canonical_key {
+                        return Ok(Some(record));
+                    }
+                }
+            }
+            Ok(None)
+        })
+        .await
+    }
 
-    /// Resolve a user-supplied id-like input to a canonical artifact id.
+    /// Resolve a user-supplied id-like input to the display id of the
+    /// document it names.
     ///
-    /// PROB-060 / SPEC-005 Phase 1.5 — enforces ADR-012 invariants I-3 + I-4
-    /// ("lookup accepts both formats and resolves to the same canonical
-    /// artifact").
+    /// ADR-030: the selection is made by the shared resolver
+    /// ([`Self::resolve_canonical_key`]) — the one the capture side uses —
+    /// so this function and [`Self::resolve_canonical_key`] can never
+    /// disagree about which document a selector names. The value returned
+    /// here is that document's **display id**, because that is what the
+    /// callers print; the document's identity is its canonical key.
     ///
-    /// Accepts three input shapes, tried in order:
-    /// (0) Literal id form — the trimmed input compared byte-for-byte against
-    /// the canonical `id` column. This is the only path that resolves kinds
-    /// whose ids are not `KIND-NNN` shaped, notably Memory
-    /// (`mem-<slugified-text>`, issue #411). Byte-exact by construction, so
-    /// non-canonical casing (`prd-074`) misses here and still falls through
-    /// to (a);
-    /// (a) Display id form (`PRD-074`, `prd-074`, `Prd-74` — case-insensitive
-    /// prefix; trailing digits parsed as u32 then zero-padded to 3 width)
-    /// resolved by direct DB lookup; (b) slug form (`prd-auth-system` —
-    /// lowercase + dashes, kind prefix + content) resolved by scanning records
-    /// of that kind and parsing each frontmatter for the `slug` field
-    /// (compared case-insensitively).
+    /// Accepts the shapes the shared resolver accepts:
+    /// (0) the canonical key itself (`prd-auth-system`) — matched exactly
+    /// (SPEC-009 rule 2);
+    /// (a) the display alias in any shape (`PRD-074`, `prd-074`, `Prd-74` —
+    /// case-insensitive prefix, trailing digits zero-padded to 3 width),
+    /// which also covers kinds whose ids are not `KIND-NNN` shaped, notably
+    /// Memory (`mem-<slugified-text>`, issue #411);
+    /// (b) nothing else. A selector that names more than one document is an
+    /// ambiguity, not a winner, and resolves to nothing.
     ///
-    /// Returns `Ok(None)` when neither path matches an existing artifact.
-    /// Returns `Ok(Some(canonical_id))` where `canonical_id` is the value
-    /// of the `id` column in the DB (current Phase 1.x form: `KIND-NNN`).
+    /// Returns `Ok(None)` when the selector names no artifact, and
+    /// `Ok(Some(display_id))` — the value of the `id` column — otherwise.
     ///
     /// # Performance
-    /// Literal path is O(1) on an indexed point lookup. Display id path is
-    /// O(1) on indexed DB lookup. Slug path is O(n) over records of one kind
-    /// only (filtered first) — for ~50 PRDs this is ~50 frontmatter parses,
-    /// acceptable for CLI; not benchmarked.
-    ///
-    /// Path 0 is free for already-canonical input (`PRD-074`): it hits and
-    /// returns, consuming the single point query Path 1 would have made.
-    /// It costs one extra point query for non-canonical display input
-    /// (`prd-074`, `PRD-74`) and for anything that ends up on the slug scan —
-    /// negligible next to that scan's `list_records` + frontmatter parses.
-    pub async fn resolve_id(&self, input: &str) -> anyhow::Result<Option<String>> {
+    /// Every path goes through one resolution pass over the index's own
+    /// (id, canonical_key, title) columns: a columnar read of two small
+    /// columns, not a body scan. It replaced the old case-insensitive slug
+    /// scan over every record of one kind.
+    pub async fn resolve_id(
+        &self,
+        permit: &dyn WorkspaceReadPermit,
+        input: &str,
+    ) -> anyhow::Result<Option<String>> {
+        permit.matches_workspace(&self.workspace)?;
         // Audit Phase 1.5 M1: trim whitespace from copy-paste / LLM input.
         let input = input.trim();
         if input.is_empty() {
             return Ok(None);
         }
 
-        // ---- Path 0: literal id match (issue #411) ----
-        // The `id` column IS the canonical identity. Kinds whose ids are not
-        // `KIND-NNN` shaped — Memory (`mem-<slugified-text>`) — are invisible
-        // to Path 1 (which needs an all-digit suffix) and to Path 2 (which
-        // needs a `slug` frontmatter field that `forgeplan remember` never
-        // writes). One point lookup on the trimmed input makes them linkable
-        // without granting Memory a lifecycle, required sections, or any
-        // validation weight.
+        // ---- Path 0: the shared resolver decides (issue #411) ----
+        // `get_record` resolves the selector through the shared resolver and
+        // then reads the row by its canonical key. One call therefore
+        // answers for every shape the resolver knows: the canonical key
+        // itself, the display alias in any casing, and kinds whose ids are
+        // not `KIND-NNN` shaped (Memory, `mem-<slugified-text>` — issue
+        // #411), without granting Memory a lifecycle, required sections, or
+        // any validation weight.
         //
-        // Uses the TRIMMED input: `get_record` builds an exact `id = '...'`
-        // predicate, so untrimmed input could never match, and the Phase 1.5
-        // M1 contract ("  PRD-074  " resolves) must hold on this path too.
-        //
-        // Byte-exact on purpose: `prd-074` does NOT match a stored `PRD-074`
-        // here, so it falls through to Path 1's case-insensitive
-        // normalization exactly as before. Making this case-insensitive would
-        // shadow Path 1 and silently change which row wins.
-        if let Some(rec) = self.get_record(input).await? {
+        // Uses the TRIMMED input: the resolver trims too, so the Phase 1.5
+        // M1 contract ("  PRD-074  " resolves) holds on this path.
+        if let Some(rec) = self.get_record(permit, input).await? {
             return Ok(Some(rec.id));
         }
 
         // ---- Path 1: display id form (KIND-NNN) ----
-        // Accept any case for prefix; trailing digits as u32.
+        // Accept any case for prefix; trailing digits as u32. The
+        // zero-padded form is asked of the SAME shared resolver, so this
+        // path cannot pick a different row than Path 0 would.
         // Audit Phase 1.5 H2: when input shape is unambiguously display-id
         // (alpha prefix + digit suffix + valid kind), do NOT fall through
-        // to slug scan on miss — slug shape requires lowercase + dashes
-        // separating words, which digit-only suffix cannot satisfy.
+        // on miss — a digit-only suffix cannot be a slug, so no other
+        // shape can match it.
         if let Some((prefix, rest)) = input.split_once('-')
             && !prefix.is_empty()
             && !rest.is_empty()
@@ -1565,50 +3474,26 @@ impl LanceStore {
             let prefix_lower = prefix.to_ascii_lowercase();
             if crate::artifact::types::ArtifactKind::from_slug_prefix(&prefix_lower).is_some() {
                 let normalized = format!("{}-{num:03}", prefix.to_uppercase());
-                if let Some(rec) = self.get_record(&normalized).await? {
+                if let Some(rec) = self.get_record(permit, &normalized).await? {
                     return Ok(Some(rec.id));
                 }
-                // Display-id shape with valid kind but DB miss → don't waste
-                // a full slug scan; the input cannot match any slug.
+                // Display-id shape with valid kind but DB miss: the input
+                // cannot match any other shape either.
                 return Ok(None);
             }
         }
 
-        // ---- Path 2: slug form (lowercase prefix + dashes + content) ----
-        // Detect by: input is all-lowercase ASCII alphanumeric + dashes,
-        // and starts with a known kind prefix.
-        let is_slug_shape = !input.is_empty()
-            && input
-                .chars()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
-        if !is_slug_shape {
-            return Ok(None);
-        }
-        let Some((kind_prefix, _suffix)) = input.split_once('-') else {
-            return Ok(None);
-        };
-        let Some(kind) = crate::artifact::types::ArtifactKind::from_slug_prefix(kind_prefix) else {
-            return Ok(None);
-        };
-
-        // Filter to records of that kind only (saves scanning all artifacts).
-        let filter = ArtifactFilter {
-            kind: Some(kind.template_key().to_string()),
-            status: None,
-        };
-        let records = self.list_records(Some(&filter)).await?;
-        for record in records {
-            let Ok((fm, _body)) = crate::artifact::frontmatter::parse_frontmatter(&record.body)
-            else {
-                continue;
-            };
-            if let Some(slug) = crate::artifact::frontmatter::slug_from_frontmatter(&fm)
-                && slug.eq_ignore_ascii_case(input)
-            {
-                return Ok(Some(record.id));
-            }
-        }
-
+        // ---- Path 2: the slug form is the canonical key ----
+        //
+        // ADR-030: a document's slug IS its canonical key, and the shared
+        // resolver matches a key exactly (SPEC-009 rule 2). Path 0 already
+        // asked that resolver, so a slug resolves here by the same answer
+        // every other selector gets.
+        //
+        // The old case-insensitive slug scan is gone on purpose: it was a
+        // SECOND set of selection rules, and a selector it accepted while
+        // `resolve_canonical_key` rejected it made the two resolvers
+        // disagree about which document a selector names.
         Ok(None)
     }
 
@@ -1618,8 +3503,10 @@ impl LanceStore {
     /// reindex doesn't break long-running daemons (MCP server).
     pub async fn list_records(
         &self,
+        permit: &dyn WorkspaceReadPermit,
         filter: Option<&ArtifactFilter>,
     ) -> anyhow::Result<Vec<ArtifactRecord>> {
+        permit.matches_workspace(&self.workspace)?;
         let predicate: Option<String> = filter.map(|f| {
             let mut conditions = Vec::new();
             if let Some(kind) = &f.kind {
@@ -1631,7 +3518,12 @@ impl LanceStore {
             conditions.join(" AND ")
         });
 
-        self.with_retry_on_stale(|| async {
+        let legacy_candidates = if self.identity_v5 {
+            None
+        } else {
+            Some(self.alias_candidates(permit).await?)
+        };
+        self.with_retry_on_stale(permit, || async {
             let mut query = self.artifacts.query();
             if let Some(p) = predicate.as_deref()
                 && !p.is_empty()
@@ -1643,9 +3535,32 @@ impl LanceStore {
             let mut results = Vec::new();
             for batch in &batches {
                 for row in 0..batch.num_rows() {
-                    if let Some(record) = extract_record(batch, row) {
-                        results.push(record);
+                    let mut record = extract_record(batch, row)
+                        .ok_or_else(|| anyhow::anyhow!("artifact row has no id"))?;
+                    if let Some(candidates) = &legacy_candidates {
+                        let matches = candidates
+                            .iter()
+                            .filter(|candidate| candidate.display_id == record.id)
+                            .count();
+                        if matches != 1 {
+                            anyhow::bail!("legacy index cannot uniquely map '{}'", record.id);
+                        }
+                        let resolved =
+                            resolve_artifact(&record.id, candidates)?.ok_or_else(|| {
+                                anyhow::anyhow!("legacy artifact '{}' has no document", record.id)
+                            })?;
+                        record.canonical_key = resolved.identity.canonical_key;
+                        if results
+                            .iter()
+                            .any(|existing: &ArtifactRecord| existing.id == record.id)
+                        {
+                            anyhow::bail!(
+                                "legacy index contains duplicate rows for '{}'",
+                                record.id
+                            );
+                        }
                     }
+                    results.push(record);
                 }
             }
             results.sort_by(|a, b| a.id.cmp(&b.id));
@@ -1660,6 +3575,7 @@ impl LanceStore {
     /// and filters in Rust for maximum compatibility.
     pub async fn search_body(
         &self,
+        permit: &dyn WorkspaceReadPermit,
         query: &str,
         kind_filter: Option<&str>,
     ) -> anyhow::Result<Vec<ArtifactRecord>> {
@@ -1667,7 +3583,7 @@ impl LanceStore {
             kind: Some(k.to_string()),
             status: None,
         });
-        let all = self.list_records(filter.as_ref()).await?;
+        let all = self.list_records(permit, filter.as_ref()).await?;
 
         let query_lower = query.to_lowercase();
         let results = all
@@ -1680,19 +3596,305 @@ impl LanceStore {
         Ok(results)
     }
 
-    /// Vector similarity search using pre-computed embedding.
-    /// Returns artifacts with distance scores, sorted by cosine distance (closest first).
+    /// Verify the complete canonical source and every indexed vector without
+    /// repairing, writing, or downloading a model. The caller must certify the
+    /// surrounding logical read attempt before returning any result.
+    #[cfg(feature = "semantic-search")]
+    pub async fn verify_semantic_read_ready(
+        &self,
+        permit: &dyn WorkspaceReadPermit,
+    ) -> anyhow::Result<()> {
+        permit.matches_workspace(&self.workspace)?;
+        if self.identity_generation_changed(permit)? {
+            anyhow::bail!("semantic freshness unavailable: identity generation changed");
+        }
+        let lance = self.workspace.join("lance");
+        let marker = migrate::read_identity_v5_marker(&lance)?.ok_or_else(|| {
+            anyhow::anyhow!("semantic freshness unavailable: no verified identity profile")
+        })?;
+        let profile = marker.embeddings.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("semantic freshness unavailable: no verified embedding profile")
+        })?;
+        verify_manifests(&lance, &[&marker.artifacts_table]).await?;
+        let path = lance.join(format!("{}.lance", marker.artifacts_table));
+        let pinned = crate::constellation::lance_tables::open_existing_native_table(
+            &path,
+            &marker.artifacts_table,
+        )
+        .await?;
+        let version = pinned.version().await?;
+        pinned.checkout(version).await?;
+        let (digest, relation_version) = self
+            .verify_semantic_snapshot(&pinned, profile, &marker)
+            .await?;
+        self.verify_semantic_snapshot_unchanged(&marker, version, relation_version, &digest)
+            .await
+    }
+
+    #[cfg(feature = "semantic-search")]
+    async fn verify_semantic_snapshot(
+        &self,
+        pinned: &Table,
+        profile: &migrate::IdentityV5EmbeddingProvenance,
+        marker: &migrate::IdentityV5Marker,
+    ) -> anyhow::Result<(String, u64)> {
+        if migrate::pending_legacy_semantic_rebuild(&self.workspace)?.is_some()
+            || migrate::has_identity_delete_intents(&self.workspace)?
+        {
+            anyhow::bail!("semantic freshness unavailable: canonical reconciliation is pending");
+        }
+        migrate::validate_current_embedding_profile(&self.workspace, profile)
+            .map_err(|error| anyhow::anyhow!("semantic freshness unavailable: {error}"))?;
+        let source = migrate::read_identity_v5_source(&self.workspace).await?;
+        let report = migrate::verify_identity_v5_source(&source);
+        if report.is_blocked() {
+            anyhow::bail!(
+                "semantic freshness unavailable: canonical source is ambiguous or unmappable"
+            );
+        }
+        let candidates = migrate::identity_v5_candidates(&source);
+        let mut expected: BTreeMap<_, _> = source
+            .documents
+            .iter()
+            .map(|document| (document.canonical_key.as_str(), document))
+            .collect();
+        let batches = collect_batches(pinned.query().execute().await?).await?;
+        for batch in &batches {
+            for row in 0..batch.num_rows() {
+                let key = required_utf8(batch, row, "artifacts", "canonical_key")?;
+                required_utf8(batch, row, "artifacts", "title")?;
+                required_large_utf8(batch, row, "artifacts", "body")?;
+                let document = expected.remove(key).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "semantic freshness unavailable: extra or duplicate indexed key '{key}'"
+                    )
+                })?;
+                let record = extract_record(batch, row).ok_or_else(|| {
+                    anyhow::anyhow!("semantic freshness unavailable: invalid indexed row")
+                })?;
+                let parent = document
+                    .parent_epic
+                    .as_deref()
+                    .map(|value| migrate::resolve_reference(&candidates, value))
+                    .transpose()?;
+                // The frontmatter parser strips LF separators, so normalize
+                // CRLF before parsing rather than trimming the resulting body.
+                let normalized_source = if document.full_text.contains("\r\n") {
+                    std::borrow::Cow::Owned(document.full_text.replace("\r\n", "\n"))
+                } else {
+                    std::borrow::Cow::Borrowed(document.full_text.as_str())
+                };
+                let (frontmatter, source_body) =
+                    crate::artifact::frontmatter::parse_frontmatter_borrowed(&normalized_source)
+                        .map_err(|error| {
+                            anyhow::anyhow!(
+                                "semantic freshness unavailable: invalid frontmatter: {error}"
+                            )
+                        })?;
+                let declared_timestamp = |primary: &str, alias: &str| {
+                    frontmatter
+                        .get(primary)
+                        .and_then(|value| value.as_str())
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .or_else(|| {
+                            frontmatter
+                                .get(alias)
+                                .and_then(|value| value.as_str())
+                                .map(str::trim)
+                                .filter(|value| !value.is_empty())
+                        })
+                };
+                let declared_created = declared_timestamp("created_at", "created");
+                let declared_updated = declared_timestamp("updated_at", "updated");
+                let source_tags: std::collections::BTreeSet<_> = document.tags.iter().collect();
+                let indexed_tags: std::collections::BTreeSet<_> = record.tags.iter().collect();
+                if record.canonical_key != key
+                    || record.id != document.display_id
+                    || record.title != document.title
+                    || (semantic_canonical_body(&record.body)
+                        != semantic_canonical_body(&document.full_text)
+                        && semantic_canonical_body(&record.body)
+                            != semantic_canonical_body(source_body))
+                    || record.kind != document.kind
+                    || record.status != document.status
+                    || record.depth != document.depth
+                    || record.author != document.author
+                    || record.valid_until != document.valid_until
+                    || record.parent_epic != parent
+                    || declared_created.is_some_and(|value| value != record.created_at.as_str())
+                    || declared_updated.is_some_and(|value| value != record.updated_at.as_str())
+                    || indexed_tags != source_tags
+                // body_hash and r_eff_score are derived index fields, not
+                // canonical frontmatter; row-local provenance covers the vector.
+                {
+                    anyhow::bail!(
+                        "semantic freshness unavailable: canonical document '{key}' changed"
+                    );
+                }
+                verify_row_local_semantic_provenance(batch, row, &record, profile)
+                    .map_err(|error| anyhow::anyhow!("semantic freshness unavailable: {error}"))?;
+            }
+        }
+        if !expected.is_empty() {
+            anyhow::bail!(
+                "semantic freshness unavailable: canonical documents are missing from the index"
+            );
+        }
+        let mut expected_edges = std::collections::BTreeSet::new();
+        for document in &source.documents {
+            for (target, relation) in &document.links {
+                expected_edges.insert((
+                    document.canonical_key.clone(),
+                    migrate::resolve_reference(&candidates, target)?,
+                    relation.clone(),
+                ));
+            }
+        }
+        let lance = self.workspace.join("lance");
+        verify_manifests(&lance, &[&marker.relations_table]).await?;
+        let path = lance.join(format!("{}.lance", marker.relations_table));
+        let relations = crate::constellation::lance_tables::open_existing_native_table(
+            &path,
+            &marker.relations_table,
+        )
+        .await?;
+        let relation_version = relations.version().await?;
+        relations.checkout(relation_version).await?;
+        let mut actual_edges = std::collections::BTreeSet::new();
+        for batch in collect_batches(relations.query().execute().await?).await? {
+            for row in 0..batch.num_rows() {
+                let edge = (
+                    required_utf8(&batch, row, "relations", "source_id")?.to_string(),
+                    required_utf8(&batch, row, "relations", "target_id")?.to_string(),
+                    required_utf8(&batch, row, "relations", "relation_type")?.to_string(),
+                );
+                actual_edges.insert(edge);
+            }
+        }
+        if actual_edges != expected_edges {
+            anyhow::bail!(
+                "semantic freshness unavailable: indexed relations differ from canonical source"
+            );
+        }
+        Ok((source.source_digest, relation_version))
+    }
+
+    #[cfg(feature = "semantic-search")]
+    async fn verify_semantic_snapshot_unchanged(
+        &self,
+        marker: &migrate::IdentityV5Marker,
+        version: u64,
+        relation_version: u64,
+        source_digest: &str,
+    ) -> anyhow::Result<()> {
+        if migrate::pending_legacy_semantic_rebuild(&self.workspace)?.is_some()
+            || migrate::has_identity_delete_intents(&self.workspace)?
+            || migrate::read_identity_v5_source(&self.workspace)
+                .await?
+                .source_digest
+                != source_digest
+            || migrate::read_identity_v5_marker(&self.workspace.join("lance"))?.as_ref()
+                != Some(marker)
+        {
+            anyhow::bail!(
+                "semantic freshness unavailable: source or readiness changed during the read"
+            );
+        }
+        let profile = marker.embeddings.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("semantic freshness unavailable: no verified embedding profile")
+        })?;
+        migrate::validate_current_embedding_profile(&self.workspace, profile)
+            .map_err(|error| anyhow::anyhow!("semantic freshness unavailable: {error}"))?;
+        let path = self
+            .workspace
+            .join("lance")
+            .join(format!("{}.lance", marker.artifacts_table));
+        verify_manifests(&self.workspace.join("lance"), &[&marker.artifacts_table]).await?;
+        if crate::constellation::lance_tables::open_existing_native_table(
+            &path,
+            &marker.artifacts_table,
+        )
+        .await?
+        .version()
+        .await?
+            != version
+        {
+            anyhow::bail!("semantic freshness unavailable: index changed during the read");
+        }
+        let path = self
+            .workspace
+            .join("lance")
+            .join(format!("{}.lance", marker.relations_table));
+        verify_manifests(&self.workspace.join("lance"), &[&marker.relations_table]).await?;
+        if crate::constellation::lance_tables::open_existing_native_table(
+            &path,
+            &marker.relations_table,
+        )
+        .await?
+        .version()
+        .await?
+            != relation_version
+        {
+            anyhow::bail!("semantic freshness unavailable: relations changed during the read");
+        }
+        Ok(())
+    }
+
+    /// Vector search embeds the query with the same pinned model as the
+    /// published rows; callers cannot supply an unbound vector.
     #[cfg(feature = "semantic-search")]
     pub async fn vector_search(
         &self,
-        query_embedding: &[f32],
+        permit: &dyn WorkspaceReadPermit,
+        query: &str,
         limit: usize,
     ) -> anyhow::Result<Vec<VectorSearchHit>> {
         use lancedb::query::QueryBase;
+        permit.matches_workspace(&self.workspace)?;
+        if self.identity_generation_changed(permit)? {
+            anyhow::bail!("semantic index generation changed; reopen the store before searching");
+        }
 
-        let results = self
-            .artifacts
-            .vector_search(query_embedding)
+        let marker = migrate::read_identity_v5_marker(&self.workspace.join("lance"))?;
+        if self.identity_v5 != marker.is_some() {
+            anyhow::bail!("semantic search handle does not match identity-v5 readiness");
+        }
+        let table_name = marker
+            .as_ref()
+            .map_or("artifacts", |marker| marker.artifacts_table.as_str());
+        verify_manifests(&self.workspace.join("lance"), &[table_name]).await?;
+        let pinned = crate::constellation::lance_tables::open_existing_native_table(
+            &self
+                .workspace
+                .join("lance")
+                .join(format!("{table_name}.lance")),
+            table_name,
+        )
+        .await?;
+        let version = pinned.version().await?;
+        pinned.checkout(version).await?;
+        if migrate::read_identity_v5_marker(&self.workspace.join("lance"))? != marker {
+            anyhow::bail!("identity-v5 readiness changed while pinning semantic search");
+        }
+        let marker = marker.ok_or_else(|| {
+            anyhow::anyhow!("semantic freshness unavailable: no verified identity profile")
+        })?;
+        let profile = marker.embeddings.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("semantic freshness unavailable: no verified embedding profile")
+        })?;
+        let (source_digest, relation_version) = self
+            .verify_semantic_snapshot(&pinned, profile, &marker)
+            .await?;
+        let workspace = self.workspace.clone();
+        let profile_for_query = profile.clone();
+        let query = query.to_string();
+        let query_embedding = tokio::task::spawn_blocking(move || {
+            migrate::embed_identity_query(&workspace, &profile_for_query, &query)
+        })
+        .await??;
+        let results = pinned
+            .vector_search(query_embedding.as_slice())
             .map_err(|e| anyhow::anyhow!("Vector search failed: {e}"))?
             .distance_type(lancedb::DistanceType::Cosine)
             .limit(limit)
@@ -1704,63 +3906,47 @@ impl LanceStore {
         for batch_result in batches {
             let batch = batch_result?;
             for row in 0..batch.num_rows() {
-                if let Some(record) = extract_record(&batch, row) {
-                    let distance = get_f32(&batch, "_distance", row)
-                        .map(|d| d as f64)
-                        .unwrap_or(1.0); // fallback: mid-range distance
-                    hits.push(VectorSearchHit { record, distance });
-                }
+                let record = extract_record(&batch, row).ok_or_else(|| {
+                    anyhow::anyhow!("vector search returned an invalid artifact row")
+                })?;
+                verify_row_local_semantic_provenance(&batch, row, &record, profile)?;
+                let distance = get_f32(&batch, "_distance", row)
+                    .filter(|value| value.is_finite())
+                    .ok_or_else(|| anyhow::anyhow!("vector search returned an invalid distance"))?
+                    as f64;
+                hits.push(VectorSearchHit { record, distance });
             }
         }
+        self.verify_semantic_snapshot_unchanged(&marker, version, relation_version, &source_digest)
+            .await?;
         Ok(hits)
     }
 
-    /// Update the embedding column for an artifact.
-    pub async fn update_embedding(&self, id: &str, embedding: &[f32]) -> anyhow::Result<()> {
-        let embedding_str = format!(
-            "[{}]",
-            embedding
-                .iter()
-                .map(|v| v.to_string())
-                .collect::<Vec<_>>()
-                .join(",")
-        );
-        let predicate = format!("id = '{}'", id.replace('\'', "''"));
-        self.artifacts
-            .update()
-            .only_if(predicate)
-            .column("embedding", &embedding_str)
-            .execute()
-            .await?;
-        Ok(())
-    }
-
-    /// Stamp the content hash a vector was computed from.
-    ///
-    /// Public for the same reason [`Self::update_embedding`] is, and it is not
-    /// an ADR-003 bypass: both write **derived index metadata**, never artifact
-    /// content. The markdown file stays the source of truth — nothing here can
-    /// change what an artifact says. That is why neither appears in the
-    /// `FORBIDDEN_METHODS` list guarded by `tests/adr_003_invariant.rs`.
-    ///
-    /// Written by `forgeplan embed` right after the vector, so the next run can
-    /// tell an already-current record from one that moved (PROB-093).
-    pub async fn update_body_hash(&self, id: &str, hash: &str) -> anyhow::Result<()> {
-        let predicate = format!("id = '{}'", id.replace('\'', "''"));
-        let escaped = hash.replace('\'', "''");
-        self.artifacts
-            .update()
-            .only_if(predicate)
-            .column("body_hash", format!("'{}'", escaped))
-            .execute()
-            .await?;
-        Ok(())
-    }
+    // `update_embedding` and `update_body_hash` were DELETED, not demoted.
+    //
+    // Both were unguarded `pub` writes onto an artifacts row: no binding, no
+    // incarnation check, no profile identity. `forgeplan embed` reached the first
+    // one directly, so a vector could be stamped onto a row whose binding had
+    // moved — the exact staleness this protocol exists to prevent. `body_hash`
+    // stamped alongside it was then used as an "already embedded" test, which
+    // cannot see a profile change.
+    //
+    // After the migration to `constellation::facade`, which publishes through
+    // `complete_embedding_batch` and its conditional `Binding::predicate` guard,
+    // they had zero production callers — only their own unit tests, which is not
+    // coverage but a reason for the function to survive. Per the cutover rule,
+    // old paths are deleted once every consumer has migrated.
+    //
+    // A vector is now written only by
+    // `IndexTables::publish_embedding_into_artifacts`.
 
     /// Find artifacts where `valid_until` is set and is earlier than the current date.
-    pub async fn find_stale(&self) -> anyhow::Result<Vec<ArtifactRecord>> {
+    pub async fn find_stale(
+        &self,
+        permit: &dyn WorkspaceReadPermit,
+    ) -> anyhow::Result<Vec<ArtifactRecord>> {
         let today = chrono::Utc::now().date_naive();
-        let all = self.list_records(None).await?;
+        let all = self.list_records(permit, None).await?;
         let mut stale: Vec<ArtifactRecord> = all
             .into_iter()
             .filter(|r| {
@@ -1784,9 +3970,13 @@ impl LanceStore {
     /// Scans all existing artifact IDs matching the prefix, finds the maximum
     /// numeric suffix, and returns the next one (e.g., "PRD-003" if max is "PRD-002").
     /// If no artifacts exist with that prefix, returns "{PREFIX}-001".
-    pub async fn next_id(&self, kind_prefix: &str) -> anyhow::Result<String> {
+    pub async fn next_id(
+        &self,
+        permit: &dyn WorkspaceReadPermit,
+        kind_prefix: &str,
+    ) -> anyhow::Result<String> {
         let prefix_upper = kind_prefix.to_uppercase();
-        let all = self.list_artifacts(None).await?;
+        let all = self.list_artifacts(permit, None).await?;
 
         let mut max_num: u32 = 0;
         let search_prefix = format!("{}-", prefix_upper);
@@ -1800,7 +3990,9 @@ impl LanceStore {
             }
         }
 
-        let next = max_num + 1;
+        let next = max_num.checked_add(1).ok_or_else(|| {
+            anyhow::anyhow!("display number for kind {prefix_upper} overflows u32")
+        })?;
         Ok(format!("{}-{:03}", prefix_upper, next))
     }
 
@@ -1814,21 +4006,27 @@ impl LanceStore {
     /// hundredth) while the actual content scored 0.62. The artifact matched
     /// what it did not say better than what it did.
     ///
-    /// The vector is **cleared**, not recomputed here: `store` has no embedder,
-    /// and encoding is feature-gated. A null vector is a state `embed`,
-    /// `search` and `health` can see and report; a wrong vector is not
-    /// detectable by anything. `body_hash` is stamped so the subsequent
-    /// `forgeplan embed` re-encodes this record alone rather than all of them.
-    pub(crate) async fn update_body(&self, id: &str, body: &str) -> anyhow::Result<()> {
+    /// Invalidating the vector and the job binding is atomic with the body
+    /// update; a subsequent ordinary mutation/search reconciliation drains it.
+    pub(crate) async fn update_body(
+        &self,
+        guard: &WorkspaceLock,
+        id: &str,
+        body: &str,
+    ) -> anyhow::Result<()> {
+        self.ensure_identity_v5_writable(guard)?;
+        let Some(key) = self.resolve_canonical_key(guard, id).await? else {
+            anyhow::bail!("Artifact '{}' not found", id);
+        };
         let now = Utc::now().to_rfc3339();
-        let predicate = format!("id = '{}'", id.replace('\'', "''"));
+        let predicate = format!("canonical_key = '{}'", key.replace('\'', "''"));
         let escaped_body = body.replace('\'', "''");
 
         // The hash covers title + body, so read the current title rather than
         // hashing the body alone — otherwise a later title edit would leave a
         // matching hash and the stale vector would survive again.
         let title = self
-            .get_artifact(id)
+            .get_artifact(guard, id)
             .await?
             .map(|a| a.title)
             .unwrap_or_default();
@@ -1842,6 +4040,12 @@ impl LanceStore {
             .column("body", format!("'{}'", escaped_body))
             .column("body_hash", format!("'{}'", new_hash))
             .column("embedding", "NULL")
+            .column("semantic_input_digest", "NULL")
+            .column("semantic_profile_digest", "NULL")
+            .column("semantic_vector_digest", "NULL")
+            .column("semantic_job_id", "NULL")
+            .column("semantic_attempt_token", "NULL")
+            .column("semantic_state", "'pending'")
             .execute()
             .await?;
         Ok(())
@@ -1849,7 +4053,11 @@ impl LanceStore {
 
     /// Get all relations across all artifacts.
     /// Returns Vec<(source_id, target_id, relation_type)>.
-    pub async fn get_all_relations(&self) -> anyhow::Result<Vec<(String, String, String)>> {
+    pub async fn get_all_relations(
+        &self,
+        permit: &dyn WorkspaceReadPermit,
+    ) -> anyhow::Result<Vec<(String, String, String)>> {
+        self.refresh(permit).await?;
         let batches = collect_batches(self.relations.query().execute().await?).await?;
 
         let mut results = Vec::new();
@@ -1864,15 +4072,36 @@ impl LanceStore {
                 .column_by_name("relation_type")
                 .and_then(|c| c.as_any().downcast_ref::<StringArray>());
 
-            if let (Some(sources), Some(targets), Some(rels)) = (source_col, target_col, rel_col) {
-                for i in 0..batch.num_rows() {
-                    if !sources.is_null(i) && !targets.is_null(i) && !rels.is_null(i) {
-                        results.push((
-                            sources.value(i).to_string(),
-                            targets.value(i).to_string(),
-                            rels.value(i).to_string(),
-                        ));
-                    }
+            let (sources, targets, rels) = match (source_col, target_col, rel_col) {
+                (Some(sources), Some(targets), Some(rels)) => (sources, targets, rels),
+                _ => anyhow::bail!("relations table has invalid required columns"),
+            };
+            for i in 0..batch.num_rows() {
+                if sources.is_null(i) || targets.is_null(i) || rels.is_null(i) {
+                    anyhow::bail!("relations table has a null required value");
+                }
+                results.push((
+                    sources.value(i).to_string(),
+                    targets.value(i).to_string(),
+                    rels.value(i).to_string(),
+                ));
+            }
+        }
+        if !self.identity_v5 {
+            let candidates = self.alias_candidates(permit).await?;
+            for (source, target, _) in &mut results {
+                let resolved = resolve_artifact(source, &candidates)?.ok_or_else(|| {
+                    anyhow::anyhow!("legacy relation source '{source}' has no document")
+                })?;
+                *source = resolved.identity.canonical_key;
+                if !target.contains('@')
+                    && let Some(resolved) =
+                        crate::artifact::canonical_key::resolve_structural_target(
+                            target,
+                            &candidates,
+                        )?
+                {
+                    *target = resolved.identity.canonical_key;
                 }
             }
         }
@@ -1882,170 +4111,115 @@ impl LanceStore {
     // ── Change Log ───────────────────────────────────────────────────
 
     /// Insert a change log entry.
-    pub async fn log_change(&self, entry: &ChangeLogEntry) -> anyhow::Result<()> {
+    ///
+    /// Schema v5: a history row names the changed artifact by its **canonical
+    /// key**, so the same query that finds the artifact finds its history. A
+    /// caller that holds a display alias gets it resolved; an artifact that
+    /// is no longer in the index (a deleted one) keeps its declared id.
+    pub async fn log_change(
+        &self,
+        guard: &WorkspaceLock,
+        entry: &ChangeLogEntry,
+    ) -> anyhow::Result<()> {
+        self.ensure_identity_v5_writable(guard)?;
         let table = self.change_log.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
                 "change_log table not initialized. Run `forgeplan init -y` to recreate workspace."
             )
         })?;
 
-        let batch = RecordBatch::try_new(
-            schema::change_log_schema(),
-            vec![
-                Arc::new(StringArray::from(vec![entry.timestamp.as_str()])),
-                Arc::new(StringArray::from(vec![entry.artifact_id.as_str()])),
-                Arc::new(StringArray::from(vec![entry.action.as_str()])),
-                Arc::new(StringArray::from(vec![entry.field.as_deref()])),
-                Arc::new(StringArray::from(vec![entry.old_value.as_deref()])),
-                Arc::new(StringArray::from(vec![entry.new_value.as_deref()])),
-                Arc::new(StringArray::from(vec![entry.source.as_str()])),
-                Arc::new(StringArray::from(vec![entry.commit_hash.as_deref()])),
-            ],
-        )?;
-
-        table.add(vec![batch]).execute().await?;
-        Ok(())
+        // A deleted artifact may no longer resolve, but ambiguity and index
+        // errors must never be converted into an unqualified audit entry.
+        let mut recorded = entry.clone();
+        if recorded.canonical_key.is_none() {
+            recorded.canonical_key = self
+                .resolve_canonical_key(guard, &entry.artifact_id)
+                .await?;
+        }
+        let selector = recorded
+            .canonical_key
+            .as_deref()
+            .unwrap_or(&entry.artifact_id);
+        if let Some(display_id) = self.resolve_display_id(guard, selector).await? {
+            recorded.artifact_id = display_id;
+        }
+        crate::db::auxiliary::change_log_append(table, &recorded).await
     }
 
-    /// Query change log entries with optional artifact filter and source filter.
+    /// Query keyed history by canonical key or an unambiguous source alias.
+    /// Missing selectors are treated as canonical keys. Unkeyed events cannot
+    /// be attributed from current sources or keyed history alone: any such
+    /// event makes a filtered history query indeterminate.
     pub async fn get_change_log(
         &self,
+        permit: &dyn WorkspaceReadPermit,
         artifact_id: Option<&str>,
         source: Option<&str>,
         limit: usize,
     ) -> anyhow::Result<Vec<ChangeLogEntry>> {
+        permit.matches_workspace(&self.workspace)?;
         let table = self
             .change_log
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("change_log table not initialized"))?;
 
-        let mut conditions: Vec<String> = Vec::new();
-        if let Some(aid) = artifact_id {
-            conditions.push(format!("artifact_id = '{}'", aid.replace('\'', "''")));
-        }
-        if let Some(src) = source {
-            conditions.push(format!("source = '{}'", src.replace('\'', "''")));
-        }
+        use crate::db::auxiliary::{HistoryFilter, change_log_query};
 
-        let mut query = table.query();
-        if !conditions.is_empty() {
-            query = query.only_if(conditions.join(" AND "));
+        let Some(selector) = artifact_id else {
+            return change_log_query(table, None, source, limit).await;
+        };
+        let documents = workspace_documents(&self.workspace).await?;
+        let candidates = crate::artifact::documents::candidates_from_documents(&documents);
+        let resolved = resolve_artifact(selector, &candidates)?;
+        let key = resolved
+            .as_ref()
+            .map(|item| item.identity.canonical_key.as_str())
+            .unwrap_or(selector);
+        // A historical alias may no longer appear in either the current
+        // source or keyed rows, so no unkeyed event can safely be excluded.
+        let history = change_log_query(table, None, None, usize::MAX).await?;
+        if history.iter().any(|row| row.canonical_key.is_none()) {
+            anyhow::bail!(
+                "history identity is indeterminate: unkeyed events cannot be attributed to '{key}'"
+            );
         }
-
-        let batches = collect_batches(query.execute().await?).await?;
-        let mut results: Vec<ChangeLogEntry> = Vec::new();
-
-        for batch in &batches {
-            for row in 0..batch.num_rows() {
-                if let Some(entry) = extract_change_log_entry(batch, row) {
-                    results.push(entry);
-                }
-            }
-        }
-
-        // Sort by timestamp descending (newest first)
-        results.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-        results.truncate(limit);
-        Ok(results)
+        change_log_query(table, Some(HistoryFilter::Identity(key)), source, limit).await
     }
 
     // ── FPF Knowledge Base ───────────────────────────────────────────
+    //
+    // Thin delegations to the shared implementations in `db::auxiliary`. The
+    // bodies live there because `AuxiliaryStore` — which on a migrated
+    // workspace is the ONLY handle that can touch `fpf_spec` without opening
+    // the retired artifact tables — needs the exact same code. Two copies would
+    // drift, and a drifted ranking or embedding guard is invisible.
 
     /// Check if FPF knowledge base is loaded.
     pub fn has_fpf(&self) -> bool {
         self.fpf_spec.is_some()
     }
 
+    /// The table this workspace's FPF knowledge base lives in.
+    fn fpf_table(&self) -> anyhow::Result<&Table> {
+        self.fpf_spec.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("FPF knowledge base not initialized. Run `forgeplan fpf ingest`")
+        })
+    }
+
     /// Insert FPF chunks in batch, optionally with pre-computed embeddings
     /// (PRD-042). When `embeddings` is `Some`, the slice MUST have the same
     /// length as `chunks` and every vector MUST have length
-    /// `EMBEDDING_DIM` (1024). When `None`, the embedding column is filled
-    /// with typed nulls — pre-semantic workspaces and tests use this path.
+    /// `EMBEDDING_DIM` (1024) and be finite. When `None`, the embedding column
+    /// is filled with typed nulls — pre-semantic workspaces and tests use this
+    /// path.
     pub async fn insert_fpf_chunks(
         &self,
+        lock: &crate::workspace::lock::WorkspaceLock,
         chunks: &[FpfChunk],
         embeddings: Option<&[Vec<f32>]>,
     ) -> anyhow::Result<usize> {
-        let table = self.fpf_spec.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("FPF knowledge base not initialized. Run `forgeplan fpf ingest`")
-        })?;
-
-        let ids: Vec<&str> = chunks.iter().map(|c| c.id.as_str()).collect();
-        let section_ids: Vec<&str> = chunks.iter().map(|c| c.section_id.as_str()).collect();
-        let parent_sections: Vec<Option<&str>> =
-            chunks.iter().map(|c| c.parent_section.as_deref()).collect();
-        let titles: Vec<&str> = chunks.iter().map(|c| c.title.as_str()).collect();
-        let bodies: Vec<&str> = chunks.iter().map(|c| c.body.as_str()).collect();
-        let line_counts: Vec<i32> = chunks.iter().map(|c| c.line_count).collect();
-        let file_paths: Vec<&str> = chunks.iter().map(|c| c.file_path.as_str()).collect();
-        let created_ats: Vec<&str> = chunks.iter().map(|c| c.created_at.as_str()).collect();
-
-        let dim = schema::EMBEDDING_DIM as usize;
-        let embedding_col: Arc<dyn Array> = match embeddings {
-            None => convert::make_null_embedding_col(chunks.len()),
-            Some(vecs) => {
-                if vecs.len() != chunks.len() {
-                    anyhow::bail!(
-                        "embeddings length ({}) must match chunks length ({})",
-                        vecs.len(),
-                        chunks.len()
-                    );
-                }
-                for (i, v) in vecs.iter().enumerate() {
-                    if v.len() != dim {
-                        anyhow::bail!(
-                            "embedding[{}] has wrong dim: expected {}, got {}",
-                            i,
-                            dim,
-                            v.len()
-                        );
-                    }
-                    // Sprint 13.7 wave 2 C4.8: reject non-finite values at the
-                    // boundary. LanceDB's cosine distance on NaN/Inf is
-                    // undefined, so refuse to persist garbage.
-                    if let Some(pos) = v.iter().position(|f| !f.is_finite()) {
-                        anyhow::bail!(
-                            "embedding[{}] contains non-finite value at index {}",
-                            i,
-                            pos
-                        );
-                    }
-                }
-                use arrow_array::{FixedSizeListArray, Float32Array};
-                use arrow_schema::Field as ArrowField;
-                let total: Vec<f32> = vecs.iter().flatten().copied().collect();
-                let values = Arc::new(Float32Array::from(total));
-                let item_field = Arc::new(ArrowField::new(
-                    "item",
-                    arrow_schema::DataType::Float32,
-                    true,
-                ));
-                Arc::new(FixedSizeListArray::new(
-                    item_field,
-                    schema::EMBEDDING_DIM,
-                    values,
-                    None,
-                ))
-            }
-        };
-
-        let batch = RecordBatch::try_new(
-            schema::fpf_spec_schema(),
-            vec![
-                Arc::new(StringArray::from(ids)),
-                Arc::new(StringArray::from(section_ids)),
-                Arc::new(StringArray::from(parent_sections)),
-                Arc::new(StringArray::from(titles)),
-                Arc::new(arrow_array::LargeStringArray::from(bodies)),
-                Arc::new(Int32Array::from(line_counts)),
-                Arc::new(StringArray::from(file_paths)),
-                Arc::new(StringArray::from(created_ats)),
-                embedding_col,
-            ],
-        )?;
-
-        table.add(vec![batch]).execute().await?;
-        Ok(chunks.len())
+        lock.matches_workspace(&self.workspace)?;
+        crate::db::auxiliary::fpf_insert_chunks(self.fpf_table()?, chunks, embeddings).await
     }
 
     /// Vector similarity search over FPF chunks (PRD-042).
@@ -2060,13 +4234,12 @@ impl LanceStore {
     /// unused in keyword-only builds, but the code path remains compiled for
     /// testability.
     ///
-    /// Uses LanceDB's native `vector_search` with cosine distance — the same
-    /// path artifacts already use for semantic search.
-    ///
     /// # Behavior
     /// - errors when `query_vec.len() != EMBEDDING_DIM` (1024).
     /// - returns an empty Vec when the table has no rows or all embedding
     ///   cells are NULL (pre-ingest workspace).
+    /// - returns an empty Vec for `limit == 0`; larger limits are bounded by
+    ///   the number of embedded rows before reaching the backend.
     /// - returns up to `limit` chunks ordered by ascending cosine distance
     ///   (closest first).
     pub async fn search_fpf_by_vector(
@@ -2074,206 +4247,60 @@ impl LanceStore {
         query_vec: &[f32],
         limit: usize,
     ) -> anyhow::Result<Vec<FpfChunk>> {
-        let dim = schema::EMBEDDING_DIM as usize;
-        if query_vec.len() != dim {
-            anyhow::bail!(
-                "query vector has wrong dim: expected {}, got {}",
-                dim,
-                query_vec.len()
-            );
-        }
-
-        let table = self.fpf_spec.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("FPF knowledge base not initialized. Run `forgeplan fpf ingest`")
-        })?;
-
-        // LanceDB native vector search. On an empty/all-null column LanceDB
-        // may either return zero rows or error; we silently degrade to Ok([])
-        // as the documented contract, but log the underlying reason so
-        // debugging is possible.
-        let search_builder = match table.vector_search(query_vec) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("  [search_fpf_by_vector] vector search builder failed: {e}");
-                return Ok(Vec::new());
-            }
-        };
-        let stream = match search_builder
-            .distance_type(lancedb::DistanceType::Cosine)
-            .limit(limit)
-            .execute()
-            .await
-        {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("  [search_fpf_by_vector] vector search failed: {e}");
-                return Ok(Vec::new());
-            }
-        };
-
-        let batches = collect_batches(stream).await?;
-        let mut results = Vec::new();
-        for batch in &batches {
-            for row in 0..batch.num_rows() {
-                if let Some(chunk) = extract_fpf_chunk(batch, row) {
-                    results.push(chunk);
-                }
-            }
-        }
-        Ok(results)
+        crate::db::auxiliary::fpf_search_vector(self.fpf_table()?, query_vec, limit).await
     }
 
     /// Search FPF spec by keyword (case-insensitive substring match on title + body).
     ///
-    /// PROB-074: wrapped in [`Self::with_retry_on_stale`] so external reindex
-    /// of the `fpf_spec` table (rare — only on FPF KB rebuild) doesn't
-    /// surface as raw lance errors in the MCP daemon.
+    /// Retries a stale FPF handle without refreshing the identity tables.
     pub async fn search_fpf(&self, query: &str, limit: usize) -> anyhow::Result<Vec<FpfChunk>> {
-        let trimmed = query.trim();
-        if trimmed.is_empty() {
+        if query.trim().is_empty() {
             anyhow::bail!("Search query cannot be empty");
         }
-
-        let table = self
-            .fpf_spec
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("FPF knowledge base not initialized"))?;
-
-        let query_lower = trimmed.to_lowercase();
-        // Split query into words for per-word OR matching
-        let words: Vec<String> = query_lower
-            .split_whitespace()
-            .filter(|w| w.len() > 2)
-            .map(|w| w.replace('\'', "''"))
-            .collect();
-
-        let filter = if words.is_empty() {
-            let escaped = query_lower.replace('\'', "''");
-            format!(
-                "LOWER(title) LIKE '%{}%' OR LOWER(body) LIKE '%{}%'",
-                escaped, escaped
-            )
-        } else {
-            words
-                .iter()
-                .map(|w| {
-                    format!(
-                        "(LOWER(title) LIKE '%{}%' OR LOWER(body) LIKE '%{}%')",
-                        w, w
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(" OR ")
-        };
-
-        self.with_retry_on_stale(|| async {
-            // Fetch ALL matching then rank (small dataset ~204 sections)
-            let batches =
-                collect_batches(table.query().only_if(filter.clone()).execute().await?).await?;
-
-            let mut scored: Vec<(FpfChunk, usize)> = Vec::new();
-            for batch in &batches {
-                for i in 0..batch.num_rows() {
-                    if let Some(chunk) = extract_fpf_chunk(batch, i) {
-                        let mut score = 0usize;
-                        let title_lower = chunk.title.to_lowercase();
-                        let body_lower = chunk.body.to_lowercase();
-
-                        for word in &words {
-                            if title_lower.contains(word.as_str()) {
-                                score += 50;
-                            }
-                            score += body_lower.matches(word.as_str()).count().min(20);
-                        }
-                        let all_in_title = words.len() > 1
-                            && words.iter().all(|w| title_lower.contains(w.as_str()));
-                        if all_in_title {
-                            score += 100;
-                        }
-                        if title_lower.contains(&query_lower) {
-                            score += 200;
-                        }
-
-                        scored.push((chunk, score));
-                    }
-                }
+        let table = self.fpf_table()?;
+        let mut last_error = None;
+        for attempt in 0..RETRY_ATTEMPTS {
+            if attempt > 0 {
+                let delay = RETRY_BACKOFF_MS[(attempt - 1).min(RETRY_BACKOFF_MS.len() - 1)];
+                tokio::time::sleep(Duration::from_millis(delay)).await;
             }
-
-            scored.sort_by_key(|(_, score)| std::cmp::Reverse(*score));
-            let results: Vec<FpfChunk> = scored.into_iter().take(limit).map(|(c, _)| c).collect();
-            Ok(results)
-        })
-        .await
+            match crate::db::auxiliary::fpf_search_keyword(table, query, limit).await {
+                Ok(chunks) => return Ok(chunks),
+                Err(error) if is_stale_manifest_error(&error) => {
+                    table.checkout_latest().await?;
+                    last_error = Some(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("FPF search retries exhausted")))
     }
 
     /// Get a specific FPF section by section_id.
     pub async fn get_fpf_section(&self, section_id: &str) -> anyhow::Result<Option<FpfChunk>> {
-        let table = self
-            .fpf_spec
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("FPF knowledge base not initialized"))?;
-
-        let filter = format!("section_id = '{}'", section_id.replace('\'', "''"));
-        let batches =
-            collect_batches(table.query().only_if(filter).limit(1).execute().await?).await?;
-
-        for batch in &batches {
-            if batch.num_rows() > 0 {
-                return Ok(extract_fpf_chunk(batch, 0));
-            }
-        }
-        Ok(None)
+        crate::db::auxiliary::fpf_get_section(self.fpf_table()?, section_id).await
     }
 
     /// List all FPF sections (without body content for performance).
     pub async fn list_fpf_sections(&self) -> anyhow::Result<Vec<FpfChunkSummary>> {
-        let table = self
-            .fpf_spec
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("FPF knowledge base not initialized"))?;
-
-        let batches = collect_batches(table.query().execute().await?).await?;
-
-        let mut results = Vec::new();
-        for batch in &batches {
-            let id_col = batch
-                .column_by_name("section_id")
-                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
-            let title_col = batch
-                .column_by_name("title")
-                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
-            let lines_col = batch
-                .column_by_name("line_count")
-                .and_then(|c| c.as_any().downcast_ref::<Int32Array>());
-
-            if let (Some(ids), Some(titles), Some(lines)) = (id_col, title_col, lines_col) {
-                for i in 0..batch.num_rows() {
-                    if !ids.is_null(i) {
-                        results.push(FpfChunkSummary {
-                            section_id: ids.value(i).to_string(),
-                            title: titles.value(i).to_string(),
-                            line_count: lines.value(i),
-                        });
-                    }
-                }
-            }
-        }
-        Ok(results)
+        crate::db::auxiliary::fpf_list_sections(self.fpf_table()?).await
     }
 
     /// Delete all FPF chunks (for re-ingestion).
-    pub async fn clear_fpf(&self) -> anyhow::Result<()> {
-        let table = self
-            .fpf_spec
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("FPF knowledge base not initialized"))?;
-        table.delete("id IS NOT NULL").await?;
-        Ok(())
+    pub async fn clear_fpf(
+        &self,
+        lock: &crate::workspace::lock::WorkspaceLock,
+    ) -> anyhow::Result<()> {
+        lock.matches_workspace(&self.workspace)?;
+        crate::db::auxiliary::fpf_clear(self.fpf_table()?).await
     }
 }
 
 /// Collect a stream of RecordBatches into a Vec.
-async fn collect_batches(
+///
+/// `pub(crate)`: shared with the auxiliary store, which reads the same
+/// `fpf_spec` table through its own handle.
+pub(crate) async fn collect_batches(
     stream: lancedb::arrow::SendableRecordBatchStream,
 ) -> anyhow::Result<Vec<RecordBatch>> {
     let mut batches = Vec::new();
@@ -2292,6 +4319,9 @@ fn extract_summary(batch: &RecordBatch, row: usize) -> Option<ArtifactSummary> {
     let status = get_string(batch, "status", row).unwrap_or_default();
 
     Some(ArtifactSummary {
+        canonical_key: get_string(batch, "canonical_key", row).unwrap_or_else(|| {
+            crate::artifact::canonical_key::canonical_key_from_document(&id, "")
+        }),
         id,
         title,
         kind,
@@ -2299,8 +4329,42 @@ fn extract_summary(batch: &RecordBatch, row: usize) -> Option<ArtifactSummary> {
     })
 }
 
+/// Build resolver candidates from artifacts rows.
+///
+/// `derive_from_body` serves a schema-4 table that has no `canonical_key`
+/// column: there the key is the ADR-030 rule applied to the document the row
+/// carries. A schema-5 table always takes the column.
+fn candidates_from_batches(
+    batches: &[RecordBatch],
+    derive_from_body: bool,
+) -> Vec<ArtifactCandidate> {
+    let mut candidates = Vec::new();
+    for batch in batches {
+        for row in 0..batch.num_rows() {
+            let Some(display_id) = get_string(batch, "id", row) else {
+                continue;
+            };
+            let canonical_key = match get_string(batch, "canonical_key", row) {
+                Some(key) => key,
+                None if derive_from_body => {
+                    let body = get_large_string(batch, "body", row).unwrap_or_default();
+                    canonical_key_from_document(&display_id, &body)
+                }
+                None => continue,
+            };
+            candidates.push(ArtifactCandidate {
+                canonical_key,
+                display_id,
+                title: get_string(batch, "title", row).unwrap_or_default(),
+                relative_path: PathBuf::new(),
+            });
+        }
+    }
+    candidates
+}
+
 /// Extract a full ArtifactRecord from a RecordBatch row.
-fn extract_record(batch: &RecordBatch, row: usize) -> Option<ArtifactRecord> {
+pub(crate) fn extract_record(batch: &RecordBatch, row: usize) -> Option<ArtifactRecord> {
     let id = get_string(batch, "id", row)?;
     let kind = get_string(batch, "kind", row).unwrap_or_default();
     let status = get_string(batch, "status", row).unwrap_or_default();
@@ -2316,7 +4380,15 @@ fn extract_record(batch: &RecordBatch, row: usize) -> Option<ArtifactRecord> {
     let tags = convert::extract_tags(batch, row);
     let body_hash = get_string(batch, "body_hash", row);
     let embedding = convert::extract_embedding(batch, row);
+    // ADR-030: the canonical key is the row's own column (schema v5) — the
+    // identity every filter and mutation uses. A schema-4 row that predates
+    // the column falls back to the rule applied to the document it carries:
+    // the slug its frontmatter declares, and its display id when it declares
+    // none.
+    let canonical_key = get_string(batch, "canonical_key", row)
+        .unwrap_or_else(|| canonical_key_from_document(&id, &body));
     Some(ArtifactRecord {
+        canonical_key,
         id,
         kind,
         status,
@@ -2346,6 +4418,18 @@ fn get_string(batch: &RecordBatch, col: &str, row: usize) -> Option<String> {
     } else {
         None
     }
+}
+
+/// Read one `Utf8` column of a row, for the modules that verify a staged
+/// index against the Markdown it was built from.
+pub(crate) fn record_string(batch: &RecordBatch, col: &str, row: usize) -> Option<String> {
+    get_string(batch, col, row)
+}
+
+/// Read one `LargeUtf8` column of a row, for the modules that verify a
+/// staged index against the Markdown it was built from.
+pub(crate) fn record_large_string(batch: &RecordBatch, col: &str, row: usize) -> Option<String> {
+    get_large_string(batch, col, row)
 }
 
 /// Read a LargeUtf8 column value from a RecordBatch row.
@@ -2394,33 +4478,87 @@ fn get_f64(batch: &RecordBatch, col: &str, row: usize) -> Option<f64> {
     }
 }
 
-/// Extract an FpfChunk from a RecordBatch row.
-fn extract_fpf_chunk(batch: &RecordBatch, row: usize) -> Option<FpfChunk> {
-    let id = get_string(batch, "id", row)?;
-    let section_id = get_string(batch, "section_id", row)?;
-    let parent_section = get_string(batch, "parent_section", row);
-    let title = get_string(batch, "title", row)?;
-    let body = get_large_string(batch, "body", row)?;
-    let line_count = {
-        let array = batch.column_by_name("line_count")?;
-        let arr = array.as_any().downcast_ref::<Int32Array>()?;
-        if arr.is_null(row) {
-            return None;
-        }
-        arr.value(row)
-    };
-    let file_path = get_string(batch, "file_path", row)?;
-    let created_at = get_string(batch, "created_at", row)?;
+fn invalid_required_column(table: &str, column: &str, row: usize) -> anyhow::Error {
+    anyhow::anyhow!(
+        "Invalid {table} row {row}: required column '{column}' is missing, null or has an incompatible type"
+    )
+}
 
-    Some(FpfChunk {
-        id,
-        section_id,
-        parent_section,
-        title,
-        body,
+fn required_utf8<'a>(
+    batch: &'a RecordBatch,
+    row: usize,
+    table: &str,
+    column: &str,
+) -> anyhow::Result<&'a str> {
+    batch
+        .column_by_name(column)
+        .and_then(|array| array.as_any().downcast_ref::<StringArray>())
+        .filter(|array| !array.is_null(row))
+        .map(|array| array.value(row))
+        .ok_or_else(|| invalid_required_column(table, column, row))
+}
+
+fn required_large_utf8<'a>(
+    batch: &'a RecordBatch,
+    row: usize,
+    table: &str,
+    column: &str,
+) -> anyhow::Result<&'a str> {
+    batch
+        .column_by_name(column)
+        .and_then(|array| {
+            array
+                .as_any()
+                .downcast_ref::<arrow_array::LargeStringArray>()
+        })
+        .filter(|array| !array.is_null(row))
+        .map(|array| array.value(row))
+        .ok_or_else(|| invalid_required_column(table, column, row))
+}
+
+fn required_i32(batch: &RecordBatch, row: usize, table: &str, column: &str) -> anyhow::Result<i32> {
+    batch
+        .column_by_name(column)
+        .and_then(|array| array.as_any().downcast_ref::<Int32Array>())
+        .filter(|array| !array.is_null(row))
+        .map(|array| array.value(row))
+        .ok_or_else(|| invalid_required_column(table, column, row))
+}
+
+/// Extract an FpfChunk from a RecordBatch row.
+///
+/// `pub(crate)`: the auxiliary store reads the same table and must decode rows
+/// with this one function, not a second copy of the column mapping.
+pub(crate) fn extract_fpf_chunk(batch: &RecordBatch, row: usize) -> anyhow::Result<FpfChunk> {
+    Ok(FpfChunk {
+        id: required_utf8(batch, row, "fpf_spec", "id")?.to_string(),
+        section_id: required_utf8(batch, row, "fpf_spec", "section_id")?.to_string(),
+        parent_section: get_string(batch, "parent_section", row),
+        title: required_utf8(batch, row, "fpf_spec", "title")?.to_string(),
+        body: required_large_utf8(batch, row, "fpf_spec", "body")?.to_string(),
+        line_count: required_i32(batch, row, "fpf_spec", "line_count")?,
+        file_path: required_utf8(batch, row, "fpf_spec", "file_path")?.to_string(),
+        created_at: required_utf8(batch, row, "fpf_spec", "created_at")?.to_string(),
+    })
+}
+
+/// Validate the same required row values without allocating a body copy just
+/// to discard it from a section summary.
+pub(crate) fn extract_fpf_chunk_summary(
+    batch: &RecordBatch,
+    row: usize,
+) -> anyhow::Result<FpfChunkSummary> {
+    required_utf8(batch, row, "fpf_spec", "id")?;
+    let section_id = required_utf8(batch, row, "fpf_spec", "section_id")?;
+    let title = required_utf8(batch, row, "fpf_spec", "title")?;
+    required_large_utf8(batch, row, "fpf_spec", "body")?;
+    let line_count = required_i32(batch, row, "fpf_spec", "line_count")?;
+    required_utf8(batch, row, "fpf_spec", "file_path")?;
+    required_utf8(batch, row, "fpf_spec", "created_at")?;
+    Ok(FpfChunkSummary {
+        section_id: section_id.to_string(),
+        title: title.to_string(),
         line_count,
-        file_path,
-        created_at,
     })
 }
 
@@ -2445,6 +4583,14 @@ fn empty_artifacts_batch(schema: Arc<arrow_schema::Schema>) -> Result<RecordBatc
             Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
             convert::make_null_embedding_col(0),
             Arc::new(convert::build_tags_list_array(empty_tags)),
+            // canonical_key — the row's authoritative identity (ADR-030).
+            Arc::new(StringArray::from(Vec::<&str>::new())),
+            Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+            Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+            Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+            Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+            Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+            Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         ],
     )
 }
@@ -2481,30 +4627,27 @@ fn empty_relations_batch(schema: Arc<arrow_schema::Schema>) -> Result<RecordBatc
 }
 
 /// Extract a ChangeLogEntry from a RecordBatch row.
-fn extract_change_log_entry(batch: &RecordBatch, row: usize) -> Option<ChangeLogEntry> {
-    let timestamp = get_string(batch, "timestamp", row)?;
-    let artifact_id = get_string(batch, "artifact_id", row)?;
-    let action = get_string(batch, "action", row)?;
-    let field = get_string(batch, "field", row);
-    let old_value = get_string(batch, "old_value", row);
-    let new_value = get_string(batch, "new_value", row);
-    let source = get_string(batch, "source", row)?;
-    let commit_hash = get_string(batch, "commit_hash", row);
-
-    Some(ChangeLogEntry {
-        timestamp,
-        artifact_id,
-        action,
-        field,
-        old_value,
-        new_value,
-        source,
-        commit_hash,
+pub(crate) fn extract_change_log_entry(
+    batch: &RecordBatch,
+    row: usize,
+) -> anyhow::Result<ChangeLogEntry> {
+    Ok(ChangeLogEntry {
+        timestamp: required_utf8(batch, row, "change_log", "timestamp")?.to_string(),
+        artifact_id: required_utf8(batch, row, "change_log", "artifact_id")?.to_string(),
+        canonical_key: get_string(batch, "canonical_key", row),
+        action: required_utf8(batch, row, "change_log", "action")?.to_string(),
+        field: get_string(batch, "field", row),
+        old_value: get_string(batch, "old_value", row),
+        new_value: get_string(batch, "new_value", row),
+        source: required_utf8(batch, row, "change_log", "source")?.to_string(),
+        commit_hash: get_string(batch, "commit_hash", row),
     })
 }
 
 /// Create an empty RecordBatch for change_log.
-fn empty_change_log_batch(schema: Arc<arrow_schema::Schema>) -> Result<RecordBatch, ArrowError> {
+pub(crate) fn empty_change_log_batch(
+    schema: Arc<arrow_schema::Schema>,
+) -> Result<RecordBatch, ArrowError> {
     RecordBatch::try_new(
         schema,
         vec![
@@ -2516,8 +4659,15 @@ fn empty_change_log_batch(schema: Arc<arrow_schema::Schema>) -> Result<RecordBat
             Arc::new(StringArray::from(Vec::<Option<&str>>::new())), // new_value (nullable)
             Arc::new(StringArray::from(Vec::<&str>::new())), // source
             Arc::new(StringArray::from(Vec::<Option<&str>>::new())), // commit_hash (nullable)
+            Arc::new(StringArray::from(Vec::<Option<&str>>::new())), // canonical_key (nullable)
         ],
     )
+}
+
+/// The empty `fpf_spec` batch. Public so the auxiliary-only store can create
+/// the one table it owns without duplicating the schema layout.
+pub fn empty_fpf_batch_for(schema: Arc<arrow_schema::Schema>) -> Result<RecordBatch, ArrowError> {
+    empty_fpf_batch(schema)
 }
 
 fn empty_fpf_batch(schema: Arc<arrow_schema::Schema>) -> Result<RecordBatch, ArrowError> {
@@ -2542,9 +4692,533 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    async fn make_store(tmp: &TempDir) -> LanceStore {
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn table_generation_detects_directory_replacement() {
+        let root = TempDir::new().unwrap();
+        let names = migrate::LegacyTableNames::default();
+        for name in [&names.artifacts, &names.relations, &names.evidence] {
+            std::fs::create_dir(root.path().join(format!("{name}.lance"))).unwrap();
+        }
+        let before = table_generation(root.path(), &names).unwrap();
+        assert_eq!(before, table_generation(root.path(), &names).unwrap());
+        let old = root.path().join(format!("{}.lance", names.artifacts));
+        std::fs::rename(&old, root.path().join("parked.lance")).unwrap();
+        std::fs::create_dir(&old).unwrap();
+        let after = table_generation(root.path(), &names).unwrap();
+        assert_ne!(before[0], after[0]);
+        assert_eq!(before[1..], after[1..]);
+    }
+
+    #[tokio::test]
+    async fn read_open_does_not_recreate_deleted_lance_directory() {
+        let tmp = TempDir::new().unwrap();
+        let lance = tmp.path().join("lance");
+        std::fs::create_dir(&lance).unwrap();
+        std::fs::remove_dir(&lance).unwrap();
+        assert!(LanceStore::open(tmp.path()).await.is_err());
+        assert!(!lance.exists());
+    }
+
+    #[test]
+    fn semantic_test_backend_is_scoped_to_guard_and_workspace() {
+        let first = TempDir::new().unwrap();
+        let second = TempDir::new().unwrap();
+        let backend = Arc::new(|_: &str| Ok(vec![0.5; schema::EMBEDDING_DIM as usize]));
+        let guard = install_semantic_backend_for_test(first.path(), backend.clone()).unwrap();
+        assert!(semantic_backend_for_test(first.path()).unwrap().is_some());
+        assert!(semantic_backend_for_test(second.path()).unwrap().is_none());
+        assert!(install_semantic_backend_for_test(first.path(), backend).is_err());
+        drop(guard);
+        assert!(semantic_backend_for_test(first.path()).unwrap().is_none());
+    }
+
+    #[test]
+    fn vector_provenance_rejects_changed_input_and_vector() {
+        let mut record = ArtifactRecord {
+            canonical_key: "prd-auth".into(),
+            id: "PRD-001".into(),
+            title: "Auth".into(),
+            body: "Body".into(),
+            embedding: Some(vec![0.5; schema::EMBEDDING_DIM as usize]),
+            ..Default::default()
+        };
+        let mut profile = migrate::IdentityV5EmbeddingProvenance {
+            model: "test".into(),
+            repository: "test/repo".into(),
+            snapshot_id: "rev".into(),
+            snapshot_digest: "a".repeat(64),
+            chunk_size: 2000,
+            implementation: "deterministic-test-v1".into(),
+            profile_digest: String::new(),
+            dimension: schema::EMBEDDING_DIM as usize,
+            input_digests: BTreeMap::new(),
+            vector_digests: BTreeMap::new(),
+        };
+        profile.profile_digest = migrate::identity_profile_digest(&profile);
+        profile.input_digests.insert(
+            record.canonical_key.clone(),
+            migrate::identity_input_digest(&record.embedding_text(2000)),
+        );
+        profile.vector_digests.insert(
+            record.canonical_key.clone(),
+            migrate::identity_vector_digest(record.embedding.as_ref().unwrap()),
+        );
+        assert!(verify_identity_vector_provenance(&record, &profile).is_ok());
+        profile.snapshot_id = "other-revision".into();
+        assert!(verify_identity_vector_provenance(&record, &profile).is_err());
+        profile.snapshot_id = "rev".into();
+        record.title.push_str(" changed");
+        assert!(verify_identity_vector_provenance(&record, &profile).is_err());
+        record.title = "Auth".into();
+        record.embedding.as_mut().unwrap()[0] = 0.75;
+        assert!(verify_identity_vector_provenance(&record, &profile).is_err());
+    }
+
+    #[test]
+    fn identity_reconcile_changes_ignore_legacy_metadata_and_trimmed_body_only() {
+        let old = ArtifactRecord {
+            canonical_key: "prd-auth".into(),
+            id: "PRD-001".into(),
+            kind: "prd".into(),
+            status: "draft".into(),
+            title: "Auth".into(),
+            body: "Auth body.\n".into(),
+            depth: "standard".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+            ..Default::default()
+        };
+        let mut reconciled = old.clone();
+        reconciled.depth = "deep".into();
+        reconciled.author = Some("Eli Rum".into());
+        reconciled.parent_epic = Some("EPIC-001".into());
+        reconciled.valid_until = Some("2030-01-01".into());
+        reconciled.tags = vec!["source=legacy".into()];
+        reconciled.updated_at = "2026-02-01T00:00:00Z".into();
+        reconciled.body = "Auth body.   \n".into();
+        assert!(
+            identity_v5_reconcile_changes(vec![old.clone()], vec![reconciled.clone()])
+                .unwrap()
+                .is_empty()
+        );
+
+        reconciled.title = "Authentication".into();
+        assert_eq!(
+            identity_v5_reconcile_changes(vec![old], vec![reconciled]).unwrap(),
+            vec![IdentityV5ReconcileChange {
+                canonical_key: "prd-auth".into(),
+                display_id: "PRD-001".into(),
+                action: "update",
+            }]
+        );
+    }
+
+    async fn make_store(tmp: &TempDir) -> (LanceStore, crate::workspace::lock::WorkspaceLock) {
+        let ws = crate::workspace::init_workspace(tmp.path(), "store-tests").unwrap();
+        let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+            .await
+            .unwrap();
+        let store = LanceStore::init_new(&ws, &guard).await.unwrap();
+        (store, guard)
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reconciliation_result_excludes_writer_after_owner_release() {
+        let tmp = TempDir::new().unwrap();
+        let (store, guard) = make_store(&tmp).await;
+        let workspace = store.workspace.clone();
+        std::fs::write(
+            workspace.join("prds/PRD-401-source.md"),
+            "---\nid: PRD-401\nslug: prd-source-added\nkind: prd\nstatus: draft\ntitle: Source addition\n---\n\nSource body.\n",
+        )
+        .unwrap();
+        drop(store);
+        drop(guard);
+
+        let hook = Arc::new(IdentityReconcileBoundaryHook::default());
+        IDENTITY_RECONCILE_BOUNDARY_HOOKS
+            .lock()
+            .unwrap()
+            .insert(workspace.clone(), hook.clone());
+        let reconcile_workspace = workspace.clone();
+        let reconcile = tokio::spawn(async move {
+            LanceStore::reconcile_identity_v5_source(&reconcile_workspace).await
+        });
+        tokio::time::timeout(Duration::from_secs(10), hook.reached.notified())
+            .await
+            .expect("reconciliation did not reach the post-owner boundary");
+
+        let writer_result: anyhow::Result<()> = async {
+            let writer_guard = crate::workspace::lock::acquire_workspace_lock(&workspace).await?;
+            let writer = LanceStore::open_for_write(&workspace, &writer_guard).await?;
+            let foreign = NewArtifact {
+                canonical_key: "prd-foreign-writer".into(),
+                id: "PRD-402".into(),
+                kind: "prd".into(),
+                status: "draft".into(),
+                title: "Foreign writer".into(),
+                body: "Concurrent body.".into(),
+                depth: "standard".into(),
+                author: None,
+                parent_epic: None,
+                valid_until: None,
+                tags: Vec::new(),
+            };
+            writer.create_artifact(&writer_guard, &foreign).await?;
+            drop(writer);
+            drop(writer_guard);
+            Ok(())
+        }
+        .await;
+        hook.resume.notify_one();
+        let changes = reconcile.await.unwrap().unwrap();
+        IDENTITY_RECONCILE_BOUNDARY_HOOKS
+            .lock()
+            .unwrap()
+            .remove(&workspace);
+        writer_result.unwrap();
+        assert_eq!(
+            changes,
+            vec![IdentityV5ReconcileChange {
+                canonical_key: "prd-source-added".into(),
+                display_id: "PRD-401".into(),
+                action: "create",
+            }]
+        );
+
+        let read = crate::workspace::lock::acquire_workspace_read_lock(&workspace)
+            .await
+            .unwrap();
+        let latest = LanceStore::open(&workspace).await.unwrap();
+        assert!(
+            latest
+                .get_record(&read, "prd-source-added")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            latest
+                .get_record(&read, "prd-foreign-writer")
+                .await
+                .unwrap()
+                .unwrap()
+                .title,
+            "Foreign writer"
+        );
+    }
+
+    #[cfg(feature = "semantic-search")]
+    #[tokio::test]
+    async fn semantic_read_rejects_source_drift_and_pending_rows_without_repair() {
+        let tmp = TempDir::new().unwrap();
+        let (store, guard) = make_store(&tmp).await;
+        let config = store.workspace.join("config.yaml");
+        let original_config = std::fs::read_to_string(&config).unwrap();
+        std::fs::write(
+            &config,
+            format!("{original_config}\nembedding:\n  model: forgeplan-test\n"),
+        )
+        .unwrap();
+        let vector = vec![0.5; schema::EMBEDDING_DIM as usize];
+        let backend_vector = vector.clone();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let backend_calls = Arc::clone(&calls);
+        let _backend = install_semantic_backend_for_test(
+            &store.workspace,
+            Arc::new(move |_| {
+                backend_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(backend_vector.clone())
+            }),
+        )
+        .unwrap();
+        let artifact = sample_artifact("PRD-301");
+        store.create_artifact(&guard, &artifact).await.unwrap();
+        let dir = store.workspace.join("prds");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("PRD-301.md");
+        let document = format!(
+            "---\nid: PRD-301\nkind: prd\nstatus: draft\nauthor: test-author\ntitle: {}\n---\n\n{}\n",
+            artifact.title, artifact.body,
+        );
+        std::fs::write(&path, &document).unwrap();
+        store
+            .seed_semantic_vector_for_test(&guard, "PRD-301", &vector)
+            .await
+            .unwrap();
+        assert!(store.verify_semantic_read_ready(&guard).await.is_ok());
+        let version = store.artifacts.version().await.unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let valid_config = std::fs::read_to_string(&config).unwrap();
+        std::fs::write(&config, format!("{valid_config}  chunk_size: 123\n")).unwrap();
+        assert!(store.verify_semantic_read_ready(&guard).await.is_err());
+        assert!(store.vector_search(&guard, "test", 1).await.is_err());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        std::fs::write(&config, &valid_config).unwrap();
+
+        let row = store.get_record(&guard, "PRD-301").await.unwrap().unwrap();
+        let with_timestamps = document.replace(
+            "kind: prd\n",
+            &format!(
+                "kind: prd\ncreated: '{}'\nupdated: '{}'\n",
+                row.created_at, row.updated_at
+            ),
+        );
+        std::fs::write(&path, &with_timestamps).unwrap();
+        assert!(store.verify_semantic_read_ready(&guard).await.is_ok());
+        std::fs::write(
+            &path,
+            with_timestamps.replace(&row.updated_at, "2000-01-01T00:00:00Z"),
+        )
+        .unwrap();
+        assert!(store.verify_semantic_read_ready(&guard).await.is_err());
+        std::fs::write(&path, &document).unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let journal = store.workspace.join("lance/legacy-semantic-rebuild");
+        let transaction = journal.join("0123456789abcdef0123456789abcdef");
+        std::fs::create_dir_all(&transaction).unwrap();
+        store.verify_semantic_read_ready(&guard).await.unwrap_err();
+        assert!(
+            transaction.is_dir(),
+            "a read must leave recovery evidence intact"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), document.as_bytes());
+        std::fs::remove_dir_all(&journal).unwrap();
+        assert_eq!(store.artifacts.version().await.unwrap(), version);
+
+        std::fs::write(
+            &path,
+            document.replace("Test body content.", "Changed body."),
+        )
+        .unwrap();
+        let error = store
+            .vector_search(&guard, "test", 1)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("freshness unavailable"), "{error}");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(store.artifacts.version().await.unwrap(), version);
+        std::fs::write(&path, &document).unwrap();
+
+        let extra = dir.join("PRD-302.md");
+        std::fs::write(
+            &extra,
+            "---\nid: PRD-302\nkind: prd\ntitle: Other\n---\n\nOther.\n",
+        )
+        .unwrap();
+        assert!(store.verify_semantic_read_ready(&guard).await.is_err());
+        std::fs::remove_file(&extra).unwrap();
+
+        let duplicate = dir.join("duplicate.md");
+        std::fs::write(&duplicate, &document).unwrap();
+        assert!(store.verify_semantic_read_ready(&guard).await.is_err());
+        std::fs::remove_file(&duplicate).unwrap();
+
+        std::fs::remove_file(&path).unwrap();
+        assert!(store.verify_semantic_read_ready(&guard).await.is_err());
+        assert_eq!(store.artifacts.version().await.unwrap(), version);
+        std::fs::write(&path, &document).unwrap();
+        let mut pending = sample_artifact("PRD-302");
+        pending.canonical_key = "prd-second".to_string();
+        store.create_artifact(&guard, &pending).await.unwrap();
+        std::fs::write(&extra, format!(
+            "---\nid: PRD-302\nslug: prd-second\nkind: prd\nstatus: draft\nauthor: test-author\ntitle: {}\n---\n\n{}\n",
+            pending.title, pending.body,
+        )).unwrap();
+        let pending_version = store.artifacts.version().await.unwrap();
+        let pending_source = std::fs::read(&extra).unwrap();
+        assert!(!journal.exists());
+        store.verify_semantic_read_ready(&guard).await.unwrap_err();
+        assert_eq!(store.artifacts.version().await.unwrap(), pending_version);
+        assert_eq!(std::fs::read(&extra).unwrap(), pending_source);
+        assert!(
+            !journal.exists(),
+            "a read must not create a recovery journal"
+        );
+        store
+            .seed_semantic_vector_for_test(&guard, "PRD-302", &vector)
+            .await
+            .unwrap();
+        store
+            .artifacts
+            .update()
+            .only_if("canonical_key = 'prd-second'")
+            .column("semantic_vector_digest", "'invalid'")
+            .execute()
+            .await
+            .unwrap();
+        let error = store
+            .vector_search(&guard, "test", 1)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("freshness unavailable"), "{error}");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let competing_vector: Vec<f32> = (0..schema::EMBEDDING_DIM)
+            .map(|index| if index % 2 == 0 { 0.5 } else { -0.5 })
+            .collect();
+        store
+            .seed_semantic_vector_for_test(&guard, "prd-second", &competing_vector)
+            .await
+            .unwrap();
+        let parent_document = document.replace("kind: prd\n", "kind: prd\nparent_epic: PRD-302\n");
+        std::fs::write(&path, &parent_document).unwrap();
+        store
+            .artifacts
+            .update()
+            .only_if("canonical_key = 'PRD-301'")
+            .column("parent_epic", "'PRD-302'")
+            .execute()
+            .await
+            .unwrap();
+        assert!(store.verify_semantic_read_ready(&guard).await.is_err());
+        store
+            .artifacts
+            .update()
+            .only_if("canonical_key = 'PRD-301'")
+            .column("parent_epic", "'prd-second'")
+            .execute()
+            .await
+            .unwrap();
+        assert!(store.verify_semantic_read_ready(&guard).await.is_ok());
+
+        // Body-only rows must accept CRLF delimiters without discarding body
+        // whitespace or treating the delimiter separator as body content.
+        std::fs::write(&path, parent_document.replace('\n', "\r\n")).unwrap();
+        assert!(store.verify_semantic_read_ready(&guard).await.is_ok());
+        std::fs::write(
+            &path,
+            parent_document
+                .replace("Test body content.", "Test\n\nbody content.")
+                .replace('\n', "\r\n"),
+        )
+        .unwrap();
+        assert!(store.verify_semantic_read_ready(&guard).await.is_err());
+
+        // A migration may index full Markdown rather than body-only text.
+        store
+            .artifacts
+            .update()
+            .only_if("canonical_key = 'PRD-301'")
+            .column("body", format!("'{}'", parent_document.replace('\'', "''")))
+            .execute()
+            .await
+            .unwrap();
+        store
+            .seed_semantic_vector_for_test(&guard, "PRD-301", &vector)
+            .await
+            .unwrap();
+        std::fs::write(&path, parent_document.replace('\n', "\r\n")).unwrap();
+        assert!(store.verify_semantic_read_ready(&guard).await.is_ok());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let hits = store.vector_search(&guard, "test", 1).await.unwrap();
+        assert_eq!(hits[0].record.canonical_key, "PRD-301");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        let relation =
+            convert::relation_to_batch("PRD-301", "prd-second", "informs", "2026-01-01T00:00:00Z")
+                .unwrap();
+        store.relations.add(vec![relation]).execute().await.unwrap();
+        let error = store
+            .verify_semantic_read_ready(&guard)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("relations differ"), "{error}");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        store
+            .relations
+            .delete("source_id = 'PRD-301'")
+            .await
+            .unwrap();
+        let duplicate_links = parent_document.replace(
+            "title: Test PRD PRD-301\n",
+            "title: Test PRD PRD-301\nlinks:\n  - target: RFC-999\n    relation: informs\n  - target: RFC-999\n    relation: informs\n",
+        );
+        std::fs::write(&path, duplicate_links).unwrap();
+        store
+            .artifacts
+            .update()
+            .only_if("canonical_key = 'PRD-301'")
+            .column("body", "'## Summary\n\nTest body content.'")
+            .execute()
+            .await
+            .unwrap();
+        store
+            .seed_semantic_vector_for_test(&guard, "PRD-301", &vector)
+            .await
+            .unwrap();
+        let resolved_edge =
+            convert::relation_to_batch("PRD-301", "RFC-999", "informs", "2026-01-01T00:00:00Z")
+                .unwrap();
+        store
+            .relations
+            .add(vec![resolved_edge])
+            .execute()
+            .await
+            .unwrap();
+        let hits = store.vector_search(&guard, "test", 1).await.unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(
+            hits.len(),
+            1,
+            "semantic coverage must return the indexed target"
+        );
+        assert_eq!(hits[0].record.canonical_key, "PRD-301");
+        assert_eq!(hits[0].record.body, "## Summary\n\nTest body content.");
+        assert!(
+            (hits[0].similarity() - 1.0).abs() < 0.001,
+            "duplicate source links must not lower the target's semantic score"
+        );
+    }
+
+    async fn make_read_store(
+        tmp: &TempDir,
+    ) -> (LanceStore, crate::workspace::lock::WorkspaceReadLock) {
+        let (store, guard) = make_store(tmp).await;
+        drop(guard);
         let ws = tmp.path().join(".forgeplan");
-        LanceStore::init(&ws).await.unwrap()
+        let permit = crate::workspace::lock::acquire_workspace_read_lock(&ws)
+            .await
+            .unwrap();
+        (store, permit)
+    }
+
+    #[tokio::test]
+    async fn init_new_requires_empty_workspace_and_produces_writable_v5() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        let lock = crate::workspace::lock::acquire_workspace_lock(&ws)
+            .await
+            .unwrap();
+        let store = LanceStore::init_new(&ws, &lock).await.unwrap();
+        store.ensure_identity_v5_writable(&lock).unwrap();
+        assert_eq!(store.workspace_path(), ws.as_path());
+        assert!(
+            migrate::read_identity_v5_marker(&ws.join("lance"))
+                .unwrap()
+                .is_some()
+        );
+        assert!(LanceStore::init_new(&ws, &lock).await.is_err());
+
+        let other = tmp.path().join("existing");
+        let other_lock = crate::workspace::lock::acquire_workspace_lock(&other)
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(other.join("prds")).await.unwrap();
+        tokio::fs::write(
+            other.join("prds/old.md"),
+            "---\nid: PRD-001\ntitle: Old\n---\nbody\n",
+        )
+        .await
+        .unwrap();
+        assert!(LanceStore::init_new(&other, &other_lock).await.is_err());
+        assert!(
+            migrate::read_identity_v5_marker(&other.join("lance"))
+                .unwrap()
+                .is_none()
+        );
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -2650,7 +5324,7 @@ mod tests {
     #[tokio::test]
     async fn should_skip_refresh_first_call_proceeds() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, _guard) = make_store(&tmp).await;
         // last_refresh_ms initialised to 0 — first call always proceeds.
         assert!(
             !store.should_skip_refresh(),
@@ -2661,7 +5335,7 @@ mod tests {
     #[tokio::test]
     async fn should_skip_refresh_within_debounce_window_skips() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, _guard) = make_store(&tmp).await;
 
         // First call proceeds.
         assert!(!store.should_skip_refresh());
@@ -2678,7 +5352,7 @@ mod tests {
     #[tokio::test]
     async fn should_skip_refresh_after_window_proceeds() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, _guard) = make_store(&tmp).await;
 
         // Burn the first slot.
         assert!(!store.should_skip_refresh());
@@ -2694,17 +5368,20 @@ mod tests {
     #[tokio::test]
     async fn refresh_call_count_bumps_on_actual_refresh() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         assert_eq!(store.refresh_call_count(), 0, "fresh store starts at 0");
 
-        store.refresh().await.expect("refresh on healthy handle");
+        store
+            .refresh(&guard)
+            .await
+            .expect("refresh on healthy handle");
         assert_eq!(
             store.refresh_call_count(),
             1,
             "successful refresh must bump counter by 1"
         );
 
-        store.refresh().await.expect("second refresh");
+        store.refresh(&guard).await.expect("second refresh");
         assert_eq!(
             store.refresh_call_count(),
             2,
@@ -2714,6 +5391,7 @@ mod tests {
 
     fn sample_artifact(id: &str) -> NewArtifact {
         NewArtifact {
+            canonical_key: id.to_string(),
             id: id.to_string(),
             kind: "prd".to_string(),
             status: "draft".to_string(),
@@ -2730,24 +5408,27 @@ mod tests {
     #[tokio::test]
     async fn init_creates_tables() {
         let tmp = TempDir::new().unwrap();
-        let ws = tmp.path().join(".forgeplan");
-        let store = LanceStore::init(&ws).await.unwrap();
+        let ws = crate::workspace::init_workspace(tmp.path(), "store-tests").unwrap();
+        let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+            .await
+            .unwrap();
+        let store = LanceStore::init_new(&ws, &guard).await.unwrap();
 
         // Should be able to list (empty) artifacts without error
-        let artifacts = store.list_artifacts(None).await.unwrap();
+        let artifacts = store.list_artifacts(&guard, None).await.unwrap();
         assert!(artifacts.is_empty());
     }
 
     #[tokio::test]
     async fn create_and_get_artifact() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
         let artifact = sample_artifact("PRD-001");
-        let id = store.create_artifact(&artifact).await.unwrap();
+        let id = store.create_artifact(&guard, &artifact).await.unwrap();
         assert_eq!(id, "PRD-001");
 
-        let retrieved = store.get_artifact("PRD-001").await.unwrap();
+        let retrieved = store.get_artifact(&guard, "PRD-001").await.unwrap();
         assert!(retrieved.is_some());
         let summary = retrieved.unwrap();
         assert_eq!(summary.id, "PRD-001");
@@ -2758,10 +5439,48 @@ mod tests {
     #[tokio::test]
     async fn get_nonexistent_artifact_returns_none() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_read_store(&tmp).await;
 
-        let result = store.get_artifact("MISSING-999").await.unwrap();
+        let result = store.get_artifact(&guard, "PRD-999").await.unwrap();
         assert!(result.is_none());
+    }
+    #[tokio::test]
+    async fn get_record_by_canonical_key_does_not_resolve_the_key_as_an_alias() {
+        let tmp = TempDir::new().unwrap();
+        let (store, guard) = make_store(&tmp).await;
+        for (canonical_key, id, title) in [
+            ("prd-ordinary", "PRD-001", "Alias claimant"),
+            ("PRD-001", "PRD-002", "Exact key"),
+        ] {
+            store
+                .replace_record(
+                    &guard,
+                    &ArtifactRecord {
+                        canonical_key: canonical_key.to_string(),
+                        id: id.to_string(),
+                        kind: "prd".to_string(),
+                        status: "draft".to_string(),
+                        title: title.to_string(),
+                        body: title.to_string(),
+                        depth: "standard".to_string(),
+                        created_at: "2026-01-01T00:00:00Z".to_string(),
+                        updated_at: "2026-01-01T00:00:00Z".to_string(),
+                        ..ArtifactRecord::default()
+                    },
+                )
+                .await
+                .unwrap();
+        }
+
+        let row = store
+            .get_record_by_canonical_key(&guard, "PRD-001")
+            .await
+            .unwrap()
+            .expect("the exact canonical key is present");
+
+        assert_eq!(row.title, "Exact key");
+        assert_eq!(row.id, "PRD-002");
+        assert_eq!(row.canonical_key, "PRD-001");
     }
 
     // PROB-060 / SPEC-005 Phase 1.5 — resolve_id accepts both display id
@@ -2769,6 +5488,10 @@ mod tests {
 
     fn artifact_with_slug(id: &str, slug: &str) -> NewArtifact {
         NewArtifact {
+            // ADR-030: a document that declares a slug is keyed by it. A
+            // prepared key that contradicts the body would give the row and
+            // the document two different identities.
+            canonical_key: String::new(),
             id: id.to_string(),
             kind: "prd".to_string(),
             status: "draft".to_string(),
@@ -2788,62 +5511,65 @@ mod tests {
     #[tokio::test]
     async fn resolve_id_display_form_uppercase() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         store
-            .create_artifact(&artifact_with_slug("PRD-074", "prd-auth-system"))
+            .create_artifact(&guard, &artifact_with_slug("PRD-074", "prd-auth-system"))
             .await
             .unwrap();
-        let resolved = store.resolve_id("PRD-074").await.unwrap();
+        let resolved = store.resolve_id(&guard, "PRD-074").await.unwrap();
         assert_eq!(resolved, Some("PRD-074".to_string()));
     }
 
     #[tokio::test]
     async fn resolve_id_display_form_lowercase() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         store
-            .create_artifact(&artifact_with_slug("PRD-074", "prd-auth-system"))
+            .create_artifact(&guard, &artifact_with_slug("PRD-074", "prd-auth-system"))
             .await
             .unwrap();
-        let resolved = store.resolve_id("prd-074").await.unwrap();
+        let resolved = store.resolve_id(&guard, "prd-074").await.unwrap();
         assert_eq!(resolved, Some("PRD-074".to_string()));
     }
 
     #[tokio::test]
     async fn resolve_id_display_form_unpadded() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         store
-            .create_artifact(&artifact_with_slug("PRD-074", "prd-auth-system"))
+            .create_artifact(&guard, &artifact_with_slug("PRD-074", "prd-auth-system"))
             .await
             .unwrap();
         // Input "PRD-74" (no padding) should resolve to canonical "PRD-074".
-        let resolved = store.resolve_id("PRD-74").await.unwrap();
+        let resolved = store.resolve_id(&guard, "PRD-74").await.unwrap();
         assert_eq!(resolved, Some("PRD-074".to_string()));
     }
 
     #[tokio::test]
     async fn resolve_id_slug_form() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         store
-            .create_artifact(&artifact_with_slug("PRD-074", "prd-auth-system"))
+            .create_artifact(&guard, &artifact_with_slug("PRD-074", "prd-auth-system"))
             .await
             .unwrap();
-        let resolved = store.resolve_id("prd-auth-system").await.unwrap();
+        let resolved = store.resolve_id(&guard, "prd-auth-system").await.unwrap();
         assert_eq!(resolved, Some("PRD-074".to_string()));
     }
 
     #[tokio::test]
     async fn resolve_id_slug_form_with_multi_segment_suffix() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         store
-            .create_artifact(&artifact_with_slug("PRD-074", "prd-auth-system-v2-rollout"))
+            .create_artifact(
+                &guard,
+                &artifact_with_slug("PRD-074", "prd-auth-system-v2-rollout"),
+            )
             .await
             .unwrap();
         let resolved = store
-            .resolve_id("prd-auth-system-v2-rollout")
+            .resolve_id(&guard, "prd-auth-system-v2-rollout")
             .await
             .unwrap();
         assert_eq!(resolved, Some("PRD-074".to_string()));
@@ -2852,37 +5578,46 @@ mod tests {
     #[tokio::test]
     async fn resolve_id_returns_none_for_unknown() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         store
-            .create_artifact(&artifact_with_slug("PRD-074", "prd-auth-system"))
+            .create_artifact(&guard, &artifact_with_slug("PRD-074", "prd-auth-system"))
             .await
             .unwrap();
         // Wrong slug.
-        assert_eq!(store.resolve_id("prd-other-thing").await.unwrap(), None);
+        assert_eq!(
+            store.resolve_id(&guard, "prd-other-thing").await.unwrap(),
+            None
+        );
         // Wrong display id.
-        assert_eq!(store.resolve_id("PRD-999").await.unwrap(), None);
+        assert_eq!(store.resolve_id(&guard, "PRD-999").await.unwrap(), None);
     }
 
     #[tokio::test]
-    async fn resolve_id_returns_none_for_garbage() {
+    async fn resolve_id_rejects_invalid_selectors() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
-        assert_eq!(store.resolve_id("").await.unwrap(), None);
-        assert_eq!(store.resolve_id("nonsense").await.unwrap(), None);
-        assert_eq!(store.resolve_id("--").await.unwrap(), None);
-        assert_eq!(store.resolve_id("foo-bar").await.unwrap(), None); // unknown kind prefix
+        let (store, guard) = make_store(&tmp).await;
+        assert_eq!(store.resolve_id(&guard, "").await.unwrap(), None);
+        for invalid in ["nonsense", "--", "foo-bar"] {
+            assert!(
+                store.resolve_id(&guard, invalid).await.is_err(),
+                "{invalid:?} is not a valid selector"
+            );
+        }
     }
 
     #[tokio::test]
     async fn resolve_id_distinguishes_kinds() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         store
-            .create_artifact(&artifact_with_slug("PRD-074", "prd-auth-system"))
+            .create_artifact(&guard, &artifact_with_slug("PRD-074", "prd-auth-system"))
             .await
             .unwrap();
         // Same suffix but wrong kind prefix → no match.
-        assert_eq!(store.resolve_id("rfc-auth-system").await.unwrap(), None);
+        assert_eq!(
+            store.resolve_id(&guard, "rfc-auth-system").await.unwrap(),
+            None
+        );
     }
 
     // Audit Phase 1.5 fixes — regression tests.
@@ -2890,18 +5625,21 @@ mod tests {
     #[tokio::test]
     async fn audit_phase15_m1_resolve_id_strips_whitespace() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         store
-            .create_artifact(&artifact_with_slug("PRD-074", "prd-auth-system"))
+            .create_artifact(&guard, &artifact_with_slug("PRD-074", "prd-auth-system"))
             .await
             .unwrap();
         // Leading/trailing whitespace + tab + newline.
         assert_eq!(
-            store.resolve_id("  PRD-074  ").await.unwrap(),
+            store.resolve_id(&guard, "  PRD-074  ").await.unwrap(),
             Some("PRD-074".to_string())
         );
         assert_eq!(
-            store.resolve_id("\tprd-auth-system\n").await.unwrap(),
+            store
+                .resolve_id(&guard, "\tprd-auth-system\n")
+                .await
+                .unwrap(),
             Some("PRD-074".to_string())
         );
     }
@@ -2909,15 +5647,15 @@ mod tests {
     #[tokio::test]
     async fn audit_phase15_h2_display_id_miss_does_not_trigger_slug_scan() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         store
-            .create_artifact(&artifact_with_slug("PRD-074", "prd-auth-system"))
+            .create_artifact(&guard, &artifact_with_slug("PRD-074", "prd-auth-system"))
             .await
             .unwrap();
         // Display-id shape with valid kind but missing artifact: must
         // short-circuit to None instead of scanning slugs.
-        assert_eq!(store.resolve_id("PRD-999").await.unwrap(), None);
-        assert_eq!(store.resolve_id("prd-999").await.unwrap(), None);
+        assert_eq!(store.resolve_id(&guard, "PRD-999").await.unwrap(), None);
+        assert_eq!(store.resolve_id(&guard, "prd-999").await.unwrap(), None);
         // Note: this asserts behavior is correct; performance check is not
         // expressible in a unit test. Manual benchmark confirms no scan.
     }
@@ -2925,49 +5663,49 @@ mod tests {
     #[tokio::test]
     async fn resolve_id_mixed_case_display_form() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         store
-            .create_artifact(&artifact_with_slug("PRD-074", "prd-auth-system"))
+            .create_artifact(&guard, &artifact_with_slug("PRD-074", "prd-auth-system"))
             .await
             .unwrap();
         assert_eq!(
-            store.resolve_id("Prd-74").await.unwrap(),
+            store.resolve_id(&guard, "Prd-74").await.unwrap(),
             Some("PRD-074".to_string())
         );
         assert_eq!(
-            store.resolve_id("pRd-074").await.unwrap(),
+            store.resolve_id(&guard, "pRd-074").await.unwrap(),
             Some("PRD-074".to_string())
         );
     }
 
     #[tokio::test]
-    async fn resolve_id_kind_prefix_only_returns_none() {
+    async fn resolve_id_rejects_kind_prefix_only() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         // No suffix at all — both paths reject.
-        assert_eq!(store.resolve_id("prd-").await.unwrap(), None);
-        assert_eq!(store.resolve_id("PRD-").await.unwrap(), None);
+        assert!(store.resolve_id(&guard, "prd-").await.is_err());
+        assert!(store.resolve_id(&guard, "PRD-").await.is_err());
     }
 
     #[tokio::test]
-    async fn resolve_id_uppercase_slug_returns_none() {
-        // is_slug_shape requires lowercase — uppercase input doesn't match
-        // slug path. Should return None (callers must pass canonical lowercase).
+    async fn resolve_id_rejects_uppercase_slug() {
+        // Slug selectors must be lowercase; malformed selector syntax is an error.
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         store
-            .create_artifact(&artifact_with_slug("PRD-074", "prd-auth-system"))
+            .create_artifact(&guard, &artifact_with_slug("PRD-074", "prd-auth-system"))
             .await
             .unwrap();
-        assert_eq!(store.resolve_id("PRD-AUTH-SYSTEM").await.unwrap(), None);
+        assert!(store.resolve_id(&guard, "PRD-AUTH-SYSTEM").await.is_err());
     }
 
     #[tokio::test]
     async fn resolve_id_legacy_artifact_without_slug_field_still_resolves_by_display_id() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         // Legacy artifact: no slug field in body.
         let legacy = NewArtifact {
+            canonical_key: "PRD-018".to_string(),
             id: "PRD-018".to_string(),
             kind: "prd".to_string(),
             status: "active".to_string(),
@@ -2979,15 +5717,21 @@ mod tests {
             valid_until: None,
             tags: Vec::new(),
         };
-        store.create_artifact(&legacy).await.unwrap();
+        store.create_artifact(&guard, &legacy).await.unwrap();
 
         // Display form works.
         assert_eq!(
-            store.resolve_id("PRD-018").await.unwrap(),
+            store.resolve_id(&guard, "PRD-018").await.unwrap(),
             Some("PRD-018".to_string())
         );
         // Slug form returns None (no slug field) — caller must fall back to verbatim.
-        assert_eq!(store.resolve_id("prd-legacy-artifact").await.unwrap(), None);
+        assert_eq!(
+            store
+                .resolve_id(&guard, "prd-legacy-artifact")
+                .await
+                .unwrap(),
+            None
+        );
     }
 
     // ── issue #411: Path 0 literal-id match makes Memory a graph citizen ──
@@ -2996,6 +5740,7 @@ mod tests {
     /// kind `memory`, no `slug` frontmatter field, no lifecycle.
     fn memory_artifact(id: &str) -> NewArtifact {
         NewArtifact {
+            canonical_key: id.to_string(),
             id: id.to_string(),
             kind: "memory".to_string(),
             status: "active".to_string(),
@@ -3015,23 +5760,26 @@ mod tests {
     #[tokio::test]
     async fn resolve_id_path0_memory_id_resolves_literally() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         let mem_id = "mem-postgresql-for-concurrent-writes-not-sqlite";
         store
-            .create_artifact(&memory_artifact(mem_id))
+            .create_artifact(&guard, &memory_artifact(mem_id))
             .await
             .unwrap();
 
         // Before Path 0 this returned None: Path 1 rejects the non-digit
         // suffix, Path 2 finds no `slug` field to compare against.
         assert_eq!(
-            store.resolve_id(mem_id).await.unwrap(),
+            store.resolve_id(&guard, mem_id).await.unwrap(),
             Some(mem_id.to_string()),
             "memory id must resolve so it can be a link source/target"
         );
         // Phase 1.5 M1 trim contract holds on Path 0 too.
         assert_eq!(
-            store.resolve_id(&format!("  {}\n", mem_id)).await.unwrap(),
+            store
+                .resolve_id(&guard, &format!("  {}\n", mem_id))
+                .await
+                .unwrap(),
             Some(mem_id.to_string())
         );
     }
@@ -3039,31 +5787,31 @@ mod tests {
     #[tokio::test]
     async fn resolve_id_path0_does_not_shadow_display_form() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         store
-            .create_artifact(&artifact_with_slug("PRD-074", "prd-auth-system"))
+            .create_artifact(&guard, &artifact_with_slug("PRD-074", "prd-auth-system"))
             .await
             .unwrap();
 
         // Canonical input: Path 0 hits and returns the same value as before.
         assert_eq!(
-            store.resolve_id("PRD-074").await.unwrap(),
+            store.resolve_id(&guard, "PRD-074").await.unwrap(),
             Some("PRD-074".to_string())
         );
         // Non-canonical casing: Path 0 misses (byte-exact predicate), Path 1
         // still normalizes and wins.
         assert_eq!(
-            store.resolve_id("prd-074").await.unwrap(),
+            store.resolve_id(&guard, "prd-074").await.unwrap(),
             Some("PRD-074".to_string())
         );
         // Unpadded: Path 0 misses, Path 1 zero-pads and wins.
         assert_eq!(
-            store.resolve_id("PRD-74").await.unwrap(),
+            store.resolve_id(&guard, "PRD-74").await.unwrap(),
             Some("PRD-074".to_string())
         );
         // Slug path untouched.
         assert_eq!(
-            store.resolve_id("prd-auth-system").await.unwrap(),
+            store.resolve_id(&guard, "prd-auth-system").await.unwrap(),
             Some("PRD-074".to_string())
         );
     }
@@ -3071,34 +5819,40 @@ mod tests {
     #[tokio::test]
     async fn resolve_id_path0_preserves_h2_early_exit_and_slug_miss() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         store
-            .create_artifact(&artifact_with_slug("PRD-074", "prd-auth-system"))
+            .create_artifact(&guard, &artifact_with_slug("PRD-074", "prd-auth-system"))
             .await
             .unwrap();
 
         // Display-id shape, valid kind, DB miss: Path 0 misses too, so Path 1
         // still reaches its early `return Ok(None)` and no slug scan happens.
-        assert_eq!(store.resolve_id("PRD-999").await.unwrap(), None);
-        assert_eq!(store.resolve_id("prd-999").await.unwrap(), None);
+        assert_eq!(store.resolve_id(&guard, "PRD-999").await.unwrap(), None);
+        assert_eq!(store.resolve_id(&guard, "prd-999").await.unwrap(), None);
         // Slug-shaped input matching nothing: still None, not an error.
-        assert_eq!(store.resolve_id("prd-other-thing").await.unwrap(), None);
         assert_eq!(
-            store.resolve_id("mem-never-remembered").await.unwrap(),
+            store.resolve_id(&guard, "prd-other-thing").await.unwrap(),
+            None
+        );
+        assert_eq!(
+            store
+                .resolve_id(&guard, "mem-never-remembered")
+                .await
+                .unwrap(),
             None
         );
         // Garbage guards unchanged.
-        assert_eq!(store.resolve_id("").await.unwrap(), None);
-        assert_eq!(store.resolve_id("   ").await.unwrap(), None);
-        assert_eq!(store.resolve_id("foo-bar").await.unwrap(), None);
+        assert_eq!(store.resolve_id(&guard, "").await.unwrap(), None);
+        assert_eq!(store.resolve_id(&guard, "   ").await.unwrap(), None);
+        assert!(store.resolve_id(&guard, "nonsense").await.is_err());
     }
 
     #[tokio::test]
     async fn resolve_id_path0_literal_miss_on_empty_store_is_ok_none() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         // No rows at all: a literal lookup must return Ok(None), never Err.
-        let result = store.resolve_id("mem-does-not-exist").await;
+        let result = store.resolve_id(&guard, "mem-does-not-exist").await;
         assert!(result.is_ok(), "literal miss must not error");
         assert_eq!(result.unwrap(), None);
     }
@@ -3106,17 +5860,17 @@ mod tests {
     #[tokio::test]
     async fn resolve_id_path0_wins_over_display_normalization_for_numeric_memory_id() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         // `forgeplan remember "12345"` produces id `mem-12345` — display-id
         // SHAPE (alpha prefix + all-digit suffix + valid kind prefix `mem`),
         // so Path 1 normalizes it to `MEM-12345`, misses, and early-exits to
         // None. Path 0 must claim it first via the literal id.
         store
-            .create_artifact(&memory_artifact("mem-12345"))
+            .create_artifact(&guard, &memory_artifact("mem-12345"))
             .await
             .unwrap();
         assert_eq!(
-            store.resolve_id("mem-12345").await.unwrap(),
+            store.resolve_id(&guard, "mem-12345").await.unwrap(),
             Some("mem-12345".to_string()),
             "Path 0 must precede Path 1 normalization"
         );
@@ -3125,18 +5879,18 @@ mod tests {
     #[tokio::test]
     async fn list_artifacts_returns_all() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
         store
-            .create_artifact(&sample_artifact("PRD-001"))
+            .create_artifact(&guard, &sample_artifact("PRD-001"))
             .await
             .unwrap();
         store
-            .create_artifact(&sample_artifact("PRD-002"))
+            .create_artifact(&guard, &sample_artifact("PRD-002"))
             .await
             .unwrap();
 
-        let list = store.list_artifacts(None).await.unwrap();
+        let list = store.list_artifacts(&guard, None).await.unwrap();
         assert_eq!(list.len(), 2);
         // sorted by id
         assert_eq!(list[0].id, "PRD-001");
@@ -3146,22 +5900,22 @@ mod tests {
     #[tokio::test]
     async fn list_artifacts_with_kind_filter() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
         store
-            .create_artifact(&sample_artifact("PRD-001"))
+            .create_artifact(&guard, &sample_artifact("PRD-001"))
             .await
             .unwrap();
 
         let mut rfc = sample_artifact("RFC-001");
         rfc.kind = "rfc".to_string();
-        store.create_artifact(&rfc).await.unwrap();
+        store.create_artifact(&guard, &rfc).await.unwrap();
 
         let filter = ArtifactFilter {
             kind: Some("prd".to_string()),
             status: None,
         };
-        let list = store.list_artifacts(Some(&filter)).await.unwrap();
+        let list = store.list_artifacts(&guard, Some(&filter)).await.unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].id, "PRD-001");
     }
@@ -3169,33 +5923,33 @@ mod tests {
     #[tokio::test]
     async fn delete_artifact() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
         store
-            .create_artifact(&sample_artifact("PRD-001"))
+            .create_artifact(&guard, &sample_artifact("PRD-001"))
             .await
             .unwrap();
-        store.delete_artifact("PRD-001").await.unwrap();
+        store.delete_artifact(&guard, "PRD-001").await.unwrap();
 
-        let result = store.get_artifact("PRD-001").await.unwrap();
+        let result = store.get_artifact(&guard, "PRD-001").await.unwrap();
         assert!(result.is_none());
     }
 
     #[tokio::test]
     async fn add_and_get_relations() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
         store
-            .add_relation("PRD-001", "RFC-001", "informs")
+            .add_relation(&guard, "PRD-001", "RFC-001", "informs")
             .await
             .unwrap();
         store
-            .add_relation("PRD-001", "ADR-001", "based_on")
+            .add_relation(&guard, "PRD-001", "ADR-001", "based_on")
             .await
             .unwrap();
 
-        let relations = store.get_relations("PRD-001").await.unwrap();
+        let relations = store.get_relations(&guard, "PRD-001").await.unwrap();
         assert_eq!(relations.len(), 2);
 
         let targets: Vec<&str> = relations.iter().map(|(t, _)| t.as_str()).collect();
@@ -3206,9 +5960,11 @@ mod tests {
     #[tokio::test]
     async fn self_link_rejected() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
-        let result = store.add_relation("PRD-001", "PRD-001", "informs").await;
+        let result = store
+            .add_relation(&guard, "PRD-001", "PRD-001", "informs")
+            .await;
         assert!(result.is_err());
         assert!(
             result
@@ -3221,9 +5977,11 @@ mod tests {
     #[tokio::test]
     async fn self_link_case_insensitive() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
-        let result = store.add_relation("PRD-001", "prd-001", "informs").await;
+        let result = store
+            .add_relation(&guard, "PRD-001", "prd-001", "informs")
+            .await;
         assert!(result.is_err());
     }
 
@@ -3234,12 +5992,12 @@ mod tests {
     #[tokio::test]
     async fn get_record_returns_full_data() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
         let artifact = sample_artifact("PRD-001");
-        store.create_artifact(&artifact).await.unwrap();
+        store.create_artifact(&guard, &artifact).await.unwrap();
 
-        let record = store.get_record("PRD-001").await.unwrap();
+        let record = store.get_record(&guard, "PRD-001").await.unwrap();
         assert!(record.is_some());
         let r = record.unwrap();
         assert_eq!(r.id, "PRD-001");
@@ -3259,9 +6017,9 @@ mod tests {
     #[tokio::test]
     async fn get_record_nonexistent_returns_none() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_read_store(&tmp).await;
 
-        let result = store.get_record("MISSING-999").await.unwrap();
+        let result = store.get_record(&guard, "PRD-999").await.unwrap();
         assert!(result.is_none());
     }
 
@@ -3277,14 +6035,17 @@ mod tests {
     #[tokio::test]
     async fn prob078_reopened_handle_sees_own_update_body() {
         let tmp = TempDir::new().unwrap();
-        let ws = tmp.path().join(".forgeplan");
+        let ws = crate::workspace::init_workspace(tmp.path(), "store-tests").unwrap();
 
         // Phase 1: a "prior process" creates the row, then we drop that
         // handle entirely (like a finished CLI invocation).
         {
-            let creator = LanceStore::init(&ws).await.unwrap();
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            let creator = LanceStore::init_new(&ws, &guard).await.unwrap();
             creator
-                .create_artifact(&sample_artifact("PRD-078"))
+                .create_artifact(&guard, &sample_artifact("PRD-078"))
                 .await
                 .unwrap();
         }
@@ -3293,19 +6054,33 @@ mod tests {
         // table version at open time (contains PRD-078 with the template
         // body). No in-session `add` will advance this snapshot.
         let session = LanceStore::open(&ws).await.unwrap();
+        let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+            .await
+            .unwrap();
 
         // Sanity: the opened handle sees the pre-existing row (template body).
-        let before = session.get_record("PRD-078").await.unwrap().unwrap();
+        let before = session
+            .get_record(&guard, "PRD-078")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(before.body, "## Summary\n\nTest body content.");
 
         // Phase 3: this session updates the body in place (LanceDB UPDATE).
         let marker = "MARKER-PROB078-UNIQUE-DEADBEEF";
-        session.update_body("PRD-078", marker).await.unwrap();
+        session
+            .update_body(&guard, "PRD-078", marker)
+            .await
+            .unwrap();
 
         // Phase 4: read back through the SAME handle. The bug under test:
         // does the handle observe its own committed UPDATE, or return the
         // stale (template) snapshot?
-        let after = session.get_record("PRD-078").await.unwrap().unwrap();
+        let after = session
+            .get_record(&guard, "PRD-078")
+            .await
+            .unwrap()
+            .unwrap();
         assert!(
             after.body.contains(marker),
             "read-after-write returned STALE body (PROB-078): got {:?}",
@@ -3316,18 +6091,18 @@ mod tests {
     #[tokio::test]
     async fn list_records_returns_full_data() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
         store
-            .create_artifact(&sample_artifact("PRD-001"))
+            .create_artifact(&guard, &sample_artifact("PRD-001"))
             .await
             .unwrap();
         store
-            .create_artifact(&sample_artifact("PRD-002"))
+            .create_artifact(&guard, &sample_artifact("PRD-002"))
             .await
             .unwrap();
 
-        let records = store.list_records(None).await.unwrap();
+        let records = store.list_records(&guard, None).await.unwrap();
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].id, "PRD-001");
         assert_eq!(records[1].id, "PRD-002");
@@ -3338,21 +6113,21 @@ mod tests {
     #[tokio::test]
     async fn list_records_with_filter() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
         store
-            .create_artifact(&sample_artifact("PRD-001"))
+            .create_artifact(&guard, &sample_artifact("PRD-001"))
             .await
             .unwrap();
         let mut rfc = sample_artifact("RFC-001");
         rfc.kind = "rfc".to_string();
-        store.create_artifact(&rfc).await.unwrap();
+        store.create_artifact(&guard, &rfc).await.unwrap();
 
         let filter = ArtifactFilter {
             kind: Some("rfc".to_string()),
             status: None,
         };
-        let records = store.list_records(Some(&filter)).await.unwrap();
+        let records = store.list_records(&guard, Some(&filter)).await.unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].id, "RFC-001");
     }
@@ -3360,18 +6135,21 @@ mod tests {
     #[tokio::test]
     async fn search_body_finds_matching_content() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
         let mut a1 = sample_artifact("PRD-001");
         a1.body = "This artifact is about authentication flow.".to_string();
-        store.create_artifact(&a1).await.unwrap();
+        store.create_artifact(&guard, &a1).await.unwrap();
 
         let mut a2 = sample_artifact("PRD-002");
         a2.body = "This artifact covers database schema design.".to_string();
-        store.create_artifact(&a2).await.unwrap();
+        store.create_artifact(&guard, &a2).await.unwrap();
 
         // Search for "authentication" — should match PRD-001 only
-        let results = store.search_body("authentication", None).await.unwrap();
+        let results = store
+            .search_body(&guard, "authentication", None)
+            .await
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "PRD-001");
     }
@@ -3379,13 +6157,13 @@ mod tests {
     #[tokio::test]
     async fn search_body_case_insensitive() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
         let mut a1 = sample_artifact("PRD-001");
         a1.body = "IMPORTANT: Security review needed.".to_string();
-        store.create_artifact(&a1).await.unwrap();
+        store.create_artifact(&guard, &a1).await.unwrap();
 
-        let results = store.search_body("security", None).await.unwrap();
+        let results = store.search_body(&guard, "security", None).await.unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "PRD-001");
     }
@@ -3393,14 +6171,17 @@ mod tests {
     #[tokio::test]
     async fn search_body_matches_title_too() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
         let mut a1 = sample_artifact("PRD-001");
         a1.title = "Authentication Module Design".to_string();
         a1.body = "No relevant keywords here.".to_string();
-        store.create_artifact(&a1).await.unwrap();
+        store.create_artifact(&guard, &a1).await.unwrap();
 
-        let results = store.search_body("authentication", None).await.unwrap();
+        let results = store
+            .search_body(&guard, "authentication", None)
+            .await
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "PRD-001");
     }
@@ -3408,19 +6189,22 @@ mod tests {
     #[tokio::test]
     async fn search_body_with_kind_filter() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
         let mut a1 = sample_artifact("PRD-001");
         a1.body = "Search target text here.".to_string();
-        store.create_artifact(&a1).await.unwrap();
+        store.create_artifact(&guard, &a1).await.unwrap();
 
         let mut a2 = sample_artifact("RFC-001");
         a2.kind = "rfc".to_string();
         a2.body = "Search target text here too.".to_string();
-        store.create_artifact(&a2).await.unwrap();
+        store.create_artifact(&guard, &a2).await.unwrap();
 
         // Filter to rfc only
-        let results = store.search_body("target", Some("rfc")).await.unwrap();
+        let results = store
+            .search_body(&guard, "target", Some("rfc"))
+            .await
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "RFC-001");
     }
@@ -3428,25 +6212,25 @@ mod tests {
     #[tokio::test]
     async fn find_stale_returns_expired_artifacts() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
         // Create an artifact with valid_until in the past
         let mut stale = sample_artifact("PRD-001");
         stale.valid_until = Some("2020-01-01T00:00:00+00:00".to_string());
-        store.create_artifact(&stale).await.unwrap();
+        store.create_artifact(&guard, &stale).await.unwrap();
 
         // Create an artifact with valid_until in the future
         let mut fresh = sample_artifact("PRD-002");
         fresh.valid_until = Some("2099-12-31T23:59:59+00:00".to_string());
-        store.create_artifact(&fresh).await.unwrap();
+        store.create_artifact(&guard, &fresh).await.unwrap();
 
         // Create an artifact with no valid_until
         store
-            .create_artifact(&sample_artifact("PRD-003"))
+            .create_artifact(&guard, &sample_artifact("PRD-003"))
             .await
             .unwrap();
 
-        let stale_results = store.find_stale().await.unwrap();
+        let stale_results = store.find_stale(&guard).await.unwrap();
         assert_eq!(stale_results.len(), 1);
         assert_eq!(stale_results[0].id, "PRD-001");
     }
@@ -3454,113 +6238,113 @@ mod tests {
     #[tokio::test]
     async fn find_stale_empty_when_none_expired() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
         store
-            .create_artifact(&sample_artifact("PRD-001"))
+            .create_artifact(&guard, &sample_artifact("PRD-001"))
             .await
             .unwrap();
 
-        let stale_results = store.find_stale().await.unwrap();
+        let stale_results = store.find_stale(&guard).await.unwrap();
         assert!(stale_results.is_empty());
     }
 
     #[tokio::test]
     async fn next_id_starts_at_001() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_read_store(&tmp).await;
 
-        let id = store.next_id("PRD").await.unwrap();
+        let id = store.next_id(&guard, "PRD").await.unwrap();
         assert_eq!(id, "PRD-001");
     }
 
     #[tokio::test]
     async fn next_id_increments_correctly() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
         store
-            .create_artifact(&sample_artifact("PRD-001"))
+            .create_artifact(&guard, &sample_artifact("PRD-001"))
             .await
             .unwrap();
         store
-            .create_artifact(&sample_artifact("PRD-002"))
+            .create_artifact(&guard, &sample_artifact("PRD-002"))
             .await
             .unwrap();
 
-        let id = store.next_id("PRD").await.unwrap();
+        let id = store.next_id(&guard, "PRD").await.unwrap();
         assert_eq!(id, "PRD-003");
     }
 
     #[tokio::test]
     async fn next_id_ignores_other_kinds() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
         store
-            .create_artifact(&sample_artifact("PRD-001"))
+            .create_artifact(&guard, &sample_artifact("PRD-001"))
             .await
             .unwrap();
         let mut rfc = sample_artifact("RFC-001");
         rfc.kind = "rfc".to_string();
-        store.create_artifact(&rfc).await.unwrap();
+        store.create_artifact(&guard, &rfc).await.unwrap();
 
-        let prd_next = store.next_id("PRD").await.unwrap();
+        let prd_next = store.next_id(&guard, "PRD").await.unwrap();
         assert_eq!(prd_next, "PRD-002");
 
-        let rfc_next = store.next_id("RFC").await.unwrap();
+        let rfc_next = store.next_id(&guard, "RFC").await.unwrap();
         assert_eq!(rfc_next, "RFC-002");
     }
 
     #[tokio::test]
     async fn next_id_case_insensitive_prefix() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
         store
-            .create_artifact(&sample_artifact("PRD-001"))
+            .create_artifact(&guard, &sample_artifact("PRD-001"))
             .await
             .unwrap();
 
         // Lowercase prefix should still find PRD-001
-        let id = store.next_id("prd").await.unwrap();
+        let id = store.next_id(&guard, "prd").await.unwrap();
         assert_eq!(id, "PRD-002");
     }
 
     #[tokio::test]
     async fn update_body_changes_content() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
         store
-            .create_artifact(&sample_artifact("PRD-001"))
+            .create_artifact(&guard, &sample_artifact("PRD-001"))
             .await
             .unwrap();
 
         store
-            .update_body("PRD-001", "## Updated\n\nNew body content.")
+            .update_body(&guard, "PRD-001", "## Updated\n\nNew body content.")
             .await
             .unwrap();
 
-        let record = store.get_record("PRD-001").await.unwrap().unwrap();
+        let record = store.get_record(&guard, "PRD-001").await.unwrap().unwrap();
         assert_eq!(record.body, "## Updated\n\nNew body content.");
     }
 
     #[tokio::test]
     async fn get_all_relations_returns_everything() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
         store
-            .add_relation("PRD-001", "RFC-001", "informs")
+            .add_relation(&guard, "PRD-001", "RFC-001", "informs")
             .await
             .unwrap();
         store
-            .add_relation("PRD-002", "ADR-001", "based_on")
+            .add_relation(&guard, "PRD-002", "ADR-001", "based_on")
             .await
             .unwrap();
 
-        let all = store.get_all_relations().await.unwrap();
+        let all = store.get_all_relations(&guard).await.unwrap();
         assert_eq!(all.len(), 2);
 
         let sources: Vec<&str> = all.iter().map(|(s, _, _)| s.as_str()).collect();
@@ -3571,15 +6355,116 @@ mod tests {
     #[tokio::test]
     async fn get_all_relations_empty() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_read_store(&tmp).await;
 
-        let all = store.get_all_relations().await.unwrap();
+        let all = store.get_all_relations(&guard).await.unwrap();
         assert!(all.is_empty());
+    }
+
+    // ─── Qualified link targets (Constellation stage 4) ───────────────
+
+    #[test]
+    fn validate_link_target_accepts_plain_and_qualified_forms() {
+        // Plain artifact ids pass through the strict rule unchanged.
+        for ok in ["PRD-001", "adr-012", "mem-my-decision"] {
+            validate_link_target(ok).unwrap_or_else(|e| panic!("{ok} must pass: {e}"));
+        }
+        // Qualified forms: `src:` ids, path fragments, dotted/underscored
+        // qualifiers.
+        for ok in [
+            "ADR-001@src:b7d6f0e1a2c3d4e5",
+            "ADR-001@ws-b",
+            "PRD-001@team_a",
+            "NOTE-007@repo.name",
+            "mem-x@src:9",
+        ] {
+            validate_link_target(ok).unwrap_or_else(|e| panic!("{ok} must pass: {e}"));
+        }
+    }
+
+    #[test]
+    fn validate_link_target_rejects_malformed_and_injectable_forms() {
+        for bad in [
+            "a@",               // empty qualifier
+            "@b",               // empty key
+            "@",                // both empty
+            "a@b c",            // whitespace in qualifier
+            "a@b/c",            // path separator
+            "a@b\\c",           // backslash
+            "a@b'c",            // single quote — filter-predicate escape
+            "a@b\"c",           // double quote
+            "a@b@c",            // second `@` is not qualifier charset
+            "a@b;",             // statement separator
+            "1A@b",             // key must still be a valid artifact id
+            "../bad@ws-b",      // traversal in the key half
+            "ADR-001@@src:x",   // doubled separator
+            "ADR-001@ ",        // whitespace-only qualifier
+            "ADR-001@ws b/x:y", // mixed separators
+        ] {
+            assert!(
+                validate_link_target(bad).is_err(),
+                "{bad} must be rejected as a link target"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn add_relation_stores_a_qualified_target_verbatim() {
+        let tmp = TempDir::new().unwrap();
+        let (store, guard) = make_store(&tmp).await;
+
+        // The foreign target does not exist in this store — that is the
+        // point of a qualified ref. The row stores the ref verbatim.
+        store
+            .add_relation(&guard, "PRD-001", "ADR-001@src:b7d6f0e1a2c3d4e5", "informs")
+            .await
+            .unwrap();
+
+        let rels = store.get_relations(&guard, "PRD-001").await.unwrap();
+        assert_eq!(
+            rels,
+            vec![(
+                "ADR-001@src:b7d6f0e1a2c3d4e5".to_string(),
+                "informs".to_string()
+            )],
+            "the qualified target must round-trip byte-for-byte"
+        );
+
+        // … and deletes by the same verbatim string (unlink path).
+        store
+            .delete_relation(&guard, "PRD-001", "ADR-001@src:b7d6f0e1a2c3d4e5", "informs")
+            .await
+            .unwrap();
+        assert!(
+            store
+                .get_relations(&guard, "PRD-001")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn add_relation_still_rejects_an_injectable_qualified_target() {
+        let tmp = TempDir::new().unwrap();
+        let (store, guard) = make_store(&tmp).await;
+
+        // The qualifier charset excludes quotes and separators, so this
+        // never reaches the filter builder below.
+        let err = store
+            .add_relation(&guard, "PRD-001", "ADR-001@x' OR '1'='1", "informs")
+            .await
+            .expect_err("an injectable qualified target must be rejected");
+        assert!(
+            format!("{err}").contains("qualified"),
+            "the error should name the rejected contract, got: {err}"
+        );
     }
 
     #[tokio::test]
     async fn artifact_record_to_summary() {
         let record = ArtifactRecord {
+            canonical_key: "PRD-001".to_string(),
             id: "PRD-001".to_string(),
             kind: "prd".to_string(),
             status: "draft".to_string(),
@@ -3607,6 +6492,7 @@ mod tests {
     #[tokio::test]
     async fn artifact_record_frontmatter_map() {
         let record = ArtifactRecord {
+            canonical_key: "PRD-001".to_string(),
             id: "PRD-001".to_string(),
             kind: "prd".to_string(),
             status: "draft".to_string(),
@@ -3657,9 +6543,9 @@ mod tests {
     #[tokio::test]
     async fn frontmatter_map_alone_never_carries_links() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         store
-            .add_relation_for_test("SPEC-003", "PRD-065", "refines")
+            .add_relation_for_test(&guard, "SPEC-003", "PRD-065", "refines")
             .await
             .unwrap();
 
@@ -3671,8 +6557,9 @@ mod tests {
         );
         assert!(
             store
-                .frontmatter_map_with_links(&record)
+                .frontmatter_map_with_links(&guard, &record)
                 .await
+                .unwrap()
                 .contains_key("links"),
             "the store knows the edge and must merge it in"
         );
@@ -3684,21 +6571,22 @@ mod tests {
     #[tokio::test]
     async fn merged_links_are_readable_by_the_rule_that_needs_them() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         for (target, relation) in [
             ("PRD-065", "refines"),
             ("ADR-009", "based_on"),
             ("SPEC-004", "informs"),
         ] {
             store
-                .add_relation_for_test("SPEC-003", target, relation)
+                .add_relation_for_test(&guard, "SPEC-003", target, relation)
                 .await
                 .unwrap();
         }
 
         let map = store
-            .frontmatter_map_with_links(&record_for_links_test("SPEC-003"))
-            .await;
+            .frontmatter_map_with_links(&guard, &record_for_links_test("SPEC-003"))
+            .await
+            .unwrap();
         let mut targets = crate::validation::checks::extract_frontmatter_link_targets(&map);
         targets.sort();
 
@@ -3711,15 +6599,17 @@ mod tests {
     #[tokio::test]
     async fn no_relations_leaves_the_map_untouched() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         let map = store
-            .frontmatter_map_with_links(&record_for_links_test("PRD-777"))
-            .await;
+            .frontmatter_map_with_links(&guard, &record_for_links_test("PRD-777"))
+            .await
+            .unwrap();
         assert!(!map.contains_key("links"));
     }
 
     fn record_for_links_test(id: &str) -> ArtifactRecord {
         ArtifactRecord {
+            canonical_key: id.to_string(),
             id: id.to_string(),
             kind: "spec".to_string(),
             status: "draft".to_string(),
@@ -3741,6 +6631,7 @@ mod tests {
     #[tokio::test]
     async fn roundtrip_artifact_with_tags_through_frontmatter_map() {
         let record = ArtifactRecord {
+            canonical_key: "PRD-099".to_string(),
             id: "PRD-099".to_string(),
             kind: "prd".to_string(),
             status: "draft".to_string(),
@@ -3773,20 +6664,23 @@ mod tests {
     #[tokio::test]
     async fn update_r_eff_score_persists() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
         store
-            .create_artifact(&sample_artifact("PRD-001"))
+            .create_artifact(&guard, &sample_artifact("PRD-001"))
             .await
             .unwrap();
 
         // Default r_eff_score is 0.0
-        let before = store.get_record("PRD-001").await.unwrap().unwrap();
+        let before = store.get_record(&guard, "PRD-001").await.unwrap().unwrap();
         assert!((before.r_eff_score - 0.0).abs() < f64::EPSILON);
 
-        store.update_r_eff_score("PRD-001", 0.85).await.unwrap();
+        store
+            .update_r_eff_score(&guard, "PRD-001", 0.85)
+            .await
+            .unwrap();
 
-        let after = store.get_record("PRD-001").await.unwrap().unwrap();
+        let after = store.get_record(&guard, "PRD-001").await.unwrap().unwrap();
         assert!((after.r_eff_score - 0.85).abs() < f64::EPSILON);
         // updated_at should have changed
         assert_ne!(before.updated_at, after.updated_at);
@@ -3795,9 +6689,9 @@ mod tests {
     #[tokio::test]
     async fn update_r_eff_score_missing_id_returns_error() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
-        let result = store.update_r_eff_score("NONEXISTENT-999", 0.5).await;
+        let result = store.update_r_eff_score(&guard, "PRD-999", 0.5).await;
         assert!(result.is_err());
         assert!(
             result.unwrap_err().to_string().contains("not found"),
@@ -3808,15 +6702,18 @@ mod tests {
     #[tokio::test]
     async fn update_r_eff_score_nan_becomes_zero() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
 
         store
-            .create_artifact(&sample_artifact("PRD-002"))
+            .create_artifact(&guard, &sample_artifact("PRD-002"))
             .await
             .unwrap();
-        store.update_r_eff_score("PRD-002", f64::NAN).await.unwrap();
+        store
+            .update_r_eff_score(&guard, "PRD-002", f64::NAN)
+            .await
+            .unwrap();
 
-        let record = store.get_record("PRD-002").await.unwrap().unwrap();
+        let record = store.get_record(&guard, "PRD-002").await.unwrap().unwrap();
         assert!(
             (record.r_eff_score - 0.0).abs() < f64::EPSILON,
             "NaN should become 0.0"
@@ -3826,23 +6723,29 @@ mod tests {
     #[tokio::test]
     async fn update_r_eff_score_clamps_out_of_range() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         store
-            .create_artifact(&sample_artifact("PRD-003"))
+            .create_artifact(&guard, &sample_artifact("PRD-003"))
             .await
             .unwrap();
 
         // Above range → clamped to 1.0
-        store.update_r_eff_score("PRD-003", 2.5).await.unwrap();
-        let r = store.get_record("PRD-003").await.unwrap().unwrap();
+        store
+            .update_r_eff_score(&guard, "PRD-003", 2.5)
+            .await
+            .unwrap();
+        let r = store.get_record(&guard, "PRD-003").await.unwrap().unwrap();
         assert!(
             (r.r_eff_score - 1.0).abs() < f64::EPSILON,
             "2.5 should clamp to 1.0"
         );
 
         // Below range → clamped to 0.0
-        store.update_r_eff_score("PRD-003", -0.5).await.unwrap();
-        let r = store.get_record("PRD-003").await.unwrap().unwrap();
+        store
+            .update_r_eff_score(&guard, "PRD-003", -0.5)
+            .await
+            .unwrap();
+        let r = store.get_record(&guard, "PRD-003").await.unwrap().unwrap();
         assert!(
             (r.r_eff_score - 0.0).abs() < f64::EPSILON,
             "-0.5 should clamp to 0.0"
@@ -3850,25 +6753,31 @@ mod tests {
 
         // Infinity → clamped to 1.0
         store
-            .update_r_eff_score("PRD-003", f64::INFINITY)
+            .update_r_eff_score(&guard, "PRD-003", f64::INFINITY)
             .await
             .unwrap();
-        let r = store.get_record("PRD-003").await.unwrap().unwrap();
+        let r = store.get_record(&guard, "PRD-003").await.unwrap().unwrap();
         assert!(
             (r.r_eff_score - 1.0).abs() < f64::EPSILON,
             "Infinity should clamp to 1.0"
         );
 
         // Boundary: exact 0.0 and 1.0
-        store.update_r_eff_score("PRD-003", 0.0).await.unwrap();
-        let r = store.get_record("PRD-003").await.unwrap().unwrap();
+        store
+            .update_r_eff_score(&guard, "PRD-003", 0.0)
+            .await
+            .unwrap();
+        let r = store.get_record(&guard, "PRD-003").await.unwrap().unwrap();
         assert!(
             (r.r_eff_score - 0.0).abs() < f64::EPSILON,
             "0.0 should stay 0.0"
         );
 
-        store.update_r_eff_score("PRD-003", 1.0).await.unwrap();
-        let r = store.get_record("PRD-003").await.unwrap().unwrap();
+        store
+            .update_r_eff_score(&guard, "PRD-003", 1.0)
+            .await
+            .unwrap();
+        let r = store.get_record(&guard, "PRD-003").await.unwrap().unwrap();
         assert!(
             (r.r_eff_score - 1.0).abs() < f64::EPSILON,
             "1.0 should stay 1.0"
@@ -3878,6 +6787,7 @@ mod tests {
     #[test]
     fn embedding_text_includes_id_title_and_body_preview() {
         let record = ArtifactRecord {
+            canonical_key: "PRD-042".to_string(),
             id: "PRD-042".to_string(),
             kind: "prd".to_string(),
             status: "Draft".to_string(),
@@ -3915,6 +6825,7 @@ mod tests {
     fn embedding_text_truncates_body_at_chunk_size() {
         let long_body = "x".repeat(5000);
         let record = ArtifactRecord {
+            canonical_key: "PRD-001".to_string(),
             id: "PRD-001".to_string(),
             kind: "prd".to_string(),
             status: "Draft".to_string(),
@@ -3955,6 +6866,7 @@ mod tests {
 
     fn make_record(id: &str) -> ArtifactRecord {
         ArtifactRecord {
+            canonical_key: id.to_string(),
             id: id.to_string(),
             kind: "prd".to_string(),
             status: "Draft".to_string(),
@@ -4020,61 +6932,72 @@ mod tests {
     #[tokio::test]
     async fn delete_relation_nonexistent_is_silent() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
-        let result = store.delete_relation("PRD-001", "RFC-001", "informs").await;
+        let (store, guard) = make_store(&tmp).await;
+        let result = store
+            .delete_relation(&guard, "PRD-001", "RFC-001", "informs")
+            .await;
         assert!(result.is_ok());
     }
 
     #[tokio::test]
     async fn delete_relation_removes_existing() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         store
-            .add_relation("PRD-001", "RFC-001", "informs")
+            .add_relation(&guard, "PRD-001", "RFC-001", "informs")
             .await
             .unwrap();
-        assert_eq!(store.get_relations("PRD-001").await.unwrap().len(), 1);
+        assert_eq!(
+            store.get_relations(&guard, "PRD-001").await.unwrap().len(),
+            1
+        );
         store
-            .delete_relation("PRD-001", "RFC-001", "informs")
+            .delete_relation(&guard, "PRD-001", "RFC-001", "informs")
             .await
             .unwrap();
-        assert!(store.get_relations("PRD-001").await.unwrap().is_empty());
+        assert!(
+            store
+                .get_relations(&guard, "PRD-001")
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
     async fn delete_relations_for_artifact_cascades() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         // PRD-001 is source for two relations
         store
-            .add_relation("PRD-001", "RFC-001", "informs")
+            .add_relation(&guard, "PRD-001", "RFC-001", "informs")
             .await
             .unwrap();
         store
-            .add_relation("PRD-001", "ADR-001", "based_on")
+            .add_relation(&guard, "PRD-001", "ADR-001", "based_on")
             .await
             .unwrap();
         // PRD-001 is target for one relation
         store
-            .add_relation("EVID-001", "PRD-001", "informs")
+            .add_relation(&guard, "EVID-001", "PRD-001", "informs")
             .await
             .unwrap();
         // Unrelated relation (should survive)
         store
-            .add_relation("RFC-001", "ADR-001", "refines")
+            .add_relation(&guard, "RFC-001", "ADR-001", "refines")
             .await
             .unwrap();
 
-        let all = store.get_all_relations().await.unwrap();
+        let all = store.get_all_relations(&guard).await.unwrap();
         assert_eq!(all.len(), 4);
 
         // Cascade delete for PRD-001
         store
-            .delete_relations_for_artifact("PRD-001")
+            .delete_relations_for_artifact(&guard, "PRD-001")
             .await
             .unwrap();
 
-        let remaining = store.get_all_relations().await.unwrap();
+        let remaining = store.get_all_relations(&guard).await.unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(
             remaining[0],
@@ -4089,13 +7012,13 @@ mod tests {
     #[tokio::test]
     async fn delete_relations_for_artifact_noop_when_none() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         // Should not error on nonexistent artifact
         store
-            .delete_relations_for_artifact("NONEXISTENT")
+            .delete_relations_for_artifact(&guard, "NONEXISTENT")
             .await
             .unwrap();
-        assert!(store.get_all_relations().await.unwrap().is_empty());
+        assert!(store.get_all_relations(&guard).await.unwrap().is_empty());
     }
 
     #[test]
@@ -4123,36 +7046,37 @@ mod tests {
     #[tokio::test]
     async fn create_artifact_with_tags_roundtrips() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         let mut art = sample_artifact("PRD-100");
         art.tags = vec!["source=code".to_string(), "layer=domain".to_string()];
-        store.create_artifact(&art).await.unwrap();
-        let rec = store.get_record("PRD-100").await.unwrap().unwrap();
+        store.create_artifact(&guard, &art).await.unwrap();
+        let rec = store.get_record(&guard, "PRD-100").await.unwrap().unwrap();
         assert_eq!(rec.tags, vec!["source=code", "layer=domain"]);
     }
 
     #[tokio::test]
     async fn tags_empty_by_default() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         store
-            .create_artifact(&sample_artifact("PRD-101"))
+            .create_artifact(&guard, &sample_artifact("PRD-101"))
             .await
             .unwrap();
-        let rec = store.get_record("PRD-101").await.unwrap().unwrap();
+        let rec = store.get_record(&guard, "PRD-101").await.unwrap().unwrap();
         assert!(rec.tags.is_empty());
     }
 
     #[tokio::test]
     async fn add_tags_merges_and_deduplicates() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         let mut art = sample_artifact("PRD-102");
         art.tags = vec!["source=code".to_string()];
-        store.create_artifact(&art).await.unwrap();
+        store.create_artifact(&guard, &art).await.unwrap();
 
         store
             .add_tags(
+                &guard,
                 "PRD-102",
                 &[
                     "source=code".to_string(), // dup — ignored
@@ -4163,31 +7087,32 @@ mod tests {
             .await
             .unwrap();
 
-        let rec = store.get_record("PRD-102").await.unwrap().unwrap();
+        let rec = store.get_record(&guard, "PRD-102").await.unwrap().unwrap();
         assert_eq!(rec.tags, vec!["source=code", "layer=domain", "reviewed"]);
     }
 
     #[tokio::test]
     async fn remove_tags_drops_matching_only() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         let mut art = sample_artifact("PRD-103");
         art.tags = vec![
             "source=code".to_string(),
             "layer=domain".to_string(),
             "reviewed".to_string(),
         ];
-        store.create_artifact(&art).await.unwrap();
+        store.create_artifact(&guard, &art).await.unwrap();
 
         store
             .remove_tags(
+                &guard,
                 "PRD-103",
                 &["layer=domain".to_string(), "missing".to_string()],
             )
             .await
             .unwrap();
 
-        let rec = store.get_record("PRD-103").await.unwrap().unwrap();
+        let rec = store.get_record(&guard, "PRD-103").await.unwrap().unwrap();
         assert_eq!(rec.tags, vec!["source=code", "reviewed"]);
     }
 
@@ -4204,15 +7129,15 @@ mod tests {
     #[tokio::test]
     async fn replace_record_is_atomic_preserves_fields() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         let mut art = sample_artifact("PRD-150");
         art.tags = vec!["source=code".to_string()];
         art.author = Some("alice".to_string());
         art.parent_epic = Some("EPIC-001".to_string());
-        store.create_artifact(&art).await.unwrap();
+        store.create_artifact(&guard, &art).await.unwrap();
 
         let original_created_at = store
-            .get_record("PRD-150")
+            .get_record(&guard, "PRD-150")
             .await
             .unwrap()
             .unwrap()
@@ -4221,12 +7146,12 @@ mod tests {
 
         // Trigger replace_record via add_tags.
         store
-            .add_tags("PRD-150", &["layer=domain".to_string()])
+            .add_tags(&guard, "PRD-150", &["layer=domain".to_string()])
             .await
             .unwrap();
 
         // Row must still exist with all fields intact (no data loss).
-        let rec = store.get_record("PRD-150").await.unwrap().unwrap();
+        let rec = store.get_record(&guard, "PRD-150").await.unwrap().unwrap();
         assert_eq!(rec.id, "PRD-150");
         assert_eq!(rec.kind, art.kind);
         assert_eq!(rec.title, art.title);
@@ -4237,7 +7162,7 @@ mod tests {
         assert_eq!(rec.tags, vec!["source=code", "layer=domain"]);
 
         // And exactly one row exists (merge_insert must not duplicate).
-        let listed = store.list_records(None).await.unwrap();
+        let listed = store.list_records(&guard, None).await.unwrap();
         let matches: Vec<_> = listed.iter().filter(|r| r.id == "PRD-150").collect();
         assert_eq!(
             matches.len(),
@@ -4253,22 +7178,22 @@ mod tests {
     #[tokio::test]
     async fn replace_record_repeated_calls_no_data_loss() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         let mut art = sample_artifact("PRD-151");
         art.tags = vec!["a".to_string()];
-        store.create_artifact(&art).await.unwrap();
+        store.create_artifact(&guard, &art).await.unwrap();
 
         for i in 0..5 {
             store
-                .add_tags("PRD-151", &[format!("tag{i}")])
+                .add_tags(&guard, "PRD-151", &[format!("tag{i}")])
                 .await
                 .unwrap();
         }
 
-        let rec = store.get_record("PRD-151").await.unwrap().unwrap();
+        let rec = store.get_record(&guard, "PRD-151").await.unwrap().unwrap();
         assert_eq!(rec.tags, vec!["a", "tag0", "tag1", "tag2", "tag3", "tag4"]);
 
-        let listed = store.list_records(None).await.unwrap();
+        let listed = store.list_records(&guard, None).await.unwrap();
         assert_eq!(
             listed.iter().filter(|r| r.id == "PRD-151").count(),
             1,
@@ -4279,18 +7204,18 @@ mod tests {
     #[tokio::test]
     async fn list_by_tag_key_value_filter() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         let mut a = sample_artifact("PRD-110");
         a.tags = vec!["source=code".to_string()];
-        store.create_artifact(&a).await.unwrap();
+        store.create_artifact(&guard, &a).await.unwrap();
         let mut b = sample_artifact("PRD-111");
         b.tags = vec!["source=docs".to_string()];
-        store.create_artifact(&b).await.unwrap();
+        store.create_artifact(&guard, &b).await.unwrap();
         let mut c = sample_artifact("PRD-112");
         c.tags = vec!["source=code".to_string(), "layer=domain".to_string()];
-        store.create_artifact(&c).await.unwrap();
+        store.create_artifact(&guard, &c).await.unwrap();
 
-        let hits = store.list_by_tag("source=code").await.unwrap();
+        let hits = store.list_by_tag(&guard, "source=code").await.unwrap();
         let ids: Vec<String> = hits.iter().map(|r| r.id.clone()).collect();
         assert_eq!(ids.len(), 2);
         assert!(ids.contains(&"PRD-110".to_string()));
@@ -4300,77 +7225,37 @@ mod tests {
     #[tokio::test]
     async fn list_by_tag_key_only_matches_prefix_and_bare() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         let mut a = sample_artifact("PRD-120");
         a.tags = vec!["source=code".to_string()];
-        store.create_artifact(&a).await.unwrap();
+        store.create_artifact(&guard, &a).await.unwrap();
         let mut b = sample_artifact("PRD-121");
         b.tags = vec!["reviewed".to_string()];
-        store.create_artifact(&b).await.unwrap();
+        store.create_artifact(&guard, &b).await.unwrap();
         let mut c = sample_artifact("PRD-122");
         c.tags = vec!["layer=domain".to_string()];
-        store.create_artifact(&c).await.unwrap();
+        store.create_artifact(&guard, &c).await.unwrap();
 
-        let src = store.list_by_tag("source").await.unwrap();
+        let src = store.list_by_tag(&guard, "source").await.unwrap();
         assert_eq!(src.len(), 1);
         assert_eq!(src[0].id, "PRD-120");
 
-        let rev = store.list_by_tag("reviewed").await.unwrap();
+        let rev = store.list_by_tag(&guard, "reviewed").await.unwrap();
         assert_eq!(rev.len(), 1);
         assert_eq!(rev[0].id, "PRD-121");
     }
 
-    /// PROB-093 regression. The defect this pins is not "the vector is old" —
-    /// it is that a rewritten artifact kept matching text it no longer
-    /// contained, *better* than text it did. Measured before the fix: a note
-    /// rewritten from submarines to bread baking still scored 0.80 on the
-    /// deleted subject (unchanged to the hundredth) against 0.62 on the actual
-    /// content.
-    #[tokio::test]
-    async fn update_body_retires_the_vector_of_the_previous_text() {
-        let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
-        store
-            .create_artifact(&sample_artifact("PRD-300"))
-            .await
-            .unwrap();
-        store
-            .update_embedding("PRD-300", &vec![0.5f32; 1024])
-            .await
-            .unwrap();
-        assert!(
-            store
-                .get_record("PRD-300")
-                .await
-                .unwrap()
-                .unwrap()
-                .embedding
-                .is_some(),
-            "precondition: the record must carry a vector before the rewrite"
-        );
-
-        store
-            .update_body("PRD-300", "Completely different subject matter.")
-            .await
-            .unwrap();
-
-        let after = store.get_record("PRD-300").await.unwrap().unwrap();
-        assert!(
-            after.embedding.is_none(),
-            "a vector describing the previous body must not survive the rewrite — \
-             a missing vector is reportable, a wrong one is not"
-        );
-        assert_eq!(
-            after.body_hash.as_deref(),
-            Some(compute_content_hash(&after.title, &after.body).as_str()),
-            "the hash must track the new content so `embed` re-encodes this \
-             record alone rather than all of them"
-        );
-    }
-
-    /// The hash must cover the title, because `embedding_text` embeds title +
-    /// body — hashing the body alone would call a title-only edit "unchanged"
-    /// and leave the stale vector in place, reintroducing PROB-093 by a side door.
+    /// PROB-093 regression for the hash.
+    ///
+    /// The original test also asserted that `update_body` retires a stale
+    /// vector. **That half is gone with `update_embedding`**: seeding a vector
+    /// now requires the conditional publisher path, which needs a real
+    /// workspace, an owner and a resolved profile. The vector-retirement
+    /// property is therefore no longer pinned at this layer; it is a property
+    /// of `publish_embedding_into_artifacts`, whose predicate refuses to write
+    /// onto a row whose `row_revision` moved.
+    ///
+    /// What remains here is the part that is still this layer's to pin.
     #[test]
     fn content_hash_changes_when_only_the_title_moves() {
         let a = compute_content_hash("Submarine navigation", "same body");
@@ -4390,11 +7275,11 @@ mod tests {
     #[tokio::test]
     async fn create_artifact_stamps_a_content_hash() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         let artifact = sample_artifact("PRD-301");
-        store.create_artifact(&artifact).await.unwrap();
+        store.create_artifact(&guard, &artifact).await.unwrap();
 
-        let rec = store.get_record("PRD-301").await.unwrap().unwrap();
+        let rec = store.get_record(&guard, "PRD-301").await.unwrap().unwrap();
         assert_eq!(
             rec.body_hash.as_deref(),
             Some(compute_content_hash(&artifact.title, &artifact.body).as_str()),
@@ -4409,43 +7294,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_body_hash_writes_the_stamp() {
-        let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
-        store
-            .create_artifact(&sample_artifact("PRD-302"))
-            .await
-            .unwrap();
-
-        store
-            .update_body_hash("PRD-302", "abc123-deadbeef")
-            .await
-            .unwrap();
-
-        let rec = store.get_record("PRD-302").await.unwrap().unwrap();
-        assert_eq!(rec.body_hash.as_deref(), Some("abc123-deadbeef"));
-    }
-
-    #[tokio::test]
     async fn add_tags_preserves_body_hash() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         store
-            .create_artifact(&sample_artifact("PRD-200"))
+            .create_artifact(&guard, &sample_artifact("PRD-200"))
             .await
             .unwrap();
 
         // Seed body_hash via replace_record (simulates PRD-043 integrity write).
-        let mut rec = store.get_record("PRD-200").await.unwrap().unwrap();
+        let mut rec = store.get_record(&guard, "PRD-200").await.unwrap().unwrap();
         rec.body_hash = Some("deadbeef-0000abcd".to_string());
-        store.replace_record(&rec).await.unwrap();
+        store.replace_record(&guard, &rec).await.unwrap();
 
         store
-            .add_tags("PRD-200", &["source=code".to_string()])
+            .add_tags(&guard, "PRD-200", &["source=code".to_string()])
             .await
             .unwrap();
 
-        let after = store.get_record("PRD-200").await.unwrap().unwrap();
+        let after = store.get_record(&guard, "PRD-200").await.unwrap().unwrap();
         assert_eq!(
             after.body_hash.as_deref(),
             Some("deadbeef-0000abcd"),
@@ -4457,24 +7324,38 @@ mod tests {
     #[tokio::test]
     async fn add_tags_preserves_embedding() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         store
-            .create_artifact(&sample_artifact("PRD-201"))
+            .create_artifact(&guard, &sample_artifact("PRD-201"))
             .await
             .unwrap();
 
         let dim = crate::db::schema::EMBEDDING_DIM as usize;
         let vec_in: Vec<f32> = (0..dim).map(|i| (i as f32) * 0.001).collect();
-        let mut rec = store.get_record("PRD-201").await.unwrap().unwrap();
-        rec.embedding = Some(vec_in.clone());
-        store.replace_record(&rec).await.unwrap();
-
+        let config = store.workspace.join("config.yaml");
+        let original = std::fs::read_to_string(&config).unwrap();
+        std::fs::write(
+            &config,
+            format!("{original}\nembedding:\n  model: forgeplan-test\n"),
+        )
+        .unwrap();
+        let backend_vector = vec_in.clone();
+        let _backend = install_semantic_backend_for_test(
+            &store.workspace,
+            Arc::new(move |_: &str| Ok(backend_vector.clone())),
+        )
+        .unwrap();
         store
-            .add_tags("PRD-201", &["layer=domain".to_string()])
+            .seed_semantic_vector_for_test(&guard, "PRD-201", &vec_in)
             .await
             .unwrap();
 
-        let after = store.get_record("PRD-201").await.unwrap().unwrap();
+        store
+            .add_tags(&guard, "PRD-201", &["layer=domain".to_string()])
+            .await
+            .unwrap();
+
+        let after = store.get_record(&guard, "PRD-201").await.unwrap().unwrap();
         let got = after.embedding.expect("C2: embedding must be preserved");
         assert_eq!(got.len(), dim);
         assert_eq!(got, vec_in);
@@ -4483,24 +7364,40 @@ mod tests {
     #[tokio::test]
     async fn remove_tags_preserves_body_hash_and_embedding() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         let mut art = sample_artifact("PRD-202");
         art.tags = vec!["source=code".to_string(), "drop_me".to_string()];
-        store.create_artifact(&art).await.unwrap();
+        store.create_artifact(&guard, &art).await.unwrap();
 
         let dim = crate::db::schema::EMBEDDING_DIM as usize;
         let vec_in: Vec<f32> = vec![0.5f32; dim];
-        let mut rec = store.get_record("PRD-202").await.unwrap().unwrap();
+        let mut rec = store.get_record(&guard, "PRD-202").await.unwrap().unwrap();
         rec.body_hash = Some("cafef00d-12345678".to_string());
-        rec.embedding = Some(vec_in.clone());
-        store.replace_record(&rec).await.unwrap();
-
+        store.replace_record(&guard, &rec).await.unwrap();
+        let config = store.workspace.join("config.yaml");
+        let original = std::fs::read_to_string(&config).unwrap();
+        std::fs::write(
+            &config,
+            format!("{original}\nembedding:\n  model: forgeplan-test\n"),
+        )
+        .unwrap();
+        let backend_vector = vec_in.clone();
+        let _backend = install_semantic_backend_for_test(
+            &store.workspace,
+            Arc::new(move |_: &str| Ok(backend_vector.clone())),
+        )
+        .unwrap();
         store
-            .remove_tags("PRD-202", &["drop_me".to_string()])
+            .seed_semantic_vector_for_test(&guard, "PRD-202", &vec_in)
             .await
             .unwrap();
 
-        let after = store.get_record("PRD-202").await.unwrap().unwrap();
+        store
+            .remove_tags(&guard, "PRD-202", &["drop_me".to_string()])
+            .await
+            .unwrap();
+
+        let after = store.get_record(&guard, "PRD-202").await.unwrap().unwrap();
         assert_eq!(after.body_hash.as_deref(), Some("cafef00d-12345678"));
         assert_eq!(after.embedding.as_deref(), Some(vec_in.as_slice()));
         assert_eq!(after.tags, vec!["source=code"]);
@@ -4509,9 +7406,9 @@ mod tests {
     #[tokio::test]
     async fn add_tags_missing_artifact_errors() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, guard) = make_store(&tmp).await;
         let err = store
-            .add_tags("PRD-999", &["source=code".to_string()])
+            .add_tags(&guard, "PRD-999", &["source=code".to_string()])
             .await;
         assert!(err.is_err());
     }
@@ -4534,9 +7431,12 @@ mod tests {
     #[tokio::test]
     async fn insert_fpf_chunks_none_embeddings_writes_null() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, _guard) = make_store(&tmp).await;
         let chunks = vec![fpf_chunk(1), fpf_chunk(2)];
-        let n = store.insert_fpf_chunks(&chunks, None).await.unwrap();
+        let n = store
+            .insert_fpf_chunks(&_guard, &chunks, None)
+            .await
+            .unwrap();
         assert_eq!(n, 2);
 
         // Read back and verify embedding column is null for all rows.
@@ -4560,12 +7460,12 @@ mod tests {
     #[tokio::test]
     async fn insert_fpf_chunks_with_embeddings_roundtrip() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, _guard) = make_store(&tmp).await;
         let dim = crate::db::schema::EMBEDDING_DIM as usize;
         let chunks = vec![fpf_chunk(1), fpf_chunk(2)];
         let embeds: Vec<Vec<f32>> = vec![vec![0.1f32; dim], vec![0.2f32; dim]];
         let n = store
-            .insert_fpf_chunks(&chunks, Some(&embeds))
+            .insert_fpf_chunks(&_guard, &chunks, Some(&embeds))
             .await
             .unwrap();
         assert_eq!(n, 2);
@@ -4591,22 +7491,24 @@ mod tests {
     #[tokio::test]
     async fn insert_fpf_chunks_wrong_dim_errors() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, _guard) = make_store(&tmp).await;
         let chunks = vec![fpf_chunk(1)];
         let bad: Vec<Vec<f32>> = vec![vec![0.5f32; 512]];
-        let err = store.insert_fpf_chunks(&chunks, Some(&bad)).await;
+        let err = store.insert_fpf_chunks(&_guard, &chunks, Some(&bad)).await;
         assert!(err.is_err());
     }
 
     #[tokio::test]
     async fn insert_fpf_chunks_length_mismatch_errors() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, _guard) = make_store(&tmp).await;
         let dim = crate::db::schema::EMBEDDING_DIM as usize;
         let chunks = vec![fpf_chunk(1), fpf_chunk(2), fpf_chunk(3)];
         // Only 2 embeddings for 3 chunks
         let embeds: Vec<Vec<f32>> = vec![vec![0.0_f32; dim], vec![0.0_f32; dim]];
-        let err = store.insert_fpf_chunks(&chunks, Some(&embeds)).await;
+        let err = store
+            .insert_fpf_chunks(&_guard, &chunks, Some(&embeds))
+            .await;
         assert!(err.is_err(), "length mismatch must error");
         let msg = format!("{:?}", err.unwrap_err());
         assert!(
@@ -4618,19 +7520,21 @@ mod tests {
     #[tokio::test]
     async fn insert_fpf_chunks_mixed_dim_errors() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, _guard) = make_store(&tmp).await;
         let dim = crate::db::schema::EMBEDDING_DIM as usize;
         let chunks = vec![fpf_chunk(1), fpf_chunk(2)];
         // First vector correct, second wrong dim.
         let embeds: Vec<Vec<f32>> = vec![vec![0.0_f32; dim], vec![0.0_f32; 512]];
-        let err = store.insert_fpf_chunks(&chunks, Some(&embeds)).await;
+        let err = store
+            .insert_fpf_chunks(&_guard, &chunks, Some(&embeds))
+            .await;
         assert!(err.is_err(), "mixed-dim vectors must error");
     }
 
     #[tokio::test]
     async fn search_fpf_by_vector_validates_dim() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, _guard) = make_store(&tmp).await;
         let bad = vec![0.0f32; 512];
         let err = store.search_fpf_by_vector(&bad, 5).await;
         assert!(err.is_err());
@@ -4639,7 +7543,7 @@ mod tests {
     #[tokio::test]
     async fn search_fpf_by_vector_empty_db_returns_empty() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, _guard) = make_store(&tmp).await;
         let dim = crate::db::schema::EMBEDDING_DIM as usize;
         let q = vec![0.0f32; dim];
         let results = store.search_fpf_by_vector(&q, 5).await.unwrap();
@@ -4649,7 +7553,7 @@ mod tests {
     #[tokio::test]
     async fn search_fpf_by_vector_happy_path() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, _guard) = make_store(&tmp).await;
         let dim = crate::db::schema::EMBEDDING_DIM as usize;
 
         // Three chunks with distinct embeddings: only chunk 1 is close to the
@@ -4664,7 +7568,7 @@ mod tests {
         let chunks = vec![fpf_chunk(1), fpf_chunk(2), fpf_chunk(3)];
         let embeds = vec![e1.clone(), e2, e3];
         store
-            .insert_fpf_chunks(&chunks, Some(&embeds))
+            .insert_fpf_chunks(&_guard, &chunks, Some(&embeds))
             .await
             .unwrap();
 
@@ -4694,10 +7598,13 @@ mod tests {
         // have NULL embeddings. LanceDB may either return no rows or surface
         // an error; both cases must degrade to Ok(empty).
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, _guard) = make_store(&tmp).await;
         let chunks = vec![fpf_chunk(1), fpf_chunk(2), fpf_chunk(3), fpf_chunk(4)];
         // Insert WITHOUT embeddings — column is present but all null.
-        let n = store.insert_fpf_chunks(&chunks, None).await.unwrap();
+        let n = store
+            .insert_fpf_chunks(&_guard, &chunks, None)
+            .await
+            .unwrap();
         assert_eq!(n, 4);
 
         let dim = crate::db::schema::EMBEDDING_DIM as usize;
@@ -4712,8 +7619,10 @@ mod tests {
 
     // ── Sprint 13.7 wave 2 C4: corner case tests ────────────────────
 
-    async fn seeded_fpf_store(tmp: &TempDir) -> LanceStore {
-        let store = make_store(tmp).await;
+    async fn seeded_fpf_store(
+        tmp: &TempDir,
+    ) -> (LanceStore, crate::workspace::lock::WorkspaceLock) {
+        let (store, guard) = make_store(tmp).await;
         let dim = crate::db::schema::EMBEDDING_DIM as usize;
         let mut e1 = vec![0.0f32; dim];
         e1[0] = 1.0;
@@ -4723,10 +7632,10 @@ mod tests {
         e3[2] = 1.0;
         let chunks = vec![fpf_chunk(1), fpf_chunk(2), fpf_chunk(3)];
         store
-            .insert_fpf_chunks(&chunks, Some(&[e1, e2, e3]))
+            .insert_fpf_chunks(&guard, &chunks, Some(&[e1, e2, e3]))
             .await
             .unwrap();
-        store
+        (store, guard)
     }
 
     #[tokio::test]
@@ -4735,7 +7644,7 @@ mod tests {
         // is graceful degrade (Ok) OR an Err. Document whichever actually
         // happens; the must-not is a panic.
         let tmp = TempDir::new().unwrap();
-        let store = seeded_fpf_store(&tmp).await;
+        let (store, _guard) = seeded_fpf_store(&tmp).await;
         let dim = crate::db::schema::EMBEDDING_DIM as usize;
         let q = vec![f32::NAN; dim];
         let result = store.search_fpf_by_vector(&q, 5).await;
@@ -4757,7 +7666,7 @@ mod tests {
     async fn search_fpf_by_vector_inf_query_handled() {
         // C4.2: same for +INF.
         let tmp = TempDir::new().unwrap();
-        let store = seeded_fpf_store(&tmp).await;
+        let (store, _guard) = seeded_fpf_store(&tmp).await;
         let dim = crate::db::schema::EMBEDDING_DIM as usize;
         let q = vec![f32::INFINITY; dim];
         let _ = store.search_fpf_by_vector(&q, 5).await; // must not panic
@@ -4767,7 +7676,7 @@ mod tests {
     async fn search_fpf_by_vector_off_by_one_dim_errors() {
         // C4.3: dim-1 and dim+1 both rejected with a clear message.
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, _guard) = make_store(&tmp).await;
         let dim = crate::db::schema::EMBEDDING_DIM as usize;
         for bad_len in &[dim - 1, dim + 1] {
             let q = vec![0.0f32; *bad_len];
@@ -4784,7 +7693,7 @@ mod tests {
     async fn search_fpf_by_vector_empty_slice_errors() {
         // C4.4: empty query slice — rejected by dim check.
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, _guard) = make_store(&tmp).await;
         let err = store.search_fpf_by_vector(&[], 5).await.unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("wrong dim"), "error: {msg}");
@@ -4792,9 +7701,9 @@ mod tests {
 
     #[tokio::test]
     async fn search_fpf_by_vector_limit_zero() {
-        // C4.5: limit=0 should yield an empty result (LanceDB honors limit).
+        // C4.5: the store handles limit=0 without issuing a zero-k query.
         let tmp = TempDir::new().unwrap();
-        let store = seeded_fpf_store(&tmp).await;
+        let (store, _guard) = seeded_fpf_store(&tmp).await;
         let dim = crate::db::schema::EMBEDDING_DIM as usize;
         let q = vec![0.0f32; dim];
         let results = store.search_fpf_by_vector(&q, 0).await.unwrap();
@@ -4807,19 +7716,21 @@ mod tests {
 
     #[tokio::test]
     async fn search_fpf_by_vector_limit_max() {
-        // C4.6: limit=usize::MAX must be capped internally and not OOM on 3
-        // rows.
+        // C4.6: an oversized limit returns every embedded chunk without
+        // overflowing the backend limit or allocating for usize::MAX.
         let tmp = TempDir::new().unwrap();
-        let store = seeded_fpf_store(&tmp).await;
+        let (store, _guard) = seeded_fpf_store(&tmp).await;
         let dim = crate::db::schema::EMBEDDING_DIM as usize;
         let mut q = vec![0.0f32; dim];
         q[0] = 1.0;
         let results = store.search_fpf_by_vector(&q, usize::MAX).await.unwrap();
-        assert!(
-            results.len() <= 3,
-            "must cap at table size, got {}",
-            results.len()
-        );
+        assert_eq!(results.len(), 3);
+        for section_id in ["T.1", "T.2", "T.3"] {
+            assert!(
+                results.iter().any(|chunk| chunk.section_id == section_id),
+                "missing section {section_id}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -4827,7 +7738,7 @@ mod tests {
         // C4.7: chunks with unicode bodies are persistable and findable via
         // vector search.
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, _guard) = make_store(&tmp).await;
         let dim = crate::db::schema::EMBEDDING_DIM as usize;
         let mut chunk = fpf_chunk(1);
         chunk.title = "Привет Мир".to_string();
@@ -4835,7 +7746,7 @@ mod tests {
         let mut e = vec![0.0f32; dim];
         e[0] = 1.0;
         store
-            .insert_fpf_chunks(&[chunk], Some(&[e.clone()]))
+            .insert_fpf_chunks(&_guard, &[chunk], Some(&[e.clone()]))
             .await
             .unwrap();
         let results = store.search_fpf_by_vector(&e, 1).await.unwrap();
@@ -4848,12 +7759,12 @@ mod tests {
     async fn insert_fpf_chunks_nan_in_embedding_rejected() {
         // C4.8: NaN in an embedding vec is refused at the boundary.
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, _guard) = make_store(&tmp).await;
         let dim = crate::db::schema::EMBEDDING_DIM as usize;
         let mut bad = vec![0.0f32; dim];
         bad[42] = f32::NAN;
         let err = store
-            .insert_fpf_chunks(&[fpf_chunk(1)], Some(&[bad]))
+            .insert_fpf_chunks(&_guard, &[fpf_chunk(1)], Some(&[bad]))
             .await
             .unwrap_err();
         let msg = format!("{err}");
@@ -4866,7 +7777,7 @@ mod tests {
         let mut bad2 = vec![0.0f32; dim];
         bad2[0] = f32::INFINITY;
         let err2 = store
-            .insert_fpf_chunks(&[fpf_chunk(2)], Some(&[bad2]))
+            .insert_fpf_chunks(&_guard, &[fpf_chunk(2)], Some(&[bad2]))
             .await
             .unwrap_err();
         assert!(format!("{err2}").contains("non-finite"));
@@ -4892,7 +7803,7 @@ mod tests {
     #[ignore = "requires BGE-M3 model download (~2.1 GB); run with --features semantic-search -- --ignored"]
     async fn real_semantic_roundtrip_with_bge_m3() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, _guard) = make_store(&tmp).await;
 
         let chunks = vec![
             FpfChunk {
@@ -4937,7 +7848,7 @@ mod tests {
         );
 
         store
-            .insert_fpf_chunks(&chunks, Some(&embeddings))
+            .insert_fpf_chunks(&_guard, &chunks, Some(&embeddings))
             .await
             .unwrap();
 
@@ -4963,8 +7874,8 @@ mod tests {
     ///
     /// Creates a tempdir LanceDB with a legacy 8-column fpf_spec table (no
     /// embedding column) alongside the other workspace tables, then opens it
-    /// via `LanceStore::open` which runs migrations (including
-    /// `migrate_fpf_spec` that adds the embedding column). Inserts chunks
+    /// via `LanceStore::open_for_write`, which runs `migrate_fpf_spec` and
+    /// adds the embedding column. Inserts chunks
     /// without embeddings (legacy ingest style), verifies the embedding
     /// column exists and is null for every row, and finally calls
     /// `search_fpf_by_vector` — which must return Ok(empty) gracefully on an
@@ -4974,12 +7885,15 @@ mod tests {
         use arrow_schema::{DataType, Field, Schema};
 
         let tmp = TempDir::new().unwrap();
-        let ws = tmp.path().join(".forgeplan");
+        let ws = crate::workspace::init_workspace(tmp.path(), "store-tests").unwrap();
+        let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+            .await
+            .unwrap();
 
         // Step 1: create a full modern workspace (artifacts/evidence/relations
-        // /change_log tables present so LanceStore::open won't bail).
+        // /change_log tables present so writer preparation can reopen it).
         {
-            let _store = LanceStore::init(&ws).await.unwrap();
+            let _store = LanceStore::init_new(&ws, &guard).await.unwrap();
             // drop at end of scope so we can re-create the fpf_spec table
             // via a direct connection.
         }
@@ -5013,9 +7927,8 @@ mod tests {
                 .unwrap();
         }
 
-        // Step 3: reopen via LanceStore::open — this triggers
-        // run_migrations → migrate_fpf_spec → embedding column added back.
-        let store = LanceStore::open(&ws).await.unwrap();
+        // Step 3: writer preparation migrates the legacy fpf_spec schema.
+        let store = LanceStore::open_for_write(&ws, &guard).await.unwrap();
 
         // Verify embedding column now exists on the table.
         let table = store.fpf_spec.as_ref().expect("fpf_spec must be present");
@@ -5027,7 +7940,10 @@ mod tests {
 
         // Step 4: insert legacy-style rows (no embeddings).
         let chunks = vec![fpf_chunk(1), fpf_chunk(2), fpf_chunk(3)];
-        let n = store.insert_fpf_chunks(&chunks, None).await.unwrap();
+        let n = store
+            .insert_fpf_chunks(&guard, &chunks, None)
+            .await
+            .unwrap();
         assert_eq!(n, 3);
 
         // Step 5: embedding column is null for every newly-inserted row.
@@ -5067,7 +7983,7 @@ mod tests {
     #[tokio::test]
     async fn semantic_and_keyword_top_result_agrees_for_clear_match() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp).await;
+        let (store, _guard) = make_store(&tmp).await;
         let dim = crate::db::schema::EMBEDDING_DIM as usize;
 
         // Three chunks; chunk `m6-2` is the obvious match for "trust":
@@ -5114,7 +8030,7 @@ mod tests {
         let embeddings = vec![e1, e2, e3];
 
         store
-            .insert_fpf_chunks(&chunks, Some(&embeddings))
+            .insert_fpf_chunks(&_guard, &chunks, Some(&embeddings))
             .await
             .unwrap();
 
@@ -5140,6 +8056,814 @@ mod tests {
         assert_eq!(
             kw_results[0].id, sem_results[0].id,
             "semantic and keyword top result must agree for this clear match"
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // ADR-030 / schema v5 — the index is keyed by the canonical key.
+    // ─────────────────────────────────────────────────────────────────
+
+    /// A document with a slug in its frontmatter declares its key there; a
+    /// document without one keeps its display id as the key.
+    #[test]
+    fn canonical_key_of_prefers_the_prepared_key_and_never_returns_empty() {
+        assert_eq!(
+            canonical_key_of("prd-auth-system", "PRD-001", "body"),
+            "prd-auth-system",
+            "a prepared key wins"
+        );
+        assert_eq!(
+            canonical_key_of("", "PRD-001", "---\nslug: prd-auth-system\n---\n\nbody"),
+            "prd-auth-system",
+            "an unprepared key is derived from the document's own slug"
+        );
+        assert_eq!(
+            canonical_key_of("", "PRD-001", "no frontmatter here"),
+            "PRD-001",
+            "a document without a slug keeps its display id as the key"
+        );
+        assert_eq!(
+            canonical_key_of("  ", "PRD-002", "body"),
+            "PRD-002",
+            "a blank key is not a key"
+        );
+    }
+
+    /// The store resolves a display alias to the canonical key of the row it
+    /// names — and a selector that names no row resolves to nothing.
+    #[tokio::test]
+    async fn resolve_canonical_key_maps_an_alias_to_the_row_key() {
+        let tmp = TempDir::new().unwrap();
+        let (store, guard) = make_store(&tmp).await;
+        store
+            .create_artifact(
+                &guard,
+                &NewArtifact {
+                    canonical_key: "prd-auth-system".to_string(),
+                    id: "PRD-001".to_string(),
+                    kind: "prd".to_string(),
+                    status: "draft".to_string(),
+                    title: "Auth".to_string(),
+                    body: "body".to_string(),
+                    depth: "standard".to_string(),
+                    author: None,
+                    parent_epic: None,
+                    valid_until: None,
+                    tags: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store
+                .resolve_canonical_key(&guard, "PRD-001")
+                .await
+                .unwrap(),
+            Some("prd-auth-system".to_string()),
+            "the display alias must resolve to the row's canonical key"
+        );
+        assert_eq!(
+            store
+                .resolve_canonical_key(&guard, "prd-auth-system")
+                .await
+                .unwrap(),
+            Some("prd-auth-system".to_string()),
+            "the canonical key must resolve to itself"
+        );
+        assert_eq!(
+            store
+                .resolve_canonical_key(&guard, "PRD-404")
+                .await
+                .unwrap(),
+            None,
+            "a selector that names no row resolves to nothing"
+        );
+    }
+
+    /// Two documents may share a display alias; the resolver must not pick
+    /// one of them.
+    #[tokio::test]
+    async fn resolve_canonical_key_refuses_an_ambiguous_alias() {
+        let tmp = TempDir::new().unwrap();
+        let (store, guard) = make_store(&tmp).await;
+        for (key, id) in [("prd-alpha", "PRD-001"), ("prd-beta", "PRD-002")] {
+            store
+                .create_artifact(
+                    &guard,
+                    &NewArtifact {
+                        canonical_key: key.to_string(),
+                        id: id.to_string(),
+                        kind: "prd".to_string(),
+                        status: "draft".to_string(),
+                        title: id.to_string(),
+                        body: "body".to_string(),
+                        depth: "standard".to_string(),
+                        author: None,
+                        parent_epic: None,
+                        valid_until: None,
+                        tags: Vec::new(),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        // Force the shared alias: the second row keeps PRD-001 as its display
+        // id, so the alias names two rows.
+        store
+            .create_artifact(
+                &guard,
+                &NewArtifact {
+                    canonical_key: "prd-gamma".to_string(),
+                    id: "PRD-001".to_string(),
+                    kind: "prd".to_string(),
+                    status: "draft".to_string(),
+                    title: "Third".to_string(),
+                    body: "body".to_string(),
+                    depth: "standard".to_string(),
+                    author: None,
+                    parent_epic: None,
+                    valid_until: None,
+                    tags: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let error = store
+            .resolve_canonical_key(&guard, "PRD-001")
+            .await
+            .unwrap_err();
+        let refusal = error
+            .downcast_ref::<crate::artifact::canonical_key::ResolveError>()
+            .expect("the resolver refusal remains typed in the error chain");
+        match refusal {
+            crate::artifact::canonical_key::ResolveError::Ambiguous { candidates, .. } => {
+                assert_eq!(candidates.len(), 2)
+            }
+            other => panic!("expected an ambiguity refusal, got {other:?}"),
+        }
+        assert_eq!(
+            store
+                .resolve_canonical_key(&guard, "prd-beta")
+                .await
+                .unwrap(),
+            Some("prd-beta".to_string()),
+            "an unambiguous key still resolves"
+        );
+    }
+
+    fn write_history_source(store: &LanceStore, key: &str, display_id: &str) {
+        let path = store.workspace.join("prds").join(format!("{key}.md"));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, format!(
+            "---\nid: {display_id}\ntitle: {key}\nslug: {key}\nkind: prd\nstatus: draft\n---\n\nbody\n"
+        )).unwrap();
+    }
+
+    #[tokio::test]
+    async fn history_isolates_duplicate_aliases_and_survives_deletion() {
+        let tmp = TempDir::new().unwrap();
+        let (store, guard) = make_store(&tmp).await;
+        for key in ["prd-alpha", "prd-beta"] {
+            store
+                .create_artifact_for_test(
+                    &guard,
+                    &NewArtifact {
+                        canonical_key: key.to_string(),
+                        id: "PRD-001".to_string(),
+                        kind: "prd".to_string(),
+                        status: "draft".to_string(),
+                        title: key.to_string(),
+                        body: "body".to_string(),
+                        depth: "standard".to_string(),
+                        author: None,
+                        parent_epic: None,
+                        valid_until: None,
+                        tags: Vec::new(),
+                    },
+                )
+                .await
+                .unwrap();
+            write_history_source(&store, key, "PRD-001");
+        }
+        for key in ["prd-alpha", "prd-beta"] {
+            store
+                .log_change(&guard, &ChangeLogEntry::new(key, "create", "cli"))
+                .await
+                .unwrap();
+        }
+        for key in ["prd-alpha", "prd-beta"] {
+            let rows = store
+                .get_change_log(&guard, Some(key), Some("cli"), 10)
+                .await
+                .unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].canonical_key.as_deref(), Some(key));
+        }
+        assert!(
+            store
+                .get_change_log(&guard, Some("PRD-001"), None, 10)
+                .await
+                .is_err()
+        );
+        store
+            .delete_artifact_for_test(&guard, "prd-alpha")
+            .await
+            .unwrap();
+        std::fs::remove_file(store.workspace.join("prds/prd-alpha.md")).unwrap();
+        let deleted = store
+            .get_change_log(&guard, Some("prd-alpha"), None, 10)
+            .await
+            .unwrap();
+        assert_eq!(deleted.len(), 1);
+        assert_eq!(deleted[0].canonical_key.as_deref(), Some("prd-alpha"));
+        crate::db::auxiliary::change_log_append(
+            store.change_log.as_ref().unwrap(),
+            &ChangeLogEntry::new("PRD-001", "legacy", "cli"),
+        )
+        .await
+        .unwrap();
+        for key in ["prd-alpha", "prd-beta"] {
+            let error = store
+                .get_change_log(&guard, Some(key), Some("cli"), 10)
+                .await
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("history identity is indeterminate")
+            );
+        }
+        assert!(
+            store
+                .get_change_log(&guard, Some("prd-missing"), None, 10)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("history identity is indeterminate")
+        );
+    }
+
+    #[tokio::test]
+    async fn history_refuses_unkeyed_rows_even_after_unrecorded_claimant_is_deleted() {
+        let tmp = TempDir::new().unwrap();
+        let (store, guard) = make_store(&tmp).await;
+        for key in ["prd-old", "prd-current"] {
+            store
+                .create_artifact_for_test(
+                    &guard,
+                    &NewArtifact {
+                        canonical_key: key.to_string(),
+                        id: "PRD-001".to_string(),
+                        kind: "prd".to_string(),
+                        status: "draft".to_string(),
+                        title: key.to_string(),
+                        body: "body".to_string(),
+                        depth: "standard".to_string(),
+                        author: None,
+                        parent_epic: None,
+                        valid_until: None,
+                        tags: Vec::new(),
+                    },
+                )
+                .await
+                .unwrap();
+            write_history_source(&store, key, "PRD-001");
+        }
+        store
+            .delete_artifact_for_test(&guard, "prd-old")
+            .await
+            .unwrap();
+        std::fs::remove_file(store.workspace.join("prds/prd-old.md")).unwrap();
+        crate::db::auxiliary::change_log_append(
+            store.change_log.as_ref().unwrap(),
+            &ChangeLogEntry::new("PRD-001", "legacy", "cli"),
+        )
+        .await
+        .unwrap();
+        let error = store
+            .get_change_log(&guard, Some("prd-current"), None, 10)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("history identity is indeterminate")
+        );
+    }
+
+    #[tokio::test]
+    async fn history_uses_complete_sources_after_index_publication() {
+        let tmp = TempDir::new().unwrap();
+        let (store, guard) = make_store(&tmp).await;
+        store
+            .create_artifact_for_test(
+                &guard,
+                &NewArtifact {
+                    canonical_key: "prd-alpha".to_string(),
+                    id: "PRD-001".to_string(),
+                    kind: "prd".to_string(),
+                    status: "draft".to_string(),
+                    title: "Alpha".to_string(),
+                    body: "body".to_string(),
+                    depth: "standard".to_string(),
+                    author: None,
+                    parent_epic: None,
+                    valid_until: None,
+                    tags: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+        write_history_source(&store, "prd-alpha", "PRD-001");
+        store
+            .log_change(&guard, &ChangeLogEntry::new("prd-alpha", "create", "cli"))
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .get_change_log(&guard, Some("PRD-001"), None, 10)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // This document is on disk but deliberately absent from the index.
+        write_history_source(&store, "prd-beta", "PRD-001");
+        let error = store
+            .get_change_log(&guard, Some("PRD-001"), None, 10)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .downcast_ref::<crate::artifact::canonical_key::ResolveError>()
+                .is_some()
+        );
+        std::fs::remove_file(store.workspace.join("prds/prd-beta.md")).unwrap();
+        std::fs::write(store.workspace.join("prds/broken.md"), b"---\nid: [\n---\n").unwrap();
+        assert!(
+            store
+                .get_change_log(&guard, Some("prd-alpha"), None, 10)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn history_refuses_deleted_key_with_only_unkeyed_history() {
+        let tmp = TempDir::new().unwrap();
+        let (store, guard) = make_store(&tmp).await;
+        crate::db::auxiliary::change_log_append(
+            store.change_log.as_ref().unwrap(),
+            &ChangeLogEntry::new("PRD-001", "legacy", "cli"),
+        )
+        .await
+        .unwrap();
+        let error = store
+            .get_change_log(&guard, Some("prd-deleted"), Some("other"), 1)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("history identity is indeterminate")
+        );
+    }
+
+    /// The audit trail keeps the event's own description: a document named by
+    /// its canonical key is recorded under the display id a person reads, and
+    /// the entry is found through either route.
+    #[tokio::test]
+    async fn the_journal_records_the_display_id_and_is_found_through_either_route() {
+        let tmp = TempDir::new().unwrap();
+        let (store, guard) = make_store(&tmp).await;
+        store
+            .create_artifact(
+                &guard,
+                &NewArtifact {
+                    canonical_key: "prd-auth-system".to_string(),
+                    id: "PRD-001".to_string(),
+                    kind: "prd".to_string(),
+                    status: "draft".to_string(),
+                    title: "Auth".to_string(),
+                    body: "body".to_string(),
+                    depth: "standard".to_string(),
+                    author: None,
+                    parent_epic: None,
+                    valid_until: None,
+                    tags: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+        write_history_source(&store, "prd-auth-system", "PRD-001");
+
+        store
+            .log_change(
+                &guard,
+                &ChangeLogEntry::new("prd-auth-system", "create", "cli"),
+            )
+            .await
+            .unwrap();
+
+        let by_key = store
+            .get_change_log(&guard, Some("prd-auth-system"), None, 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            by_key.len(),
+            1,
+            "the entry is found through the canonical key"
+        );
+        assert_eq!(
+            by_key[0].artifact_id, "PRD-001",
+            "the row keeps the display id a person reads, not the key"
+        );
+
+        let by_display = store
+            .get_change_log(&guard, Some("PRD-001"), None, 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            by_display.len(),
+            1,
+            "the entry is found through the display id too"
+        );
+        assert_eq!(by_display[0].artifact_id, "PRD-001");
+    }
+
+    /// The row carries its canonical key, and the row is found by that key
+    /// as well as by its display alias.
+    #[tokio::test]
+    async fn a_row_is_addressed_by_its_canonical_key() {
+        let tmp = TempDir::new().unwrap();
+        let (store, guard) = make_store(&tmp).await;
+        store
+            .create_artifact(
+                &guard,
+                &NewArtifact {
+                    canonical_key: "prd-auth-system".to_string(),
+                    id: "PRD-001".to_string(),
+                    kind: "prd".to_string(),
+                    status: "draft".to_string(),
+                    title: "Auth".to_string(),
+                    body: "body".to_string(),
+                    depth: "standard".to_string(),
+                    author: None,
+                    parent_epic: None,
+                    valid_until: None,
+                    tags: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let listed = store.list_records(&guard, None).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(
+            listed[0].canonical_key, "prd-auth-system",
+            "the row must carry the canonical key"
+        );
+        assert_eq!(
+            listed[0].id, "PRD-001",
+            "the public id stays the display id"
+        );
+
+        let by_key = store.get_record(&guard, "prd-auth-system").await.unwrap();
+        let by_alias = store.get_record(&guard, "PRD-001").await.unwrap();
+        assert!(by_key.is_some(), "the key must address the row");
+        assert!(by_alias.is_some(), "the alias must address the row");
+    }
+
+    /// A relation row stores the canonical keys of its endpoints — the
+    /// display ids never reach the table.
+    #[tokio::test]
+    async fn a_relation_row_holds_canonical_keys() {
+        let tmp = TempDir::new().unwrap();
+        let (store, guard) = make_store(&tmp).await;
+        for (key, id) in [
+            ("prd-auth-system", "PRD-001"),
+            ("rfc-wire-format", "RFC-001"),
+        ] {
+            store
+                .create_artifact(
+                    &guard,
+                    &NewArtifact {
+                        canonical_key: key.to_string(),
+                        id: id.to_string(),
+                        kind: "prd".to_string(),
+                        status: "draft".to_string(),
+                        title: id.to_string(),
+                        body: "body".to_string(),
+                        depth: "standard".to_string(),
+                        author: None,
+                        parent_epic: None,
+                        valid_until: None,
+                        tags: Vec::new(),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+
+        // The caller may hold the display aliases; the row must not.
+        store
+            .add_relation(&guard, "PRD-001", "RFC-001", "informs")
+            .await
+            .unwrap();
+
+        let all = store.get_all_relations(&guard).await.unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].0, "prd-auth-system", "the source must be the key");
+        assert_eq!(all[0].1, "rfc-wire-format", "the target must be the key");
+
+        // And the edge is found by the key, not by the display id.
+        let outgoing = store
+            .get_relations(&guard, "prd-auth-system")
+            .await
+            .unwrap();
+        assert_eq!(outgoing.len(), 1);
+        assert_eq!(outgoing[0].0, "rfc-wire-format");
+    }
+
+    /// A canonical key is taken: two documents may share a display alias,
+    /// none may share a key.
+    #[tokio::test]
+    async fn a_duplicate_canonical_key_is_refused() {
+        let tmp = TempDir::new().unwrap();
+        let (store, guard) = make_store(&tmp).await;
+        let artifact = NewArtifact {
+            canonical_key: "prd-auth-system".to_string(),
+            id: "PRD-001".to_string(),
+            kind: "prd".to_string(),
+            status: "draft".to_string(),
+            title: "Auth".to_string(),
+            body: "body".to_string(),
+            depth: "standard".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        };
+        store.create_artifact(&guard, &artifact).await.unwrap();
+
+        let second = NewArtifact {
+            id: "PRD-002".to_string(),
+            ..artifact
+        };
+        let error = store
+            .create_artifact(&guard, &second)
+            .await
+            .expect_err("a taken canonical key must be refused");
+        assert!(
+            error.to_string().contains("already exists"),
+            "the refusal must say the artifact exists, got {error}"
+        );
+        assert_eq!(
+            store.list_records(&guard, None).await.unwrap().len(),
+            1,
+            "the refused insert must not have added a row"
+        );
+    }
+    /// Distinct canonical identities that share a display alias remain
+    /// isolated through resolution, relation storage, and content search.
+    #[tokio::test]
+    async fn shared_display_alias_does_not_mix_indexed_documents() {
+        let tmp = TempDir::new().unwrap();
+        let (store, guard) = make_store(&tmp).await;
+        let mut first = artifact_with_slug("PRD-001", "prd-first");
+        first.title = "First identity".to_string();
+        first.body.push_str("\nUniqueFirstTerm");
+        let mut second = artifact_with_slug("PRD-001", "prd-second");
+        second.title = "Second identity".to_string();
+        second.body.push_str("\nUniqueSecondTerm");
+
+        store.create_artifact(&guard, &first).await.unwrap();
+        store.create_artifact(&guard, &second).await.unwrap();
+        store
+            .add_relation(&guard, "prd-first", "prd-second", "informs")
+            .await
+            .unwrap();
+
+        let first_record = store
+            .get_record(&guard, "prd-first")
+            .await
+            .unwrap()
+            .unwrap();
+        let second_record = store
+            .get_record(&guard, "prd-second")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (
+                first_record.id.as_str(),
+                first_record.canonical_key.as_str()
+            ),
+            ("PRD-001", "prd-first")
+        );
+        assert_eq!(
+            (
+                second_record.id.as_str(),
+                second_record.canonical_key.as_str()
+            ),
+            ("PRD-001", "prd-second")
+        );
+        assert!(first_record.body.contains("UniqueFirstTerm"));
+        assert!(second_record.body.contains("UniqueSecondTerm"));
+
+        let alias_error = store
+            .resolve_canonical_key(&guard, "PRD-001")
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            alias_error.downcast_ref::<crate::artifact::canonical_key::ResolveError>(),
+            Some(crate::artifact::canonical_key::ResolveError::Ambiguous { .. })
+        ));
+        let first_hits = store
+            .search_body(&guard, "UniqueFirstTerm", None)
+            .await
+            .unwrap();
+        let second_hits = store
+            .search_body(&guard, "UniqueSecondTerm", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            first_hits
+                .iter()
+                .map(|record| record.canonical_key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["prd-first"]
+        );
+        assert_eq!(
+            second_hits
+                .iter()
+                .map(|record| record.canonical_key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["prd-second"]
+        );
+        assert_eq!(
+            store.get_relations(&guard, "prd-first").await.unwrap(),
+            vec![("prd-second".to_string(), "informs".to_string())]
+        );
+        assert!(
+            store
+                .get_relations(&guard, "prd-second")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        store
+            .log_change(
+                &guard,
+                &ChangeLogEntry::new("PRD-001", "first-update", "test")
+                    .with_canonical_key("prd-first"),
+            )
+            .await
+            .unwrap();
+        store
+            .log_change(
+                &guard,
+                &ChangeLogEntry::new("PRD-001", "second-update", "test")
+                    .with_canonical_key("prd-second"),
+            )
+            .await
+            .unwrap();
+        let first_history = store
+            .get_change_log(&guard, Some("prd-first"), None, 10)
+            .await
+            .unwrap();
+        let second_history = store
+            .get_change_log(&guard, Some("prd-second"), None, 10)
+            .await
+            .unwrap();
+        assert_eq!(first_history.len(), 1);
+        assert_eq!(first_history[0].canonical_key.as_deref(), Some("prd-first"));
+        assert_eq!(first_history[0].action, "first-update");
+        assert_eq!(second_history.len(), 1);
+        assert_eq!(
+            second_history[0].canonical_key.as_deref(),
+            Some("prd-second")
+        );
+        assert_eq!(second_history[0].action, "second-update");
+    }
+
+    /// The two resolvers must agree. A selector that names one document
+    /// produces that document's key from `resolve_canonical_key` and its
+    /// display id from `resolve_id`; a selector that names none produces
+    /// nothing from either. Two selection rule sets would let them disagree
+    /// about which document a selector names.
+    #[tokio::test]
+    async fn resolve_id_and_resolve_canonical_key_agree() {
+        let tmp = TempDir::new().unwrap();
+        let (store, guard) = make_store(&tmp).await;
+        store
+            .create_artifact(
+                &guard,
+                &NewArtifact {
+                    canonical_key: "prd-auth-system".to_string(),
+                    id: "PRD-001".to_string(),
+                    kind: "prd".to_string(),
+                    status: "draft".to_string(),
+                    title: "Auth".to_string(),
+                    body: "body".to_string(),
+                    depth: "standard".to_string(),
+                    author: None,
+                    parent_epic: None,
+                    valid_until: None,
+                    tags: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+
+        for selector in ["prd-auth-system", "PRD-001", "  PRD-001  ", "prd-1"] {
+            let key = store.resolve_canonical_key(&guard, selector).await.unwrap();
+            let id = store.resolve_id(&guard, selector).await.unwrap();
+            match (key, id) {
+                (Some(key), Some(id)) => {
+                    assert_eq!(id, "PRD-001", "the display id must come back");
+                    let row = store
+                        .get_record(&guard, &key)
+                        .await
+                        .unwrap()
+                        .expect("the key must address the row");
+                    assert_eq!(
+                        row.id, id,
+                        "both resolvers must name the same document for '{selector}'"
+                    );
+                }
+                (None, None) => {}
+                (key, id) => {
+                    panic!("the two resolvers disagree about '{selector}': key={key:?} id={id:?}")
+                }
+            }
+        }
+
+        // A selector that names nothing resolves to nothing in both.
+        assert_eq!(
+            store
+                .resolve_canonical_key(&guard, "PRD-404")
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(store.resolve_id(&guard, "PRD-404").await.unwrap(), None);
+    }
+
+    /// The frontmatter the store reconstructs carries the canonical key in
+    /// the `slug` field next to the display id in `id` — the same terms the
+    /// frontmatter reader and the document writers use. A round trip through
+    /// the frontmatter must not rewrite the key.
+    #[test]
+    fn the_frontmatter_map_carries_the_key_in_the_slug_field() {
+        let record = ArtifactRecord {
+            canonical_key: "prd-auth-system".to_string(),
+            id: "PRD-001".to_string(),
+            kind: "prd".to_string(),
+            status: "draft".to_string(),
+            title: "Auth".to_string(),
+            body: "body".to_string(),
+            depth: "standard".to_string(),
+            author: None,
+            parent_epic: None,
+            r_eff_score: 0.0,
+            valid_until: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+            tags: Vec::new(),
+            body_hash: None,
+            embedding: None,
+        };
+
+        let map = record.frontmatter_map();
+        assert_eq!(
+            map.get("id").unwrap(),
+            &serde_yaml::Value::String("PRD-001".to_string()),
+            "the public id stays the display id"
+        );
+        assert_eq!(
+            map.get("slug").unwrap(),
+            &serde_yaml::Value::String("prd-auth-system".to_string()),
+            "the canonical key travels in the slug field"
+        );
+
+        // The round trip: the map renders to Markdown, and the reader hands
+        // the same key back.
+        let rendered =
+            crate::artifact::frontmatter::render_frontmatter(&map, &record.body).unwrap();
+        let (parsed, _body) = crate::artifact::frontmatter::parse_frontmatter(&rendered).unwrap();
+        assert_eq!(
+            crate::artifact::frontmatter::slug_from_frontmatter(&parsed),
+            Some("prd-auth-system"),
+            "a round trip through the frontmatter must not rewrite the key"
+        );
+        assert_eq!(
+            crate::artifact::canonical_key::canonical_key_from_document("PRD-001", &rendered),
+            "prd-auth-system",
+            "the document's own key rule must read back the same key"
         );
     }
 }

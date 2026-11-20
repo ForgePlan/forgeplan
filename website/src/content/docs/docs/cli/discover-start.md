@@ -56,7 +56,7 @@ forgeplan discover complete <session-id>
 
 1. **Tiered reading order** - code > git > tests > docs. Lower tiers only validate higher tiers, never override them.
 2. **Finding categories** - decisions, invariants, drift, debt, risks, ownership signals.
-3. **How to report** - append each finding via the `discover_finding` MCP tool (MCP-only, by design - keeps humans out of the loop while the survey runs).
+3. **How to report** - append findings through `forgeplan_discover_finding` via MCP; there is no equivalent finding-append CLI command. This does not exclude human review.
 4. **When to stop** - heuristics for coverage (e.g. all top-level crates/modules touched, major git epochs sampled).
 5. **Handoff** - when done, call `discover complete` to trigger the recommendation pass.
 
@@ -81,3 +81,22 @@ It was introduced in PRD-035 Sprint 13.3-13.4 to address the onboarding gap docu
 - [`forgeplan discover list`](/docs/cli/discover-list/) - all sessions
 - [`forgeplan discover complete`](/docs/cli/discover-complete/) - finalize + recommendations
 - [`forgeplan init`](/docs/cli/init/) - workspace bootstrap step before discover
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan discover start --help`.
+
+```text
+Start a new discovery session — prints protocol for AI agent
+
+Usage: forgeplan discover start <NAME>
+
+Arguments:
+  <NAME>  Project name for the discovery session
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

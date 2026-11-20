@@ -15,11 +15,12 @@ Forgeplan - методологический движок. Каждая кома
 - Гадают, иногда галлюцинируют
 - Зацикливаются на одном шаге
 
-Каждое из этого тратит токены и рискует корректностью. Контракт убирает неоднозначность - каждый вывод несёт явный детерминированный next-action.
+Подсказки уменьшают число догадок, но пять правил ниже — целевой протокол,
+не доказанное покрытие каждого текущего ответа.
 
 ## Контракт из 5 правил
 
-Каждый вывод Forgeplan, независимо от surface, удовлетворяет:
+Вывод Forgeplan должен следовать этим целевым правилам:
 
 1. **PRESENCE** - каждый ответ либо emit'ит next-action, либо явно терминальный. Тихих gaps не бывает.
 2. **ACTIONABILITY** - next-action это полная copy-paste команда с реальными ID, никогда не фрагмент или placeholder.
@@ -31,11 +32,11 @@ Forgeplan - методологический движок. Каждая кома
 
 | Маркер | Когда emit'ится | Действие агента |
 |---|---|---|
-| `Next: <full command>` | Основное действие - рекомендуемый следующий шаг | Выполнить exactly как написано |
+| `Next: <full command>` | Основное действие — рекомендуемый следующий шаг | Проверить workspace, права и условия, затем выполнить без изменения смысла |
 | `Or: <command>` | Альтернатива когда primary блокирован (например claim занят) | Использовать только если primary fails |
 | `Wait: <condition>` | Async/TTL state | Retry после condition |
 | `Done.` | Workflow завершён (terminal) | Перейти дальше, не зацикливаться |
-| `Fix: <command>` | Error remediation (paired с `Error:`) | Сразу выполнить fix команду |
+| `Fix: <command>` | Исправление ошибки (в паре с `Error:`) | Проверить предлагаемое действие; hint не разрешает разрушительные или привилегированные операции |
 
 ## Где читать hint
 
@@ -97,10 +98,10 @@ or ask the orchestrator to force-release.
    - CLI text: scan для `Next:`, `Fix:`, `Wait:`, или `Done.` строки
    - CLI JSON: read `_next_action` field (или stderr `Next:` для list/tree)
    - MCP: read `_next_action` field response'а
-2. **Выполни primary если present**.
-   - Если `Next:` или `Fix:` - выполни команду **exactly как написано**
-   - Не парафразируй, не подставляй placeholders
-   - Не разбивай на несколько команд
+2. **Проверь primary до выполнения**.
+   - Уточни выбранный workspace, реальные ID, полномочия и условия.
+   - Сохрани смысл команды; сообщи о placeholders или неверном синтаксисе.
+   - Hint не расширяет scope пользователя и не разрешает force-release.
 3. **Используй `Or:` только если primary blocks**.
 4. **На `Wait:`, retry после condition**.
 5. **На `Done.`, workflow complete** - переходи к следующей задаче, не зацикливайся.
@@ -111,10 +112,15 @@ or ask the orchestrator to force-release.
 1. **Не парафразируй hint** - full команда дана не просто так
 2. **Не комбинируй `Next:` + `Or:`** в одном call - выбери одно
 3. **Не игнорируй `Done.`** - явный terminal сигнал
-4. **Не подставляй `EVID-NNN` placeholders** - сначала запусти `forgeplan_new evidence`, потом используй real ID
+4. **Не выдумывай ID `EVID-NNN`** — вызови `forgeplan_new` с `kind: "evidence"` и реальным title, затем используй возвращённый ID
 5. **Не паникуй на `Wait:`** - async/TTL это нормально; просто retry
 
 ## Практические workflow паттерны
+
+Это учебные схемы workflow, не записанный вывод. ID артефактов условны.
+Одной валидации недостаточно: до активации нужны предусмотренные реализация,
+доказательства и review. Проверенное покрытие совместимости и оставшиеся
+ограничения описаны в [справочнике Constellation](/ru/docs/reference/constellation/).
 
 ### Pattern A: Shape → Validate → Activate
 
@@ -126,7 +132,7 @@ forgeplan_new(kind: "prd", title: "OAuth login support")
   → Next: forgeplan validate PRD-042
 
 forgeplan_validate("PRD-042")
-  → Next: forgeplan activate PRD-042   (если PASS)
+  → Проверь findings; до активации заверши код, свяжи реальные evidence, выполни score и review
   → Fix: forgeplan validate PRD-042    (если errors)
 
 forgeplan_activate("PRD-042")
@@ -138,31 +144,36 @@ forgeplan_activate("PRD-042")
 ```
 forgeplan_activate("PRD-042")
   → Error: No evidence linked
-  → Fix: forgeplan validate PRD-042
+  → Исправление: создай реальные evidence, свяжи с PRD-042, затем score и review
 
-forgeplan_validate("PRD-042")
-  → Result: PASS
-  → Next: forgeplan score PRD-042
+forgeplan_review("PRD-042")
+  → Проверь findings валидации и activation gates
 ```
 
 ### Pattern C: Multi-agent dispatch
 
 ```
 forgeplan_dispatch(--agents 3)
-  → Next: forgeplan claim PRD-054 --agent worker-1 --ttl 30
+  → Next: forgeplan claim PRD-054 --agent worker-1 --ttl-minutes 30
   → Or:   forgeplan list --status draft
 
 forgeplan_claim("PRD-054")
   → Error: Already held by worker-2
-  → Or: forgeplan release PRD-054 --force
+  → Wait: holder освобождает claim или истекает TTL
 ```
+
+Некоторые текущие hint sites ещё предлагают `release --force` при коллизии.
+Это escape hatch оркестратора, не разрешение конкурирующему worker отобрать
+claim. Проверь claims или согласуй действие с владельцем.
 
 ## Drift prevention
 
-Контракт enforced через:
-
-1. **Integration test** `crates/forgeplan-cli/tests/hint_contract.rs` - 36 тестов, fails CI если команда без contract marker
-2. **Audit script** `scripts/audit-hints.sh` - coverage метрика, target 100%, currently 100% (70/70 commands)
+Исторический EVID-086 по PRD-071 фиксирует 36 contract tests и аудит
+70/70 команд. Это числа того релиза, не всего нынешнего CLI/MCP.
+`crates/forgeplan-cli/tests/hint_contract.rs` и `scripts/audit-hints.sh`
+помогают обнаруживать регрессии, но не гарантируют все runtime-ответы.
+Например, у текущего `score --all --json` нет `_next_action`;
+потребитель не должен выдумывать отсутствующий hint.
 
 ## Quick reference card
 

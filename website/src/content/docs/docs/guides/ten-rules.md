@@ -16,13 +16,13 @@ Tactical = just code. Standard = PRD → RFC. Don't create all 10 artifact types
 PRD → Epic, RFC → PRD, ADR → RFC. Always traceable upward.
 
 ## 5. Supersede, don't delete
-Old artifacts get `status: superseded`. History is preserved. Never `rm`.
+Use `forgeplan supersede OLD --by NEW` for a replacement, not a direct status edit. Preserve history; never `rm` the old record.
 
 ## 6. R_eff = min(evidence)
-Trust is the weakest link. Not average - minimum. One blind spot drags everything.
+Trust uses a weakest-link minimum over current eligible evidence and dependency contributions, not an average or `min(F,G,R)`. See [the scoring rules](/docs/methodology/evidence/).
 
 ## 7. Evidence expires
-`valid_until` TTL. Expired = 0.1 (stale, not absent). Re-test periodically.
+Optional `valid_until` is an expiry date. An expired evidence item scores 0.1; detection does not rewrite its persisted status. Re-test before renewing.
 
 ## 8. Shape before you code
 Create artifact → fill MUST sections → validate → THEN code. No stub PRDs.

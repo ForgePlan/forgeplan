@@ -5,7 +5,10 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ArtifactSummaryDto {
+    /// The display alias (`PRD-074`) — the id a caller already used.
     pub id: String,
+    /// The document's canonical key, beside the id (ADR-030).
+    pub canonical_key: String,
     pub kind: String,
     pub status: String,
     pub title: String,
@@ -66,6 +69,8 @@ pub struct ArtifactLinksDto {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ArtifactRecordDto {
     pub id: String,
+    /// Stable identity key, separate from the display alias in `id`.
+    pub canonical_key: String,
     pub kind: String,
     pub status: String,
     pub title: String,
@@ -149,6 +154,8 @@ pub struct NewArtifactResponse {
     // EXISTING FIELDS — order preserved for JSON-schema/back-compat
     // (CD-2 binding: pre-Phase-2.4 callers must keep working).
     pub id: String,
+    /// Stable identity key for the created document.
+    pub canonical_key: String,
     pub kind: String,
     pub title: String,
     pub filepath: String,
@@ -173,9 +180,8 @@ pub struct NewArtifactResponse {
     // practice (server.rs populates them from the augmented frontmatter),
     // but the optional shape leaves room for legacy import paths /
     // future tools that don't compute the identity triple up front.
-    /// Canonical slug (`prd-auth-system`) computed from kind+title at
-    /// create time. Used in commit `Refs:` lines and cross-artifact links
-    /// until the CI bot assigns a number on merge.
+    /// Canonical identity key stored in the document's `slug` frontmatter
+    /// field. Matches `canonical_key` and `id_canonical`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slug: Option<String>,
     /// Local prediction at create time — `max(assigned)+1`. Drives the `?`
@@ -283,14 +289,24 @@ pub struct EvidenceDto {
     pub id: String,
     pub verdict: String,
     pub congruence_level: u8,
+    /// The EFFECTIVE score the weakest-link min consumes (evidence-type
+    /// modifier applied). Reconstruct the arithmetic with `score_raw` and
+    /// `type_modifier`.
     pub score: f64,
+    /// The pack's own-merit score before the evidence-type modifier.
+    #[serde(default)]
+    pub score_raw: f64,
+    /// The deduction applied by the evidence-type modifier
+    /// (`benchmark` −0.1, `audit` −0.2, else 0).
+    #[serde(default)]
+    pub type_modifier: f64,
     pub expired: bool,
     /// Lifecycle status of the evidence artifact (ADR-020).
     #[serde(default)]
     pub status: String,
     /// ADR-020: true when the pack's terminal status (superseded/deprecated)
-    /// excludes it from the weakest-link min. `score` is then the pack's raw
-    /// own-merit score, shown for transparency — it does NOT feed R_eff.
+    /// excludes it from the weakest-link min. `score` is then the pack's
+    /// effective score, shown for transparency — it does NOT feed R_eff.
     #[serde(default)]
     pub excluded: bool,
 }
@@ -392,7 +408,14 @@ pub struct ReleaseNotesParams {
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ClaimDto {
+    /// The document's display alias — the name a person reads.
     pub id: String,
+    /// The document's canonical key — the identity the claim belongs to.
+    ///
+    /// The alias may repeat inside a workspace; the key does not. A caller
+    /// that holds the key addresses exactly one document.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_key: Option<String>,
     pub agent_id: String,
     pub claimed_at: String,
     pub expires_at: String,
@@ -404,6 +427,7 @@ impl From<forgeplan_core::claim::Claim> for ClaimDto {
     fn from(c: forgeplan_core::claim::Claim) -> Self {
         Self {
             id: c.id,
+            canonical_key: c.canonical_key,
             agent_id: c.agent_id,
             claimed_at: c.claimed_at.to_rfc3339(),
             expires_at: c.expires_at.to_rfc3339(),
@@ -569,11 +593,42 @@ pub struct OrderResponse {
 pub struct SearchResponse {
     pub results: Vec<SearchResultDto>,
     pub total: usize,
+    /// Which channels actually contributed to this ranking.
+    ///
+    /// Without it a client cannot tell a complete answer from a lexical-only
+    /// one: both arrive as a list of hits with scores, and a semantic channel
+    /// that never ran is indistinguishable from one that ran and matched
+    /// nothing. `semantic: false` means the ranking is **incomplete**, not that
+    /// nothing was found.
+    pub coverage: SearchCoverage,
+}
+
+/// What participated in a search's ranking.
+///
+/// Reported separately so "source freshness", "lexical coverage" and "semantic
+/// coverage" are never conflated into a single completeness claim. Only the
+/// channels this handler can know about are listed.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SearchCoverage {
+    /// Real semantic scores were computed and fed into the ranking.
+    ///
+    /// `false` when the build has no `semantic-search` feature, when no model
+    /// snapshot is cached (a query never downloads one), or when no row was
+    /// eligible. Never substituted with zeros: a zero score reads as "matched,
+    /// and scored nothing", which is a real-looking hit that is not one.
+    pub semantic: bool,
+    /// BM25 lexical matching contributed.
+    pub lexical: bool,
+    /// Knowledge-graph centrality and neighbour expansion contributed.
+    pub graph: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct SearchResultDto {
+    /// The display alias (`PRD-074`) — the id a caller already used.
     pub id: String,
+    /// The document's canonical key, beside the id (ADR-030).
+    pub canonical_key: String,
     pub kind: String,
     pub title: String,
     #[serde(default)]

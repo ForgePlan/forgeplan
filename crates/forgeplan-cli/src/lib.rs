@@ -16,3 +16,8 @@
 
 pub mod commands;
 pub(crate) mod ui;
+
+// RFC-021 Phase 3 / SPEC-013: `--json` error-path envelope. The binary's
+// error printer calls this so `--json` invocations always leave parseable
+// JSON on stdout; success-path envelope adoption in commands is additive.
+pub mod json_envelope;

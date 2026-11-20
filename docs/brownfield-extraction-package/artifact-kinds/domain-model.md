@@ -2,6 +2,8 @@
 
 > Canonical model of a domain: aggregates, entities, value objects, relationships, and canonical DDL/pseudo-code/SDL — all as standalone self-contained text.
 
+> Proposed package schema, not the current native template/validator. Sample dates, evidence IDs, successful validation flags and 82% reproduction value below are illustrative, not supplied execution evidence. See [implementation status](../README.md#implementation-status-2026-10-23).
+
 ## Purpose
 
 Domain models are the **rebuild spec** for a bounded context. Given only the domain-model artifact, a reader should be able to recreate the schema, the core operations, the events, and the API contract — without touching the original codebase.
@@ -73,6 +75,7 @@ canonical_sdl: |
     rejected
     canceled
     completed
+    removed
   }
   type Orders_Order {
     id: Int!
@@ -137,7 +140,7 @@ lifecycle_state: "active" | "draft" | "superseded"
 
 ## Example heading tree (TripSales — Orders)
 
-```markdown
+````markdown
 # DM-001 — Orders Domain
 
 ## Overview
@@ -200,11 +203,11 @@ stateDiagram-v2
 - Order (TERM-001)
 - forwarder_confirmed (TERM-012)
 ...
-```
+````
 
 ## Validation rules
 
-- `canonical_ddl` must pass `psql --check` (C11 mode 1).
+- `canonical_ddl` must execute successfully in a disposable PostgreSQL database explicitly selected for C11 mode 1; `psql` has no `--check` flag.
 - `canonical_sdl` must parse (C11 mode 2).
 - Every `use_cases_ref`, `invariants_ref`, `scenarios_ref`, `glossary_ref` must exist.
 - State machine transitions must all have a trigger + guard.
@@ -224,4 +227,4 @@ stateDiagram-v2
 
 ## Freshness
 
-Re-validate when any of its refs change. Drift triggers C10 to re-render the canonical fields.
+Proposed freshness behavior: re-validate when refs change and ask C10 to re-render affected fields. Current drift detection does not itself implement this canonical rendering loop.

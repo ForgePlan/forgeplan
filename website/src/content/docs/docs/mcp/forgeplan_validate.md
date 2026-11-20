@@ -3,7 +3,7 @@ title: forgeplan_validate
 description: "Validate artifact completeness against schema rules. Checks required sections per artifact kind and depth level. Returns structured findings with severity (MUST/SHOULD/COULD)."
 ---
 
-Runs the rule-based validator over an artifact. Each kind (PRD, RFC, ADR, Epic, Spec) has a depth-aware ruleset (30+ rules) checking for required sections, frontmatter fields, density, and cross-references. MUST failures block `forgeplan_activate`. This is the agent's primary quality gate before declaring an artifact "done".
+Runs kind- and depth-aware rules for required sections, frontmatter, density and cross-references. Zero MUST findings passes this validation step; it does not establish implementation, evidence strength, activation eligibility, or satisfaction of external project policy.
 
 **Category**: Quality & Validation
 
@@ -23,19 +23,20 @@ _Schema source: `crates/forgeplan-mcp/src/server.rs::ValidateParams`_
 
 ## Returns
 
-A verdict plus a list of findings. Each finding carries a `severity` (MUST / SHOULD / COULD), a `rule_id`, a `message`, and often a `section` locator. `status: PASS` means zero MUST failures - the agent can activate.
+Returns aggregate `total_artifacts`, `total_passed`, `total_errors`, `total_warnings`, and per-artifact `results`. Each result has `artifact_id`, `kind`, `depth`, `passed`, `error_count`, `warning_count`, and `findings`; findings use `rule_id`, `severity`, `message`, and optional `section`.
 
-Example response shape:
+`passed: true` means zero MUST findings, not authorization to activate. Review lifecycle evidence/stub gates and applicable policy separately.
+
+Illustrative response excerpt:
 
 ```json
 {
-  "id": "PRD-042",
-  "status": "FAIL",
-  "must_count": 1,
-  "should_count": 2,
-  "findings": [
-    { "severity": "MUST", "rule": "prd.has_problem", "message": "Missing ## Problem section" },
-    { "severity": "SHOULD", "rule": "prd.density", "message": "Problem section < 50 words" }
+  "total_artifacts": 1,
+  "total_passed": 1,
+  "total_errors": 0,
+  "total_warnings": 0,
+  "results": [
+    { "artifact_id": "RFC-016", "kind": "Rfc", "depth": "Standard", "passed": true, "error_count": 0, "warning_count": 0, "findings": [] }
   ]
 }
 ```
@@ -56,11 +57,11 @@ With typical agent context:
 
 ## Typical sequence
 
-`forgeplan_update` → `forgeplan_validate` → (if MUST failures) `forgeplan_update` fix → `forgeplan_validate` again → PASS → `forgeplan_activate`. The same tool is also useful in `forgeplan_health`'s remediation loop when cleaning up blind spots.
+`forgeplan_update` → `forgeplan_validate` → fix findings → revalidate → implement and record actual evidence → review lifecycle and policy requirements before activation. A deliberately retained draft is not a validation failure.
 
 ## CLI equivalent
 
-- [`forgeplan validate`](/docs/cli/validate/) - same rules, terminal output
+- [`forgeplan validate`](/docs/cli/validate/) - CLI validation uses the same rule domain. Recorded compatibility scenarios do not certify every validation path; see [Constellation](/docs/reference/constellation/) for coverage and remaining limits.
 
 ## See also
 
@@ -68,3 +69,49 @@ With typical agent context:
 - [`forgeplan_activate`](/docs/mcp/forgeplan_activate/) - the gate validate enforces
 - [`forgeplan_score`](/docs/mcp/forgeplan_score/) - orthogonal quality signal (R_eff)
 - [`forgeplan_review`](/docs/mcp/forgeplan_review/) - human-readable readiness report
+
+<!-- forgeplan-runtime:start -->
+## Captured tools/list
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, profile `full`.
+
+Validate artifact completeness against schema rules. Checks required sections per artifact kind and depth level. Returns structured findings with severity (MUST/SHOULD/COULD).
+
+### Input parameters
+
+| Name | Required | Type | Description |
+|---|---|---|---|
+| `id` | no | string \| null | Artifact ID to validate (validates all if omitted) |
+| `workspace` | no | string \| null | Optional explicit workspace directory for this call. When set, the MCP<br>server resolves the `.forgeplan/` projection from this path instead of<br>the server's startup CWD. Use this when the calling agent is running<br>in a git worktree separate from the MCP server's launch directory.<br>PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "id": {
+      "default": null,
+      "description": "Artifact ID to validate (validates all if omitted)",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "workspace": {
+      "default": null,
+      "description": "Optional explicit workspace directory for this call. When set, the MCP\nserver resolves the `.forgeplan/` projection from this path instead of\nthe server's startup CWD. Use this when the calling agent is running\nin a git worktree separate from the MCP server's launch directory.\nPRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "ValidateParams",
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

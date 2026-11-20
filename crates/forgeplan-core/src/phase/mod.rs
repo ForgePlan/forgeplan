@@ -91,8 +91,8 @@ pub fn truncate_reason(reason: Option<String>) -> Option<String> {
 /// Methodology phase for the greenfield workflow.
 ///
 /// Order: Shape → Validate → Adi → Code → Test → Audit → Evidence → Done.
-/// `Unknown` is reserved for artifacts without a state file (pre-PRD-056
-/// artifacts or state corruption).
+/// `Unknown` is reserved for artifacts without a state file (pre-PRD-056).
+/// Invalid state files are reported as read errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
@@ -188,7 +188,14 @@ pub struct PhaseTransition {
 /// `.forgeplan/state/<artifact_id>.yaml`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PhaseState {
+    /// The display id of the document — the name a reader knows it by.
     pub artifact_id: String,
+    /// The document's canonical key — the identity the state file is named
+    /// after, so two documents that share a display id keep their own state.
+    ///
+    /// `None` for a state written before the key was recorded.
+    #[serde(default)]
+    pub canonical_key: Option<String>,
     #[serde(default)]
     pub workflow_type: WorkflowType,
     pub current_phase: Phase,
@@ -209,9 +216,55 @@ pub fn state_dir(workspace: &Path) -> PathBuf {
     workspace.join("state")
 }
 
-/// Absolute path of the state file for a given artifact id.
-pub fn state_path(workspace: &Path, artifact_id: &str) -> PathBuf {
-    state_dir(workspace).join(format!("{artifact_id}.yaml"))
+/// Absolute path of the state file for a given artifact.
+///
+/// The file is named after the document's **canonical key** — the identity,
+/// not the alias a second document may share. The key is escaped into
+/// exactly one path component (see
+/// [`crate::artifact::sidecar::sidecar_file_stem`]), so a key that carries
+/// a separator still names one file inside the state directory.
+pub fn state_path(workspace: &Path, canonical_key: &str) -> PathBuf {
+    crate::artifact::sidecar::sidecar_path(&state_dir(workspace), canonical_key, "yaml")
+}
+
+/// Validate a canonical key that is about to become a file name.
+///
+/// The key is escaped into exactly one path component, so whatever it holds
+/// cannot escape the state directory. The check only refuses what cannot be
+/// a key at all: an empty name, a name too long for a file, and a name with
+/// a NUL byte in it.
+///
+/// [`validate_artifact_id`] remains the guard for the *display id* — the
+/// alias a person reads, which is stored inside the state file rather than
+/// used as a path.
+pub fn validate_canonical_key(key: &str) -> anyhow::Result<()> {
+    if key.is_empty() {
+        anyhow::bail!("canonical key cannot be empty");
+    }
+    if key.len() > MAX_ARTIFACT_ID_LEN {
+        anyhow::bail!(
+            "canonical key too long: {} bytes (max: {})",
+            key.len(),
+            MAX_ARTIFACT_ID_LEN
+        );
+    }
+    if key.contains('\0') {
+        anyhow::bail!("canonical key contains a null byte");
+    }
+    // A minted key starts with an ASCII letter and names one document. A
+    // selector that climbs out of the workspace — `../../etc/passwd` — is not
+    // a key, and the sidecar paths escape `/`, so without this guard the
+    // escaping would turn a traversal into a harmless-looking file name.
+    if !key.starts_with(|c: char| c.is_ascii_alphabetic()) {
+        anyhow::bail!("canonical key must start with an ASCII letter: {key}");
+    }
+    if key
+        .split('/')
+        .any(|segment| segment == ".." || segment.starts_with('.'))
+    {
+        anyhow::bail!("canonical key contains a path traversal segment: {key}");
+    }
+    Ok(())
 }
 
 /// Build a fresh `PhaseState` at `Shape` phase for a newly created artifact.
@@ -220,6 +273,9 @@ pub fn initial_state(artifact_id: &str, reason: Option<String>) -> PhaseState {
     let now = Utc::now();
     PhaseState {
         artifact_id: artifact_id.to_string(),
+        // A state is written by the key the document is addressed by, so it
+        // can say which document it describes even when two share an alias.
+        canonical_key: Some(artifact_id.to_string()),
         workflow_type: WorkflowType::Greenfield,
         current_phase: Phase::Shape,
         advanced_at: now,

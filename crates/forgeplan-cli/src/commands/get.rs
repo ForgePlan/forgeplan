@@ -4,30 +4,119 @@ use crate::commands::common;
 use crate::ui;
 
 pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
-    let store = common::store().await?;
-    // PROB-060 / SPEC-005 Phase 1.5 — `forgeplan get` accepts both display
-    // id (`PRD-074`, `prd-074`, `Prd-74`) and slug form (`prd-auth-system`).
-    // Resolver maps either form → canonical DB id; None means no match by
-    // any path. Audit Phase 1.5 H1: removed redundant `unwrap_or_else(id)`
-    // fallback — resolver already covers all legitimate paths.
-    // ADR-012 invariants I-3 + I-4 enforcement.
-    let record = match store.resolve_id(id).await? {
-        Some(canonical) => store.get_record(&canonical).await?.ok_or_else(|| {
-            anyhow::anyhow!(
-                "Artifact resolved to '{canonical}' but get_record missed (race?)\nFix: forgeplan list"
+    let cwd = std::env::current_dir()?;
+    let workspace = forgeplan_core::workspace::find_workspace(&cwd)
+        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+    // SPEC-013 lazy sync: publish any file-first edits before this read —
+    // must run before the shared read lock is taken.
+    common::reconcile_workspace_for_read(&workspace).await;
+    let permit = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&workspace).await?;
+    let (record, relations, incoming, view_metadata) = if common::index_migrated(&workspace) {
+        let selected =
+            match forgeplan_core::constellation::facade::open_workspace_selector_with_permit(
+                &workspace, &permit, id,
             )
-        })?,
-        None => anyhow::bail!("Artifact '{id}' not found\nFix: forgeplan list"),
+            .await
+            {
+                Ok(Some(selected)) => selected,
+                Ok(None) => {
+                    let failure =
+                        common::resolution_failure(&common::Resolution::NotFound, id, &[]);
+                    common::print_resolution_failure(&failure);
+                    return Err(common::resolution_failure_error(&failure));
+                }
+                Err(forgeplan_core::constellation::ConstellationError::Resolve(error)) => {
+                    let outcome: common::Resolution = Err(error).into();
+                    let candidates = match &outcome {
+                        common::Resolution::Ambiguous { candidates, .. }
+                        | common::Resolution::ConflictingCanonicalKey { candidates, .. } => {
+                            candidates.as_slice()
+                        }
+                        _ => &[],
+                    };
+                    let failure = common::resolution_failure(&outcome, id, candidates);
+                    common::print_resolution_failure(&failure);
+                    return Err(common::resolution_failure_error(&failure));
+                }
+                Err(error) => return Err(error.into()),
+            };
+        let record = selected.record().clone();
+        // The edges are held under the canonical key. The report names each
+        // endpoint by the display id a reader knows it by, and carries the
+        // key beside it — so a document that shares its display id with
+        // another is still named exactly.
+        let name = |endpoint: &str| -> String {
+            selected
+                .display_for_key(endpoint)
+                .unwrap_or(endpoint)
+                .to_string()
+        };
+        let relations = selected
+            .relations()
+            .into_iter()
+            .map(|(target, relation)| (name(&target), target, relation))
+            .collect::<Vec<_>>();
+        let incoming = selected
+            .incoming_relations()
+            .into_iter()
+            .map(|(source, relation)| (name(&source), source, relation))
+            .collect::<Vec<_>>();
+        let metadata = serde_json::json!({
+            "index": "constellation",
+            "generation_id": selected.generation_id(),
+            "snapshot_id": selected.snapshot_id(),
+            "source_set_digest": selected.source_set_digest(),
+            "persisted": selected.is_persisted(),
+        });
+        (record, relations, incoming, Some(metadata))
+    } else {
+        // The legacy layout resolves against the index rows: the same shared
+        // algorithm, over the same document set the MCP server reads. A name
+        // two rows answer to names neither of them — the command says which
+        // two, and exits non-zero.
+        let store = common::store().await?;
+        let resolution =
+            common::resolve_against_legacy_index(&store, &permit, &workspace, id).await?;
+        let canonical = match &resolution.outcome {
+            common::Resolution::Found(found) => found.identity.canonical_key.clone(),
+            other => {
+                let failure = common::resolution_failure(other, id, &resolution.candidates);
+                common::print_resolution_failure(&failure);
+                return Err(common::resolution_failure_error(&failure));
+            }
+        };
+        let record = store
+            .get_record(&permit, &canonical)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Artifact '{id}' missing after resolution"))?;
+        // The edges are held under the canonical key. The report names each
+        // endpoint by the display id a reader knows it by, and carries the
+        // key beside it.
+        let mut relations: Vec<(String, String, String)> = Vec::new();
+        for (target, relation) in store.get_relations(&permit, &canonical).await? {
+            // A qualified or forward reference (`ADR-001@ws-b`) is not a
+            // selector in this workspace. It stays verbatim: one unresolved
+            // edge must not make the whole document unreadable.
+            let display = store
+                .resolve_display_id(&permit, &target)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| target.clone());
+            relations.push((display, target, relation));
+        }
+        let mut incoming: Vec<(String, String, String)> = Vec::new();
+        for (source, relation) in store.get_incoming_relations(&permit, &canonical).await? {
+            let display = store
+                .resolve_display_id(&permit, &source)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| source.clone());
+            incoming.push((display, source, relation));
+        }
+        (record, relations, incoming, None)
     };
-
-    // Contextual hints — compute up front so both text and JSON paths emit them.
-    // Use canonical id everywhere downstream so relation lookups also work
-    // when caller passed slug.
-    let relations = store.get_relations(&record.id).await.unwrap_or_default();
-    let incoming = store
-        .get_incoming_relations(&record.id)
-        .await
-        .unwrap_or_default();
     let has_links = !relations.is_empty() || !incoming.is_empty();
 
     // #447 — both edge sets were already fetched above and then collapsed
@@ -39,11 +128,15 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     let links_json = serde_json::json!({
         "outbound": relations
             .iter()
-            .map(|(target, relation)| serde_json::json!({ "target": target, "relation": relation }))
+            .map(|(target, target_key, relation)| serde_json::json!({
+                "target": target, "target_key": target_key, "relation": relation
+            }))
             .collect::<Vec<_>>(),
         "inbound": incoming
             .iter()
-            .map(|(source, relation)| serde_json::json!({ "source": source, "relation": relation }))
+            .map(|(source, source_key, relation)| serde_json::json!({
+                "source": source, "source_key": source_key, "relation": relation
+            }))
             .collect::<Vec<_>>(),
     });
     let kind: forgeplan_core::artifact::types::ArtifactKind = record
@@ -92,8 +185,12 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
     }
 
     if json {
-        let json_data = serde_json::json!({
+        let mut json_data = serde_json::json!({
             "id": record.id,
+            // ADR-030 / SPEC-009: the response keeps the display id AND
+            // carries the canonical key — the identity an address must use
+            // when the display id is not unique.
+            "canonical_key": record.canonical_key,
             "slug": slug_for_json,
             "kind": record.kind,
             "status": record.status,
@@ -102,6 +199,7 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
             "author": record.author,
             "parent_epic": record.parent_epic,
             "valid_until": record.valid_until,
+            "tags": record.tags,
             "r_eff": record.r_eff_score,
             "created_at": record.created_at,
             "updated_at": record.updated_at,
@@ -109,6 +207,12 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
             "links": links_json,
             "_next_action": hints::primary_action(&hints_vec),
         });
+        if let Some(serde_json::Value::Object(metadata)) = view_metadata {
+            json_data
+                .as_object_mut()
+                .expect("get payload is an object")
+                .extend(metadata);
+        }
         println!("{}", serde_json::to_string_pretty(&json_data)?);
         return Ok(());
     }
@@ -144,12 +248,15 @@ pub async fn run(id: &str, json: bool) -> anyhow::Result<()> {
         if !relations.is_empty() {
             let out: Vec<String> = relations
                 .iter()
-                .map(|(t, r)| format!("{t} ({r})"))
+                .map(|(t, _key, r)| format!("{t} ({r})"))
                 .collect();
             ui::kv("Links out", &out.join(", "));
         }
         if !incoming.is_empty() {
-            let inc: Vec<String> = incoming.iter().map(|(s, r)| format!("{s} ({r})")).collect();
+            let inc: Vec<String> = incoming
+                .iter()
+                .map(|(s, _key, r)| format!("{s} ({r})"))
+                .collect();
             ui::kv("Links in", &inc.join(", "));
         }
     }

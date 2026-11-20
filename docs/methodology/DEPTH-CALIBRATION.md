@@ -4,6 +4,11 @@
 
 A guide for choosing the appropriate level of decision rigor. Based on Quint-code depth calibration and adapted for Forgeplan.
 
+The four levels, durations and review requirements below describe the adopted
+authoring convention, not an upstream FPF standard or automatic router policy.
+The current Rust `Mode` parses `critical` as `Deep`; `calibrate` suggests a depth
+from content heuristics and does not change an artifact's depth or status.
+
 ## Level Overview
 
 | Level | When | What to Create | Time | Characteristics |
@@ -40,9 +45,9 @@ Strategic initiative with multiple PRDs?
               Verification gates at every stage
 ```
 
-## Automatic Escalation Triggers
+## Escalation Triggers for Review
 
-Regardless of the initial assessment, the level escalates when the following factors are present:
+Regardless of the initial assessment, review the depth against these factors:
 
 | Trigger | Minimum Level |
 |---------|---------------|
@@ -63,7 +68,7 @@ Rule: **escalation is safe, de-escalation is risky.** When in doubt, choose the 
 - **Artifacts**: Note (optional)
 - **Rationale**: Not required
 - **Evidence**: Not required
-- **valid_until**: Automatically 90 days
+- **valid_until**: 90 days is a suggested review interval, not an automatic creation default
 - **Rollback plan**: Not required (easy to revert by definition)
 - **Review**: Not required
 
@@ -98,11 +103,14 @@ Rule: **escalation is safe, de-escalation is risky.** When in doubt, choose the 
 
 ## Examples
 
+The scenarios and durations below are illustrative, not shipped features,
+benchmarks or a record of completed migrations.
+
 ### Example 1: Fixing a Typo in a Template — Tactical
 
-**Situation**: A typo was found in a section heading of `templates/prd/PRD_TEMPLATE.md`.
+**Situation**: A typo was found in a section heading of `templates/prd/_TEMPLATE.md`.
 
-**Why Tactical**: Obviously what to fix, 1 file, easy to revert, zero risk.
+**Why Tactical**: The edit is obvious, confined to one file and easy to revert.
 
 **Action**: Fix and commit. No Note needed.
 
@@ -110,7 +118,7 @@ Rule: **escalation is safe, de-escalation is risky.** When in doubt, choose the 
 
 **Situation**: Users are requesting artifact export to JSON in addition to Markdown.
 
-**Why Standard**: Multiple approaches exist (serde_json vs. tera templates, nesting format), feature takes 2-3 days, affects the `artifact/writer` module.
+**Why Standard**: Multiple approaches exist (serde_json vs. templates, nesting format), with a hypothetical 2-3 day implementation affecting artifact export.
 
 **Action**: Create a PRD (tactical, 1 page) with format justification -> RFC describing the implementation.
 

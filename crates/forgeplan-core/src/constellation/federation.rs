@@ -1,0 +1,1681 @@
+//! Stage 1 — federated reads over explicitly named `.forgeplan` sources.
+//!
+//! Two ideas from the architecture document drive everything here:
+//!
+//! * **Path-only resolution.** A caller names a `.forgeplan` directory and
+//!   gets answers. Nothing here opens a `LanceStore`, runs migrations, or
+//!   fires project hooks — the same boundary `resolve_workspace_dir` gives
+//!   the MCP Constellation tools, applied to more than one root.
+//! * **An honest envelope.** Every result names the source it came from and
+//!   the version the answer was read at — the pinned generation when a
+//!   Constellation index exists, the captured source-set digest when it
+//!   does not. An unavailable source is reported as unavailable, never as
+//!   zero matches.
+//!
+//! Reading an unindexed workspace falls back to parsing the canonical
+//! markdown directly through [`capture_source`]. That path is slower than a
+//! pinned table and carries no `semantic_state` coverage, and the envelope
+//! says so rather than pretending otherwise.
+
+use std::path::{Path, PathBuf};
+
+use serde::Serialize;
+
+use super::capture::{CaptureLimits, CaptureRequest, capture_canonical_census};
+use super::registry::SourceRole;
+use super::{ConstellationError, sha256_hex};
+
+/// A `.forgeplan` directory named by the caller — the unit of federation.
+///
+/// The path must exist, canonicalize without crossing a symlink, and look
+/// like a Forgeplan workspace (at least one artifact directory). Whether a
+/// path that fails any of those is a per-source diagnostic or a fatal
+/// error is the `role`/`mode` contract below: `Required` aborts a strict
+/// query, `Optional` lands in `failures`.
+#[derive(Debug, Clone)]
+pub struct SourceSpec {
+    pub path: PathBuf,
+    /// Required or optional under the strict-query contract — carried
+    /// here, not only in the registry, because callers that skip the
+    /// registry (ad-hoc path lists, tests) must still pick a side.
+    /// `SourceSpec::new` keeps `Required`: an unnamed caller saying
+    /// "read this" is saying it matters.
+    pub role: SourceRole,
+}
+
+impl SourceSpec {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            role: SourceRole::Required,
+        }
+    }
+
+    /// An optional source — its failure is a `failures` entry on a
+    /// partial answer, never a query error.
+    pub fn new_optional(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            role: SourceRole::Optional,
+        }
+    }
+
+    /// Builder form for the registry-driven paths, which read the role
+    /// out of `RegistrySource` rather than choosing one.
+    pub fn with_role(mut self, role: SourceRole) -> Self {
+        self.role = role;
+        self
+    }
+}
+
+/// How a read treats a source that cannot answer.
+///
+/// `Strict` is the default on every surface: a `required` source that
+/// fails aborts the query with [`ConstellationError::SourceUnavailable`]
+/// — no envelope, so nothing reads like a complete answer. `AllowPartial`
+/// is the caller's explicit "take what answers" (`--allow-partial`,
+/// `strict: false` over MCP): it demotes every source to optional for
+/// that call, so failures land in `failures` and flip `partial`.
+///
+/// Snapshot reads never consult it — a lockfile's source set is frozen
+/// at pin time and `skipped` entries are already the honest report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum QueryMode {
+    /// Required sources must answer or the query fails.
+    #[default]
+    Strict,
+    /// Every source is treated as optional for this call.
+    AllowPartial,
+}
+
+/// Whether `failure` aborts the read outright under `mode` — the single
+/// place the "required source unavailable ⇒ strict error" rule lives, so
+/// every `*_live` surface enforces it identically.
+pub(crate) fn failure_is_fatal(spec: &SourceSpec, mode: QueryMode) -> bool {
+    mode == QueryMode::Strict && spec.role == SourceRole::Required
+}
+
+/// The strict-mode error a required source's failure maps to.
+pub(crate) fn source_unavailable(failure: &SourceFailure) -> ConstellationError {
+    ConstellationError::SourceUnavailable {
+        detail: format!(
+            "required source {} is unavailable: {}",
+            failure.path, failure.reason
+        ),
+    }
+}
+
+/// Identity of a source inside one answer — stable for a canonical path.
+///
+/// `source_id` is a digest of the canonical `.forgeplan` path, so the same
+/// workspace reached through different spellings reports one identity and
+/// two genuinely different checkouts report two — the ambiguity the spec
+/// names (`ADR-001` in two projects must never merge).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SourceRef {
+    pub source_id: String,
+    pub path: String,
+    /// `pinned` — answered from a published generation; `markdown` — read
+    /// from canonical bytes because no generation exists.
+    pub channel: SourceChannel,
+    /// The version the answer was read at: a generation id when pinned, the
+    /// capture's `sourceSetDigest` when reading markdown directly.
+    pub version_key: String,
+    /// Source-set content identity carried by the actual read. `None` for
+    /// Git snapshots, whose immutable identity is `version_key`.
+    #[serde(skip)]
+    pub source_set_digest: Option<String>,
+}
+
+/// Which read channel produced a source's rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceChannel {
+    /// Opened the published Constellation tables at the manifest's pinned
+    /// versions — immutable, verified.
+    Pinned,
+    /// Parsed the canonical markdown on disk. Reflects files as captured
+    /// now; never claims the durability guarantees of a published index.
+    Markdown,
+    /// Read from pinned Git objects (`git show` at a recorded OID) —
+    /// stage-3 snapshot channel. As immutable as `pinned`, without needing
+    /// a published Constellation index at all.
+    PinnedGit,
+}
+
+impl SourceChannel {
+    /// The short label CLI/MCP output prints per hit.
+    pub fn channel_str(&self) -> &'static str {
+        match self {
+            Self::Pinned => "pinned",
+            Self::Markdown => "markdown",
+            Self::PinnedGit => "git",
+        }
+    }
+}
+
+/// Per-source outcome when the source could not be read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct SourceFailure {
+    /// The path as the caller spelled it — there may be no canonical form.
+    pub path: String,
+    pub reason: String,
+}
+
+/// One search hit, stamped with the source that produced it.
+#[derive(Debug, Clone, Serialize)]
+pub struct FederatedHit {
+    pub source: SourceRef,
+    pub canonical_key: String,
+    pub display_id: Option<String>,
+    pub title: String,
+    pub kind: Option<String>,
+    pub status: Option<String>,
+    /// Stored `semantic_state` for pinned rows; `None` on the markdown
+    /// channel — an unindexed workspace has no vector coverage to report,
+    /// and inventing `unavailable` would describe a queue that does not exist.
+    pub semantic_state: Option<String>,
+}
+
+/// The envelope every federated read returns, success or partial.
+#[derive(Debug)]
+pub struct FederatedSearchOutcome {
+    /// Sources that answered, with the version each answer was read at.
+    pub sources: Vec<SourceRef>,
+    /// Sources that did not. `partial` is true iff this is non-empty —
+    /// "not read" is never folded into "no matches".
+    pub failures: Vec<SourceFailure>,
+    pub hits: Vec<FederatedHit>,
+    pub truncated: bool,
+    pub partial: bool,
+}
+
+/// Shared resolution metadata, including sources scanned but not responsible
+/// for the selected artifact. A failed source is never interpreted as a miss.
+#[derive(Debug)]
+pub struct FederatedReadMetadata {
+    pub sources: Vec<SourceRef>,
+    pub failures: Vec<SourceFailure>,
+    pub partial: bool,
+}
+#[derive(Debug)]
+pub struct FederatedArtifact {
+    pub source: SourceRef,
+    pub canonical_key: String,
+    pub display_id: Option<String>,
+    pub title: String,
+    pub kind: Option<String>,
+    pub status: Option<String>,
+    pub body: String,
+    pub relative_path: String,
+    pub source_digest: String,
+    pub semantic_state: Option<String>,
+}
+
+#[derive(Debug)]
+pub enum FederatedGetResult {
+    Found(Box<FederatedArtifact>),
+    Ambiguous {
+        sources: Vec<SourceRef>,
+    },
+    NotFound,
+    /// An identity error; read metadata still proves every captured source
+    /// before a scoped caller emits the complete set of ambiguity candidates.
+    ResolveError(crate::artifact::canonical_key::ResolveError),
+}
+
+/// One artifact resolved across every named source, with completeness.
+#[derive(Debug)]
+pub struct FederatedGet {
+    pub result: FederatedGetResult,
+    pub read: FederatedReadMetadata,
+}
+
+// -- Resolution -------------------------------------------------------------
+
+/// The `.forgeplan` directories capture iterates — imported lazily so this
+/// module does not name a second artifact-dir contract.
+fn looks_like_forgeplan_dir(dir: &Path) -> bool {
+    crate::workspace::ARTIFACT_DIRS
+        .iter()
+        .any(|d| dir.join(d).is_dir())
+}
+
+/// Canonicalize a caller-named source without following a symlink boundary.
+///
+/// Same confinement rule `capture` applies at its root: a `.forgeplan`
+/// spelled through an alias would read bytes outside the stated boundary,
+/// so the alias is refused, not silently resolved.
+pub(super) fn resolve_source(spec: &SourceSpec) -> Result<PathBuf, SourceFailure> {
+    let spelled = spec.path.display().to_string();
+    let meta = std::fs::symlink_metadata(&spec.path).map_err(|e| SourceFailure {
+        path: spelled.clone(),
+        reason: format!("cannot stat the source root: {e}"),
+    })?;
+    if meta.file_type().is_symlink() {
+        return Err(SourceFailure {
+            path: spelled,
+            reason: "the source root is a symlink; aliases are refused at the boundary".into(),
+        });
+    }
+    if !meta.is_dir() {
+        return Err(SourceFailure {
+            path: spelled,
+            reason: "source root is not a directory".into(),
+        });
+    }
+    let canonical = spec.path.canonicalize().map_err(|e| SourceFailure {
+        path: spelled.clone(),
+        reason: format!("cannot canonicalize the source root: {e}"),
+    })?;
+    if !looks_like_forgeplan_dir(&canonical) {
+        return Err(SourceFailure {
+            path: spelled,
+            reason: format!(
+                "{} does not look like a .forgeplan workspace (no artifact directories)",
+                canonical.display()
+            ),
+        });
+    }
+    Ok(canonical)
+}
+
+pub(crate) fn source_id_for(canonical: &Path) -> String {
+    format!(
+        "src:{}",
+        &sha256_hex(canonical.to_string_lossy().as_bytes())[..16]
+    )
+}
+
+/// Whether a `KEY@qualifier` names this source.
+///
+/// Three forms are accepted, because all three are what an operator
+/// actually writes: the stable `src:<hash>` id (exact or prefix), the
+/// trailing path component (`@shared`), or a full path suffix. Anything
+/// else simply does not match, and the caller reports the miss.
+pub fn qualifier_matches(source_id: &str, source_path: &str, qualifier: &str) -> bool {
+    if source_id == qualifier || source_id.starts_with(qualifier) {
+        return true;
+    }
+    if source_path.ends_with(qualifier) {
+        return true;
+    }
+    source_path
+        .split(std::path::MAIN_SEPARATOR)
+        .any(|segment| segment == qualifier)
+}
+
+/// The [`SourceRef::source_id`] a spec will report, if it resolves.
+///
+/// CLI uses this to match a user qualifier (`@src:ab12…` or a path
+/// fragment) against named sources *before* reading — resolution failures
+/// mean `None`, and the qualifier match then happens on what was spelled.
+pub fn spec_source_id(spec: &SourceSpec) -> Option<String> {
+    resolve_source(spec).ok().map(|c| source_id_for(&c))
+}
+
+// -- Qualified references (`KEY@qualifier`) ------------------------------------
+
+/// Split a qualified reference into its artifact key and its source
+/// qualifier: `ADR-001@src:b7d6…` → `("ADR-001", Some("src:b7d6…"))`.
+///
+/// The qualifier exists so a key claimed by two sources can be narrowed
+/// to one — `ADR-001` in two projects must never merge. The split is
+/// deliberately *syntactic only*: it accepts the first `@` as the
+/// separator and returns no qualifier when either side would be empty,
+/// so `a@`, `@b`, and a bare `ADR-001` all come back as
+/// `(input, None)`. Which characters a qualifier may contain when the
+/// ref is *written* is a separate, stricter question — see
+/// [`crate::db::store::validate_link_target`].
+///
+/// A second `@` lands inside the qualifier (`a@b@c` → `("a",
+/// Some("b@c"))`) — callers that store the ref validate the charset;
+/// callers that only *match* it against sources can live with a
+/// qualifier that will simply never match.
+pub fn parse_qualified_ref(input: &str) -> (&str, Option<&str>) {
+    match input.split_once('@') {
+        Some((key, qualifier)) if !key.is_empty() && !qualifier.is_empty() => {
+            (key, Some(qualifier))
+        }
+        _ => (input, None),
+    }
+}
+
+/// The sources a `@qualifier` narrows to.
+///
+/// Two readings, the same pair `registry::find_source` uses for rebind
+/// selectors and the read commands use for `KEY@q`:
+///
+/// * the qualifier is a **fragment of the source's spelled path** —
+///   `@ws-b` names the source whose path contains `ws-b`;
+/// * the qualifier **is or prefixes the source's live `src:` id** —
+///   `@src:b7d6` names the source whose id begins that way.
+///
+/// [`spec_source_id`] resolves the id live, so a source that cannot be
+/// read right now still answers to its path fragment but not to its
+/// id — the qualifier-miss diagnostic is the caller's job; this helper
+/// only answers "which of these match". Zero matches is a legitimate
+/// answer, not an error.
+pub fn specs_matching<'a>(specs: &'a [SourceSpec], qualifier: &str) -> Vec<&'a SourceSpec> {
+    specs
+        .iter()
+        .filter(|spec| {
+            spec.path.display().to_string().contains(qualifier)
+                || spec_source_id(spec)
+                    .as_deref()
+                    .is_some_and(|sid| sid == qualifier || sid.starts_with(qualifier))
+        })
+        .collect()
+}
+
+// -- Per-source read paths ----------------------------------------------------
+
+async fn read_pinned(
+    canonical: &Path,
+    query: &str,
+    limit: usize,
+) -> Result<(SourceRef, Vec<FederatedHit>), ConstellationError> {
+    let index_root = canonical.join("lance");
+    let outcome =
+        super::facade::search_pinned_lexical(&index_root, query, limit, &Default::default())
+            .await?;
+    let source = SourceRef {
+        source_id: source_id_for(canonical),
+        path: canonical.display().to_string(),
+        channel: SourceChannel::Pinned,
+        version_key: outcome.generation_id.clone(),
+        source_set_digest: Some(outcome.source_set_digest),
+    };
+    let hits = outcome
+        .hits
+        .into_iter()
+        .map(|h| FederatedHit {
+            source: source.clone(),
+            canonical_key: h.canonical_key,
+            display_id: h.display_id,
+            title: h.title,
+            kind: h.kind,
+            status: h.status,
+            semantic_state: h.semantic_state,
+        })
+        .collect();
+    Ok((source, hits))
+}
+
+async fn read_markdown(
+    canonical: &Path,
+    query: &str,
+    limit: usize,
+) -> Result<(SourceRef, Vec<FederatedHit>), ConstellationError> {
+    let captured =
+        capture_canonical_census(&CaptureRequest::new(canonical), CaptureLimits::default()).await?;
+    if !captured.is_complete() {
+        return Err(ConstellationError::SourceUnavailable {
+            detail: format!(
+                "canonical source capture is incomplete: {:?}",
+                captured.diagnostics
+            ),
+        });
+    }
+    let source = SourceRef {
+        source_id: source_id_for(canonical),
+        path: canonical.display().to_string(),
+        channel: SourceChannel::Markdown,
+        version_key: captured.source_set_digest.clone(),
+        source_set_digest: Some(captured.source_set_digest.clone()),
+    };
+    let needle = query.to_lowercase();
+    let mut hits = Vec::new();
+    'outer: for artifact in &captured.artifacts {
+        if artifact.canonical_key.to_lowercase().contains(&needle)
+            || artifact.display_id.to_lowercase().contains(&needle)
+            || artifact.title.to_lowercase().contains(&needle)
+            || artifact.body.to_lowercase().contains(&needle)
+        {
+            hits.push(FederatedHit {
+                source: source.clone(),
+                canonical_key: artifact.canonical_key.clone(),
+                display_id: Some(artifact.display_id.clone()),
+                title: artifact.title.clone(),
+                kind: Some(artifact.kind.clone()),
+                status: Some(artifact.status.clone()),
+                semantic_state: None,
+            });
+            if hits.len() >= limit {
+                break 'outer;
+            }
+        }
+    }
+    Ok((source, hits))
+}
+
+/// The live source's identity token: the published generation's source-set
+/// digest, or the canonical census digest otherwise.
+///
+/// A confirmed collision-only census can bind identity diagnostics to a scope;
+/// this token does not make that census available for ordinary reads. The scope
+/// compares the actual served witness with its opening token before returning
+/// an outcome. Publication over unchanged bytes keeps the digest equal.
+pub async fn live_source_version(spec: &SourceSpec) -> Result<String, SourceFailure> {
+    let canonical = resolve_source(spec)?;
+    if has_published_index(&canonical) {
+        let index_root = canonical.join("lance");
+        let descriptor = super::storage::read_current(&index_root)
+            .map_err(|error| SourceFailure {
+                path: canonical.display().to_string(),
+                reason: error.to_string(),
+            })?
+            .ok_or_else(|| SourceFailure {
+                path: canonical.display().to_string(),
+                reason: "index exists without a published generation".to_string(),
+            })?;
+        let manifest =
+            super::storage::read_manifest(&index_root, &descriptor).map_err(|error| {
+                SourceFailure {
+                    path: canonical.display().to_string(),
+                    reason: error.to_string(),
+                }
+            })?;
+        return Ok(manifest.source_set_digest);
+    }
+    let captured =
+        capture_canonical_census(&CaptureRequest::new(&canonical), CaptureLimits::default())
+            .await
+            .map_err(|error| SourceFailure {
+                path: canonical.display().to_string(),
+                reason: error.to_string(),
+            })?;
+    if !captured.is_complete() && captured.diagnostic_inventory().is_none() {
+        return Err(SourceFailure {
+            path: canonical.display().to_string(),
+            reason: format!("incomplete canonical source: {:?}", captured.diagnostics),
+        });
+    }
+    Ok(captured.source_set_digest)
+}
+
+/// Whether a source has a *published* generation to pin to. Three states:
+///
+/// * no `lance/` at all → markdown channel, clearly;
+/// * `lance/` exists but no `CURRENT.json` → the index directory was
+///   created (e.g. by `init`) but never published; the markdown channel is
+///   still the honest answer, not an error — nothing was ever born there;
+/// * `CURRENT.json` present → the pinned channel; a failure to *read* it
+///   is a genuine index fault and surfaces as a source failure, not a
+///   silent downgrade to markdown.
+fn has_published_index(canonical: &Path) -> bool {
+    canonical
+        .join("lance")
+        .join(super::storage::CURRENT_FILE_NAME)
+        .is_file()
+}
+
+// -- The facade ---------------------------------------------------------------
+
+/// Search every named source at whatever honest channel it offers.
+///
+/// A source with a published Constellation index answers from the pinned
+/// generation; a source without one is parsed from canonical markdown.
+/// Sources are queried in order, hits are interleaved as returned, and
+/// `partial` tells the caller some sources did not answer — the spec's
+/// rule that an unreadable source must not read as an empty corpus.
+///
+/// `mode` draws the line between "partial" and "refused": under
+/// [`QueryMode::Strict`] a failed `required` source aborts the whole
+/// search with [`ConstellationError::SourceUnavailable`]; under
+/// [`QueryMode::AllowPartial`] — or for an `optional` source in any mode —
+/// the failure is a named `failures` entry and the answer is `partial`.
+pub async fn federated_search(
+    specs: &[SourceSpec],
+    query: &str,
+    limit: usize,
+    mode: QueryMode,
+) -> Result<FederatedSearchOutcome, ConstellationError> {
+    if limit == 0 {
+        return Err(ConstellationError::Io {
+            detail: "a federated search with limit 0 cannot return anything".to_string(),
+        });
+    }
+    let mut sources = Vec::new();
+    // Retain one extra hit to detect truncation without retaining every
+    // source's results. The hit budget never limits source coverage.
+    let candidate_limit = limit.saturating_add(1);
+    let mut failures = Vec::new();
+    let mut hits = Vec::new();
+    for spec in specs {
+        let canonical = match resolve_source(spec) {
+            Ok(c) => c,
+            Err(f) => {
+                if failure_is_fatal(spec, mode) {
+                    return Err(source_unavailable(&f));
+                }
+                failures.push(f);
+                continue;
+            }
+        };
+        let source_limit = candidate_limit.saturating_sub(hits.len()).max(1);
+        // A present-but-broken index is a failure the caller sees, not a
+        // silent downgrade to the markdown channel: reporting markdown
+        // hits under a "pinned" banner would hide that the index rotted.
+        let result = if has_published_index(&canonical) {
+            read_pinned(&canonical, query, source_limit).await
+        } else {
+            read_markdown(&canonical, query, source_limit).await
+        };
+        match result {
+            Ok((source, source_hits)) => {
+                sources.push(source);
+                let remaining = candidate_limit.saturating_sub(hits.len());
+                hits.extend(source_hits.into_iter().take(remaining));
+            }
+            Err(e) => {
+                let failure = SourceFailure {
+                    path: spec.path.display().to_string(),
+                    reason: format!("{e}"),
+                };
+                if failure_is_fatal(spec, mode) {
+                    return Err(source_unavailable(&failure));
+                }
+                failures.push(failure);
+            }
+        }
+    }
+    let truncated = hits.len() > limit;
+    hits.truncate(limit);
+    Ok(FederatedSearchOutcome {
+        partial: !failures.is_empty(),
+        sources,
+        failures,
+        hits,
+        truncated,
+    })
+}
+
+/// Read one canonical key across every named source.
+///
+/// Two checkouts may legitimately carry the same `ADR-001`; `Ambiguous`
+/// names them all and the caller qualifies the ref. Successful and
+/// ambiguous outcomes retain full scan metadata so an unread source
+/// cannot make the result appear complete.
+///
+/// Under [`QueryMode::Strict`] a failed `required` source aborts the get
+/// from inside the scan — before `Found`/`Ambiguous` is considered.
+/// `AllowPartial` and failed optional sources preserve named failures and
+/// mark the returned metadata partial.
+pub async fn federated_get(
+    specs: &[SourceSpec],
+    key_or_id: &str,
+    mode: QueryMode,
+) -> Result<FederatedGet, ConstellationError> {
+    if key_or_id.trim().is_empty() {
+        return Err(ConstellationError::Resolve(
+            crate::artifact::canonical_key::ResolveError::InvalidSelector {
+                input: key_or_id.to_string(),
+            },
+        ));
+    }
+    let mut found: Vec<(SourceRef, super::facade::PinnedArtifact)> = Vec::new();
+    let mut sources = Vec::new();
+    let mut failures = Vec::new();
+    let mut resolve_errors = Vec::new();
+    for spec in specs {
+        let canonical = match resolve_source(spec) {
+            Ok(c) => c,
+            Err(f) => {
+                if failure_is_fatal(spec, mode) {
+                    return Err(source_unavailable(&f));
+                }
+                failures.push(f);
+                continue;
+            }
+        };
+        if has_published_index(&canonical) {
+            match super::facade::get_pinned_artifact(&canonical.join("lance"), key_or_id).await {
+                Ok(pinned) => {
+                    let source = SourceRef {
+                        source_id: source_id_for(&canonical),
+                        path: canonical.display().to_string(),
+                        channel: SourceChannel::Pinned,
+                        version_key: pinned.generation_id,
+                        source_set_digest: Some(pinned.source_set_digest),
+                    };
+                    sources.push(source.clone());
+                    match pinned.result {
+                        Ok(Some(artifact)) => found.push((source, artifact)),
+                        Ok(None) => {}
+                        Err(error) => resolve_errors
+                            .push(qualify_resolve_candidates(error, &source.source_id)),
+                    }
+                }
+                Err(ConstellationError::Resolve(error)) => {
+                    resolve_errors.push(qualify_resolve_candidates(
+                        error,
+                        &source_id_for(&canonical),
+                    ));
+                }
+                Err(e) => {
+                    let failure = SourceFailure {
+                        path: spec.path.display().to_string(),
+                        reason: format!("{e}"),
+                    };
+                    if failure_is_fatal(spec, mode) {
+                        return Err(source_unavailable(&failure));
+                    }
+                    failures.push(failure);
+                }
+            }
+        } else {
+            match capture_canonical_census(
+                &CaptureRequest::new(&canonical),
+                CaptureLimits::default(),
+            )
+            .await
+            {
+                Ok(captured) => {
+                    // A collision census may diagnose identity, but never supplies a body.
+                    let diagnostic_error = if captured.is_complete() {
+                        None
+                    } else {
+                        match super::facade::resolve_diagnostic_artifact(&captured, key_or_id) {
+                            Err(error)
+                                if !matches!(
+                                    &error,
+                                    crate::artifact::canonical_key::ResolveError::IncompleteCapture {
+                                        ..
+                                    }
+                                ) =>
+                            {
+                                Some(error)
+                            }
+                            _ => {
+                                let failure = SourceFailure {
+                                    path: spec.path.display().to_string(),
+                                    reason: format!(
+                                        "source capture is incomplete: {:?}",
+                                        captured.diagnostics
+                                    ),
+                                };
+                                if failure_is_fatal(spec, mode) {
+                                    return Err(source_unavailable(&failure));
+                                }
+                                failures.push(failure);
+                                continue;
+                            }
+                        }
+                    };
+                    let source = SourceRef {
+                        source_id: source_id_for(&canonical),
+                        path: canonical.display().to_string(),
+                        channel: SourceChannel::Markdown,
+                        version_key: captured.source_set_digest.clone(),
+                        source_set_digest: Some(captured.source_set_digest.clone()),
+                    };
+                    sources.push(source.clone());
+                    if let Some(error) = diagnostic_error {
+                        resolve_errors.push(qualify_resolve_candidates(error, &source.source_id));
+                        continue;
+                    }
+                    let candidates: Vec<_> = captured
+                        .artifacts
+                        .iter()
+                        .map(
+                            |artifact| crate::artifact::canonical_key::ArtifactCandidate {
+                                canonical_key: artifact.canonical_key.clone(),
+                                display_id: artifact.display_id.clone(),
+                                title: artifact.title.clone(),
+                                relative_path: artifact.relative_path.clone().into(),
+                            },
+                        )
+                        .collect();
+                    let selected = match crate::artifact::canonical_key::resolve_artifact(
+                        key_or_id,
+                        &candidates,
+                    ) {
+                        Ok(selected) => selected,
+                        Err(error) => {
+                            resolve_errors
+                                .push(qualify_resolve_candidates(error, &source.source_id));
+                            continue;
+                        }
+                    };
+                    if let Some(resolved) = selected
+                        && let Some(artifact) = captured.artifacts.iter().find(|artifact| {
+                            artifact.canonical_key == resolved.identity.canonical_key
+                        })
+                    {
+                        found.push((
+                            source,
+                            super::facade::PinnedArtifact {
+                                canonical_key: artifact.canonical_key.clone(),
+                                display_id: Some(artifact.display_id.clone()),
+                                title: artifact.title.clone(),
+                                kind: Some(artifact.kind.clone()),
+                                status: Some(artifact.status.clone()),
+                                body: Some(artifact.body.to_string()),
+                                source_path: Some(artifact.relative_path.clone()),
+                                source_digest: Some(artifact.source_digest.clone()),
+                                semantic_state: None,
+                            },
+                        ));
+                    }
+                }
+                Err(e) => {
+                    let failure = SourceFailure {
+                        path: spec.path.display().to_string(),
+                        reason: format!("{e}"),
+                    };
+                    if failure_is_fatal(spec, mode) {
+                        return Err(source_unavailable(&failure));
+                    }
+                    failures.push(failure);
+                }
+            }
+        }
+    }
+    let partial = !failures.is_empty();
+    let result = if let Some(error) = merge_get_resolve_errors(
+        resolve_errors,
+        found.iter().map(
+            |(source, artifact)| crate::artifact::canonical_key::ArtifactCandidate {
+                canonical_key: artifact.canonical_key.clone(),
+                display_id: artifact.display_id.clone().unwrap_or_default(),
+                title: artifact.title.clone(),
+                relative_path: PathBuf::from(&source.source_id)
+                    .join(artifact.source_path.as_deref().unwrap_or_default()),
+            },
+        ),
+    ) {
+        FederatedGetResult::ResolveError(error)
+    } else if found.len() > 1 {
+        FederatedGetResult::Ambiguous {
+            sources: found.iter().map(|(source, _)| source.clone()).collect(),
+        }
+    } else if let Some((source, artifact)) = found.into_iter().next() {
+        FederatedGetResult::Found(Box::new(FederatedArtifact {
+            source,
+            canonical_key: artifact.canonical_key,
+            display_id: artifact.display_id,
+            title: artifact.title,
+            kind: artifact.kind,
+            status: artifact.status,
+            body: artifact.body.unwrap_or_default(),
+            relative_path: artifact.source_path.unwrap_or_default(),
+            source_digest: artifact.source_digest.unwrap_or_default(),
+            semantic_state: artifact.semantic_state,
+        }))
+    } else {
+        FederatedGetResult::NotFound
+    };
+    Ok(FederatedGet {
+        result,
+        read: FederatedReadMetadata {
+            sources,
+            failures,
+            partial,
+        },
+    })
+}
+
+/// Preserve identity diagnostics as identity errors, not source availability
+/// failures. The source id prefixes each candidate path so candidates remain
+/// distinguishable without exposing an absolute source path.
+pub(super) fn qualify_resolve_candidates(
+    error: crate::artifact::canonical_key::ResolveError,
+    source_id: &str,
+) -> crate::artifact::canonical_key::ResolveError {
+    use crate::artifact::canonical_key::ResolveError;
+
+    let qualify = |candidates: Vec<crate::artifact::canonical_key::ArtifactCandidate>| {
+        candidates
+            .into_iter()
+            .map(|mut candidate| {
+                candidate.relative_path = PathBuf::from(source_id).join(candidate.relative_path);
+                candidate
+            })
+            .collect()
+    };
+    match error {
+        ResolveError::Ambiguous { input, candidates } => ResolveError::Ambiguous {
+            input,
+            candidates: qualify(candidates),
+        },
+        ResolveError::ConflictingCanonicalKey { key, candidates } => {
+            ResolveError::ConflictingCanonicalKey {
+                key,
+                candidates: qualify(candidates),
+            }
+        }
+        ResolveError::IncompleteCapture { message } => ResolveError::IncompleteCapture {
+            message: format!("source {source_id}: {message}"),
+        },
+        other => other,
+    }
+}
+
+/// Preserve the primary typed failure while completing an ambiguity with all
+/// source-local claims and successful matches. Normal reads never materialize
+/// the candidate iterator.
+pub(super) fn merge_get_resolve_errors(
+    errors: Vec<crate::artifact::canonical_key::ResolveError>,
+    found: impl IntoIterator<Item = crate::artifact::canonical_key::ArtifactCandidate>,
+) -> Option<crate::artifact::canonical_key::ResolveError> {
+    use crate::artifact::canonical_key::ResolveError;
+
+    let mut errors = errors.into_iter();
+    let mut error = errors.next()?;
+    if let ResolveError::Ambiguous { candidates, .. } = &mut error {
+        for next in errors {
+            match next {
+                ResolveError::Ambiguous {
+                    candidates: extra, ..
+                }
+                | ResolveError::ConflictingCanonicalKey {
+                    candidates: extra, ..
+                } => candidates.extend(extra),
+                _ => {}
+            }
+        }
+        candidates.extend(found);
+        candidates.sort_by(|a, b| {
+            a.canonical_key
+                .cmp(&b.canonical_key)
+                .then_with(|| a.relative_path.cmp(&b.relative_path))
+        });
+    }
+    Some(error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::constellation::capture::CaptureLimits;
+    use crate::constellation::facade::{MaintainCapability, maintain_index, resume_admission};
+    use crate::workspace::ARTIFACT_DIRS;
+    use tempfile::TempDir;
+
+    /// A `.forgeplan` directory with the given `(dir, filename, markdown)`
+    /// artifacts. The tempdir itself plays the `.forgeplan` role — same
+    /// convention the facade tests use.
+    fn workspace_with(files: &[(&str, &str, &str)]) -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        for dir in ARTIFACT_DIRS {
+            std::fs::create_dir_all(tmp.path().join(dir)).unwrap();
+        }
+        for (dir, name, body) in files {
+            std::fs::write(tmp.path().join(dir).join(name), body).unwrap();
+        }
+        tmp
+    }
+
+    fn artifact(id: &str, kind: &str, title: &str, body: &str) -> String {
+        format!("---\nid: {id}\nkind: {kind}\nstatus: draft\ntitle: {title}\n---\n\n{body}\n")
+    }
+
+    async fn publish(tmp: &TempDir) {
+        resume_admission();
+        let capability =
+            MaintainCapability::for_strict_maintenance(tmp.path().canonicalize().unwrap());
+        maintain_index(
+            &capability,
+            CaptureLimits::default(),
+            std::time::Instant::now() + std::time::Duration::from_secs(120),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn search_answers_two_sources_on_their_own_channels() {
+        // One indexed source answers from its pinned generation; the other
+        // has no index and answers from parsed markdown. Both hits carry a
+        // source identity that tells the two apart.
+        let indexed = workspace_with(&[(
+            "adrs",
+            "ADR-010-cache.md",
+            &artifact("ADR-010", "adr", "Cache policy", "sharedterm lives here"),
+        )]);
+        publish(&indexed).await;
+        let markdown = workspace_with(&[(
+            "prds",
+            "PRD-010-ingest.md",
+            &artifact("PRD-010", "prd", "Ingest", "sharedterm appears too"),
+        )]);
+        // A read must not create files, locks or markers in the source —
+        // spec stage 1: "без изменений исходников". Snapshot the tree.
+        let listing_before: Vec<String> = walkdir::WalkDir::new(markdown.path())
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path().display().to_string())
+            .collect();
+
+        let outcome = federated_search(
+            &[
+                SourceSpec::new(indexed.path()),
+                SourceSpec::new(markdown.path()),
+            ],
+            "sharedterm",
+            10,
+            QueryMode::Strict,
+        )
+        .await
+        .unwrap();
+
+        assert!(!outcome.partial, "{:?}", outcome.failures);
+        assert_eq!(outcome.sources.len(), 2);
+        assert_eq!(outcome.hits.len(), 2);
+        let mut channels: Vec<SourceChannel> =
+            outcome.hits.iter().map(|h| h.source.channel).collect();
+        channels.sort_by_key(|c| *c as u8);
+        assert_eq!(
+            channels,
+            vec![SourceChannel::Pinned, SourceChannel::Markdown]
+        );
+        assert_ne!(
+            outcome.hits[0].source.source_id, outcome.hits[1].source.source_id,
+            "two workspaces must never collapse into one source identity"
+        );
+        // The markdown channel's version key is a capture digest, not a
+        // generation id — callers can tell which channel answered.
+        let md_hit = outcome
+            .hits
+            .iter()
+            .find(|h| h.source.channel == SourceChannel::Markdown)
+            .unwrap();
+        assert!(!md_hit.source.version_key.is_empty());
+        assert_eq!(md_hit.semantic_state, None);
+
+        let listing_after: Vec<String> = walkdir::WalkDir::new(markdown.path())
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path().display().to_string())
+            .collect();
+        assert_eq!(
+            listing_before, listing_after,
+            "a federated read must not write into the source workspace"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_source_is_reported_not_folded_into_empty() {
+        let good = workspace_with(&[(
+            "specs",
+            "SPEC-001-a.md",
+            &artifact("SPEC-001", "spec", "Spec", "needle"),
+        )]);
+
+        // The dead source is optional — a required one would abort the
+        // strict read, which is the *other* arm of the contract.
+        let outcome = federated_search(
+            &[
+                SourceSpec::new(good.path()),
+                SourceSpec::new_optional("/definitely/not/a/workspace"),
+            ],
+            "needle",
+            10,
+            QueryMode::Strict,
+        )
+        .await
+        .unwrap();
+
+        assert!(outcome.partial);
+        assert_eq!(outcome.failures.len(), 1);
+        assert_eq!(outcome.hits.len(), 1);
+        assert_eq!(outcome.hits[0].canonical_key, "SPEC-001");
+    }
+
+    #[tokio::test]
+    async fn the_hit_limit_does_not_hide_a_later_source_failure() {
+        let good = workspace_with(&[(
+            "adrs",
+            "ADR-001-a.md",
+            &artifact("ADR-001", "adr", "First decision", "needle"),
+        )]);
+        let missing = good.path().join("missing-workspace");
+        for (role, mode, fatal) in [
+            (SourceRole::Required, QueryMode::Strict, true),
+            (SourceRole::Optional, QueryMode::Strict, false),
+            (SourceRole::Required, QueryMode::AllowPartial, false),
+        ] {
+            let result = federated_search(
+                &[
+                    SourceSpec::new(good.path()),
+                    SourceSpec::new(&missing).with_role(role),
+                ],
+                "needle",
+                1,
+                mode,
+            )
+            .await;
+            if fatal {
+                assert!(
+                    matches!(result, Err(ConstellationError::SourceUnavailable { .. })),
+                    "a later required source must fail strict search even after the hit limit: {result:?}"
+                );
+            } else {
+                let outcome = result.unwrap();
+                assert!(outcome.partial);
+                assert_eq!(outcome.failures.len(), 1);
+                assert_eq!(outcome.failures[0].path, missing.display().to_string());
+                assert_eq!(outcome.hits.len(), 1);
+                assert_eq!(outcome.hits[0].canonical_key, "ADR-001");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_full_hit_budget_still_reports_later_healthy_sources() {
+        let first = workspace_with(&[(
+            "adrs",
+            "ADR-001-a.md",
+            &artifact("ADR-001", "adr", "First decision", "needle"),
+        )]);
+        let later = workspace_with(&[(
+            "adrs",
+            "ADR-002-b.md",
+            &artifact("ADR-002", "adr", "Later decision", "needle"),
+        )]);
+        let outcome = federated_search(
+            &[SourceSpec::new(first.path()), SourceSpec::new(later.path())],
+            "needle",
+            1,
+            QueryMode::Strict,
+        )
+        .await
+        .unwrap();
+        assert!(!outcome.partial);
+        assert!(outcome.failures.is_empty());
+        let source_paths: Vec<_> = outcome.sources.iter().map(|s| s.path.as_str()).collect();
+        let first_path = first.path().canonicalize().unwrap().display().to_string();
+        let later_path = later.path().canonicalize().unwrap().display().to_string();
+        assert_eq!(source_paths, [first_path.as_str(), later_path.as_str()]);
+        assert_eq!(outcome.hits.len(), 1);
+        assert_eq!(outcome.hits[0].canonical_key, "ADR-001");
+        assert!(outcome.truncated, "the later match exceeds the hit budget");
+    }
+
+    #[tokio::test]
+    async fn truncation_distinguishes_an_exact_limit_from_an_extra_match() {
+        for (second_body, truncated) in [("other text", false), ("needle", true)] {
+            let source = workspace_with(&[
+                (
+                    "adrs",
+                    "ADR-001-a.md",
+                    &artifact("ADR-001", "adr", "First decision", "needle"),
+                ),
+                (
+                    "adrs",
+                    "ADR-002-b.md",
+                    &artifact("ADR-002", "adr", "Later decision", second_body),
+                ),
+            ]);
+            let outcome = federated_search(
+                &[SourceSpec::new(source.path())],
+                "needle",
+                1,
+                QueryMode::Strict,
+            )
+            .await
+            .unwrap();
+            assert_eq!(outcome.hits.len(), 1);
+            assert_eq!(outcome.hits[0].canonical_key, "ADR-001");
+            assert_eq!(outcome.truncated, truncated);
+        }
+    }
+
+    #[tokio::test]
+    async fn get_is_ambiguous_when_two_sources_claim_one_key() {
+        // Two checkouts legitimately carrying ADR-001 must never merge —
+        // the caller sees both claimers and qualifies the ref.
+        let a = workspace_with(&[(
+            "adrs",
+            "ADR-001-a.md",
+            &artifact("ADR-001", "adr", "Alpha decision", "alpha body"),
+        )]);
+        let b = workspace_with(&[(
+            "adrs",
+            "ADR-001-b.md",
+            &artifact("ADR-001", "adr", "Beta decision", "beta body"),
+        )]);
+
+        let result = federated_get(
+            &[SourceSpec::new(a.path()), SourceSpec::new(b.path())],
+            "ADR-001",
+            QueryMode::Strict,
+        )
+        .await
+        .unwrap();
+
+        match result.result {
+            FederatedGetResult::Ambiguous { sources } => {
+                assert_eq!(sources.len(), 2);
+                assert_ne!(sources[0].source_id, sources[1].source_id);
+                assert_eq!(result.read.sources.len(), 2);
+                assert!(!result.read.partial);
+            }
+            other => panic!("two claimers must be ambiguous, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn single_source_get_preserves_conflict_candidates_and_multi_source_isolation() {
+        let conflicted = workspace_with(&[
+            (
+                "prds",
+                "PRD-001-a.md",
+                &artifact("PRD-001", "prd", "Alpha", "a"),
+            ),
+            (
+                "prds",
+                "PRD-001-b.md",
+                &artifact("PRD-001", "prd", "Beta", "b"),
+            ),
+            (
+                "prds",
+                "PRD-002-unrelated.md",
+                &artifact("PRD-002", "prd", "Unrelated", "unrelated body"),
+            ),
+        ]);
+        let healthy = workspace_with(&[(
+            "prds",
+            "PRD-001-c.md",
+            &artifact("PRD-001", "prd", "Healthy", "c"),
+        )]);
+        let read = federated_get(
+            &[SourceSpec::new(conflicted.path())],
+            "PRD-001",
+            QueryMode::Strict,
+        )
+        .await
+        .unwrap();
+        match read.result {
+            FederatedGetResult::ResolveError(
+                crate::artifact::canonical_key::ResolveError::ConflictingCanonicalKey {
+                    key,
+                    candidates,
+                },
+            ) => {
+                assert_eq!(key, "PRD-001");
+                assert_eq!(candidates.len(), 2);
+                assert!(candidates.iter().any(|candidate| {
+                    candidate.title == "Alpha"
+                        && candidate
+                            .relative_path
+                            .to_string_lossy()
+                            .starts_with("src:")
+                }));
+                assert!(candidates.iter().any(|candidate| candidate.title == "Beta"));
+                assert_eq!(read.read.sources.len(), 1);
+            }
+            other => panic!("expected typed source conflict, got {other:?}"),
+        }
+
+        let incomplete = federated_get(
+            &[SourceSpec::new(conflicted.path())],
+            "PRD-002",
+            QueryMode::Strict,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            incomplete,
+            ConstellationError::SourceUnavailable { .. }
+        ));
+
+        for specs in [
+            vec![
+                SourceSpec::new(conflicted.path()),
+                SourceSpec::new(healthy.path()),
+            ],
+            vec![
+                SourceSpec::new_optional(conflicted.path()),
+                SourceSpec::new(healthy.path()),
+            ],
+        ] {
+            match federated_get(&specs, "PRD-001", QueryMode::Strict).await {
+                Ok(read) => match read.result {
+                    FederatedGetResult::ResolveError(
+                        crate::artifact::canonical_key::ResolveError::ConflictingCanonicalKey {
+                            candidates,
+                            ..
+                        },
+                    ) => {
+                        assert_eq!(candidates.len(), 2);
+                        assert!(candidates.iter().all(|candidate| {
+                            candidate
+                                .relative_path
+                                .to_string_lossy()
+                                .starts_with("src:")
+                        }));
+                        assert_eq!(read.read.sources.len(), 2);
+                    }
+                    other => panic!("expected typed source conflict, got {other:?}"),
+                },
+                Err(error) => panic!(
+                    "known identity conflicts must remain typed and prevent an unqualified hit: {error:?}"
+                ),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn markdown_get_refuses_a_shared_alias_but_accepts_each_key() {
+        let first = "---\nid: PRD-001\nslug: prd-alpha\nkind: prd\nstatus: draft\ntitle: Alpha\n---\n\nalpha body\n";
+        let second = "---\nid: PRD-001\nslug: prd-beta\nkind: prd\nstatus: draft\ntitle: Beta\n---\n\nbeta body\n";
+        let source = workspace_with(&[("prds", "alpha.md", first), ("prds", "beta.md", second)]);
+        let specs = [SourceSpec::new(source.path())];
+
+        let ambiguous = federated_get(&specs, "PRD-001", QueryMode::Strict)
+            .await
+            .unwrap();
+        assert!(matches!(
+            ambiguous.result,
+            FederatedGetResult::ResolveError(
+                crate::artifact::canonical_key::ResolveError::Ambiguous { .. }
+            )
+        ));
+        assert_eq!(ambiguous.read.sources.len(), 1);
+
+        for (key, body) in [("prd-alpha", "alpha body"), ("prd-beta", "beta body")] {
+            let result = federated_get(&specs, key, QueryMode::Strict).await.unwrap();
+            match result.result {
+                FederatedGetResult::Found(artifact) => {
+                    assert_eq!(artifact.canonical_key, key);
+                    assert_eq!(artifact.body.trim(), body);
+                }
+                other => panic!("canonical key must select one document: {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn get_reads_a_key_through_the_markdown_channel() {
+        let tmp = workspace_with(&[(
+            "notes",
+            "NOTE-001-field.md",
+            &artifact("NOTE-001", "note", "Field note", "the exact bytes"),
+        )]);
+
+        let result = federated_get(
+            &[SourceSpec::new(tmp.path())],
+            "NOTE-001",
+            QueryMode::Strict,
+        )
+        .await
+        .unwrap();
+
+        match result.result {
+            FederatedGetResult::Found(artifact) => {
+                assert_eq!(artifact.source.channel, SourceChannel::Markdown);
+                assert!(artifact.body.contains("the exact bytes"));
+                assert_eq!(artifact.semantic_state, None);
+                assert_eq!(
+                    artifact.source.source_set_digest,
+                    result.read.sources[0].source_set_digest
+                );
+            }
+            other => panic!("expected Found, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_prefers_the_pinned_generation_when_it_exists() {
+        let tmp = workspace_with(&[(
+            "adrs",
+            "ADR-020-pinned.md",
+            &artifact("ADR-020", "adr", "Pinned", "stored body"),
+        )]);
+        publish(&tmp).await;
+
+        let result = federated_get(&[SourceSpec::new(tmp.path())], "ADR-020", QueryMode::Strict)
+            .await
+            .unwrap();
+
+        match result.result {
+            FederatedGetResult::Found(artifact) => {
+                assert_eq!(artifact.source.channel, SourceChannel::Pinned);
+                assert_ne!(
+                    artifact.source.version_key,
+                    artifact.source.source_set_digest.as_deref().unwrap()
+                );
+                assert_eq!(result.read.sources.len(), 1);
+                assert_eq!(
+                    result.read.sources[0].source_set_digest,
+                    artifact.source.source_set_digest
+                );
+            }
+            other => panic!("expected Found, got {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_symlinked_source_root_is_refused() {
+        let real = workspace_with(&[(
+            "adrs",
+            "ADR-030-a.md",
+            &artifact("ADR-030", "adr", "Real", "body"),
+        )]);
+        // The alias lives inside its own tempdir — the shared system temp
+        // dir would leak a stale `alias-link` between runs.
+        let holder = TempDir::new().unwrap();
+        let link = holder.path().join("alias-link");
+        std::os::unix::fs::symlink(real.path(), &link).unwrap();
+
+        // Optional role — a refused symlink boundary is a named failure,
+        // not a fatal one, when the caller said the source may be absent.
+        let outcome = federated_search(
+            &[SourceSpec::new_optional(&link)],
+            "body",
+            10,
+            QueryMode::Strict,
+        )
+        .await
+        .unwrap();
+
+        assert!(outcome.partial);
+        assert_eq!(outcome.failures.len(), 1);
+        assert!(outcome.failures[0].reason.contains("symlink"));
+        assert!(outcome.hits.is_empty());
+    }
+
+    // -- Qualified refs (`KEY@qualifier`) --------------------------------------
+
+    #[test]
+    fn parse_qualified_ref_splits_on_the_first_at() {
+        assert_eq!(
+            parse_qualified_ref("ADR-001@src:b7d6f0e1a2c3d4e5"),
+            ("ADR-001", Some("src:b7d6f0e1a2c3d4e5"))
+        );
+        assert_eq!(
+            parse_qualified_ref("ADR-001@ws-b"),
+            ("ADR-001", Some("ws-b"))
+        );
+        // No `@` — the input is the whole key.
+        assert_eq!(parse_qualified_ref("ADR-001"), ("ADR-001", None));
+        // Empty halves are not a qualifier — the ref comes back whole.
+        assert_eq!(parse_qualified_ref("ADR-001@"), ("ADR-001@", None));
+        assert_eq!(parse_qualified_ref("@ws-b"), ("@ws-b", None));
+        // A second `@` is qualifier text, not a second separator.
+        assert_eq!(parse_qualified_ref("a@b@c"), ("a", Some("b@c")));
+    }
+
+    /// A forgeplan-shaped dir at an explicit path — `workspace_with` cannot
+    /// name its tempdir, and path-fragment matching needs a known fragment.
+    fn workspace_at(path: &Path) {
+        for dir in ARTIFACT_DIRS {
+            std::fs::create_dir_all(path.join(dir)).unwrap();
+        }
+    }
+
+    #[test]
+    fn specs_matching_narrows_by_id_prefix_and_path_fragment() {
+        let holder = TempDir::new().unwrap();
+        let ws_a = holder.path().join("ws-alpha");
+        let ws_b = holder.path().join("ws-beta");
+        workspace_at(&ws_a);
+        workspace_at(&ws_b);
+        let specs = vec![SourceSpec::new(&ws_a), SourceSpec::new(&ws_b)];
+
+        // Exact `src:` id — the full id names exactly one source.
+        let id_a = spec_source_id(&specs[0]).expect("ws-a resolves");
+        let id_b = spec_source_id(&specs[1]).expect("ws-beta resolves");
+        assert_ne!(id_a, id_b);
+        let by_id = specs_matching(&specs, &id_a);
+        assert_eq!(by_id.len(), 1);
+        assert_eq!(by_id[0].path, specs[0].path);
+
+        // A strict prefix of the id still narrows to one.
+        let prefix = &id_a[..id_a.len() - 4];
+        assert!(prefix.starts_with("src:"));
+        let by_prefix = specs_matching(&specs, prefix);
+        assert_eq!(by_prefix.len(), 1);
+        assert_eq!(by_prefix[0].path, specs[0].path);
+
+        // A path fragment names the source the string way.
+        let by_path = specs_matching(&specs, "ws-beta");
+        assert_eq!(by_path.len(), 1);
+        assert_eq!(by_path[0].path, specs[1].path);
+
+        // A fragment shared by both paths matches both — ambiguity is the
+        // caller's diagnostic, not this helper's.
+        assert_eq!(specs_matching(&specs, "ws-").len(), 2);
+
+        // Zero matches is an answer, not an error.
+        assert!(specs_matching(&specs, "no-such-source").is_empty());
+    }
+
+    // -- Required/optional source roles ----------------------------------------
+
+    #[test]
+    fn source_spec_builders_pick_a_role() {
+        let required = SourceSpec::new("/anywhere");
+        assert_eq!(required.role, SourceRole::Required);
+        let optional = SourceSpec::new_optional("/anywhere");
+        assert_eq!(optional.role, SourceRole::Optional);
+        // `with_role` is how the registry applies a stored role.
+        let demoted = required.with_role(SourceRole::Optional);
+        assert_eq!(demoted.role, SourceRole::Optional);
+        assert_eq!(QueryMode::default(), QueryMode::Strict);
+    }
+
+    #[tokio::test]
+    async fn a_dead_required_source_fails_a_strict_search() {
+        // The spec's contract: a required source that cannot answer must
+        // abort the query — a partial envelope would read as complete.
+        let good = workspace_with(&[(
+            "specs",
+            "SPEC-001-a.md",
+            &artifact("SPEC-001", "spec", "Spec", "needle"),
+        )]);
+
+        let err = federated_search(
+            &[
+                SourceSpec::new(good.path()),
+                SourceSpec::new("/definitely/not/a/workspace"),
+            ],
+            "needle",
+            10,
+            QueryMode::Strict,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err_code(&err), "source_unavailable");
+        match &err {
+            ConstellationError::SourceUnavailable { detail } => {
+                assert!(detail.contains("/definitely/not/a/workspace"), "{detail}");
+            }
+            other => panic!("expected SourceUnavailable, got {other:?}"),
+        }
+    }
+
+    fn err_code(e: &ConstellationError) -> &'static str {
+        e.code().as_str()
+    }
+
+    #[tokio::test]
+    async fn a_dead_optional_source_is_partial_not_fatal() {
+        let good = workspace_with(&[(
+            "specs",
+            "SPEC-001-a.md",
+            &artifact("SPEC-001", "spec", "Spec", "needle"),
+        )]);
+
+        let outcome = federated_search(
+            &[
+                SourceSpec::new(good.path()),
+                SourceSpec::new_optional("/definitely/not/a/workspace"),
+            ],
+            "needle",
+            10,
+            QueryMode::Strict,
+        )
+        .await
+        .unwrap();
+
+        assert!(outcome.partial);
+        assert_eq!(outcome.failures.len(), 1);
+        assert_eq!(outcome.hits.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn allow_partial_demotes_a_dead_required_source() {
+        // `--allow-partial` / `strict: false`: the caller explicitly
+        // accepts a partial answer, so even a required source's outage is
+        // reported in `failures` rather than aborting the read.
+        let good = workspace_with(&[(
+            "specs",
+            "SPEC-001-a.md",
+            &artifact("SPEC-001", "spec", "Spec", "needle"),
+        )]);
+
+        let outcome = federated_search(
+            &[
+                SourceSpec::new(good.path()),
+                SourceSpec::new("/definitely/not/a/workspace"),
+            ],
+            "needle",
+            10,
+            QueryMode::AllowPartial,
+        )
+        .await
+        .unwrap();
+
+        assert!(outcome.partial);
+        assert_eq!(outcome.failures.len(), 1);
+        assert_eq!(outcome.hits.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn get_reports_a_dead_required_source_even_when_another_answers() {
+        // The order matters: the dead required source sits *after* the
+        // one that holds the key, and the failure must still abort — the
+        // alternative is a `Found` that quietly conceals an outage.
+        let good = workspace_with(&[(
+            "notes",
+            "NOTE-001-field.md",
+            &artifact("NOTE-001", "note", "Field note", "the exact bytes"),
+        )]);
+
+        let err = federated_get(
+            &[
+                SourceSpec::new(good.path()),
+                SourceSpec::new("/definitely/not/a/workspace"),
+            ],
+            "NOTE-001",
+            QueryMode::Strict,
+        )
+        .await
+        .unwrap_err();
+
+        match err {
+            ConstellationError::SourceUnavailable { detail } => {
+                assert!(detail.contains("/definitely/not/a/workspace"), "{detail}");
+            }
+            other => panic!("expected SourceUnavailable, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_with_a_dead_optional_source_still_finds_the_key() {
+        let good = workspace_with(&[(
+            "notes",
+            "NOTE-001-field.md",
+            &artifact("NOTE-001", "note", "Field note", "the exact bytes"),
+        )]);
+
+        let result = federated_get(
+            &[
+                SourceSpec::new(good.path()),
+                SourceSpec::new_optional("/definitely/not/a/workspace"),
+            ],
+            "NOTE-001",
+            QueryMode::Strict,
+        )
+        .await
+        .unwrap();
+
+        match result.result {
+            FederatedGetResult::Found(artifact) => {
+                assert_eq!(artifact.canonical_key, "NOTE-001");
+                assert!(artifact.body.contains("the exact bytes"));
+                assert!(result.read.partial);
+                assert_eq!(result.read.failures.len(), 1);
+                assert_eq!(result.read.failures[0].path, "/definitely/not/a/workspace");
+                assert_eq!(result.read.sources.len(), 1);
+                assert!(result.read.sources[0].source_set_digest.is_some());
+            }
+            other => panic!("expected Found, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_with_dead_required_source_allows_named_partial_found() {
+        let good = workspace_with(&[(
+            "notes",
+            "NOTE-001-field.md",
+            &artifact("NOTE-001", "note", "Field note", "visible candidate body"),
+        )]);
+        let read = federated_get(
+            &[
+                SourceSpec::new(good.path()),
+                SourceSpec::new("/definitely/not/a/workspace"),
+            ],
+            "NOTE-001",
+            QueryMode::AllowPartial,
+        )
+        .await
+        .unwrap();
+        match read.result {
+            FederatedGetResult::Found(artifact) => {
+                assert_eq!(artifact.canonical_key, "NOTE-001");
+                assert!(artifact.body.contains("visible candidate body"));
+                assert!(read.read.partial);
+                assert_eq!(read.read.failures.len(), 1);
+                assert_eq!(read.read.failures[0].path, "/definitely/not/a/workspace");
+                assert_eq!(read.read.sources.len(), 1);
+            }
+            other => panic!("expected partial Found, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn ambiguous_get_preserves_unread_source_failure() {
+        let a = workspace_with(&[(
+            "adrs",
+            "ADR-001-a.md",
+            &artifact("ADR-001", "adr", "Alpha decision", "alpha candidate"),
+        )]);
+        let b = workspace_with(&[(
+            "adrs",
+            "ADR-001-b.md",
+            &artifact("ADR-001", "adr", "Beta decision", "beta candidate"),
+        )]);
+        let read = federated_get(
+            &[
+                SourceSpec::new(a.path()),
+                SourceSpec::new(b.path()),
+                SourceSpec::new_optional("/definitely/not/a/workspace"),
+            ],
+            "ADR-001",
+            QueryMode::Strict,
+        )
+        .await
+        .unwrap();
+        match read.result {
+            FederatedGetResult::Ambiguous { sources } => {
+                assert_eq!(sources.len(), 2);
+                assert!(
+                    sources
+                        .iter()
+                        .all(|source| source.source_set_digest.is_some())
+                );
+                assert!(read.read.partial);
+                assert_eq!(read.read.failures.len(), 1);
+                assert_eq!(read.read.failures[0].path, "/definitely/not/a/workspace");
+                assert_eq!(read.read.sources.len(), 2);
+            }
+            other => panic!("expected partial ambiguity, got {other:?}"),
+        }
+    }
+}

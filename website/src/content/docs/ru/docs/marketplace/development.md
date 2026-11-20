@@ -23,7 +23,10 @@ plugin-name/
 
 ## Паттерн агентского RAG
 
-Навыки используют **агентский RAG** - интеллектуальное извлечение, которое загружает только около 300 строк за раз, а не всю базу знаний. Пример использования этого паттерна в реальном мире можно найти в [плагине Forgeplan Workflow](/docs/marketplace/forgeplan-workflow/), который использует роутер `SKILL.md` для предоставления разделов методологии по запросу.
+Навыки могут использовать **агентский RAG**: роутер `SKILL.md` направляет
+хост к нужным файлам вместо загрузки всего корпуса. Пример —
+[Forgeplan Workflow](/ru/docs/marketplace/forgeplan-workflow/).
+Около 300 строк на чтение — авторская рекомендация, не лимит загрузчика.
 
 ### Как это работает:
 
@@ -60,19 +63,20 @@ skill-name/
 ## Публикация на маркетплейсе
 
 ```bash
-# 1. Скопируйте плагин на маркетплейс
-cp -R my-plugin forgeplan-marketplace/plugins/
-
-# 2. Добавьте в каталог marketplace.json
-# Отредактируйте .claude-plugin/marketplace.json → plugins[]
-
-# 3. Валидируйте
+# В отдельном проверенном checkout marketplace разместите plugins/my-plugin/.
+# Добавьте его в .claude-plugin/marketplace.json и увеличьте catalog metadata.version.
+node scripts/gen-omp-catalog.js
 ./scripts/validate-all-plugins.sh my-plugin
 
 # 4. Создайте PR
 git add -A && git commit -m "feat: add my-plugin v1.0.0"
 gh pr create --base main
 ```
+
+Это пример вклада в marketplace, не команда для запуска в проекте Forgeplan.
+Проверяйте и добавляйте только нужные файлы: `git add -A` включит и чужие
+изменения. До коммита или PR выполните актуальные инструкции CONTRIBUTING
+и обязательные проверки marketplace.
 
 ## Примеры плагинов
 
@@ -85,5 +89,6 @@ gh pr create --base main
 ### Требования к PR:
 - Структура плагина валидирована
 - Версия обновлена в plugin.json + marketplace.json
+- При изменении каталога увеличен `metadata.version` и пересоздан `.omp-plugin/marketplace.json`
 - README с командами установки
 - Отсутствие секретов или учётных данных

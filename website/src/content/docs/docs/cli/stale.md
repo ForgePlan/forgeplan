@@ -3,14 +3,12 @@ title: forgeplan stale
 description: "List artifacts with expired valid_until - the refresh backlog at a glance."
 ---
 
-`forgeplan stale` finds every artifact whose `valid_until` is in the past. These are
-the "stale" candidates in the lifecycle state machine - they have not yet been
-deprecated, but their evidence is no longer fresh, so R_eff has been capped at 0.1
-(stale, not absent).
+`forgeplan stale` lists records with overdue `valid_until`. It does not rewrite
+their status or cached R_eff. An expired artifact can still have stored
+`status: active`; expiry detection and lifecycle transition are separate.
 
-Unlike `decay`, which previews upcoming expirations, `stale` is reactive: it lists
-the ones you already missed. Run it at session start so you can `renew` or `reopen`
-them before starting new work.
+Evidence scoring applies its own expiry rule when scores are computed. This
+listing is not a gradual decay simulation.
 
 ## When to use
 
@@ -22,7 +20,7 @@ them before starting new work.
 ## When NOT to use
 
 - As a gate on `activate` - use `validate` and `review` instead.
-- On Notes (they auto-expire after 90 days and are hidden by default anyway).
+- To apply a fixed Note TTL — this command does not establish automatic 90-day expiry or hide Notes by that rule.
 
 ## Usage
 
@@ -46,22 +44,14 @@ forgeplan stale [OPTIONS]
 forgeplan stale
 ```
 
-Output:
-
-```text
-Stale artifacts (valid_until expired)
-─────────────────────────────────────
-ADR-002  LanceDB schema v2    expired  12d ago   R_eff: 0.90 → 0.10
-PRD-007  Search intelligence  expired  45d ago   R_eff: 0.80 → 0.10
-ADR-004  Auth token strategy  expired   3d ago   R_eff: 1.00 → 0.10
-
-3 artifacts need renewal or reopening
-```
+The text report prints `ID`, `Title`, `Expired` and `Days ago`.
+It does not show a before/after R_eff column. Use `score` to inspect scoring
+impact separately; expiry of the decision is not automatically expiry of every supporting pack.
 
 ### Machine-readable
 
 ```bash
-forgeplan stale --json | jq '.[] | select(.days_overdue > 30)'
+forgeplan stale --json | jq '.stale[] | select(.days_expired > 30)'
 ```
 
 Filter artifacts overdue by more than 30 days - high-priority refresh candidates.
@@ -70,8 +60,10 @@ Filter artifacts overdue by more than 30 days - high-priority refresh candidates
 
 ```bash
 forgeplan health && forgeplan stale
-# for each stale artifact: renew (extend) OR reopen (new draft)
-forgeplan renew ADR-002 --reason "still valid, extend 6m" --until 2026-10-01
+# Inspect stored status and the reason for expiry before choosing a transition
+forgeplan get ADR-002 --json
+# Example for stored status stale, after a fresh review justifies the date:
+forgeplan renew ADR-002 --reason "reviewed supporting evidence" --until 2027-04-23
 forgeplan reopen PRD-007 --reason "replace with new approach"
 ```
 
@@ -81,11 +73,11 @@ forgeplan reopen PRD-007 --reason "replace with new approach"
 |----------------|---------------------------------------------------------|
 | ID / title     | artifact identity                                       |
 | expired Xd ago | days past `valid_until`                                 |
-| R_eff drop     | previous cached R_eff vs current (capped at 0.1)        |
+| Days ago | elapsed days past the parsed date; no R_eff change is performed by listing |
 
-For each stale artifact you have three options:
+Choose based on both the review and stored lifecycle state:
 
-1. **`renew`** - the decision is still correct; extend `valid_until` with a new reason.
+1. **`renew`** — for a stored `stale` decision after a justified review. An expired record still stored `active` does not permit an `active → active` renewal.
 2. **`reopen`** - the context has changed; create a new draft and deprecate the old one (lineage preserved).
 3. **`deprecate`** - the decision no longer applies; mark it terminal with a reason.
 
@@ -100,8 +92,25 @@ Unified Workflow protocol treats stale clearance as mandatory before picking up 
 
 ## See also
 
-- [`forgeplan decay`](/docs/cli/decay/) - preview upcoming expirations
+- [`forgeplan decay`](/docs/cli/decay/) - separate scoring impact report
 - [`forgeplan renew`](/docs/cli/renew/) - extend valid_until for still-valid decisions
 - [`forgeplan reopen`](/docs/cli/reopen/) - replace stale with a new draft (lineage)
 - [`forgeplan deprecate`](/docs/cli/deprecate/) - terminal state for no-longer-valid decisions
 - [CLI overview](/docs/cli/)
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan stale --help`.
+
+```text
+Detect stale artifacts with expired valid_until
+
+Usage: forgeplan stale [OPTIONS]
+
+Options:
+      --json     Output as JSON for machine consumption
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

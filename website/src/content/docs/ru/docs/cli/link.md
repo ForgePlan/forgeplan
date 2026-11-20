@@ -5,7 +5,7 @@ description: "Связывает два артефакта типизирова�
 
 Создает типизированную, направленную связь от одного артефакта к другому. Связи - это то, как Forgeplan строит граф решений; они обеспечивают работу проверок состояния, подсчета R_eff, графа зависимостей Mermaid, топологической сортировки для планирования спринтов и обнаружения слепых пятен.
 
-Каждый значимый артефакт должен иметь хотя бы одну входящую или исходящую связь. Сироты (артефакты без связей) - это главный сигнал, выявляемый [`forgeplan health`](/docs/cli/health/).
+У значимого артефакта должна быть осмысленная связь. [`forgeplan health`](/ru/docs/cli/health/) показывает сирот; не добавляйте бессодержательные связи только ради счётчика.
 
 ## Использование
 
@@ -48,7 +48,7 @@ Forgeplan использует закрытый словарь. Принимаю
 forgeplan new evidence "Benchmark: BM25 vs TF-IDF on Russian corpus"
 # ... заполните verdict, congruence_level, evidence_type ...
 forgeplan link EVID-001 PRD-039 --relation informs
-forgeplan score PRD-039   # R_eff теперь должен быть > 0
+forgeplan score PRD-039   # изучите вклад; одна связь не доказывает положительную оценку
 ```
 
 Выведите RFC из PRD:
@@ -86,13 +86,13 @@ forgeplan link SPEC-003 PRD-018 --relation refines
 
 ## Направление имеет значение
 
-Связи являются направленными. `forgeplan link PRD-001 EVID-001 --relation informs` означает *PRD-001 информирует EVID-001*, что почти никогда не является желаемым результатом. Стандартный шаблон всегда **доказательство → решение**:
+Связи направлены: `forgeplan link PRD-001 EVID-001 --relation informs` означает *PRD-001 информирует EVID-001*. Канонический поток поддержки: **доказательство → решение**. Скорер находит доказательства в обе стороны, но смысл связей от этого не становится взаимозаменяемым.
 
 ```bash
 forgeplan link EVID-001 PRD-001 --relation informs   # правильно
 ```
 
-Если вы установили связь в неправильном направлении, исправьте это с помощью [`forgeplan unlink`](/docs/cli/unlink/), а затем создайте новую `link`.
+При неверном направлении удалите конкретную связь через [`forgeplan unlink`](/ru/docs/cli/unlink/) и создайте правильную.
 
 ## Самостоятельные ссылки заблокированы
 
@@ -100,16 +100,39 @@ forgeplan link EVID-001 PRD-001 --relation informs   # правильно
 
 ## Что происходит после связывания
 
-- Связь сохраняется в таблице `links` в LanceDB.
-- [`forgeplan score`](/docs/cli/score/) пересчитывает R_eff для цели - связи `informs` от доказательств с `verdict: supports` повышают оценку.
-- [`forgeplan graph`](/docs/cli/graph/) включает ребро в вывод Mermaid.
-- [`forgeplan blocked`](/docs/cli/blocked/) и [`forgeplan order`](/docs/cli/order/) повторно запускают топологическую сортировку по рёбрам `based_on` / `refines`.
+- Канонический Markdown хранит связь; legacy-таблица `relations` производная. На migrated-workspace изменения идут file-first с reconcile Constellation, без воссоздания старых таблиц.
+- Вызовите [`forgeplan score`](/ru/docs/cli/score/) для решения. Новый supports-пакет не обязательно увеличивает минимум: более слабый допустимый пакет может его уменьшить.
+- [`forgeplan graph`](/ru/docs/cli/graph/) показывает ребро.
+- [`forgeplan blocked`](/ru/docs/cli/blocked/) и [`forgeplan order`](/ru/docs/cli/order/) используют структурные зависимости `based_on` / `refines` / `supersedes`, а не блокирующую связь `informs`.
 
 ## См. также
 
-- [Обзор CLI](/docs/cli/)
-- [`forgeplan unlink`](/docs/cli/unlink/) - удалить связь
-- [`forgeplan score`](/docs/cli/score/) - оценить R_eff после связывания доказательств
-- [`forgeplan graph`](/docs/cli/graph/) - визуализировать граф связей
-- [`forgeplan health`](/docs/cli/health/) - найти сирот (артефакты без связей) и недостающие доказательства
-- [Руководство по методологии](/docs/methodology/overview/)
+- [Обзор CLI](/ru/docs/cli/)
+- [`forgeplan unlink`](/ru/docs/cli/unlink/) - удалить связь
+- [`forgeplan score`](/ru/docs/cli/score/) - оценка R_eff
+- [`forgeplan graph`](/ru/docs/cli/graph/) - граф
+- [`forgeplan health`](/ru/docs/cli/health/) - задолженность
+- [Методология](/ru/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan link --help`.
+
+```text
+Link two artifacts with a typed relationship
+
+Usage: forgeplan link [OPTIONS] <SOURCE> <TARGET>
+
+Arguments:
+  <SOURCE>  Source artifact ID
+  <TARGET>  Target artifact ID
+
+Options:
+      --relation <RELATION>     Relationship type: informs, based_on, supersedes, contradicts, refines [default: informs]
+      --replace                 Issue #286: if an edge already exists between source and target with a DIFFERENT relation, replace it (idempotent upsert). Without this flag, an existing edge with a different relation surfaces as an error and the call fails — matching the pre-issue-#286 behaviour. Used to fix mis-typed `based_on` / `informs` choices without destroying the artifact via `forgeplan delete`
+      --auto-activate-complete  Issue #288 Part A: when the link source is a complete evidence artifact (kind=evidence + status=draft + body has verdict + congruence_level), silently activate it draft → active in the same call. Mirrors `auto_activate_source_if_complete` on the MCP `forgeplan_link` tool. No-op when the source doesn't meet the criteria
+  -h, --help                    Print help
+  -V, --version                 Print version
+```
+<!-- forgeplan-runtime:end -->

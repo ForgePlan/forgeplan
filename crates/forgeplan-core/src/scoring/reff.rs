@@ -3,7 +3,8 @@ use std::collections::HashSet;
 use chrono::{NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::db::store::{ArtifactFilter, LanceStore};
+use crate::constellation::workspace_read::WorkspaceRead;
+use crate::db::store::{ArtifactFilter, ArtifactRecord, LanceStore};
 use crate::scoring::evidence::parse_evidence_from_record;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,6 +87,19 @@ fn is_expired(valid_until: Option<NaiveDateTime>) -> bool {
 /// never feed this into an aggregate (use `r_eff` for that, ADR-020).
 pub fn raw_evidence_score(e: &EvidenceItem) -> f64 {
     score_evidence(e)
+}
+
+/// Effective score of a single evidence item — the number the recursive engine
+/// actually feeds into the weakest-link min.
+///
+/// This differs from [`raw_evidence_score`] by the evidence-type modifier
+/// (`benchmark` −0.1, `audit` −0.2; see [`evidence_type_to_cl_modifier`]).
+/// Breakdown renderers must show THIS value: printing the raw score next to an
+/// `R_eff` derived from the full one produced output no reader could reconcile
+/// — an `audit` pack rendered as `= 0.5` above an `R_eff` of 0.30, with nothing
+/// in between to explain the gap.
+pub fn full_evidence_score(e: &EvidenceItem) -> f64 {
+    score_evidence_full(e)
 }
 
 /// Score a single evidence item.
@@ -178,7 +192,23 @@ impl ReffCi {
 /// With N=9 evidence, uncertainty ≈ 0.10 (tighter).
 /// With N=100 evidence, uncertainty ≈ 0.03 (confident).
 pub fn r_eff_with_ci(evidence: &[EvidenceItem]) -> ReffCi {
-    let point = r_eff(evidence);
+    r_eff_ci_around(r_eff(evidence), evidence)
+}
+
+/// Same band, centred on an externally supplied point estimate.
+///
+/// Callers that report the RECURSIVE score (`r_eff_recursive`, which also walks
+/// dependencies and applies the evidence-type modifier) must use this and pass
+/// that score. Deriving the band from `r_eff()` instead produced an interval
+/// that did not contain the number printed beside it — `forgeplan score
+/// PROB-047 --json` emitted `r_eff: 0.00` next to `r_eff_ci.point: 1.00`, and
+/// the text band `[0.83 — 1.00]` sat entirely above an `R_eff` of 0.80. A
+/// confidence interval that excludes its own point estimate is worse than none.
+///
+/// The width heuristic is unchanged: it describes how much evidence the
+/// estimate rests on, which is independent of where the estimate landed.
+pub fn r_eff_ci_around(point: f64, evidence: &[EvidenceItem]) -> ReffCi {
+    let point = point.clamp(0.0, 1.0);
     // ADR-020: the CI describes the same population the point estimate was
     // computed over — terminal-status packs are excluded from both, so a
     // superseded pack neither narrows the interval nor counts as "evidence".
@@ -189,10 +219,17 @@ pub fn r_eff_with_ci(evidence: &[EvidenceItem]) -> ReffCi {
         .count();
 
     if count == 0 {
+        // No eligible evidence, so the band has no width to describe — but
+        // carry the caller's point through rather than substituting 0.0.
+        // Today the two always coincide (an artifact with no eligible evidence
+        // has self_score 0.0, and the final score can never exceed it), so this
+        // is not a live divergence. It is written this way because silently
+        // discarding the supplied point is precisely the class of bug this
+        // function was introduced to remove.
         return ReffCi {
-            point: 0.0,
-            low: 0.0,
-            high: 0.0,
+            point,
+            low: point,
+            high: point,
             evidence_count: 0,
             stale_count: 0,
         };
@@ -254,7 +291,95 @@ fn score_evidence_full(e: &EvidenceItem) -> f64 {
     (base - penalty - type_mod).max(0.0)
 }
 
-/// Recursively compute R_eff for an artifact and its dependency chain.
+/// The artifact graph the recursive engine walks.
+///
+/// Both cases answer the same four questions — an id's outgoing edges, its
+/// incoming edges, one record, every evidence record — because both
+/// projections were built from the same canonical Markdown. Naming the two
+/// cases HERE is what keeps one engine rather than two: a separate scorer
+/// written for the captured view would be free to drift from this one, and
+/// the drift would only ever surface as a migrated workspace disagreeing
+/// with its own legacy answer.
+pub enum AssuranceSource<'a> {
+    /// The legacy Lance projection, for a workspace Constellation has not
+    /// claimed.
+    Store(
+        &'a LanceStore,
+        &'a dyn crate::workspace::lock::WorkspaceReadPermit,
+    ),
+    /// One captured/pinned read view of the canonical Markdown, for a
+    /// workspace the constellation protocol owns.
+    Read(&'a WorkspaceRead),
+}
+
+impl AssuranceSource<'_> {
+    /// Outgoing `(target, relation)` edges of one artifact.
+    async fn outgoing(&self, id: &str) -> anyhow::Result<Vec<(String, String)>> {
+        match self {
+            Self::Store(store, permit) => store.get_relations(*permit, id).await,
+            Self::Read(read) => Ok(read.get_relations(id)),
+        }
+    }
+
+    /// Incoming `(source, relation)` edges of one artifact.
+    async fn incoming(&self, id: &str) -> anyhow::Result<Vec<(String, String)>> {
+        match self {
+            Self::Store(store, permit) => store.get_incoming_relations(*permit, id).await,
+            Self::Read(read) => Ok(read.get_incoming_relations(id)),
+        }
+    }
+
+    /// Every evidence record, in id order — the population both engines
+    /// intersect with the linked set.
+    async fn evidence_records(&self) -> anyhow::Result<Vec<ArtifactRecord>> {
+        let filter = ArtifactFilter {
+            kind: Some("evidence".to_string()),
+            status: None,
+        };
+        match self {
+            Self::Store(store, permit) => store.list_records(*permit, Some(&filter)).await,
+            Self::Read(read) => Ok(read.list_records(Some(&filter))),
+        }
+    }
+
+    /// One record by exact display id, or `None`.
+    ///
+    /// Never resolved: the engine asks "is this a real artifact with this
+    /// kind/status", and answering that from a slug-shaped guess would let an
+    /// unresolved edge masquerade as a Note exempt from evidence.
+    async fn record(&self, id: &str) -> anyhow::Result<Option<ArtifactRecord>> {
+        match self {
+            Self::Store(store, permit) => store.get_record(*permit, id).await,
+            Self::Read(read) => Ok(read.get_record(id).cloned()),
+        }
+    }
+
+    /// Every edge in the graph, as `(source, target, relation)`.
+    async fn all_relations(&self) -> anyhow::Result<Vec<(String, String, String)>> {
+        match self {
+            Self::Store(store, permit) => store.get_all_relations(*permit).await,
+            Self::Read(read) => Ok(read.get_all_relations()),
+        }
+    }
+
+    /// The canonical key of the document a reference names.
+    ///
+    /// Relation endpoints are canonical keys (ADR-030); a caller may still
+    /// hold a display id. Both the evidence comparison and the link count
+    /// need the key, and neither may assume one layout.
+    async fn canonical_key_of(&self, id: &str) -> anyhow::Result<Option<String>> {
+        match self {
+            Self::Store(store, permit) => store.resolve_canonical_key(*permit, id).await,
+            Self::Read(read) => Ok(read
+                .resolve_artifact(id)
+                .map_err(|error| anyhow::anyhow!("{error}"))?
+                .map(|resolved| resolved.identity.canonical_key)),
+        }
+    }
+}
+
+/// Recursively compute R_eff for an artifact and its dependency chain over
+/// the legacy Lance projection.
 ///
 /// Implements the weakest-link principle across the artifact's own evidence
 /// and all transitive dependencies. Cycle detection prevents infinite
@@ -265,6 +390,101 @@ fn score_evidence_full(e: &EvidenceItem) -> f64 {
 pub async fn r_eff_recursive(
     artifact_id: &str,
     store: &LanceStore,
+    permit: &dyn crate::workspace::lock::WorkspaceReadPermit,
+    visited: &mut HashSet<String>,
+) -> anyhow::Result<AssuranceReport> {
+    assurance_recursive(artifact_id, &AssuranceSource::Store(store, permit), visited).await
+}
+
+/// The same [`AssuranceReport`], computed over one captured/pinned read view
+/// of the canonical Markdown.
+///
+/// This is the migrated answer, not an approximation of the legacy one: it is
+/// the identical algorithm over the identical algorithm's inputs, so
+/// `weakest_link`, `factors`, `decay_penalty` and the leaf-evidence branch
+/// mean exactly what they mean on a legacy workspace. No `LanceStore` is
+/// opened, so no retired table is created and no schema migration runs.
+pub async fn r_eff_recursive_captured(
+    artifact_id: &str,
+    read: &WorkspaceRead,
+    visited: &mut HashSet<String>,
+) -> anyhow::Result<AssuranceReport> {
+    assurance_recursive(artifact_id, &AssuranceSource::Read(read), visited).await
+}
+
+/// [`r_eff_recursive_captured`] with a fresh visited set — the whole report
+/// for one artifact, no caller-owned cycle state.
+pub async fn assurance_report_captured(
+    artifact_id: &str,
+    read: &WorkspaceRead,
+) -> anyhow::Result<AssuranceReport> {
+    r_eff_recursive_captured(artifact_id, read, &mut HashSet::new()).await
+}
+
+/// The evidence packs linked to `target_id` in either direction, as scored
+/// items, in id order.
+///
+/// Shared by the CLI and MCP `score <id>` display paths so the breakdown a
+/// human reads and the rollup that produced the number above it are always
+/// computed from one population. A pack linked from either side counts: a
+/// canonical `EVID --informs--> PRD` is the common shape, and the outgoing
+/// half of the flat-display list never sees it.
+pub async fn linked_evidence_items(
+    source: &AssuranceSource<'_>,
+    target_id: &str,
+) -> anyhow::Result<Vec<EvidenceItem>> {
+    let outgoing = source.outgoing(target_id).await?;
+    let evidence_targets: Vec<String> = outgoing
+        .iter()
+        .filter(|(_, rel)| rel == "informs" || rel == "based_on" || rel == "refines")
+        .map(|(target, _)| target.clone())
+        .collect();
+
+    // The relation endpoints are canonical keys; the evidence records carry
+    // both, so the comparison is made on the key.
+    let target_key = source.canonical_key_of(target_id).await?;
+    let mut items = Vec::new();
+    for record in source.evidence_records().await? {
+        let linked = evidence_targets
+            .iter()
+            .any(|id| id.eq_ignore_ascii_case(&record.canonical_key))
+            || match target_key.as_deref() {
+                Some(key) => source
+                    .outgoing(&record.canonical_key)
+                    .await?
+                    .iter()
+                    .any(|(target, _)| target.eq_ignore_ascii_case(key)),
+                None => false,
+            };
+        if linked {
+            items.push(parse_evidence_from_record(&record));
+        }
+    }
+    Ok(items)
+}
+
+/// How many edges touch `target_id` in either direction — the F-G-R
+/// reliability input's graph-density term.
+pub async fn relation_link_count(
+    source: &AssuranceSource<'_>,
+    target_id: &str,
+) -> anyhow::Result<usize> {
+    // The edges name canonical keys; the caller may hold a display id.
+    let Some(key) = source.canonical_key_of(target_id).await? else {
+        return Ok(0);
+    };
+    Ok(source
+        .all_relations()
+        .await?
+        .iter()
+        .filter(|(src, target, _)| src == &key || target == &key)
+        .count())
+}
+
+/// The recursive engine itself, over either graph.
+async fn assurance_recursive(
+    artifact_id: &str,
+    source: &AssuranceSource<'_>,
     visited: &mut HashSet<String>,
 ) -> anyhow::Result<AssuranceReport> {
     // Cycle detection: return neutral score to break the cycle.
@@ -287,13 +507,9 @@ pub async fn r_eff_recursive(
 
     // Collect evidence records that link to this artifact.
     // Check BOTH directions: outgoing (this → evidence) AND incoming (evidence → this).
-    let outgoing = store.get_relations(artifact_id).await?;
-    let incoming = store.get_incoming_relations(artifact_id).await?;
-    let evidence_filter = ArtifactFilter {
-        kind: Some("evidence".to_string()),
-        status: None,
-    };
-    let all_evidence = store.list_records(Some(&evidence_filter)).await?;
+    let outgoing = source.outgoing(artifact_id).await?;
+    let incoming = source.incoming(artifact_id).await?;
+    let all_evidence = source.evidence_records().await?;
 
     // Build set of evidence IDs linked in either direction.
     let mut linked_evidence_ids: HashSet<String> = outgoing
@@ -314,7 +530,9 @@ pub async fn r_eff_recursive(
     let mut terminal_skips = 0usize;
     for rec in all_evidence
         .iter()
-        .filter(|rec| linked_evidence_ids.contains(&rec.id))
+        // The linked set holds canonical keys; the record's display id may
+        // repeat, so the comparison is made on the key.
+        .filter(|rec| linked_evidence_ids.contains(&rec.canonical_key))
     {
         if crate::lifecycle::transitions::is_terminal(&rec.status) {
             factors.push(format!("Skipped {} (status: {})", rec.id, rec.status));
@@ -323,6 +541,12 @@ pub async fn r_eff_recursive(
         }
         evidence_items.push(parse_evidence_from_record(rec));
     }
+    // The self-score is a `min`, so its VALUE does not care about order — but
+    // the breakdown table and the `factors` audit trail are rendered in this
+    // order, and `list_records` carries no ORDER BY. Sort so the same graph
+    // prints the same report twice, which is what makes the output diffable and
+    // safe for an agent to parse positionally.
+    evidence_items.sort_by(|a, b| a.id.cmp(&b.id));
 
     // PRD-086 FR-001 (#325). An EvidencePack asked for its evidence finds none —
     // a pack has no packs — and the empty-evidence branch below returns 0.0 with
@@ -338,8 +562,8 @@ pub async fn r_eff_recursive(
     //
     // Packs that carry child evidence keep the normal path: an EVID built on
     // other EVIDs is a real chain and the weakest link still rules it.
-    let is_evidence_kind = store
-        .get_record(artifact_id)
+    let is_evidence_kind = source
+        .record(artifact_id)
         .await
         .ok()
         .flatten()
@@ -347,7 +571,7 @@ pub async fn r_eff_recursive(
         .unwrap_or(false);
 
     if is_evidence_kind && evidence_items.is_empty() && terminal_skips == 0 {
-        let own = store.get_record(artifact_id).await.ok().flatten();
+        let own = source.record(artifact_id).await.ok().flatten();
         if let Some(rec) = own {
             let item = parse_evidence_from_record(&rec);
             let intrinsic = score_evidence_full(&item);
@@ -409,7 +633,7 @@ pub async fn r_eff_recursive(
     // makes trust in the measurement flow down from the decision it justifies —
     // backwards. A pack does not become less reliable because the PRD it
     // informs is poorly evidenced elsewhere.
-    let deps: Vec<(String, String)> = outgoing
+    let dep_edges: Vec<(String, String)> = outgoing
         .iter()
         .filter(|(_, rel_type)| dep_relation_types.contains(rel_type.as_str()))
         .filter(|(_, rel_type)| {
@@ -417,18 +641,54 @@ pub async fn r_eff_recursive(
         })
         .cloned()
         .collect();
+    // `get_relations` returns link-creation order, which is unrelated to id
+    // order. The walk order is observable — `weakest_link` ties keep the first
+    // minimum, `factors` are emitted in walk order, and cycle detection gives
+    // the FIRST path to a node its real score and later paths a neutral 1.0,
+    // so when those paths carry different relation types their CL penalties
+    // differ and the resulting min differs with them. Sorting pins the walk to
+    // the graph, not to storage order.
+    //
+    // Relations name their endpoints by the canonical key (`prd-<slug>-k<hash>`),
+    // whose order is driven by the hash suffix — NOT the display id. Sorting on
+    // the key therefore does NOT sort PRD-002 before PRD-003. The walk order the
+    // report (and the reader) can act on is the DISPLAY id, so each dep's
+    // record is resolved once up front and the sort runs on `record.id`. The
+    // resolved record is carried into the loop so the per-dep fetch is not
+    // repeated.
+    let mut deps: Vec<(String, String, Option<ArtifactRecord>)> =
+        Vec::with_capacity(dep_edges.len());
+    for (dep_key, rel_type) in dep_edges {
+        let rec = source.record(&dep_key).await.ok().flatten();
+        deps.push((dep_key, rel_type, rec));
+    }
+    deps.sort_by(|a, b| {
+        let ida = a.2.as_ref().map(|r| r.id.as_str()).unwrap_or(a.0.as_str());
+        let idb = b.2.as_ref().map(|r| r.id.as_str()).unwrap_or(b.0.as_str());
+        ida.cmp(idb)
+    });
 
     let mut min_dep_score = 1.0_f64;
     let mut weakest_link: Option<String> = None;
 
-    for (dep_id, rel_type) in &deps {
+    for (dep_id, rel_type, dep_record) in &deps {
+        // The relations name their endpoints by the canonical key; a report
+        // names the document by its display id, which is what a reader can
+        // act on. The record was already resolved for the sort above.
+        let dep_name = dep_record
+            .as_ref()
+            .map(|record| record.id.clone())
+            .unwrap_or_else(|| dep_id.clone());
         // Skip non-active dependencies — draft/deprecated/superseded should not drag down R_eff
-        if let Ok(Some(dep_record)) = store.get_record(dep_id).await {
+        if let Some(dep_record) = dep_record {
             if matches!(
                 dep_record.status.as_str(),
                 "draft" | "deprecated" | "superseded"
             ) {
-                factors.push(format!("Skipped {dep_id} (status: {})", dep_record.status));
+                factors.push(format!(
+                    "Skipped {dep_name} (status: {})",
+                    dep_record.status
+                ));
                 continue;
             }
 
@@ -445,17 +705,32 @@ pub async fn r_eff_recursive(
             // the cascade surfacing it is the product working.
             if matches!(dep_record.kind.as_str(), "note" | "memory") {
                 factors.push(format!(
-                    "Skipped {dep_id} (kind: {} — exempt from evidence by routing depth)",
+                    "Skipped {dep_name} (kind: {} — exempt from evidence by routing depth)",
                     dep_record.kind
+                ));
+                continue;
+            }
+
+            // ADR-021 / PROB-086. An edge whose TARGET is an evidence pack
+            // belongs to evidence collection (concern 1), not dependency
+            // recursion (concern 2). The self-score already harvested this same
+            // edge — in BOTH link directions — as evidence for `id`; walking it
+            // again as a dependency double-counts it, and the recursion pulls
+            // the pack's own score (often 0, or a cap like 0.9) into the
+            // weakest-link min. The edge lands as credit AND as punishment, and
+            // the punishment wins. Skip it, logged, rather than recurse.
+            if dep_record.kind.eq_ignore_ascii_case("evidence") {
+                factors.push(format!(
+                    "Skipped {dep_name} (kind: evidence — belongs to evidence collection, not a dependency)"
                 ));
                 continue;
             }
         }
 
-        let dep_report = match Box::pin(r_eff_recursive(dep_id, store, visited)).await {
+        let dep_report = match Box::pin(assurance_recursive(dep_id, source, visited)).await {
             Ok(report) => report,
             Err(_) => {
-                factors.push(format!("Failed to compute R_eff for dependency {dep_id}"));
+                factors.push(format!("Failed to compute R_eff for dependency {dep_name}"));
                 AssuranceReport {
                     artifact_id: dep_id.clone(),
                     r_eff: 0.0,
@@ -480,12 +755,12 @@ pub async fn r_eff_recursive(
 
         if effective_r < min_dep_score {
             min_dep_score = effective_r;
-            weakest_link = Some(dep_id.clone());
+            weakest_link = Some(dep_name.clone());
         }
 
         if penalty > 0.0 {
             factors.push(format!(
-                "CL penalty applied for {dep_id} (relation: {rel_type})"
+                "CL penalty applied for {dep_name} (relation: {rel_type})"
             ));
         }
     }

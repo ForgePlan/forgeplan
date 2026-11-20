@@ -1,8 +1,8 @@
 ---
-// Site-level structured data — gives Google sitelinks signal.
-// Renders Organization + WebSite (with SearchAction) + SiteNavigationElement
-// as JSON-LD. Place in <head> of homepage AND key landing pages (blog index)
-// for maximum sitelinks discoverability.
+// Site-level structured data describing the organization, website and navigation.
+// Renders Organization + WebSite (with a declared SearchAction) + SiteNavigationElement
+// as JSON-LD. Place in <head> of the homepage and key landing pages.
+// Structured data does not guarantee search features or rankings.
 //
 // References:
 //   https://developers.google.com/search/docs/appearance/sitelinks
@@ -10,9 +10,9 @@
 //   https://schema.org/WebSite
 //   https://schema.org/SiteNavigationElement
 //
-// Note: Google sitelinks are not guaranteed — Google's algorithm decides
-// based on site authority, internal linking, and click-through patterns.
-// This component provides the maximum signal we can.
+// Note: Google decides whether to display sitelinks.
+// These declarations are metadata, not evidence of search-engine acceptance
+// or a runtime check of the declared search target.
 
 interface Props {
   lang?: 'en' | 'ru';
@@ -32,8 +32,8 @@ const organization = {
   url: site.href,
   logo: url('/og-default.png'),
   description: ru
-    ? 'Инженерная методология для решений, которые не протухают — структурированные артефакты проекта с оценкой качества, отслеживанием доказательств и семантическим поиском.'
-    : 'Engineering methodology for decisions that last — structured project artifacts with quality scoring, evidence tracking, and semantic search.',
+    ? 'Инструментарий инженерной методологии для пересмотра решений — структурированные артефакты проекта с оценкой качества, отслеживанием доказательств и семантическим поиском.'
+    : 'Engineering methodology tools for revisiting decisions — structured project artifacts with quality scoring, evidence tracking, and semantic search.',
   sameAs: [
     'https://github.com/ForgePlan/forgeplan',
     'https://elirum.me',
@@ -69,11 +69,11 @@ const navItems = ru
       { name: 'Документация', url: '/ru/docs/getting-started/installation' },
       { name: 'Блог', url: '/ru/blog' },
       { name: 'GitHub', url: 'https://github.com/ForgePlan/forgeplan' },
-      { name: 'CLI Reference', url: '/ru/docs/cli/health' },
-      { name: 'MCP Reference', url: '/ru/docs/mcp/' },
+      { name: 'Справочник CLI', url: '/ru/docs/cli/health' },
+      { name: 'Справочник MCP', url: '/ru/docs/mcp/' },
       { name: 'Методология', url: '/ru/docs/methodology/overview' },
-      { name: 'Changelog', url: '/ru/docs/changelog/' },
-      { name: 'Установка', url: '/#install' },
+      { name: 'История изменений (EN)', url: '/docs/changelog/' },
+      { name: 'Установка (EN)', url: '/#install' },
     ]
   : [
       { name: 'Documentation', url: '/docs/getting-started/installation' },
@@ -106,12 +106,12 @@ const softwareApplication = {
     price: '0',
     priceCurrency: 'USD',
   },
-  softwareVersion: '0.33',
+  softwareVersion: '0.38.0',
   downloadUrl: 'https://github.com/ForgePlan/forgeplan/releases',
   url: 'https://forgeplan.dev',
   description: ru
-    ? 'Инструментарий инженерной методологии для решений, которые не протухают — CLI + MCP server с оценкой качества, отслеживанием доказательств и семантическим поиском.'
-    : 'Engineering methodology toolkit for decisions that last — CLI + MCP server with quality scoring, evidence tracking, and semantic search.',
+    ? 'Инструментарий инженерной методологии для пересмотра решений — CLI + сервер MCP с оценкой качества, отслеживанием доказательств и семантическим поиском.'
+    : 'Engineering methodology tools for revisiting decisions — CLI + MCP server with quality scoring, evidence tracking, and semantic search.',
   publisher: {
     '@type': 'Organization',
     name: 'Forgeplan',

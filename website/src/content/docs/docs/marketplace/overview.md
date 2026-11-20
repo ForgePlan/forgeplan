@@ -3,7 +3,10 @@ title: Marketplace Overview
 description: Plugin ecosystem for Claude Code - skills, agents, commands, hooks
 ---
 
-The [ForgePlan Marketplace](https://github.com/ForgePlan/marketplace) is the official plugin ecosystem for Claude Code and compatible AI coding agents (Cursor, Windsurf, Codex, etc.).
+The [ForgePlan Marketplace](https://github.com/ForgePlan/marketplace) distributes
+Claude Code plugins and portable skills. Other clients need their own supported
+adapters; portable text does not make Claude commands, hooks and permissions
+automatically equivalent in Cursor, Windsurf or Codex.
 
 ## What's Inside
 
@@ -13,25 +16,25 @@ The marketplace ships plugins covering methodology, development tooling, reasoni
 
 | Plugin | Purpose | Key commands | Page |
 |--------|---------|-------------|------|
-| **forgeplan-workflow** | Full Forgeplan methodology cycle | `/forge`, `/forge-cycle`, `/forge-audit` | [Details](/docs/marketplace/forgeplan-workflow/) |
-| **dev-toolkit** | Code auditing, sprints, research, builds | `/audit`, `/sprint`, `/recall`, `/research`, `/build` | [Details](/docs/marketplace/dev-toolkit/) |
-| **fpf** | First Principles Framework reasoning | `/fpf`, `/fpf decompose`, `/fpf evaluate` | [FPF Guide](/docs/guides/fpf/) |
+| **forgeplan-workflow** | Full Forgeplan methodology cycle | `/forge-cycle`, `/forge-audit`, `forgeplan-methodology` skill | [Details](/docs/marketplace/forgeplan-workflow/) |
+| **fpl-skills** | Current auditing, sprints, research and build skills | `/audit`, `/sprint`, `/research`, `/build` | [Legacy dev-toolkit history](/docs/marketplace/dev-toolkit/) |
+| **fpf** | First Principles Framework reasoning | `/fpf` modes; explicit `/fpf-decompose`, `/fpf-evaluate` | [FPF Guide](/docs/guides/fpf/) |
 | **forgeplan-orchestra** | Sync with Orchestra task management | `/session`, `/sync` | -- |
-| **laws-of-ux** | UX psychology principles for frontend | `/ux-review`, `/ux-law` | -- |
-| **agents-sparc** | SPARC methodology (experimental) | -- | [Details](/docs/marketplace/sparc/) |
+| **laws-of-ux** | UX psychology reference listed in the registry | Inspect the installed package; command availability is not established here | -- |
+| **agents-sparc** | SPARC for one feature in an existing system | `sparc` skill and phase agents | [Details](/docs/marketplace/sparc/) |
 
 For the full list of slash commands across all plugins, see [Commands Reference](/docs/marketplace/commands/).
 
 ## Installation
 
-### Via npx (marketplace registry)
+### Via the client's plugin marketplace
 
 ```bash
 # Install a specific plugin (run inside a Claude Code session)
 /plugin marketplace add ForgePlan/marketplace
-/plugin install dev-toolkit@ForgePlan-marketplace
+/plugin install fpl-skills@ForgePlan-marketplace
 
-# Install the forge skill (methodology) — offline, no marketplace needed
+# Run this separate offline skill installer in your shell, not as a slash command
 forgeplan setup-skill
 ```
 
@@ -45,9 +48,15 @@ forgeplan setup-skill
 
 This writes the embedded skill file to `~/.claude/skills/forge/SKILL.md`. See [`forgeplan setup-skill`](/docs/cli/setup-skill/) for details.
 
+The [catalog checked at revision b4e8a1b9](https://github.com/ForgePlan/marketplace/blob/b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7/.claude-plugin/marketplace.json)
+marks `dev-toolkit` deprecated in favour of `fpl-skills` and `agents-sparc`
+stable. A registry entry is not installation or behavioral verification.
+
 ## How Plugins Work
 
-Plugins use **agentic RAG** -- intelligent retrieval that loads only relevant content (~300 lines per step) instead of entire knowledge bases. A skill's `SKILL.md` acts as a router: it maps user needs to specific content sections, so the agent reads only what it needs for the current step.
+Skills can use **agentic RAG**: `SKILL.md` routes an agent to relevant sections.
+This is a content-organization convention, not a guarantee that every plugin
+automatically retrieves only 300 lines or that every host loads it identically.
 
 For details on building your own plugin, see [Plugin Development](/docs/marketplace/development/).
 

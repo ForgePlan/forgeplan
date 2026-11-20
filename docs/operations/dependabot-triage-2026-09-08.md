@@ -1,5 +1,14 @@
 # Dependabot triage — 2026-09-08 (v0.37.0 release window)
 
+> Historical v0.37.0 receipt, not current alert/CI state or release approval.
+> [GHSA-rhfx-m35p-ff5j](https://github.com/advisories/GHSA-rhfx-m35p-ff5j)
+> concerns `IterMut` pointer-invalidation soundness in `>=0.9.0,<0.16.3`,
+> fixed `0.16.3`. “Miri-only”/“optimized builds unaffected” below is the dated
+> acceptance rationale, not a demonstrated safety guarantee; the advisory now
+> displays CVSS 2.7. Website-only tooling can still affect builders/deployments.
+> Preserve original pins, counts, observed results and scheduled dispositions;
+> no live query or new security/runtime verification was run for this annotation.
+
 Per RED-LINE #10 (CLAUDE.md): each release tags every open Dependabot alert as
 **addressed** / **scheduled** / **accepted-with-justification**. Follows the
 `docs/operations/RELEASE-PROTOCOL.md` step-4 contract.

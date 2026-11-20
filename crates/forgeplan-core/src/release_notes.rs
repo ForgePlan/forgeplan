@@ -27,8 +27,79 @@ use std::process::Command;
 use anyhow::{Context, Result};
 use serde::Serialize;
 
+use crate::constellation::workspace_read::WorkspaceRead;
 use crate::db::store::{ArtifactRecord, LanceStore};
 use crate::git::validate_git_ref;
+
+/// Where the records a release note is built from come from.
+///
+/// The legacy Lance projection or one captured/pinned read view. Both answer
+/// the same four questions — resolve a basename to a canonical id, load one
+/// record, load its outgoing edges, load its incoming edges — so the note
+/// building below runs once for both layouts instead of being written twice
+/// and left to disagree.
+enum Records<'a> {
+    Store(
+        &'a LanceStore,
+        &'a dyn crate::workspace::lock::WorkspaceReadPermit,
+    ),
+    Read(&'a WorkspaceRead),
+}
+
+impl Records<'_> {
+    /// Canonical display id for a candidate, or `None` when it resolves to
+    /// nothing in this source.
+    async fn resolve_id(&self, candidate: &str) -> Result<Option<String>> {
+        match self {
+            Self::Store(store, permit) => store.resolve_id(*permit, candidate).await,
+            Self::Read(read) => Ok(read.resolve_id(candidate)),
+        }
+    }
+
+    /// One record by canonical id, or `None`.
+    async fn record(&self, id: &str) -> Result<Option<ArtifactRecord>> {
+        match self {
+            Self::Store(store, permit) => store.get_record(*permit, id).await,
+            Self::Read(read) => Ok(read.get_record(id).cloned()),
+        }
+    }
+
+    /// Whether the artifact at `id` carries tag `security`.
+    ///
+    /// Separate from [`Self::record`] because the neighbour probe only reads
+    /// tags: on the captured path that probe must not clone a whole record
+    /// body per 1-hop neighbour just to look at its tag list. The legacy
+    /// path has no cheaper accessor to route through — its `get_record`
+    /// already materialises the row — so both sides answer identically and
+    /// only the captured side stops paying for the clone.
+    async fn has_security_tag(&self, id: &str) -> Result<bool> {
+        Ok(match self {
+            Self::Store(store, permit) => store
+                .get_record(*permit, id)
+                .await?
+                .is_some_and(|r| r.tags.iter().any(|t| t.eq_ignore_ascii_case("security"))),
+            Self::Read(read) => read
+                .get_record(id)
+                .is_some_and(|r| r.tags.iter().any(|t| t.eq_ignore_ascii_case("security"))),
+        })
+    }
+
+    /// Outgoing `(target, relation)` edges of one artifact.
+    async fn outgoing(&self, id: &str) -> Result<Vec<(String, String)>> {
+        match self {
+            Self::Store(store, permit) => store.get_relations(*permit, id).await,
+            Self::Read(read) => Ok(read.get_relations(id)),
+        }
+    }
+
+    /// Incoming `(source, relation)` edges of one artifact.
+    async fn incoming(&self, id: &str) -> Result<Vec<(String, String)>> {
+        match self {
+            Self::Store(store, permit) => store.get_incoming_relations(*permit, id).await,
+            Self::Read(read) => Ok(read.get_incoming_relations(id)),
+        }
+    }
+}
 
 /// Top-level Keep-a-Changelog section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
@@ -516,7 +587,15 @@ pub fn id_from_basename(basename: &str) -> Option<String> {
 
 /// Check whether `record` or any of its 1-hop neighbours (in either
 /// relation direction) carries tag `security`.
-pub async fn is_linked_to_security(store: &LanceStore, record: &ArtifactRecord) -> Result<bool> {
+pub async fn is_linked_to_security(
+    store: &LanceStore,
+    permit: &dyn crate::workspace::lock::WorkspaceReadPermit,
+    record: &ArtifactRecord,
+) -> Result<bool> {
+    is_linked_to_security_in(&Records::Store(store, permit), record).await
+}
+
+async fn is_linked_to_security_in(records: &Records<'_>, record: &ArtifactRecord) -> Result<bool> {
     if record
         .tags
         .iter()
@@ -524,22 +603,16 @@ pub async fn is_linked_to_security(store: &LanceStore, record: &ArtifactRecord) 
     {
         return Ok(true);
     }
-    let outgoing = store.get_relations(&record.id).await.unwrap_or_default();
+    let outgoing = records.outgoing(&record.id).await?;
     for (target, _rel) in &outgoing {
-        if let Ok(Some(t)) = store.get_record(target).await
-            && t.tags.iter().any(|t| t.eq_ignore_ascii_case("security"))
-        {
+        // Tag-only probe: the neighbour's body is never read here.
+        if records.has_security_tag(target).await? {
             return Ok(true);
         }
     }
-    let incoming = store
-        .get_incoming_relations(&record.id)
-        .await
-        .unwrap_or_default();
+    let incoming = records.incoming(&record.id).await?;
     for (source, _rel) in &incoming {
-        if let Ok(Some(s)) = store.get_record(source).await
-            && s.tags.iter().any(|t| t.eq_ignore_ascii_case("security"))
-        {
+        if records.has_security_tag(source).await? {
             return Ok(true);
         }
     }
@@ -551,15 +624,20 @@ pub async fn is_linked_to_security(store: &LanceStore, record: &ArtifactRecord) 
 /// attachment in our methodology — CLAUDE.md "EvidencePack" section).
 pub async fn pick_closing_evid(
     store: &LanceStore,
+    permit: &dyn crate::workspace::lock::WorkspaceReadPermit,
+    record: &ArtifactRecord,
+) -> Result<Option<String>> {
+    pick_closing_evid_in(&Records::Store(store, permit), record).await
+}
+
+async fn pick_closing_evid_in(
+    records: &Records<'_>,
     record: &ArtifactRecord,
 ) -> Result<Option<String>> {
     if record.kind == "evidence" {
         return Ok(None);
     }
-    let incoming = store
-        .get_incoming_relations(&record.id)
-        .await
-        .unwrap_or_default();
+    let incoming = records.incoming(&record.id).await?;
     for (source_id, _rel) in incoming {
         if source_id.starts_with("EVID-") || source_id.to_lowercase().starts_with("evid-") {
             return Ok(Some(source_id));
@@ -573,6 +651,23 @@ pub async fn pick_closing_evid(
 /// records that no longer exist are silently dropped.
 pub async fn build_release_notes(
     store: &LanceStore,
+    permit: &dyn crate::workspace::lock::WorkspaceReadPermit,
+    touched: &Touched,
+    since: &str,
+    until: &str,
+    draft: bool,
+) -> Result<ReleaseNotes> {
+    build_release_notes_in(&Records::Store(store, permit), touched, since, until, draft).await
+}
+
+/// [`build_release_notes`] over one captured/pinned read view.
+///
+/// Git still answers "which artifacts did this range touch" from the same
+/// repository; only the record lookup moves to the capture, so a migrated
+/// workspace gets the same categories, the same closing-evidence picks and
+/// the same security classification without opening a legacy table.
+async fn build_release_notes_in(
+    records: &Records<'_>,
     touched: &Touched,
     since: &str,
     until: &str,
@@ -586,24 +681,23 @@ pub async fn build_release_notes(
         let Some(candidate_id) = id_from_basename(basename) else {
             continue;
         };
-        let canonical = match store.resolve_id(&candidate_id).await {
-            Ok(Some(c)) => c,
-            _ => continue,
+        let Some(canonical) = records.resolve_id(&candidate_id).await? else {
+            continue;
         };
         if !seen_ids.insert(canonical.clone()) {
             continue;
         }
-        let record = match store.get_record(&canonical).await? {
+        let record = match records.record(&canonical).await? {
             Some(r) => r,
             None => continue,
         };
-        let security = is_linked_to_security(store, &record).await?;
+        let security = is_linked_to_security_in(records, &record).await?;
         let class = classify(&record, security, draft);
         let cat = match class {
             Classification::Include(c) => c,
             _ => continue,
         };
-        let evid = pick_closing_evid(store, &record).await?;
+        let evid = pick_closing_evid_in(records, &record).await?;
         let commit = shas
             .iter()
             .next()
@@ -630,6 +724,7 @@ pub async fn build_release_notes(
 /// callers choose markdown/text/json themselves.
 pub async fn generate(
     store: &LanceStore,
+    permit: &dyn crate::workspace::lock::WorkspaceReadPermit,
     repo_root: &Path,
     since: Option<&str>,
     until: Option<&str>,
@@ -651,8 +746,56 @@ pub async fn generate(
     };
 
     let touched = walk_artifact_changes(repo_root, &since_resolved, &until_resolved)?;
-    let notes =
-        build_release_notes(store, &touched, &since_resolved, &until_resolved, draft).await?;
+    let notes = build_release_notes(
+        store,
+        permit,
+        &touched,
+        &since_resolved,
+        &until_resolved,
+        draft,
+    )
+    .await?;
+    Ok(notes)
+}
+
+/// End-to-end release notes over one captured/pinned read view.
+///
+/// The same ref resolution, the same `git log` walk over the same
+/// repository and the same classification as [`generate`] — only the record
+/// lookup reads from this capture. A migrated workspace therefore produces
+/// the same sections, entries, commit shas and closing-evidence picks, and
+/// does so without opening the legacy projection.
+pub async fn generate_captured(
+    read: &WorkspaceRead,
+    repo_root: &Path,
+    since: Option<&str>,
+    until: Option<&str>,
+    draft: bool,
+) -> Result<ReleaseNotes> {
+    let since_resolved = match since {
+        Some(s) => {
+            validate_git_ref(s)?;
+            s.to_string()
+        }
+        None => latest_tag(repo_root).unwrap_or_else(|| "HEAD~50".to_string()),
+    };
+    let until_resolved = match until {
+        Some(u) => {
+            validate_git_ref(u)?;
+            u.to_string()
+        }
+        None => "HEAD".to_string(),
+    };
+
+    let touched = walk_artifact_changes(repo_root, &since_resolved, &until_resolved)?;
+    let notes = build_release_notes_in(
+        &Records::Read(read),
+        &touched,
+        &since_resolved,
+        &until_resolved,
+        draft,
+    )
+    .await?;
     Ok(notes)
 }
 
@@ -662,6 +805,7 @@ mod tests {
 
     fn rec(kind: &str, status: &str, r_eff: f64, tags: &[&str]) -> ArtifactRecord {
         ArtifactRecord {
+            canonical_key: format!("{}-001", kind.to_uppercase()),
             id: format!("{}-001", kind.to_uppercase()),
             kind: kind.to_string(),
             status: status.to_string(),
@@ -1050,5 +1194,429 @@ mod tests {
             Some("alpha-repo"),
             "alphabetic order: 'alpha' must win, not fs::read_dir() insertion order — got {resolved:?}"
         );
+    }
+
+    // ── Captured read view ────────────────────────────────────────────
+
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    fn git(repo: &std::path::Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .expect("git runs");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    struct ArtifactFixture<'a> {
+        id: &'a str,
+        kind: &'a str,
+        status: &'a str,
+        tags: &'a [&'a str],
+        links: &'a [(&'a str, &'a str)],
+    }
+
+    fn write_artifact(
+        ws: &std::path::Path,
+        dir: &str,
+        file: &str,
+        fixture: ArtifactFixture<'_>,
+    ) -> PathBuf {
+        let ArtifactFixture {
+            id,
+            kind,
+            status,
+            tags,
+            links,
+        } = fixture;
+        let mut fm = format!(
+            "---\nid: {id}\ntitle: Fixture {id}\nkind: {kind}\nstatus: {status}\n\
+             depth: standard\ncreated_at: 2026-01-01T00:00:00Z\n"
+        );
+        if !tags.is_empty() {
+            fm.push_str("tags:\n");
+            for tag in tags {
+                fm.push_str(&format!("  - {tag}\n"));
+            }
+        }
+        if !links.is_empty() {
+            fm.push_str("links:\n");
+            for (target, relation) in links {
+                fm.push_str(&format!("  - target: {target}\n    relation: {relation}\n"));
+            }
+        }
+        let path = ws.join(dir).join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            format!("{fm}---\n\n## Context\n\nRelease-notes fixture body.\n"),
+        )
+        .unwrap();
+        path
+    }
+
+    /// A tagged release with two commits: `v0.1.0` holds the original
+    /// decisions, and the second commit edits two ADRs and adds a PRD and
+    /// two evidence packs — the range a release note is built from.
+    fn release_repo() -> (TempDir, PathBuf, PathBuf) {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q", "--initial-branch=main"]);
+        git(&repo, &["config", "user.email", "fixture@example.test"]);
+        git(&repo, &["config", "user.name", "Release Fixture"]);
+
+        let ws = repo.join(".forgeplan");
+        for dir in crate::workspace::ARTIFACT_DIRS {
+            std::fs::create_dir_all(ws.join(dir)).unwrap();
+        }
+
+        let adr1 = write_artifact(
+            &ws,
+            "adrs",
+            "ADR-001-first.md",
+            ArtifactFixture {
+                id: "ADR-001",
+                kind: "adr",
+                status: "active",
+                tags: &[],
+                links: &[],
+            },
+        );
+        let adr2 = write_artifact(
+            &ws,
+            "adrs",
+            "ADR-002-security.md",
+            ArtifactFixture {
+                id: "ADR-002",
+                kind: "adr",
+                status: "active",
+                tags: &["security"],
+                links: &[],
+            },
+        );
+        let evid2 = write_artifact(
+            &ws,
+            "evidence",
+            "EVID-002-pack.md",
+            ArtifactFixture {
+                id: "EVID-002",
+                kind: "evidence",
+                status: "active",
+                tags: &[],
+                links: &[("ADR-002", "informs")],
+            },
+        );
+        write_artifact(
+            &ws,
+            "prds",
+            "PRD-001-first.md",
+            ArtifactFixture {
+                id: "PRD-001",
+                kind: "prd",
+                status: "active",
+                tags: &[],
+                links: &[],
+            },
+        );
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-q", "-m", "v0.1.0"]);
+        git(&repo, &["tag", "v0.1.0"]);
+
+        // Second commit: edits both ADRs and the pack that informs the
+        // security-tagged one, and adds an active PRD, an unevidenced draft
+        // PRD and a fresh pack — the range a release note is built from.
+        for path in [&adr1, &adr2, &evid2] {
+            let mut body = std::fs::read_to_string(path).unwrap();
+            body.push_str("\nEdited in the second release commit.\n");
+            std::fs::write(path, body).unwrap();
+        }
+        // Never active and never scored: the quality gate drops it unless
+        // the caller asks for a draft.
+        write_artifact(
+            &ws,
+            "prds",
+            "PRD-002-second.md",
+            ArtifactFixture {
+                id: "PRD-002",
+                kind: "prd",
+                status: "draft",
+                tags: &[],
+                links: &[],
+            },
+        );
+        write_artifact(
+            &ws,
+            "prds",
+            "PRD-003-second.md",
+            ArtifactFixture {
+                id: "PRD-003",
+                kind: "prd",
+                status: "active",
+                tags: &[],
+                links: &[],
+            },
+        );
+        write_artifact(
+            &ws,
+            "evidence",
+            "EVID-003-pack.md",
+            ArtifactFixture {
+                id: "EVID-003",
+                kind: "evidence",
+                status: "active",
+                tags: &[],
+                links: &[],
+            },
+        );
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-q", "-m", "second release"]);
+
+        (tmp, repo, ws)
+    }
+
+    async fn open_read(ws: &std::path::Path) -> WorkspaceRead {
+        crate::constellation::facade::open_workspace_read(
+            ws,
+            None,
+            crate::constellation::capture::CaptureLimits::default(),
+        )
+        .await
+        .expect("the fixture workspace captures completely")
+    }
+
+    async fn legacy_store_for(read: &WorkspaceRead) -> LanceStore {
+        let (store, guard) = {
+            let ws = read
+                .workspace()
+                .parent()
+                .unwrap()
+                .join("legacy-projection-fixture");
+            let guard = crate::workspace::lock::acquire_workspace_lock(&ws)
+                .await
+                .unwrap();
+            let store = LanceStore::init_new(&ws, &guard).await.unwrap();
+            for name in crate::workspace::ARTIFACT_DIRS
+                .iter()
+                .copied()
+                .chain(["state", "config.yaml"])
+            {
+                let src = read.workspace().join(name);
+                if !src.exists() {
+                    continue;
+                }
+                for entry in walkdir::WalkDir::new(&src).follow_links(false) {
+                    let entry = entry.unwrap();
+                    let dest = ws.join(entry.path().strip_prefix(read.workspace()).unwrap());
+                    if entry.file_type().is_dir() {
+                        std::fs::create_dir_all(&dest).unwrap();
+                    } else {
+                        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+                        std::fs::copy(entry.path(), dest).unwrap();
+                    }
+                }
+            }
+            (store, guard)
+        };
+        // From `read.records()` (scores recomputed by `from_parts`), not
+        // from `record_from_parsed` whose output is 0.0 for every record —
+        // `classify`'s quality gate reads that score directly.
+        for record in read.records() {
+            store
+                .create_artifact(
+                    &guard,
+                    &crate::db::store::NewArtifact {
+                        canonical_key: record.id.clone(),
+                        id: record.id.clone(),
+                        kind: record.kind.clone(),
+                        status: record.status.clone(),
+                        title: record.title.clone(),
+                        body: record.body.clone(),
+                        depth: record.depth.clone(),
+                        author: record.author.clone(),
+                        parent_epic: record.parent_epic.clone(),
+                        valid_until: record.valid_until.clone(),
+                        tags: record.tags.clone(),
+                    },
+                )
+                .await
+                .unwrap();
+            store.replace_record(&guard, record).await.unwrap();
+        }
+        for (source, target, relation) in read.get_all_relations() {
+            store
+                .add_relation(&guard, &source, &target, &relation)
+                .await
+                .unwrap();
+        }
+        store
+    }
+
+    fn ids_in(notes: &ReleaseNotes, category: Category) -> Vec<String> {
+        notes
+            .sections
+            .get(category.json_key())
+            .map(|entries| entries.iter().map(|e| e.id.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn captured_release_notes_classify_the_git_range_over_the_capture() {
+        let (_tmp, repo, ws) = release_repo();
+        let read = open_read(&ws).await;
+
+        let notes = generate_captured(&read, &repo, Some("v0.1.0"), Some("HEAD"), false)
+            .await
+            .unwrap();
+
+        assert_eq!(notes.since, "v0.1.0");
+        assert_eq!(notes.until, "HEAD");
+        assert!(!notes.draft);
+
+        // Both edited ADRs land under Changed, in basename order.
+        assert_eq!(
+            ids_in(&notes, Category::Changed),
+            vec!["ADR-001", "ADR-002"]
+        );
+        // EVID-002 links to a security-tagged decision, so it is Security,
+        // not Internal; EVID-003 has no such neighbour and stays Internal.
+        assert_eq!(ids_in(&notes, Category::Security), vec!["EVID-002"]);
+        assert_eq!(ids_in(&notes, Category::Internal), vec!["EVID-003"]);
+        // The new active PRD is Added; the draft one is gated out.
+        assert_eq!(ids_in(&notes, Category::Added), vec!["PRD-003"]);
+        assert!(notes.sections.get("fixed").unwrap().is_empty());
+
+        // ADR-002 has an incoming evidence pack, so the note carries it.
+        let adr2 = notes
+            .sections
+            .get("changed")
+            .unwrap()
+            .iter()
+            .find(|e| e.id == "ADR-002")
+            .unwrap();
+        assert_eq!(adr2.evid.as_deref(), Some("EVID-002"));
+        assert_eq!(adr2.commit.len(), 7, "the touching commit is shortened");
+        assert_eq!(adr2.kind, "adr");
+
+        // ADR-001 was edited in the same commit and carries no evidence.
+        let adr1 = notes
+            .sections
+            .get("changed")
+            .unwrap()
+            .iter()
+            .find(|e| e.id == "ADR-001")
+            .unwrap();
+        assert_eq!(adr1.evid, None);
+        assert_eq!(adr1.commit, adr2.commit);
+    }
+
+    #[tokio::test]
+    async fn captured_release_notes_draft_flag_waives_the_quality_gate() {
+        let (_tmp, repo, ws) = release_repo();
+        let read = open_read(&ws).await;
+
+        let notes = generate_captured(&read, &repo, Some("v0.1.0"), Some("HEAD"), true)
+            .await
+            .unwrap();
+
+        assert!(notes.draft);
+        // PRD-002 is only reachable in draft mode: the release gate drops
+        // artifacts with neither an active status nor a positive score.
+        assert_eq!(ids_in(&notes, Category::Added), vec!["PRD-002", "PRD-003"]);
+    }
+
+    #[tokio::test]
+    async fn captured_release_notes_default_to_the_latest_tag_and_head() {
+        let (_tmp, repo, ws) = release_repo();
+        let read = open_read(&ws).await;
+
+        let notes = generate_captured(&read, &repo, None, None, false)
+            .await
+            .unwrap();
+
+        // `since: None` resolves through `git describe --tags --abbrev=0`,
+        // not a hardcoded range.
+        assert_eq!(notes.since, "v0.1.0");
+        assert_eq!(notes.until, "HEAD");
+        assert!(
+            notes.total() > 0,
+            "the tagged range must resolve to entries"
+        );
+    }
+
+    #[tokio::test]
+    async fn captured_release_notes_reject_an_injected_ref() {
+        let (_tmp, repo, ws) = release_repo();
+        let read = open_read(&ws).await;
+
+        let err = generate_captured(&read, &repo, Some("v0.1.0; rm -rf /"), None, false)
+            .await
+            .expect_err("a shell fragment is not a git ref");
+        assert!(
+            format!("{err}").contains("git"),
+            "the validation error must name the ref contract, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn captured_release_notes_match_the_legacy_projection_entry_for_entry() {
+        let (_tmp, repo, ws) = release_repo();
+        let read = open_read(&ws).await;
+        let (store, guard) = {
+            let store = legacy_store_for(&read).await;
+            let guard = crate::workspace::lock::acquire_workspace_read_lock(store.workspace_path())
+                .await
+                .unwrap();
+            (store, guard)
+        };
+
+        for draft in [false, true] {
+            let legacy = generate(&store, &guard, &repo, Some("v0.1.0"), Some("HEAD"), draft)
+                .await
+                .unwrap();
+            let captured = generate_captured(&read, &repo, Some("v0.1.0"), Some("HEAD"), draft)
+                .await
+                .unwrap();
+
+            assert_eq!(
+                (&legacy.since, &legacy.until, legacy.draft),
+                (&captured.since, &captured.until, captured.draft)
+            );
+            assert_eq!(legacy.total(), captured.total(), "draft={draft}");
+            for category in Category::ordered() {
+                assert_eq!(
+                    ids_in(&legacy, category),
+                    ids_in(&captured, category),
+                    "category={} draft={draft}",
+                    category.json_key()
+                );
+            }
+            let legacy_changed = legacy.sections.get("changed").unwrap();
+            let captured_changed = captured.sections.get("changed").unwrap();
+            for (l, c) in legacy_changed.iter().zip(captured_changed) {
+                assert_eq!(
+                    (
+                        l.id.as_str(),
+                        l.title.as_str(),
+                        l.kind.as_str(),
+                        l.commit.as_str(),
+                        l.evid.as_deref()
+                    ),
+                    (
+                        c.id.as_str(),
+                        c.title.as_str(),
+                        c.kind.as_str(),
+                        c.commit.as_str(),
+                        c.evid.as_deref()
+                    )
+                );
+            }
+        }
     }
 }

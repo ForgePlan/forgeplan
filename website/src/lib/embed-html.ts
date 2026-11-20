@@ -2,8 +2,15 @@
 // Extracts <body> innerHTML + <style> + <script> from a self-contained HTML
 // document and scopes the CSS under a wrapper class so it does not bleed
 // onto the surrounding site chrome.
+//
+// Lesson-to-lesson hrefs are rewritten here, at build time, because inlining a
+// lesson changes its base URL: a link written for the standalone file
+// (/guides-raw/<slug>.html) resolves somewhere else once its body is inlined
+// into /guides/<slug>/ (or /ru/guides/<slug>/). The raw files stay standalone
+// and untouched — the rewrite exists only in the inlined copy.
 
 import fs from 'node:fs';
+import { getGuide } from '../data/guides.ts';
 
 const SCOPE_CLASS = '.guide-embedded';
 
@@ -112,6 +119,52 @@ function scopeCss(css: string): string {
   return out.join('\n');
 }
 
+export type GuideLocale = 'en' | 'ru';
+
+// Canonical guide route prefixes, matching the links the catalog pages emit
+// (/guides/<slug>, /ru/guides/<slug> — no trailing slash).
+const GUIDE_ROUTE_PREFIX: Record<GuideLocale, string> = {
+  en: '/guides/',
+  ru: '/ru/guides/',
+};
+
+// Href shapes in public/guides-raw/*.html that mean "another lesson of this
+// catalog", captured for the path part only (query/fragment are split off
+// before matching and re-appended after).
+//
+//   '../guides/<slug>'  written for the inlined route; from the standalone file
+//                       base it resolves to /guides-raw/../guides/<slug>
+//   'guides/<slug>'     same intent, relative form
+//   '/guides/<slug>'    already a site route, but pinned to one locale
+//   '/ru/guides/<slug>' ditto, pinned to RU
+//
+// A trailing slash is tolerated on any of them.
+const GUIDE_ROUTE_HREF = /^\/?(?:\.\.\/)?(?:ru\/)?guides\/([a-z0-9][a-z0-9-]*)\/?$/;
+
+// Sibling link between two standalone lesson files: '<slug>.html'. Valid while
+// the lesson is served from /guides-raw/, dead once inlined — but not a dead
+// link in the standalone copy, which is why it is rewritten only on the inlined
+// one.
+const RAW_LESSON_HREF = /^([a-z0-9][a-z0-9-]*)\.html$/;
+
+// href attribute with either quote style. The leading \s keeps data-href and
+// xlink:href out of scope.
+const HREF_ATTRIBUTE = /(\shref\s*=\s*)(["'])([^"']*)\2/gi;
+
+// src/data/guides.ts is the authority on what a lesson route is: a path whose
+// last segment is not a catalog slug keeps its original base, so a stale link
+// stays visible to check-dead-links instead of becoming a fabricated route.
+function normalizeGuideHref(href: string, locale: GuideLocale): string {
+  const cut = href.search(/[?#]/);
+  const path = cut === -1 ? href : href.slice(0, cut);
+  const tail = cut === -1 ? '' : href.slice(cut);
+
+  const match = GUIDE_ROUTE_HREF.exec(path) ?? RAW_LESSON_HREF.exec(path);
+  if (!match || !getGuide(match[1])) return href;
+
+  return GUIDE_ROUTE_PREFIX[locale] + match[1] + tail;
+}
+
 export interface EmbedResult {
   bodyHtml: string;
   scopedCss: string;
@@ -120,7 +173,12 @@ export interface EmbedResult {
   title: string;
 }
 
-export function extractEmbed(filepath: string): EmbedResult {
+export interface EmbedOptions {
+  /** Locale of the page the lesson is inlined into — picks the guide route prefix. */
+  locale: GuideLocale;
+}
+
+export function extractEmbed(filepath: string, options: EmbedOptions): EmbedResult {
   const html = fs.readFileSync(filepath, 'utf-8');
 
   const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
@@ -128,9 +186,18 @@ export function extractEmbed(filepath: string): EmbedResult {
 
   const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
   let bodyHtml = bodyMatch ? bodyMatch[1] : '';
+  // The page emits collected scripts separately. Leaving them in bodyHtml
+  // executes them twice during HTML parsing (including chart constructors).
+  bodyHtml = bodyHtml.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
   // Strip lesson's own footer block ('trust-calculus · explainer · v1 → forgeplan · forgeplan.dev')
   // so site BlogFooter is the only footer on the page.
   bodyHtml = bodyHtml.replace(/<div\s+class=["']footer["'][^>]*>[\s\S]*?<\/div>/gi, '');
+  // Inlining moves the lesson's base URL from /guides-raw/<slug>.html to
+  // /guides/<slug>/ (or /ru/guides/<slug>/), so links between lessons are
+  // re-pointed at the catalog routes of the page locale.
+  // Everything else — external URLs, fragments, non-lesson site paths — is left as authored.
+  bodyHtml = bodyHtml.replace(HREF_ATTRIBUTE, (_match, prefix: string, quote: string, href: string) =>
+    `${prefix}${quote}${normalizeGuideHref(href, options.locale)}${quote}`);
 
   const styleBlocks = Array.from(html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/gi)).map(m => m[1]);
   const rawCss = styleBlocks.join('\n');

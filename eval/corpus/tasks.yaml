@@ -1,0 +1,343 @@
+# F10 reference task set — 30 tasks over corpus ws-a (drain-queue) + ws-b (billing).
+#
+# Fields:
+#   id                 task id
+#   kind               search | get            (pack mode always packs `question`)
+#   search_mode        smart | keyword | semantic — local-mode flag (federated/pack ignore it)
+#   question           query / pack task text
+#   key                artifact id (kind: get)
+#   fed_query          optional override for `constellation search`, which is a
+#                      literal substring match — must be a verbatim corpus string
+#   pack_query         optional override for `constellation pack` task text —
+#                      pack ranks by term overlap (e.g. English text for a
+#                      Russian `question`, which only semantic local search can serve)
+#   expected_sources   which workspaces hold the answer; also drives local-mode fan-out
+#   expected_artifacts canonical keys a good answer surfaces (rank + wrong-ref accounting)
+#   must_include       substrings the gathered evidence must contain (constraint recall)
+#   must_not_include   substrings signalling boundary/version violations
+#   expect_found       true | false | ambiguous
+#   budget             pack token budget (chars/4 estimate), default 2000
+
+# ─── ws-a only ────────────────────────────────────────────────────────────────
+
+- id: T01
+  kind: get
+  key: PRD-001
+  question: "drain queue reliability owner lock TTL retry policy ack lease"
+  expected_sources: [ws-a]
+  expected_artifacts: [PRD-001]
+  must_include: ["30 seconds with heartbeat every 10 seconds", "at most 5 attempts", "250ms", "acked within the lease window"]
+  must_not_include: ["SPEC-999"]
+  expect_found: true
+
+- id: T02
+  kind: search
+  search_mode: smart
+  question: "owner lock steal rule missed heartbeats"
+  fed_query: "heartbeats"
+  expected_sources: [ws-a]
+  expected_artifacts: [SPEC-003, ADR-002, PRD-001]
+  must_include: ["SPEC-003"]
+  must_not_include: []
+  expect_found: true
+
+- id: T03
+  kind: search
+  search_mode: semantic
+  question: "how long can a worker hold a partition before another worker takes it over"
+  fed_query: "three heartbeats"
+  expected_sources: [ws-a]
+  expected_artifacts: [SPEC-003, ADR-002]
+  must_include: ["SPEC-003"]
+  must_not_include: []
+  expect_found: true
+
+- id: T04
+  kind: search
+  search_mode: keyword
+  question: "binding"
+  expected_sources: [ws-a]
+  expected_artifacts: [SPEC-001]
+  must_include: ["SPEC-001"]
+  must_not_include: []
+  expect_found: true
+
+- id: T05
+  kind: get
+  key: SPEC-001
+  question: "binding predicate contract required fields epoch checkout incarnation"
+  expected_sources: [ws-a]
+  expected_artifacts: [SPEC-001]
+  must_include: ["epoch", "checkout", "incarnation", "row_revision", "binding_stale"]
+  must_not_include: ["ADR-404"]
+  expect_found: true
+
+- id: T06
+  kind: search
+  search_mode: smart
+  question: "ack within lease window checkpoint requeue"
+  fed_query: "requeue"
+  expected_sources: [ws-a]
+  expected_artifacts: [PRD-001]
+  must_include: ["PRD-001"]
+  must_not_include: []
+  expect_found: true
+
+- id: T07
+  kind: get
+  key: EVID-001
+  question: "crash loss measurement drain worker how many messages lost"
+  expected_sources: [ws-a]
+  expected_artifacts: [EVID-001]
+  must_include: ["0.4%", "340 messages"]
+  must_not_include: ["EVID-555"]
+  expect_found: true
+
+- id: T08
+  kind: get
+  key: ADR-404
+  question: "fetch artifact ADR-404 from drain workspace"
+  expected_sources: [ws-a]
+  expected_artifacts: []
+  must_include: []
+  must_not_include: []
+  expect_found: false
+
+- id: T09
+  kind: search
+  search_mode: keyword
+  question: "chargeback"
+  expected_sources: [ws-a]
+  expected_artifacts: []
+  must_include: []
+  must_not_include: ["PROB-777"]
+  expect_found: false
+
+- id: T10
+  kind: search
+  search_mode: semantic
+  question: "сколько сообщений терялось при падении воркера до внедрения блокировок"
+  fed_query: "0.4%"
+  pack_query: "crash loss measurement drain worker messages"
+  expected_sources: [ws-a]
+  expected_artifacts: [EVID-001, PROB-001]
+  must_include: ["EVID-001"]
+  must_not_include: []
+  expect_found: true
+
+# ─── ws-b only ────────────────────────────────────────────────────────────────
+
+- id: T11
+  kind: get
+  key: SPEC-101
+  question: "invoice retry pipeline attempts dead letter idempotency key"
+  expected_sources: [ws-b]
+  expected_artifacts: [SPEC-101]
+  must_include: ["3 attempts", "1s, 5s, 30s", "dead-letter", "inv:<invoice_id>"]
+  must_not_include: ["SPEC-999"]
+  expect_found: true
+
+- id: T12
+  kind: search
+  search_mode: semantic
+  question: "what happens when the payment gateway keeps failing requests"
+  fed_query: "5xx"
+  expected_sources: [ws-b]
+  expected_artifacts: [RFC-101]
+  must_include: ["RFC-101"]
+  must_not_include: []
+  expect_found: true
+
+- id: T13
+  kind: get
+  key: ADR-102
+  question: "idempotency strategy key format dedup window"
+  expected_sources: [ws-b]
+  expected_artifacts: [ADR-102]
+  must_include: ["inv:<invoice_id>", "24 hours", "atomically"]
+  must_not_include: ["ADR-404"]
+  expect_found: true
+
+- id: T14
+  kind: search
+  search_mode: keyword
+  question: "dead-letter"
+  expected_sources: [ws-b]
+  expected_artifacts: [SPEC-101]
+  must_include: ["SPEC-101"]
+  must_not_include: ["SPEC-999"]
+  expect_found: true
+
+- id: T15
+  kind: search
+  search_mode: smart
+  question: "invoice immutability correction credit note issued status"
+  fed_query: "immutable"
+  expected_sources: [ws-b]
+  expected_artifacts: [PRD-102]
+  must_include: ["PRD-102"]
+  must_not_include: []
+  expect_found: true
+
+- id: T16
+  kind: get
+  key: EVID-101
+  question: "march duplicate charge postmortem numbers invoices refunds"
+  expected_sources: [ws-b]
+  expected_artifacts: [EVID-101]
+  must_include: ["137 duplicate charges", "61 invoices"]
+  must_not_include: ["EVID-555"]
+  expect_found: true
+
+- id: T17
+  kind: search
+  search_mode: semantic
+  question: "how is tax rounded on an invoice line item"
+  fed_query: "half-up"
+  expected_sources: [ws-b]
+  expected_artifacts: [SPEC-103]
+  must_include: ["SPEC-103"]
+  must_not_include: []
+  expect_found: true
+
+- id: T18
+  kind: get
+  key: SPEC-999
+  question: "fetch artifact SPEC-999 from billing workspace"
+  expected_sources: [ws-b]
+  expected_artifacts: []
+  must_include: []
+  must_not_include: []
+  expect_found: false
+
+- id: T19
+  kind: search
+  search_mode: keyword
+  question: "sandbox"
+  expected_sources: [ws-b]
+  expected_artifacts: []
+  must_include: []
+  must_not_include: ["PROB-777"]
+  expect_found: false
+
+- id: T20
+  kind: search
+  search_mode: semantic
+  question: "сколько раз повторяется выставление инвойса перед переводом в dead-letter"
+  fed_query: "1s, 5s, 30s"
+  expected_sources: [ws-b]
+  expected_artifacts: [SPEC-101, PRD-101]
+  must_include: ["SPEC-101"]
+  must_not_include: []
+  expect_found: true
+
+# ─── federated (both workspaces) ──────────────────────────────────────────────
+
+- id: T21
+  kind: search
+  search_mode: smart
+  question: "retry attempts then dead letter policy"
+  fed_query: "dead-letter"
+  expected_sources: [ws-a, ws-b]
+  expected_artifacts: [SPEC-002, SPEC-101]
+  must_include: ["SPEC-002", "SPEC-101"]
+  must_not_include: []
+  expect_found: true
+  budget: 350
+
+- id: T22
+  kind: get
+  key: ADR-001
+  question: "fetch artifact ADR-001"
+  expected_sources: [ws-a, ws-b]
+  expected_artifacts: [ADR-001]
+  must_include: ["ADR-001"]
+  must_not_include: []
+  expect_found: ambiguous
+
+- id: T23
+  kind: search
+  search_mode: smart
+  question: "idempotency key format dedup window binding predicate"
+  fed_query: "binding predicate"
+  expected_sources: [ws-a, ws-b]
+  expected_artifacts: [SPEC-102, SPEC-001]
+  must_include: ["SPEC-102", "SPEC-001"]
+  must_not_include: []
+  expect_found: true
+
+- id: T24
+  kind: search
+  search_mode: keyword
+  question: "dead-letter"
+  expected_sources: [ws-a, ws-b]
+  expected_artifacts: [SPEC-002, SPEC-101]
+  must_include: ["SPEC-002", "SPEC-101"]
+  must_not_include: []
+  expect_found: true
+
+- id: T25
+  kind: search
+  search_mode: smart
+  question: "ops runbook what must never be done manually"
+  fed_query: "runbook"
+  expected_sources: [ws-a, ws-b]
+  expected_artifacts: [NOTE-001, NOTE-101]
+  must_include: ["NOTE-001", "NOTE-101"]
+  must_not_include: []
+  expect_found: true
+
+- id: T26
+  kind: search
+  search_mode: semantic
+  question: "measured incident numbers crash loss and duplicate charges"
+  fed_query: "idempotency"
+  expected_sources: [ws-a, ws-b]
+  expected_artifacts: [EVID-001, EVID-101]
+  must_include: ["EVID-001", "EVID-101"]
+  must_not_include: []
+  expect_found: true
+  budget: 500
+
+- id: T27
+  kind: search
+  search_mode: smart
+  question: "program exit criteria zero incidents consecutive days"
+  fed_query: "zero"
+  expected_sources: [ws-a, ws-b]
+  expected_artifacts: [EPIC-001, EPIC-101]
+  must_include: ["EPIC-001", "EPIC-101"]
+  must_not_include: []
+  expect_found: true
+  budget: 500
+
+- id: T28
+  kind: get
+  key: PROB-777
+  question: "fetch artifact PROB-777"
+  expected_sources: [ws-a, ws-b]
+  expected_artifacts: []
+  must_include: []
+  must_not_include: []
+  expect_found: false
+
+- id: T29
+  kind: search
+  search_mode: keyword
+  question: "attestation"
+  expected_sources: [ws-a, ws-b]
+  expected_artifacts: []
+  must_include: []
+  must_not_include: ["SPEC-999"]
+  expect_found: false
+
+- id: T30
+  kind: search
+  search_mode: smart
+  question: "single writer serialization ownership token"
+  fed_query: "writes"
+  expected_sources: [ws-a, ws-b]
+  expected_artifacts: [ADR-001]
+  must_include: ["ADR-001"]
+  must_not_include: []
+  expect_found: true

@@ -1,13 +1,15 @@
 ---
 title: Quick Start
-description: "From zero to your first activated decision in 10 minutes."
+description: "A worked example of creating, validating, evidencing and activating a decision."
 ---
 
-This is the 10-minute walkthrough. If you want a slower, fully annotated
-tutorial with error recovery, see [First Artifact Tutorial](/docs/guides/first-artifact/).
+This is a worked example. For a fully annotated tutorial with recovery, see
+[First Artifact Tutorial](/docs/guides/first-artifact/). IDs and output below
+are illustrative, not a captured runtime transcript; use the ID returned by
+your own command.
 
 :::tip[Shortcut]
-In Claude Code, Cursor, Windsurf and similar AI agents the entire workflow below is packaged as the `/forge` skill. Install with `forgeplan setup-skill` and run `/forge "your task description"`.
+In Claude Code, install the bundled `/forge` skill with `forgeplan setup-skill` and run `/forge "your task description"`. Other clients need their own supported skill installation; this command only writes the Claude Code path.
 See [Marketplace -- Forgeplan Workflow](/docs/marketplace/forgeplan-workflow/).
 :::
 
@@ -30,11 +32,11 @@ Verify it works:
 forgeplan --version
 ```
 
-:::caution[Do the three post-install steps first]
-Installing the binary is not the whole setup. The embedding model, the FPF
-knowledge base and the agent plugins each need one command, and skipping any
-of them degrades results **silently** — nothing errors out. See
-[three things installing the binary does not do](/docs/getting-started/installation/#read-this-first-three-things-installing-the-binary-does-not-do).
+:::caution[Prepare the capabilities you use]
+The semantic-search build feature, model files, and workspace vectors are
+separate prerequisites. FPF and agent plugins are additional workflow
+dependencies, not required for plain keyword retrieval. See
+[Installation](/docs/getting-started/installation/).
 :::
 
 ## 1. Initialize a workspace
@@ -44,9 +46,15 @@ cd /path/to/your/project
 forgeplan init -y
 ```
 
-This creates `.forgeplan/` with empty `prds/`, `rfcs/`, `adrs/`, `evidence/`
-directories and a `config.yaml`. The `-y` flag skips interactive prompts
-(required for AI agents).
+In a new project this creates artifact directories and `config.yaml`; `-y`
+skips prompts. If `.forgeplan/` already exists, including in a parent,
+`init -y` returns without repairs. On a fresh clone, use `reindex` for the
+derived index; if config is missing and defaults are wanted, deliberately
+use `init -y --force`, then restore custom settings from its backup.
+
+This CLI lifecycle walkthrough is not a claim that every command supports
+a migrated workspace in local `0.39.0+constellation.s1.1`. Use the
+[Constellation guide](/docs/guides/constellation/) for that layout.
 
 ```bash
 forgeplan health
@@ -78,17 +86,19 @@ forgeplan new prd "User Authentication"
 # -> Created: PRD-001 at .forgeplan/prds/PRD-001-user-authentication.md
 ```
 
-Open the file and fill the MUST sections:
+Prepare the completed body in `prd-body.md` outside `.forgeplan/`, then apply
+it with `forgeplan update PRD-001 --body @prd-body.md`. Fill the MUST sections:
 
 - **Problem** - why does this exist?
 - **Goals** - what does success look like? (SMART criteria)
 - **Non-Goals** - what is explicitly out of scope?
 - **Target Users** - who benefits?
 - **Functional Requirements (FR)** - `[Actor] can [capability]`
+- **Related Artifacts** - parent decisions or an explicit statement that none apply
 
 :::caution[Don't leave stubs]
-A stub PRD with no Problem/Goals is technical debt. Fill it now or
-`forgeplan delete PRD-001`. Half-filled PRDs pollute `forgeplan health`.
+Fill missing sections before activation. Do not delete a draft merely
+because validation reports incomplete content.
 :::
 
 ## 4. Validate
@@ -97,15 +107,19 @@ A stub PRD with no Problem/Goals is technical debt. Fill it now or
 forgeplan validate PRD-001
 ```
 
-Expected:
+For recorded compatibility coverage and remaining limits, see
+[Constellation](/docs/reference/constellation/). Use an explicit `workspace`
+when calling full MCP `forgeplan_validate`. Registration alone does not
+establish runtime coverage for every lifecycle tool.
+
+Illustrative validator output for a supported workspace:
 ```
 PRD-001: PASS ✓ (0 MUST errors, 2 SHOULD warnings)
 ```
 
-If you see MUST errors, the sections are missing or empty. Fix them and
-re-run. The validator also catches implementation leakage: writing
-"Use JWT" in a requirement fails the gate - requirements describe WHAT,
-not HOW.
+MUST findings can cover more than missing sections. Fix each reported rule
+and re-run. Technology choices such as JWT belong in design, not requirements:
+the implementation-leakage rule is SHOULD at Standard and MUST at Deep.
 
 ## 5. Reason (ADI)
 
@@ -113,18 +127,20 @@ For Standard depth, ADI is recommended. For Deep and Critical, it is
 mandatory:
 
 ```bash
-forgeplan reason PRD-001
+forgeplan reason PRD-001 --save
 ```
 
-The router generates **3+ hypotheses**, derives predictions for each, and
-scores them against any evidence already in the workspace. The output is
-stored with the artifact so future readers can see how you arrived at the
-decision.
+The configured LLM is asked to generate hypotheses, predictions and an
+evidence-oriented comparison; the router selects depth, not ADI content.
+Review the output against actual evidence. `--save` creates a linked Note; without it the CLI
+only prints the analysis.
 
-Want FPF knowledge-base context injected into the prompt?
+Alternatively, request FPF knowledge-base context (do not run both examples
+unless you want two saved Notes). This CLI path currently proceeds without
+retired-table FPF context on migrated Constellation workspaces:
 
 ```bash
-forgeplan reason PRD-001 --fpf
+forgeplan reason PRD-001 --fpf --save
 ```
 
 See [ADI Reasoning](/docs/methodology/adi/) for the full cycle.
@@ -151,7 +167,8 @@ forgeplan new evidence "Auth tests - 12 pass, JWT validate 0.3ms"
 # -> Created: EVID-001
 ```
 
-Open the evidence file and add the **structured fields** block to the body:
+Prepare `evidence-body.md` outside `.forgeplan/` with actual results and this
+**structured fields** block. The CL3 example requires matching test context:
 
 ```markdown
 ## Structured Fields
@@ -161,12 +178,15 @@ congruence_level: 3
 evidence_type: test
 ```
 
-Without these fields, the R_eff parser assigns CL0 (0.9 penalty) and your
-score collapses to near zero. This is the number one beginner mistake.
+An absent/unrecognised verdict or absent/invalid CL source fails closed to
+CL0 (0.9 penalty). Declare `evidence_type` too; it has its own scoring role.
+Do not copy the illustrative test count or timings as measurements. For
+code-claiming evidence, record real Git provenance as required by your gate.
 
-Link the evidence to the PRD:
+Apply the completed evidence body, then link it to the PRD:
 
 ```bash
+forgeplan update EVID-001 --body @evidence-body.md
 forgeplan link EVID-001 PRD-001 --relation informs
 ```
 
@@ -181,8 +201,10 @@ PRD-001: R_eff = 1.00 - Adequate
   EVID-001: supports, CL3, test -> score 1.0
 ```
 
-If R_eff is 0.0, check: (a) is evidence linked? (b) does evidence body
-contain the structured fields? See [Evidence & R_eff](/docs/methodology/evidence/).
+If R_eff is 0.0, inspect the score breakdown: missing current evidence,
+refutation, CL penalties or dependencies can explain it. Missing structured
+claims commonly produce 0.1, not necessarily zero.
+See [Evidence & R_eff](/docs/methodology/evidence/).
 
 ## 9. Activate
 
@@ -204,7 +226,7 @@ forgeplan health
 ```
 
 ```
-Artifacts: 1 (1 active, 0 draft, 0 stale)
+Artifacts: 3 (1 active, 2 draft: EVID-001 and the saved ADI Note)
 Blind spots: 0
 Orphans: 0
 Evidence coverage: 100%

@@ -25,63 +25,59 @@ use common::McpFixture;
 /// - One PRD whose body is mostly TBD/TODO markers (active stub).
 ///
 /// All artifacts are status=active so they appear in the panels.
-async fn seed_dup_and_stub_fixture(store: std::sync::Arc<forgeplan_core::db::store::LanceStore>) {
-    // Two duplicate PRDs.
-    store
-        .create_artifact_for_test(&NewArtifact {
-            id: "PRD-DUP-A".to_string(),
-            kind: "prd".to_string(),
-            status: "active".to_string(),
-            title: "Same-shape PRD".to_string(),
-            body: "## Problem\nReal text.\n\n## Goals\nReal goals.\n".to_string(),
-            depth: "standard".to_string(),
-            author: None,
-            parent_epic: None,
-            valid_until: None,
-            tags: Vec::new(),
-        })
-        .await
-        .expect("seed PRD-DUP-A");
-    store
-        .create_artifact_for_test(&NewArtifact {
-            id: "PRD-DUP-B".to_string(),
-            kind: "prd".to_string(),
-            status: "active".to_string(),
-            title: "Same-shape PRD".to_string(),
-            body: "## Problem\nReal text.\n\n## Goals\nReal goals.\n".to_string(),
-            depth: "standard".to_string(),
-            author: None,
-            parent_epic: None,
-            valid_until: None,
-            tags: Vec::new(),
-        })
-        .await
-        .expect("seed PRD-DUP-B");
-
-    // One active stub: PRD with 3+ stub markers in body. The
-    // stub detector in validation::rules::check_stub_detailed
-    // triggers on `count >= 3`. Use canonical English template
-    // phrases (matches PHRASE_MARKERS) + a {placeholder} marker
-    // to exceed the threshold.
-    store
-        .create_artifact_for_test(&NewArtifact {
-            id: "PRD-STUB".to_string(),
-            kind: "prd".to_string(),
-            status: "active".to_string(),
-            title: "Stub PRD title".to_string(),
-            body: "## Problem\nWhat we are building and why\n\n\
-                   ## Goals\nHow the problem affects users\n\n\
-                   ## Non-Goals\nWhat's in the MVP\n\n\
-                   ## Notes\nSee {placeholder} below.\n"
-                .to_string(),
-            depth: "standard".to_string(),
-            author: None,
-            parent_epic: None,
-            valid_until: None,
-            tags: Vec::new(),
-        })
-        .await
-        .expect("seed PRD-STUB");
+async fn seed_dup_and_stub_fixture(
+    store: std::sync::Arc<forgeplan_core::db::store::LanceStore>,
+    seed_guard: std::sync::Arc<forgeplan_core::workspace::lock::WorkspaceLock>,
+) {
+    for (id, title, prose) in [
+        (
+            "PRD-001",
+            "Same-shape PRD",
+            "## Problem\nReal text.\n\n## Goals\nReal goals.\n",
+        ),
+        (
+            "PRD-002",
+            "Same-shape PRD",
+            "## Problem\nReal text.\n\n## Goals\nReal goals.\n",
+        ),
+        (
+            "PRD-003",
+            "Stub PRD title",
+            "## Problem\nWhat we are building and why\n\n\
+             ## Goals\nHow the problem affects users\n\n\
+             ## Non-Goals\nWhat's in the MVP\n\n\
+             ## Notes\nSee {placeholder} below.\n",
+        ),
+    ] {
+        let kind = "prd"
+            .parse::<forgeplan_core::artifact::types::ArtifactKind>()
+            .expect("valid PRD kind");
+        let canonical_key =
+            forgeplan_core::artifact::canonical_key::mint_artifact_key(&kind, title)
+                .expect("mint PRD key");
+        let body = format!(
+            "---\nid: {id}\nkind: prd\nstatus: active\ntitle: {title}\nslug: {canonical_key}\n---\n\n{prose}"
+        );
+        store
+            .create_artifact_for_test(
+                &seed_guard,
+                &NewArtifact {
+                    canonical_key,
+                    id: id.to_string(),
+                    kind: "prd".to_string(),
+                    status: "active".to_string(),
+                    title: title.to_string(),
+                    body,
+                    depth: "standard".to_string(),
+                    author: None,
+                    parent_epic: None,
+                    valid_until: None,
+                    tags: Vec::new(),
+                },
+            )
+            .await
+            .expect("seed valid PRD");
+    }
 }
 
 /// MCP `forgeplan_health` MUST emit `possible_duplicates` AND

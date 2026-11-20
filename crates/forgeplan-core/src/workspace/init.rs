@@ -125,6 +125,13 @@ const CONFIG_TEMPLATES: &str = r#"
 "#;
 
 /// All artifact subdirectories created inside `.forgeplan/`.
+///
+/// Also the set the capture scanner enumerates, so it must cover every
+/// directory [`crate::artifact::types::ArtifactKind::dir_name`] can name. A
+/// kind whose directory is missing here is invisible to reconcile: the file
+/// is written, `forgeplan_new` reports success, and the artifact never appears
+/// in `get` / `list` / `score` — which is exactly what happened to the six
+/// brownfield extraction kinds (`Issue #287` Phase A).
 pub const ARTIFACT_DIRS: &[&str] = &[
     "prds",
     "epics",
@@ -138,6 +145,12 @@ pub const ARTIFACT_DIRS: &[&str] = &[
     "refresh",
     "memory",
     "discovery",
+    "use_cases",
+    "glossary",
+    "invariants",
+    "scenarios",
+    "hypotheses",
+    "domain_models",
 ];
 
 /// PRD-077 FR-002 / CR-C4: commented template appended to

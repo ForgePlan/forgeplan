@@ -103,6 +103,11 @@ lifecycle_state: "draft"
 
 # SC-042 — Forwarder confirms an accepted order
 
+Historical extraction sample, not verification evidence for Forgeplan.
+Unlinked invariant/scenario IDs below illustrate the source project's graph;
+the package does not ship those artifacts.
+The dated staging/manual-run statements in frontmatter and below are retained historical claims without supporting execution receipts in this package; they were not independently verified by this review.
+
 ## Feature overview
 Validates that an order participant (forwarder or cargo_owner) can confirm an accepted order, and that the side-effects differ by party. Non-participants see a NOT_FOUND error to prevent information leakage.
 
@@ -128,15 +133,15 @@ See frontmatter visualization 2.
 - **Confidence**: `inferred`. Waiting on Domain Owner confirmation of dual-confirm semantics (HYP-042).
 
 ## Traceability
-- Use case: [UC-003](../use-cases.md#uc-003).
+- Use case: [UC-003](tripsales-use-case-sample.md).
 - Invariants:
-  - [INV-003](../invariants.md#inv-003) — participant-only visibility.
-  - [INV-005](../invariants.md#inv-005) — status transition rules.
-  - [INV-012](../invariants.md#inv-012) — cargo initialization on forwarder confirm.
-- Terms:
-  - [forwarder_confirmed](../glossary.md#forwarder_confirmed) (TERM-012).
-  - [cargo_owner_confirmed](../glossary.md#cargo_owner_confirmed) (TERM-013).
-  - [forwarder](../glossary.md#forwarder) (TERM-005).
+  - `INV-003` — participant-only visibility.
+  - `INV-005` — status transition rules.
+  - `INV-012` — cargo initialization on forwarder confirm.
+- Terms in the [sample domain glossary](tripsales-glossary-sample.md):
+  - `forwarder_confirmed` (TERM-012).
+  - `cargo_owner_confirmed` (TERM-013).
+  - `forwarder` (TERM-005).
 - Related scenarios:
   - SC-043 (cancel an order in forwarder_confirmed with cascade).
   - SC-051 (attempt confirm on a non-confirmable status).

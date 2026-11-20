@@ -1,6 +1,6 @@
 ---
 title: forgeplan mcp install
-description: "Smart-merge Forgeplan into Claude Code, Cursor, or Windsurf MCP config - cross-platform, idempotent, brew-upgrade-safe."
+description: "Добавляет Forgeplan в конфигурацию MCP Claude Code, Cursor или Windsurf, сохраняя другие записи."
 ---
 
 `forgeplan mcp install` записывает MCP-сервер Forgeplan в файл конфигурации клиента
@@ -24,7 +24,7 @@ description: "Smart-merge Forgeplan into Claude Code, Cursor, or Windsurf MCP co
 
 ## Когда НЕ использовать
 
-- Для пер-tool конфигурации - настраивать нечего, сервер читает `./.forgeplan/`.
+- Для выбора профиля или политики workspace: установка пишет конфигурацию клиента; фактический запуск сервера настраивается и проверяется отдельно.
 - Для HTTP / сетевого MCP - Forgeplan поставляется только со stdio.
 - Чтобы удалить Forgeplan из клиента - отредактируйте файл конфигурации вручную;
   `install` только добавляет.
@@ -47,9 +47,7 @@ forgeplan mcp install [OPTIONS] --client <CLIENT>
   -V, --version                  Print version
 ```
 
-`--binary-path` и `--use-name` взаимоисключающи. По умолчанию команда разрешает
-работающий бинарник в стабильный, не-версионированный путь (например,
-`/opt/homebrew/bin/forgeplan`, а не Cellar-локацию), чтобы `brew upgrade` не ломал запись.
+`--binary-path` и `--use-name` взаимоисключающие. Стабильная запись PATH выбирается лишь при совпадении с исполняемым файлом установщика; иначе используется `current_exe`. Стабильность после обновления не безусловна. Чтобы не смешать выбранную `0.39.0+constellation.s1.1` и установленную `0.38.0`, задайте абсолютный `--binary-path` выбранной сборки и изучите dry-run.
 
 ## Примеры
 
@@ -59,8 +57,7 @@ forgeplan mcp install [OPTIONS] --client <CLIENT>
 forgeplan mcp install --client claude
 ```
 
-Записывает `~/.claude.json`. Scope по умолчанию - `user`, поэтому каждый проект,
-который открывает Claude Code, видит инструменты Forgeplan.
+Пишет user-scoped запись в `~/.claude.json`; доступность в проектах зависит от загрузки и инициализации клиентом.
 
 ### Пример 2: Cursor, только проект
 
@@ -68,9 +65,7 @@ forgeplan mcp install --client claude
 forgeplan mcp install --client cursor --scope project
 ```
 
-Записывает `./.cursor/mcp.json`. Forgeplan загружается только когда активным
-рабочим пространством является этот репозиторий - полезно, когда лишь часть
-проектов в монорепозитории использует Forgeplan.
+Пишет `./.cursor/mcp.json` для project scope. Загрузка определяется workspace и политикой клиента.
 
 ### Пример 3: Превью перед записью
 
@@ -87,10 +82,7 @@ forgeplan mcp install --client windsurf --dry-run
 forgeplan mcp install --client cursor --use-name forgeplan
 ```
 
-Записывает `"command": "forgeplan"` - рассчитывает на `$PATH` в момент запуска MCP.
-**Оговорка для GUI-клиентов macOS**: Claude Code Mac и Cursor app **не** наследуют
-shell PATH, поэтому короткие имена ломаются, если вы не настроили
-`launchctl setenv PATH ...`. Дефолт (абсолютный путь) - более безопасный выбор.
+Записывает `"command": "forgeplan"` и полагается на PATH при старте MCP. GUI-приложения macOS могут не наследовать shell PATH; абсолютный путь убирает эту зависимость. Проверяйте фактическое окружение клиента, а не предполагаемое универсальное значение PATH.
 
 ## Записываемые файлы конфигурации
 
@@ -112,11 +104,7 @@ shell PATH, поэтому короткие имена ломаются, есл�
 
 ## Место в рабочем процессе
 
-`mcp install` - мост между «бинарник на диске» и «агент может вызывать инструменты
-Forgeplan». После успеха перезапустите клиента, и поверхность методологии
-(Shape → Validate → Code → Evidence → Activate) станет доступна через
-инструменты `mcp__forgeplan__*`. После рестарта вызовите `forgeplan health`, чтобы
-убедиться, что сервер стартует без ошибок.
+`mcp install` записывает конфигурацию, но не доказывает успешный старт или вызов сервера клиентом. Создаёт `args: ["serve"]` и сохраняет существующий `env`. После рестарта проверьте инициализацию MCP и каталог инструментов нужного бинарника, профиля и workspace. Отдельный CLI-вызов `forgeplan health` не проверяет это MCP-соединение.
 
 ## См. также
 
@@ -125,3 +113,41 @@ Forgeplan». После успеха перезапустите клиента, 
 - [`forgeplan serve`](/ru/docs/cli/serve/) - справочник по нижележащему серверу
 - [Индекс MCP-инструментов](/ru/docs/mcp/) - что предоставляет сервер после установки
 - [`forgeplan health`](/ru/docs/cli/health/) - проверка после рестарта клиента
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan mcp install --help`.
+
+```text
+Install forgeplan MCP config into a client (Claude / Cursor / Windsurf).
+
+Smart-merge: replaces command/args/transport, preserves existing `env`. Idempotent — safe to re-run.
+
+Usage: forgeplan mcp install [OPTIONS] --client <CLIENT>
+
+Options:
+  -c, --client <CLIENT>
+          Target client: claude, cursor, or windsurf
+
+  -s, --scope <SCOPE>
+          Config scope: user (global) or project (local). Default: user
+          
+          [default: user]
+
+      --binary-path <BINARY_PATH>
+          Override binary path (default: detected from current_exe)
+
+      --use-name <USE_NAME>
+          Use short name instead of absolute path: forgeplan or fpl. Requires PATH to include the binary's directory at MCP launch time. macOS GUI apps may not inherit shell PATH — use absolute path (the default) for maximum portability
+
+      --dry-run
+          Print proposed change without writing
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+```
+<!-- forgeplan-runtime:end -->

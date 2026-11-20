@@ -40,7 +40,9 @@ pub fn suggest(
         let fgr = fgr_scores.iter().find(|s| s.artifact_id == record.id);
         let link_count = relations
             .iter()
-            .filter(|(src, tgt, _)| src == &record.id || tgt == &record.id)
+            // The relation endpoints are canonical keys (ADR-030); the display
+            // id is a repeatable alias, so the comparison is made on the key.
+            .filter(|(src, tgt, _)| src == &record.canonical_key || tgt == &record.canonical_key)
             .count();
 
         // Rule 1: No evidence + draft → EXPLORE (highest priority)
@@ -129,6 +131,7 @@ mod tests {
 
     fn record(id: &str, status: &str, r_eff: f64) -> ArtifactRecord {
         ArtifactRecord {
+            canonical_key: id.into(),
             id: id.into(),
             kind: "prd".into(),
             status: status.into(),

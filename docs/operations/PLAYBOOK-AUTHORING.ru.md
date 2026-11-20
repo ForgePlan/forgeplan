@@ -6,17 +6,23 @@
 оркестрируют внешние плагины/скиллы/агентов и ингестят их output в
 forge-граф (PRD/ADR/Epic/Note/Spec).
 
+> Сверено с `c852f40c`, не с одним лишь историческим ADR. В этом руководстве
+> YAML — примеры, не receipts успешного запуска. Skill dispatcher пока только
+> пишет trace и возвращает success: он не загружает установленный skill и не
+> доказывает выполнение проверки. Зарегистрированного `forgeplan skill install`
+> нет. Запуск delegate требует реальных prerequisites и разрешения, особенно
+> для shell, artifact mutation и внешних API; этот текст их не предоставляет.
+
 ## Что такое Playbook
 
 **Playbook** — это `.yaml`-файл, описывающий **multi-step workflow**:
 триггеры запуска, последовательность шагов с делегациями, mapping для
 ингеста результатов, install-хинты на случай отсутствия плагина.
 
-Не путать со **скриптом**: playbook не содержит исполняемого кода —
-только декларативные шаги. Реальную работу делают **внешние плагины**
-(c4-architecture, autoresearch), **скиллы** (forge-history-miner),
-**агенты** Claude Code, либо **встроенные** операции forgeplan-core
-(`ingest`, `new`, `validate`, `activate`, `search`).
+Playbook — декларативная конфигурация, но может разрешать исполняемый
+`command` с argv и вызывать мутирующие внутренние операции. Это не sandbox.
+Реальную работу выполняют подключённые Plugin/Agent/Command delegates или
+`forgeplan_core`; Skill пока возвращает лишь trace, как отмечено выше.
 
 Источник истины формата — [SPEC-003](../../.forgeplan/specs/SPEC-003-playbook-yaml-schema.md).
 Этот документ — пользовательский guide; для правил валидации см.
@@ -93,9 +99,9 @@ triggered_by:
 
 ### `requires` — prerequisites
 
-Декларативная заявка на плагины и скиллы. `forgeplan plugins doctor`
-читает это поле и предупреждает, если что-то не установлено
-**до** запуска.
+Декларативная заявка на зависимости. Отдельный `forgeplan plugins doctor`
+помогает проверить установленный registry; YAML-заявка сама по себе
+не доказывает совместимость или доступность каждого delegate.
 
 ```yaml
 requires:
@@ -107,8 +113,8 @@ requires:
       pack: brownfield-code-pack
 ```
 
-Если плагина нет на машине, конкретный шаг падает с **install-хинтом**
-из `fallback_hint` (см. ниже).
+При недоступности delegate возможен install-hint, но текущий Skill path
+не проверяет установку и не выдаёт такого отказа.
 
 ## Структура YAML — `steps`
 
@@ -125,17 +131,16 @@ requires:
 | `fallback_hint` | string | нет | Команда установки, если delegate отсутствует |
 | `on_error` | enum | нет | `abort` (default) / `continue` |
 | `timeout_seconds` | int | нет | Per-step override default'а dispatcher'а (300s general / 600s plugin / 180s command/skill). Schema 1.1+ (PRD-072 FR-8) |
-| `budget_usd` | float | нет | USD cap для `claude --print` invocations (Plugin/Agent paths). Schema 1.2+ (ADR-011 §Decision). По умолчанию `$1.00` — слишком низок для adversarial review playbook'ов; ставьте `5.00` для audit-style steps. **Внимание**: claude enforces budget post-hoc — observed 1.05-1.25× overrun над cap (PROB-050 A-25). |
+| `budget_usd` | float | нет | Передаётся Plugin/Agent в `claude --print`, default `$1.00`. Это не строгий расходный предел: EVID-097 наблюдал `$0.20184575` при cap `$0.05` на `claude` 2.1.126. Больший cap — не гарантия успеха или верхняя оценка перерасхода. |
 | `allowed_tools` | array of tool names | нет | Whitelist tool names для `claude --print`. По умолчанию `[Read, Glob, Grep]` (least-privilege analytic). Расширяйте до `[Read, Write, Bash]` для production-builder steps. Schema 1.2+ |
 
 `requires` использует **ID шагов**, не артефактов и не файлов.
 Цикл в `requires` или ссылка на несуществующий ID — load error
 (SPEC-003 §Errors).
 
-**Schema versioning** — `schema_version` совместима с `^1.0` (semver caret).
-Поля `timeout_seconds` (1.1) и `budget_usd` + `allowed_tools` (1.2) —
-**additive, не breaking**: playbook'и без них загружаются идентично schema
-1.0. Loader предупреждает (`WARN`) о неизвестных полях, не fails.
+**Schema versioning:** loader принимает semver `>=1.0.0,<2.0.0`.
+Поля 1.1/1.2 additive. Top-level неизвестные поля отклоняются;
+неизвестные поля Step десериализуются без обязательного WARN.
 
 ## Пять типов делегации
 
@@ -183,12 +188,12 @@ production-ready. Forgeplan не дублирует его генерацию д
     type: skill
     name: forge-history-miner
     pack: brownfield-code-pack
-  fallback_hint: "forgeplan skill install brownfield-code-pack"
+  fallback_hint: "Install this skill through your agent host; verify its supported installation command."
 ```
 
-Когда использовать: когда capability компактнее agent'а (один SKILL.md,
-1–2 prompt'а). Forgeplan-skills устанавливаются через
-`forgeplan skill install` и доступны всем агентам в workspace.
+Когда использовать: capability компактнее agent'а. Это описание намерения
+делегации; текущий Skill path trace-only. Установку выполняет host,
+а не несуществующая команда `forgeplan skill install`.
 
 ### 4. `command` — произвольный shell (opt-in)
 
@@ -210,14 +215,16 @@ production-ready. Forgeplan не дублирует его генерацию д
   delegate_to:
     type: forgeplan_core
     target: ingest             # ingest | new | validate | activate | search
-  mapping: c4-to-forge
-  produces_at: "C4-Documentation/"
+  input:
+    mapping_path: marketplace/mappings/c4-to-forge.yaml
+    source_path: C4-Documentation/
+    dry_run: true
 ```
 
 Когда использовать: для шагов, которые делает сам forgeplan-core
 без внешних зависимостей (`ingest`, `new`, `validate`, `activate`,
-`search`). Безопасно: ничего не запускает, не делегирует — прямой
-вызов внутреннего API.
+`search`). Это direct internal API, но не автоматически безопасная read-only
+операция: `new`/`activate` и пишущий ingest требуют соответствующего разрешения.
 
 ## DAG-ordering через `requires`
 
@@ -225,6 +232,7 @@ production-ready. Forgeplan не дублирует его генерацию д
 steps:
   - id: detect-c4-need
     delegate_to: { type: forgeplan_core, target: validate }
+    input: { id: PRD-001 }  # пример существующего ID, не placeholder для запуска
 
   - id: run-c4-architecture
     delegate_to: { type: plugin, name: c4-architecture, target: c4-code }
@@ -232,7 +240,10 @@ steps:
 
   - id: ingest-c4
     delegate_to: { type: forgeplan_core, target: ingest }
-    mapping: c4-to-forge
+    input:
+      mapping_path: marketplace/mappings/c4-to-forge.yaml
+      source_path: C4-Documentation/
+      dry_run: true
     requires: [run-c4-architecture]
 ```
 
@@ -245,8 +256,8 @@ Loader строит граф из `requires` и валидирует:
 
 ## `fallback_hint` — install-команды
 
-Если плагин/скилл, на который ссылается шаг, **не установлен**, runtime
-**останавливает** playbook и эмитит:
+Пример диагностического сообщения для недоступного plugin delegate
+(не обещание одинакового поведения для Skill):
 
 ```
 Error: step `run-c4-architecture` requires plugin `c4-architecture`,
@@ -254,9 +265,8 @@ Error: step `run-c4-architecture` requires plugin `c4-architecture`,
 Fix: claude plugin install c4-architecture
 ```
 
-`fallback_hint` обязан быть **точной командой** для текущей платформы.
-Не пишите «установите c4-architecture из marketplace» — пишите
-полную shell-строку. AC-4 PRD-065 проверяет именно это поведение.
+`fallback_hint` должен давать проверяемый способ установки для конкретного host.
+Точность текста — обязанность автора, не выполненный runtime-тест.
 
 ## Конвенции naming
 
@@ -264,8 +274,7 @@ Fix: claude plugin install c4-architecture
 - Файл playbook'а: `<name>.yaml` (`brownfield-code.yaml`).
 - Header-comment с purpose + version + cross-links — обязательно
   (см. `marketplace/playbooks/brownfield-code.yaml` как образец).
-- `schema_version: "1.0"` — пока единственный поддерживаемый.
-  При выходе v2 SPEC-003 объявит migration policy.
+- Поддерживаемый диапазон `schema_version`: `>=1.0.0,<2.0.0`.
 
 ## Валидация и запуск
 
@@ -278,15 +287,17 @@ forgeplan playbook validate marketplace/playbooks/brownfield-code.yaml
 forgeplan playbook show brownfield-code
 forgeplan playbook run brownfield-code --yes --dry-run
 
-# Реальный запуск
+# Реальный запуск после проверки prerequisites и разрешений
 forgeplan playbook run brownfield-code --yes
+# Если есть command delegates, дополнительно нужен --allow-shell
 
-# Запустить только один шаг (для отладки)
-forgeplan playbook run brownfield-code --yes --step run-c4-architecture
+# Начать с шага 2 (число, 1-based); это не запуск только одного named step
+forgeplan playbook run brownfield-code --yes --step 2
 ```
 
-`--yes` обязателен в non-interactive режиме (CI, AI agents) —
-без него runtime требует интерактивное подтверждение.
+CLI требует `--yes`; не рассчитывайте на интерактивный prompt.
+Для command delegates отдельно проверьте shell opt-in (`--allow-shell`
+или явно разрешённая workspace-конфигурация); один `--yes` его не заменяет.
 
 ## Errors — что отвергает loader
 
@@ -299,20 +310,19 @@ forgeplan playbook run brownfield-code --yes --step run-c4-architecture
 | Неизвестный `delegate_to.type` | ERROR (показывает 5 валидных) |
 | `requires:` ссылается на несуществующий step ID | ERROR |
 | Цикл в `requires:` графе | ERROR (показывает цикл) |
-| Плагин из `requires:` не установлен | WARN при load, ERROR при run |
+| Неустановленный plugin | Проверять registry отдельно; ошибка delegate при run, не общая гарантия load-time проверки |
 | Неизвестное YAML-поле на top-level | ERROR (`deny_unknown_fields`) |
-| Неизвестное поле внутри step | WARN (forward compat) |
-| `schema_version` > runtime | ERROR (suggest upgrade) |
+| Неизвестное поле внутри step | Принимается без гарантированного WARN |
+| `schema_version` вне `>=1.0.0,<2.0.0` | ERROR |
 | `produces_at` есть, но `mapping` нет | WARN (output не ingestится) |
 | `mapping` есть, но `produces_at` нет | ERROR |
 
 ## Subprocess lifecycle (Phase 6)
 
-С v0.27.0 четыре делегации (`plugin`, `agent`, `skill`, `command`)
-запускают **реальный subprocess**, а не mock-stub. Пятая (`forgeplan_core`)
-по-прежнему остаётся direct internal call в текущем процессе. Эта
-секция объясняет invariants, которым должен соответствовать pack
-author при выборе делегации и параметров шага.
+Реальные subprocess используют `plugin`, `agent`, `command`.
+`skill` остаётся trace-only; `forgeplan_core` — direct internal call.
+Исторические ADR/EVID описывают свои проверки, не доказывают реализацию
+каждого обещанного dispatcher-path в текущем source.
 
 Источник истины — [ADR-010](../../.forgeplan/adrs/ADR-010-phase-6-subprocess-invocation-via-tokio-process-with-kill-on-drop-and-timeout.md)
 + [EVID-090](../../.forgeplan/evidence/EVID-090-spike-2-tokio-process-subprocess-invocation-validated-for-phase-6-dispatchers.md)
@@ -337,8 +347,8 @@ claude --print --agent <slug> --output-format json \
 dispatcher decoding. Empirical proof: [EVID-097](../../.forgeplan/evidence/EVID-097-phase-b-track-4-a8-real-e2e-closure-measurement.md)
 (real `claude` 2.1.126, 5 invocations, $0.98 spent).
 
-`Skill`, `Command`, `ForgeplanCore` dispatchers — без изменений
-относительно ADR-010 контракта.
+`Command` использует direct argv exec, `ForgeplanCore` — internal API.
+`Skill` не запускает subprocess и не выполняет содержимое skill.
 
 ### Async exec через tokio::process
 
@@ -346,11 +356,11 @@ dispatcher decoding. Empirical proof: [EVID-097](../../.forgeplan/evidence/EVID-
 `tokio::process::Command` с фиксированной конфигурацией:
 
 ```text
-stdin   = Stdio::null()        // нет path для interactive injection
+stdin   = null либо pipe      // Plugin/Agent получают prompt через pipe
 stdout  = Stdio::piped()       // concurrent drain (избегает 64K-buffer deadlock)
 stderr  = Stdio::piped()       // same — capture для journal
 env     = clear() + allow-list // нет утечки FORGEPLAN_*
-kill_on_drop(true)             // SIGKILL/TerminateProcess при cancel/panic
+kill_on_drop(true)             // попытка kill прямого child при реальном Drop
 ```
 
 Output читается concurrent через `tokio::join!(stdout, stderr, wait)` —
@@ -391,31 +401,29 @@ abort'ятся (если `on_error: abort` — default) или продолжа�
 
 Хардкорные invariants Phase 6 (см. ADR-010 §Invariants):
 
-- **NEVER**: `Stdio::inherit()` для stdin — закрывает interactive
-  prompt injection.
+- **NEVER**: `Stdio::inherit()` для stdin. Это исключает интерактивный ввод,
+  но не устраняет prompt injection в переданном LLM тексте.
 - **NEVER**: `sh -c` или shell expansion. `command:`-делегации принимают
   `Vec<String>` — direct exec через argv-list, никаких глоб'ов или
   переменных оболочки в процессе spawn.
 - **NEVER**: env passthrough by default. `env_clear()` + explicit
   allow-list (`PATH`, `HOME`, опционально `FORGEPLAN_WORKSPACE`).
-  Никакие `FORGEPLAN_*` ключи (LLM provider, OpenAI keys) НЕ утекают
-  в subprocess.
-- **NEVER**: `command:`-делегация без флага `--yes` в run-команде. Гейт
-  `validate_command_delegate_security` отвергает execution в
-  interactive режиме.
-- **ALWAYS**: `kill_on_drop(true)` — гарантия очистки zombie
-  processes на Ctrl+C, panic, или drop executor'а.
-- **ALWAYS**: timeout enforced — нет «бесконечного» step'а.
+  Секретные provider keys не передаются автоматически; разрешённый
+  `FORGEPLAN_WORKSPACE` — отдельное явно перечисленное исключение.
+- **NEVER**: запускать `command` без execution confirmation и отдельного shell opt-in.
+- `kill_on_drop(true)` действует при выполнении Drop; после SIGKILL родителя
+  Drop не запускается. Очистка всех grandchildren/process tree не гарантирована.
+- Timeout ограничивает ожидание subprocess и вызывает kill/wait прямого child;
+  это не обещание жёсткого общего deadline для любого internal API.
 
-Pack authors: если ваш plugin требует переменную окружения, добавьте
-её в allow-list через `env:` поле шага (a follow-up FR — пока хардкод
-allow-list внутри dispatcher).
+Поля `env:` у Step сейчас нет. Существующий allow-list задаётся dispatcher;
+не добавляйте в YAML неработающее поле и не передавайте secrets в обход политики.
 
 ### Fallback hint behaviour
 
-Если plugin/agent/skill **не установлен**, subprocess не запускается.
-Dispatcher эмитит `DispatchError::DelegateMissing` с install-командой
-из `fallback_hint`:
+Plugin/Agent paths могут вернуть `DispatchError::DelegateMissing`, например
+при недоступном безопасном executable. Это не универсальная проверка установки
+всех capabilities. Следующий текст — пример, не проверенный текущий output:
 
 ```yaml
 - id: run-c4-architecture
@@ -431,34 +439,32 @@ Error: step `run-c4-architecture` requires plugin `c4-architecture`,
 Fix: claude plugin install c4-architecture
 ```
 
-Контракт `Fix:` маркера — PRD-071 (см.
-[agent-protocol.md](../methodology/agent-protocol.md)). Агент Claude
-Code распарсит `Fix:` и предложит выполнить install-команду или
-прервать playbook.
-
-`fallback_hint` обязательно для каждой `plugin`/`skill` делегации —
-load-time error, если поле отсутствует у `plugin:` step. Это
-явный invariant ADR-009: pack author не может полагаться, что
-target-плагин установлен глобально.
+`Fix:` — соглашение hint-протокола, не гарантия автоматической установки host.
+У текущего loader нет обязательной проверки наличия `fallback_hint` на каждом
+plugin/skill step. Авторское требование предоставить полезный hint сохраняется,
+но нельзя выдавать его за реализованный load-time error.
 
 ### Скрытое поведение `forgeplan_core`
 
-Делегация `forgeplan_core` — единственная **без subprocess**:
+Делегация `forgeplan_core` вызывает internal API без subprocess; Skill path
+тоже не создаёт subprocess, но не выполняет содержимое skill.
 
 ```yaml
 - id: ingest-c4
   delegate_to: { type: forgeplan_core, target: ingest }
-  mapping: c4-to-forge
-  produces_at: "C4-Documentation/"
+  input:
+    mapping_path: marketplace/mappings/c4-to-forge.yaml
+    source_path: C4-Documentation/
+    dry_run: true
 ```
 
 Реальный путь — direct internal call в `forgeplan_core_dispatcher.rs`.
 `ForgeplanOp::Ingest` мапится на existing `ingest::engine::run()` API
 без дополнительного процесса.
 
-Преимущества: no overhead на fork+exec, shared в-memory state,
-journal flushes synchronous. Используется heavy в `greenfield-kickoff.yaml`
-(7 шагов через ForgeplanCore + 1 optional Skill).
+Нет fork/exec, но dispatcher открывает свежий store handle, а не гарантированно
+разделяет уже загруженный state/соединение. Journal фиксирует шаги; его наличие
+не доказывает exactly-once применение или успешность trace-only Skill.
 
 Ограничение: `forgeplan_core` поддерживает строго 5 операций —
 `ingest`, `new`, `validate`, `activate`, `search`. Нужна другая —
@@ -467,14 +473,15 @@ journal flushes synchronous. Используется heavy в `greenfield-kicko
 
 ### Resumability + journal
 
-Journal flushed **после каждого `StepEnd`** (per Phase 5 contract).
-При kill -9 во время step → restart через `forgeplan playbook run X --yes`
-resumes с последнего persisted StepEnd.
+Journal фиксирует события шагов, но новый `playbook run` создаёт новый RunId.
+Автоматическое продолжение от последнего StepEnd не реализовано. `--step N`
+задаёт явную 1-based стартовую позицию; перед повторным применением надо
+разобрать побочные эффекты завершённых/прерванных шагов и prerequisites.
 
-`kill_on_drop` гарантирует, что subprocess с убитого forgeplan-процесса
-тоже не остаётся zombie — tokio runtime отправляет SIGKILL при Drop
-уже после того, как forgeplan-процесс упал. Spike-2 (EVID-090)
-verified: после timeout/kill `pgrep` показывал 0 zombies.
+После `kill -9` родитель не исполняет destructors. `kill_on_drop` не гарантирует
+убийство оставшегося child или потомков в этом случае. Spike-2 EVID-090 —
+историческое наблюдение конкретных timeout/kill сценариев, не доказательство
+такой гарантии для всех аварийных завершений.
 
 Pack authors не должны делать step «ленивым» (например, polling
 external API). Вместо этого — `Wait:` hint (PRD-071) с явным TTL

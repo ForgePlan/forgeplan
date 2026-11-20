@@ -2,21 +2,47 @@
 //! Uses HashMap + tokio::sync::RwLock for thread-safe async access. No disk I/O.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, NaiveDate, Utc};
 use tokio::sync::RwLock;
 
+use crate::artifact::canonical_key::ArtifactCandidate;
 use crate::artifact::store::ArtifactSummary;
 use crate::db::store::{ArtifactFilter, ArtifactRecord, FpfChunk, FpfChunkSummary, NewArtifact};
 use crate::driver::{ArtifactStorage, FpfStorage, RelationStorage, SearchStorage, VectorStorage};
+use crate::workspace::lock::{WorkspaceLock, WorkspaceReadPermit};
 
 /// Internal state behind a single RwLock to avoid TOCTOU races.
 struct InMemoryState {
+    /// Canonical key → record. The key is the identity (ADR-030); the display
+    /// id in the record is a repeatable alias.
     artifacts: HashMap<String, ArtifactRecord>,
-    relations: Vec<(String, String, String)>, // source, target, relation_type
+    /// (source key, target key, relation_type)
+    relations: Vec<(String, String, String)>,
     fpf_chunks: Vec<FpfChunk>,
     id_counters: HashMap<String, u32>,
+}
+
+/// Resolve a caller-supplied selector to the canonical key of exactly one
+/// document, using the **shared** algorithm — the same one the Lance store and
+/// driver must propagate ambiguity rather than treating it as absence.
+fn resolve_key(state: &InMemoryState, selector: &str) -> anyhow::Result<Option<String>> {
+    let candidates: Vec<ArtifactCandidate> = state
+        .artifacts
+        .values()
+        .map(|record| ArtifactCandidate {
+            canonical_key: record.canonical_key.clone(),
+            display_id: record.id.clone(),
+            title: record.title.clone(),
+            // The in-memory driver has no files; the path is never read.
+            relative_path: PathBuf::new(),
+        })
+        .collect();
+    Ok(
+        crate::artifact::canonical_key::resolve_artifact(selector, &candidates)?
+            .map(|resolved| resolved.identity.canonical_key),
+    )
 }
 
 /// Thread-safe in-memory store for testing.
@@ -71,9 +97,24 @@ impl InMemoryStore {
 
 #[async_trait::async_trait]
 impl ArtifactStorage for InMemoryStore {
-    async fn create_artifact(&self, artifact: &NewArtifact) -> anyhow::Result<String> {
+    async fn create_artifact(
+        &self,
+        _guard: &WorkspaceLock,
+        artifact: &NewArtifact,
+    ) -> anyhow::Result<String> {
         let now = Utc::now().to_rfc3339();
+        // The row is keyed by the canonical key (ADR-030). The prepared key
+        // wins; a caller that supplied none gets the ADR-030 rule applied to
+        // the document. The row's own field must carry the SAME key, or the
+        // shared resolver names a key the map does not hold and a lookup by
+        // display id finds nothing.
+        let key = crate::db::store::canonical_key_of(
+            &artifact.canonical_key,
+            &artifact.id,
+            &artifact.body,
+        );
         let record = ArtifactRecord {
+            canonical_key: key.clone(),
             id: artifact.id.clone(),
             kind: artifact.kind.clone(),
             status: artifact.status.clone(),
@@ -91,21 +132,25 @@ impl ArtifactStorage for InMemoryStore {
             embedding: None,
         };
         let id = record.id.clone();
-        self.state
-            .write()
-            .await
-            .artifacts
-            .insert(id.clone(), record);
+        self.state.write().await.artifacts.insert(key, record);
         Ok(id)
     }
 
-    async fn get_artifact(&self, id: &str) -> anyhow::Result<Option<ArtifactSummary>> {
+    async fn get_artifact(
+        &self,
+        _permit: &dyn WorkspaceReadPermit,
+        id: &str,
+    ) -> anyhow::Result<Option<ArtifactSummary>> {
         let state = self.state.read().await;
-        Ok(state.artifacts.get(id).map(|r| r.to_summary()))
+        let key = resolve_key(&state, id)?;
+        Ok(key
+            .and_then(|key| state.artifacts.get(&key))
+            .map(|r| r.to_summary()))
     }
 
     async fn list_artifacts(
         &self,
+        _permit: &dyn WorkspaceReadPermit,
         filter: Option<&ArtifactFilter>,
     ) -> anyhow::Result<Vec<ArtifactSummary>> {
         let state = self.state.read().await;
@@ -131,14 +176,17 @@ impl ArtifactStorage for InMemoryStore {
 
     async fn update_artifact(
         &self,
+        _guard: &WorkspaceLock,
         id: &str,
         status: Option<&str>,
         title: Option<&str>,
     ) -> anyhow::Result<()> {
         let mut state = self.state.write().await;
+        let key =
+            resolve_key(&state, id)?.ok_or_else(|| anyhow::anyhow!("artifact not found: {id}"))?;
         let record = state
             .artifacts
-            .get_mut(id)
+            .get_mut(&key)
             .ok_or_else(|| anyhow::anyhow!("artifact not found: {id}"))?;
         if let Some(s) = status {
             record.status = s.to_string();
@@ -150,37 +198,53 @@ impl ArtifactStorage for InMemoryStore {
         Ok(())
     }
 
-    async fn update_r_eff_score(&self, id: &str, score: f64) -> anyhow::Result<()> {
+    async fn update_r_eff_score(
+        &self,
+        _guard: &WorkspaceLock,
+        id: &str,
+        score: f64,
+    ) -> anyhow::Result<()> {
         let mut state = self.state.write().await;
+        let key =
+            resolve_key(&state, id)?.ok_or_else(|| anyhow::anyhow!("artifact not found: {id}"))?;
         let record = state
             .artifacts
-            .get_mut(id)
+            .get_mut(&key)
             .ok_or_else(|| anyhow::anyhow!("artifact not found: {id}"))?;
         record.r_eff_score = score;
         record.updated_at = Utc::now().to_rfc3339();
         Ok(())
     }
 
-    async fn delete_artifact(&self, id: &str) -> anyhow::Result<()> {
+    async fn delete_artifact(&self, _guard: &WorkspaceLock, id: &str) -> anyhow::Result<()> {
         let mut state = self.state.write().await;
+        let key =
+            resolve_key(&state, id)?.ok_or_else(|| anyhow::anyhow!("artifact not found: {id}"))?;
         state
             .artifacts
-            .remove(id)
+            .remove(&key)
             .ok_or_else(|| anyhow::anyhow!("artifact not found: {id}"))?;
         // Atomically clean up relations involving this artifact (same lock)
-        state.relations.retain(|(s, t, _)| s != id && t != id);
+        state.relations.retain(|(s, t, _)| s != &key && t != &key);
         Ok(())
     }
 
     // -- Full records ---------------------------------------------------------
 
-    async fn get_record(&self, id: &str) -> anyhow::Result<Option<ArtifactRecord>> {
+    async fn get_record(
+        &self,
+        _permit: &dyn WorkspaceReadPermit,
+        id: &str,
+    ) -> anyhow::Result<Option<ArtifactRecord>> {
         let state = self.state.read().await;
-        Ok(state.artifacts.get(id).cloned())
+        Ok(resolve_key(&state, id)?
+            .and_then(|key| state.artifacts.get(&key))
+            .cloned())
     }
 
     async fn list_records(
         &self,
+        _permit: &dyn WorkspaceReadPermit,
         filter: Option<&ArtifactFilter>,
     ) -> anyhow::Result<Vec<ArtifactRecord>> {
         let state = self.state.read().await;
@@ -204,11 +268,18 @@ impl ArtifactStorage for InMemoryStore {
         Ok(records)
     }
 
-    async fn update_body(&self, id: &str, body: &str) -> anyhow::Result<()> {
+    async fn update_body(
+        &self,
+        _guard: &WorkspaceLock,
+        id: &str,
+        body: &str,
+    ) -> anyhow::Result<()> {
         let mut state = self.state.write().await;
+        let key =
+            resolve_key(&state, id)?.ok_or_else(|| anyhow::anyhow!("artifact not found: {id}"))?;
         let record = state
             .artifacts
-            .get_mut(id)
+            .get_mut(&key)
             .ok_or_else(|| anyhow::anyhow!("artifact not found: {id}"))?;
         record.body = body.to_string();
         record.updated_at = Utc::now().to_rfc3339();
@@ -220,72 +291,105 @@ impl ArtifactStorage for InMemoryStore {
 
 #[async_trait::async_trait]
 impl RelationStorage for InMemoryStore {
-    async fn add_relation(&self, source: &str, target: &str, relation: &str) -> anyhow::Result<()> {
+    async fn add_relation(
+        &self,
+        _guard: &WorkspaceLock,
+        source: &str,
+        target: &str,
+        relation: &str,
+    ) -> anyhow::Result<()> {
         // Self-link guard (PROB-019)
         if source.eq_ignore_ascii_case(target) {
             anyhow::bail!("Self-link not allowed: {} cannot link to itself", source);
         }
         let mut state = self.state.write().await;
+        // Relation endpoints are canonical keys (ADR-030); a caller may still
+        // pass a display alias, so resolve both before storing.
+        let source_key = resolve_key(&state, source)?.unwrap_or_else(|| source.to_string());
+        let target_key = resolve_key(&state, target)?.unwrap_or_else(|| target.to_string());
         // Reject duplicates
         let exists = state.relations.iter().any(|(s, t, r)| {
-            s.eq_ignore_ascii_case(source) && t.eq_ignore_ascii_case(target) && r == relation
+            s.eq_ignore_ascii_case(&source_key)
+                && t.eq_ignore_ascii_case(&target_key)
+                && r == relation
         });
         if exists {
             anyhow::bail!("relation already exists: {source} -> {target} ({relation})");
         }
         state
             .relations
-            .push((source.to_string(), target.to_string(), relation.to_string()));
+            .push((source_key, target_key, relation.to_string()));
         Ok(())
     }
 
     async fn delete_relation(
         &self,
+        _guard: &WorkspaceLock,
         source: &str,
         target: &str,
         relation: &str,
     ) -> anyhow::Result<()> {
         let mut state = self.state.write().await;
+        let source_key = resolve_key(&state, source)?.unwrap_or_else(|| source.to_string());
+        let target_key = resolve_key(&state, target)?.unwrap_or_else(|| target.to_string());
         let before = state.relations.len();
         state
             .relations
-            .retain(|(s, t, r)| !(s == source && t == target && r == relation));
+            .retain(|(s, t, r)| !(s == &source_key && t == &target_key && r == relation));
         if state.relations.len() == before {
             anyhow::bail!("relation not found: {source} -> {target} ({relation})");
         }
         Ok(())
     }
 
-    async fn get_relations(&self, id: &str) -> anyhow::Result<Vec<(String, String)>> {
+    async fn get_relations(
+        &self,
+        _permit: &dyn WorkspaceReadPermit,
+        id: &str,
+    ) -> anyhow::Result<Vec<(String, String)>> {
         let state = self.state.read().await;
+        let key = resolve_key(&state, id)?;
         Ok(state
             .relations
             .iter()
-            .filter(|(s, _, _)| s == id)
+            .filter(|(s, _, _)| Some(s) == key.as_ref())
             .map(|(_, t, r)| (t.clone(), r.clone()))
             .collect())
     }
 
-    async fn get_incoming_relations(&self, id: &str) -> anyhow::Result<Vec<(String, String)>> {
+    async fn get_incoming_relations(
+        &self,
+        _permit: &dyn WorkspaceReadPermit,
+        id: &str,
+    ) -> anyhow::Result<Vec<(String, String)>> {
         let state = self.state.read().await;
+        let key = resolve_key(&state, id)?;
         Ok(state
             .relations
             .iter()
-            .filter(|(_, t, _)| t == id)
+            .filter(|(_, t, _)| Some(t) == key.as_ref())
             .map(|(s, _, r)| (s.clone(), r.clone()))
             .collect())
     }
 
-    async fn get_all_relations(&self) -> anyhow::Result<Vec<(String, String, String)>> {
+    async fn get_all_relations(
+        &self,
+        _permit: &dyn WorkspaceReadPermit,
+    ) -> anyhow::Result<Vec<(String, String, String)>> {
         let state = self.state.read().await;
         Ok(state.relations.clone())
     }
 
-    async fn delete_relations_for_artifact(&self, id: &str) -> anyhow::Result<()> {
+    async fn delete_relations_for_artifact(
+        &self,
+        _guard: &WorkspaceLock,
+        id: &str,
+    ) -> anyhow::Result<()> {
         let mut state = self.state.write().await;
+        let key = resolve_key(&state, id)?.unwrap_or_else(|| id.to_string());
         state
             .relations
-            .retain(|(s, t, _)| !s.eq_ignore_ascii_case(id) && !t.eq_ignore_ascii_case(id));
+            .retain(|(s, t, _)| !s.eq_ignore_ascii_case(&key) && !t.eq_ignore_ascii_case(&key));
         Ok(())
     }
 }
@@ -296,6 +400,7 @@ impl RelationStorage for InMemoryStore {
 impl SearchStorage for InMemoryStore {
     async fn search_body(
         &self,
+        _permit: &dyn WorkspaceReadPermit,
         query: &str,
         kind_filter: Option<&str>,
     ) -> anyhow::Result<Vec<ArtifactRecord>> {
@@ -319,7 +424,10 @@ impl SearchStorage for InMemoryStore {
         Ok(results)
     }
 
-    async fn find_stale(&self) -> anyhow::Result<Vec<ArtifactRecord>> {
+    async fn find_stale(
+        &self,
+        _permit: &dyn WorkspaceReadPermit,
+    ) -> anyhow::Result<Vec<ArtifactRecord>> {
         let now = Utc::now();
         let state = self.state.read().await;
         let mut stale: Vec<ArtifactRecord> = state
@@ -336,7 +444,11 @@ impl SearchStorage for InMemoryStore {
         Ok(stale)
     }
 
-    async fn next_id(&self, kind_prefix: &str) -> anyhow::Result<String> {
+    async fn next_id(
+        &self,
+        _permit: &dyn WorkspaceReadPermit,
+        kind_prefix: &str,
+    ) -> anyhow::Result<String> {
         let mut state = self.state.write().await;
         let counter = state
             .id_counters
@@ -364,9 +476,12 @@ impl FpfStorage for InMemoryStore {
 
     async fn insert_fpf_chunks(
         &self,
+        workspace: &Path,
+        lock: &crate::workspace::lock::WorkspaceLock,
         chunks: &[FpfChunk],
         embeddings: Option<&[Vec<f32>]>,
     ) -> anyhow::Result<usize> {
+        lock.matches_workspace(workspace)?;
         if let Some(vecs) = embeddings
             && vecs.len() != chunks.len()
         {
@@ -421,7 +536,12 @@ impl FpfStorage for InMemoryStore {
             .collect())
     }
 
-    async fn clear_fpf(&self) -> anyhow::Result<()> {
+    async fn clear_fpf(
+        &self,
+        workspace: &Path,
+        lock: &crate::workspace::lock::WorkspaceLock,
+    ) -> anyhow::Result<()> {
+        lock.matches_workspace(workspace)?;
         let mut state = self.state.write().await;
         state.fpf_chunks.clear();
         Ok(())
@@ -451,6 +571,9 @@ mod tests {
 
     fn make_new_artifact(kind: &str, title: &str, body: &str) -> NewArtifact {
         NewArtifact {
+            // Placeholder like the id below — the id is replaced by
+            // `next_id` in tests, and the canonical key follows it.
+            canonical_key: String::new(),
             id: String::new(), // will be replaced by next_id in tests
             kind: kind.to_string(),
             status: "draft".to_string(),
@@ -464,45 +587,65 @@ mod tests {
         }
     }
 
-    async fn create_with_id(store: &InMemoryStore, kind: &str, title: &str, body: &str) -> String {
-        let id = store.next_id(kind).await.unwrap();
+    async fn create_with_id(
+        guard: &crate::workspace::lock::WorkspaceLock,
+        store: &InMemoryStore,
+        kind: &str,
+        title: &str,
+        body: &str,
+    ) -> String {
+        let id = store.next_id(guard, kind).await.unwrap();
         let mut art = make_new_artifact(kind, title, body);
         art.id = id.clone();
-        store.create_artifact(&art).await.unwrap();
+        store.create_artifact(guard, &art).await.unwrap();
         id
     }
 
     #[tokio::test]
     async fn test_create_and_get_artifact() {
         let store = InMemoryStore::new();
-        let id = create_with_id(&store, "PRD", "Auth System", "Login flow").await;
+        let tmp = tempfile::tempdir().unwrap();
+        let guard = crate::workspace::acquire_workspace_lock(tmp.path())
+            .await
+            .unwrap();
+        let id = create_with_id(&guard, &store, "PRD", "Auth System", "Login flow").await;
 
         assert_eq!(id, "PRD-001");
 
-        let summary = store.get_artifact(&id).await.unwrap().unwrap();
+        let summary = store.get_artifact(&guard, &id).await.unwrap().unwrap();
         assert_eq!(summary.id, "PRD-001");
         assert_eq!(summary.title, "Auth System");
         assert_eq!(summary.kind, "PRD");
         assert_eq!(summary.status, "draft");
 
-        let record = store.get_record(&id).await.unwrap().unwrap();
+        let record = store.get_record(&guard, &id).await.unwrap().unwrap();
         assert_eq!(record.body, "Login flow");
         assert_eq!(record.r_eff_score, 0.0);
         assert!(record.author.as_deref() == Some("test"));
 
         // Not found
-        assert!(store.get_artifact("PRD-999").await.unwrap().is_none());
+        assert!(
+            store
+                .get_artifact(&guard, "PRD-999")
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
     async fn test_list_artifacts_with_filter() {
         let store = InMemoryStore::new();
-        create_with_id(&store, "PRD", "PRD One", "body1").await;
-        create_with_id(&store, "RFC", "RFC One", "body2").await;
-        create_with_id(&store, "PRD", "PRD Two", "body3").await;
+        let tmp = tempfile::tempdir().unwrap();
+        let guard = crate::workspace::acquire_workspace_lock(tmp.path())
+            .await
+            .unwrap();
+        create_with_id(&guard, &store, "PRD", "PRD One", "body1").await;
+        create_with_id(&guard, &store, "RFC", "RFC One", "body2").await;
+        create_with_id(&guard, &store, "PRD", "PRD Two", "body3").await;
 
         // No filter -- all 3
-        let all = store.list_artifacts(None).await.unwrap();
+        let all = store.list_artifacts(&guard, None).await.unwrap();
         assert_eq!(all.len(), 3);
 
         // Filter by kind
@@ -510,7 +653,7 @@ mod tests {
             kind: Some("PRD".to_string()),
             status: None,
         };
-        let prds = store.list_artifacts(Some(&filter)).await.unwrap();
+        let prds = store.list_artifacts(&guard, Some(&filter)).await.unwrap();
         assert_eq!(prds.len(), 2);
         assert!(prds.iter().all(|s| s.kind == "PRD"));
 
@@ -519,38 +662,45 @@ mod tests {
             kind: None,
             status: Some("active".to_string()),
         };
-        let active = store.list_artifacts(Some(&filter)).await.unwrap();
+        let active = store.list_artifacts(&guard, Some(&filter)).await.unwrap();
         assert_eq!(active.len(), 0);
     }
 
     #[tokio::test]
     async fn test_update_artifact_status() {
         let store = InMemoryStore::new();
-        let id = create_with_id(&store, "PRD", "Title", "body").await;
+        let tmp = tempfile::tempdir().unwrap();
+        let guard = crate::workspace::acquire_workspace_lock(tmp.path())
+            .await
+            .unwrap();
+        let id = create_with_id(&guard, &store, "PRD", "Title", "body").await;
 
         store
-            .update_artifact(&id, Some("active"), Some("New Title"))
+            .update_artifact(&guard, &id, Some("active"), Some("New Title"))
             .await
             .unwrap();
 
-        let summary = store.get_artifact(&id).await.unwrap().unwrap();
+        let summary = store.get_artifact(&guard, &id).await.unwrap().unwrap();
         assert_eq!(summary.status, "active");
         assert_eq!(summary.title, "New Title");
 
         // Update r_eff
-        store.update_r_eff_score(&id, 0.85).await.unwrap();
-        let record = store.get_record(&id).await.unwrap().unwrap();
+        store.update_r_eff_score(&guard, &id, 0.85).await.unwrap();
+        let record = store.get_record(&guard, &id).await.unwrap().unwrap();
         assert!((record.r_eff_score - 0.85).abs() < f64::EPSILON);
 
         // Update body
-        store.update_body(&id, "updated body").await.unwrap();
-        let record = store.get_record(&id).await.unwrap().unwrap();
+        store
+            .update_body(&guard, &id, "updated body")
+            .await
+            .unwrap();
+        let record = store.get_record(&guard, &id).await.unwrap().unwrap();
         assert_eq!(record.body, "updated body");
 
         // Non-existent artifact
         assert!(
             store
-                .update_artifact("NOPE-001", Some("x"), None)
+                .update_artifact(&guard, "NOPE-001", Some("x"), None)
                 .await
                 .is_err()
         );
@@ -559,58 +709,85 @@ mod tests {
     #[tokio::test]
     async fn test_delete_artifact() {
         let store = InMemoryStore::new();
-        let id = create_with_id(&store, "PRD", "To Delete", "body").await;
-        let id2 = create_with_id(&store, "RFC", "Keep", "body").await;
+        let tmp = tempfile::tempdir().unwrap();
+        let guard = crate::workspace::acquire_workspace_lock(tmp.path())
+            .await
+            .unwrap();
+        let id = create_with_id(&guard, &store, "PRD", "To Delete", "body").await;
+        let id2 = create_with_id(&guard, &store, "RFC", "Keep", "body").await;
 
         // Add a relation involving the deleted artifact
-        store.add_relation(&id, &id2, "informs").await.unwrap();
+        store
+            .add_relation(&guard, &id, &id2, "informs")
+            .await
+            .unwrap();
 
-        store.delete_artifact(&id).await.unwrap();
+        store.delete_artifact(&guard, &id).await.unwrap();
 
-        assert!(store.get_artifact(&id).await.unwrap().is_none());
-        assert!(store.get_artifact(&id2).await.unwrap().is_some());
+        assert!(store.get_artifact(&guard, &id).await.unwrap().is_none());
+        assert!(store.get_artifact(&guard, &id2).await.unwrap().is_some());
 
         // Relations cleaned up
-        let rels = store.get_all_relations().await.unwrap();
+        let rels = store.get_all_relations(&guard).await.unwrap();
         assert!(rels.is_empty());
 
         // Double delete errors
-        assert!(store.delete_artifact(&id).await.is_err());
+        assert!(store.delete_artifact(&guard, &id).await.is_err());
     }
 
     #[tokio::test]
     async fn test_relations_crud() {
         let store = InMemoryStore::new();
-        let prd = create_with_id(&store, "PRD", "PRD", "body").await;
-        let rfc = create_with_id(&store, "RFC", "RFC", "body").await;
-        let adr = create_with_id(&store, "ADR", "ADR", "body").await;
+        let tmp = tempfile::tempdir().unwrap();
+        let guard = crate::workspace::acquire_workspace_lock(tmp.path())
+            .await
+            .unwrap();
+        let prd = create_with_id(&guard, &store, "PRD", "PRD", "body").await;
+        let rfc = create_with_id(&guard, &store, "RFC", "RFC", "body").await;
+        let adr = create_with_id(&guard, &store, "ADR", "ADR", "body").await;
 
-        store.add_relation(&prd, &rfc, "informs").await.unwrap();
-        store.add_relation(&rfc, &adr, "implements").await.unwrap();
+        store
+            .add_relation(&guard, &prd, &rfc, "informs")
+            .await
+            .unwrap();
+        store
+            .add_relation(&guard, &rfc, &adr, "implements")
+            .await
+            .unwrap();
 
         // Outgoing from prd
-        let out = store.get_relations(&prd).await.unwrap();
+        let out = store.get_relations(&guard, &prd).await.unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0], ("RFC-001".to_string(), "informs".to_string()));
 
         // Incoming to rfc
-        let inc = store.get_incoming_relations(&rfc).await.unwrap();
+        let inc = store.get_incoming_relations(&guard, &rfc).await.unwrap();
         assert_eq!(inc.len(), 1);
         assert_eq!(inc[0], ("PRD-001".to_string(), "informs".to_string()));
 
         // All relations
-        let all = store.get_all_relations().await.unwrap();
+        let all = store.get_all_relations(&guard).await.unwrap();
         assert_eq!(all.len(), 2);
 
         // Duplicate rejection
-        assert!(store.add_relation(&prd, &rfc, "informs").await.is_err());
+        assert!(
+            store
+                .add_relation(&guard, &prd, &rfc, "informs")
+                .await
+                .is_err()
+        );
 
         // Self-link rejection (PROB-019)
-        assert!(store.add_relation(&prd, &prd, "informs").await.is_err());
+        assert!(
+            store
+                .add_relation(&guard, &prd, &prd, "informs")
+                .await
+                .is_err()
+        );
         // Case-insensitive self-link
         assert!(
             store
-                .add_relation(&prd, &prd.to_uppercase(), "informs")
+                .add_relation(&guard, &prd, &prd.to_uppercase(), "informs")
                 .await
                 .is_err()
         );
@@ -619,9 +796,21 @@ mod tests {
     #[tokio::test]
     async fn test_search_body() {
         let store = InMemoryStore::new();
-        create_with_id(&store, "PRD", "Auth System", "OAuth2 login flow").await;
-        create_with_id(&store, "RFC", "DB Migration", "PostgreSQL schema changes").await;
+        let tmp = tempfile::tempdir().unwrap();
+        let guard = crate::workspace::acquire_workspace_lock(tmp.path())
+            .await
+            .unwrap();
+        create_with_id(&guard, &store, "PRD", "Auth System", "OAuth2 login flow").await;
         create_with_id(
+            &guard,
+            &store,
+            "RFC",
+            "DB Migration",
+            "PostgreSQL schema changes",
+        )
+        .await;
+        create_with_id(
+            &guard,
             &store,
             "PRD",
             "Search Feature",
@@ -630,38 +819,48 @@ mod tests {
         .await;
 
         // Search by body content (case-insensitive)
-        let results = store.search_body("postgresql", None).await.unwrap();
+        let results = store.search_body(&guard, "postgresql", None).await.unwrap();
         assert_eq!(results.len(), 2);
 
         // Search with kind filter
-        let results = store.search_body("postgresql", Some("PRD")).await.unwrap();
+        let results = store
+            .search_body(&guard, "postgresql", Some("PRD"))
+            .await
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "Search Feature");
 
         // Search by title
-        let results = store.search_body("auth", None).await.unwrap();
+        let results = store.search_body(&guard, "auth", None).await.unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "Auth System");
 
         // No match
-        let results = store.search_body("nonexistent", None).await.unwrap();
+        let results = store
+            .search_body(&guard, "nonexistent", None)
+            .await
+            .unwrap();
         assert!(results.is_empty());
     }
 
     #[tokio::test]
     async fn test_next_id_increments() {
         let store = InMemoryStore::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let guard = crate::workspace::acquire_workspace_lock(tmp.path())
+            .await
+            .unwrap();
 
-        assert_eq!(store.next_id("prd").await.unwrap(), "PRD-001");
-        assert_eq!(store.next_id("prd").await.unwrap(), "PRD-002");
-        assert_eq!(store.next_id("prd").await.unwrap(), "PRD-003");
+        assert_eq!(store.next_id(&guard, "prd").await.unwrap(), "PRD-001");
+        assert_eq!(store.next_id(&guard, "prd").await.unwrap(), "PRD-002");
+        assert_eq!(store.next_id(&guard, "prd").await.unwrap(), "PRD-003");
 
         // Different prefix has its own counter
-        assert_eq!(store.next_id("rfc").await.unwrap(), "RFC-001");
-        assert_eq!(store.next_id("rfc").await.unwrap(), "RFC-002");
+        assert_eq!(store.next_id(&guard, "rfc").await.unwrap(), "RFC-001");
+        assert_eq!(store.next_id(&guard, "rfc").await.unwrap(), "RFC-002");
 
         // Case-insensitive prefix
-        assert_eq!(store.next_id("PRD").await.unwrap(), "PRD-004");
+        assert_eq!(store.next_id(&guard, "PRD").await.unwrap(), "PRD-004");
     }
 
     #[tokio::test]
@@ -669,12 +868,20 @@ mod tests {
         use std::sync::Arc;
 
         let store = Arc::new(InMemoryStore::new());
+        let tmp = tempfile::tempdir().unwrap();
+        let guard = Arc::new(
+            crate::workspace::acquire_workspace_lock(tmp.path())
+                .await
+                .unwrap(),
+        );
 
         let store1 = Arc::clone(&store);
+        let guard1 = Arc::clone(&guard);
         let t1 = tokio::spawn(async move {
             for i in 0..50 {
-                let id = store1.next_id("TST").await.unwrap();
+                let id = store1.next_id(&*guard1, "TST").await.unwrap();
                 let art = NewArtifact {
+                    canonical_key: id.clone(),
                     id,
                     kind: "TST".to_string(),
                     status: "draft".to_string(),
@@ -686,15 +893,17 @@ mod tests {
                     valid_until: None,
                     tags: Vec::new(),
                 };
-                store1.create_artifact(&art).await.unwrap();
+                store1.create_artifact(&guard1, &art).await.unwrap();
             }
         });
 
         let store2 = Arc::clone(&store);
+        let guard2 = Arc::clone(&guard);
         let t2 = tokio::spawn(async move {
             for i in 0..50 {
-                let id = store2.next_id("TST").await.unwrap();
+                let id = store2.next_id(&*guard2, "TST").await.unwrap();
                 let art = NewArtifact {
+                    canonical_key: id.clone(),
                     id,
                     kind: "TST".to_string(),
                     status: "draft".to_string(),
@@ -706,7 +915,7 @@ mod tests {
                     valid_until: None,
                     tags: Vec::new(),
                 };
-                store2.create_artifact(&art).await.unwrap();
+                store2.create_artifact(&guard2, &art).await.unwrap();
             }
         });
 
@@ -714,7 +923,7 @@ mod tests {
         t2.await.unwrap();
 
         // All 100 artifacts created with unique IDs
-        let all = store.list_artifacts(None).await.unwrap();
+        let all = store.list_artifacts(&*guard, None).await.unwrap();
         assert_eq!(all.len(), 100);
 
         // All IDs unique
@@ -727,10 +936,15 @@ mod tests {
     #[tokio::test]
     async fn test_find_stale() {
         let store = InMemoryStore::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let guard = crate::workspace::acquire_workspace_lock(tmp.path())
+            .await
+            .unwrap();
 
         // Create artifact with expired valid_until (RFC3339 format)
-        let id = store.next_id("PRD").await.unwrap();
+        let id = store.next_id(&guard, "PRD").await.unwrap();
         let art = NewArtifact {
+            canonical_key: id.clone(),
             id: id.clone(),
             kind: "PRD".to_string(),
             status: "active".to_string(),
@@ -742,11 +956,12 @@ mod tests {
             valid_until: Some("2020-01-01T00:00:00Z".to_string()),
             tags: Vec::new(),
         };
-        store.create_artifact(&art).await.unwrap();
+        store.create_artifact(&guard, &art).await.unwrap();
 
         // Create artifact with expired valid_until (NaiveDate format)
-        let id_naive = store.next_id("PRD").await.unwrap();
+        let id_naive = store.next_id(&guard, "PRD").await.unwrap();
         let art_naive = NewArtifact {
+            canonical_key: id_naive.clone(),
             id: id_naive.clone(),
             kind: "PRD".to_string(),
             status: "active".to_string(),
@@ -758,11 +973,12 @@ mod tests {
             valid_until: Some("2020-06-15".to_string()),
             tags: Vec::new(),
         };
-        store.create_artifact(&art_naive).await.unwrap();
+        store.create_artifact(&guard, &art_naive).await.unwrap();
 
         // Create artifact without valid_until
-        let id3 = store.next_id("PRD").await.unwrap();
+        let id3 = store.next_id(&guard, "PRD").await.unwrap();
         let art3 = NewArtifact {
+            canonical_key: id3.clone(),
             id: id3,
             kind: "PRD".to_string(),
             status: "active".to_string(),
@@ -774,11 +990,12 @@ mod tests {
             valid_until: None,
             tags: Vec::new(),
         };
-        store.create_artifact(&art3).await.unwrap();
+        store.create_artifact(&guard, &art3).await.unwrap();
 
         // Create artifact with future valid_until
-        let id4 = store.next_id("PRD").await.unwrap();
+        let id4 = store.next_id(&guard, "PRD").await.unwrap();
         let art4 = NewArtifact {
+            canonical_key: id4.clone(),
             id: id4,
             kind: "PRD".to_string(),
             status: "active".to_string(),
@@ -790,9 +1007,9 @@ mod tests {
             valid_until: Some("2099-12-31T23:59:59Z".to_string()),
             tags: Vec::new(),
         };
-        store.create_artifact(&art4).await.unwrap();
+        store.create_artifact(&guard, &art4).await.unwrap();
 
-        let stale = store.find_stale().await.unwrap();
+        let stale = store.find_stale(&guard).await.unwrap();
         assert_eq!(stale.len(), 2);
         assert_eq!(stale[0].id, id);
         assert_eq!(stale[1].id, id_naive);
@@ -800,6 +1017,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_fpf_operations() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(tmp.path())
+            .await
+            .unwrap();
+        let workspace = tmp.path();
         let store = InMemoryStore::new();
         assert!(!store.has_fpf());
 
@@ -826,7 +1048,10 @@ mod tests {
             },
         ];
 
-        let inserted = store.insert_fpf_chunks(&chunks, None).await.unwrap();
+        let inserted = store
+            .insert_fpf_chunks(workspace, &lock, &chunks, None)
+            .await
+            .unwrap();
         assert_eq!(inserted, 2);
         assert!(store.has_fpf());
 
@@ -845,21 +1070,25 @@ mod tests {
         assert_eq!(list.len(), 2);
 
         // Clear
-        store.clear_fpf().await.unwrap();
+        store.clear_fpf(workspace, &lock).await.unwrap();
         assert!(!store.has_fpf());
     }
 
     #[tokio::test]
     async fn test_list_records_with_filter() {
         let store = InMemoryStore::new();
-        create_with_id(&store, "PRD", "P1", "b1").await;
-        create_with_id(&store, "RFC", "R1", "b2").await;
+        let tmp = tempfile::tempdir().unwrap();
+        let guard = crate::workspace::acquire_workspace_lock(tmp.path())
+            .await
+            .unwrap();
+        create_with_id(&guard, &store, "PRD", "P1", "b1").await;
+        create_with_id(&guard, &store, "RFC", "R1", "b2").await;
 
         let filter = ArtifactFilter {
             kind: Some("RFC".to_string()),
             status: None,
         };
-        let records = store.list_records(Some(&filter)).await.unwrap();
+        let records = store.list_records(&guard, Some(&filter)).await.unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].kind, "RFC");
         assert_eq!(records[0].body, "b2");

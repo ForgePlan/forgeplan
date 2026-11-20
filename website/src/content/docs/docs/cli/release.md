@@ -19,7 +19,7 @@ Mirrors [`forgeplan_release`](/docs/mcp/forgeplan_release/) on the MCP side.
 ## When NOT to use
 
 - To delete the artifact itself - release only drops the claim. For the artifact, use [`forgeplan delete`](/docs/cli/delete/).
-- To shorten a claim's TTL - release drops the claim entirely. To set a shorter TTL, just call [`forgeplan claim`](/docs/cli/claim/) again with the new value (idempotent for the holder).
+- To shorten TTL, renew [`claim`](/docs/cli/claim/) as the same holder with the desired value. Renewal rewrites timestamps, expiry and note; it is not byte-idempotent.
 - To free a crashed worker's claim without `--force` - the command will refuse, since the agent identity does not match.
 
 ## Usage
@@ -55,7 +55,7 @@ forgeplan release PRD-057 --agent worker-1
 
 **Release under the same identity you claimed with.** `release` does not inherit it — with no `--agent` it identifies as `cli/<version>`, which will not match a claim made as `worker-1`, and the command refuses.
 
-If you claimed with no `--agent` at all, then plain `forgeplan release PRD-057` is correct: both sides use the same default identity. Calling again on an already-released artifact is a no-op (no error).
+In the selected build the defaults differ: `claim` uses `cli-<version>`, while `release` uses `cli/<version>`. A bare claim followed by bare release can therefore refuse. Read the actual holder from `forgeplan claims` and pass it explicitly with `--agent`; do not use `--force` to hide this mismatch. A second release after successful removal is a no-op.
 
 When the identities do not match, the fix is to name the holder — **not** `--force`, which drops the claim regardless of who owns it (PROB-095).
 
@@ -85,3 +85,25 @@ This closes the multi-agent loop: `dispatch` → `claim` → work → **`release
 - [`forgeplan claim`](/docs/cli/claim/) - acquire the claim
 - [`forgeplan claims`](/docs/cli/claims/) - see who holds what
 - [`forgeplan dispatch`](/docs/cli/dispatch/) - re-plan after release
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan release --help`.
+
+```text
+Release a claim (PRD-057). Idempotent — missing claim = success
+
+Usage: forgeplan release [OPTIONS] <ID>
+
+Arguments:
+  <ID>  Artifact ID to release
+
+Options:
+      --agent <AGENT>  Agent identity. Defaults to `cli/<version>` (or empty when --force)
+      --force          Force-release regardless of holder (orchestrator escape hatch)
+      --json           Output as JSON for machine consumption
+  -h, --help           Print help
+  -V, --version        Print version
+```
+<!-- forgeplan-runtime:end -->

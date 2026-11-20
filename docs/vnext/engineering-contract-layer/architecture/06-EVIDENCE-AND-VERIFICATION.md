@@ -1,5 +1,7 @@
 # EvidenceBundle and Verification
 
+> Целевой дизайн vNext. Действующий git-provenance gate уже проверяет заявленную дельту (`crates/forgeplan-core/src/scoring/provenance.rs`), но не является всей описанной здесь criterion-level системой. Предложенные gates ниже не меняют действующие policies; см. [статус пакета](../README.md).
+
 ## Основной принцип
 
 > Verify the artifact, not the claim.
@@ -60,6 +62,8 @@ stale
 - Evidence с истёкшим validity не удовлетворяет active gate.
 
 ## Claim-centric R_eff
+
+Это проект модели, а не формула текущего скорера: `evaluate(...)` ещё не определяет алгоритм и диапазоны. В `crates/forgeplan-core/src/scoring/reff.rs` рекурсивный отчёт берёт минимум собственного evidence score и вкладов подходящих зависимостей, с отдельными CL/type penalties и исключением terminal-status packs. Flat `r_eff` в проекциях не включает рекурсию и type modifier и может отличаться от отчёта. В действующем scoring verdict допустимы `supports`, `weakens`, `refutes`; `unknown` из draft EvidenceBundle нельзя переносить в него как поддержанный verdict. Поля congruence/freshness и правила миграции требуют явного mapping.
 
 ```text
 claim_score = evaluate(supports, weakens, refutes, congruence, freshness, provenance)

@@ -6,8 +6,9 @@
 /// `tokio::process` for single-shot detection calls (mirrors the original
 /// `id_alloc` convention).
 ///
-/// Errors (git not installed, not inside a repo, non-UTF8 output) are
-/// returned as `None` so callers degrade gracefully.
+/// Errors (git not installed, not inside a repo, or malformed command output)
+/// are returned as `None` so callers degrade gracefully. `git_show_toplevel`
+/// preserves Unix path bytes rather than requiring UTF-8.
 use std::path::{Path, PathBuf};
 
 /// Run `git rev-parse --git-common-dir` from `cwd` and return the
@@ -54,22 +55,36 @@ pub(crate) fn git_common_dir(cwd: &Path) -> Option<PathBuf> {
 /// the `common-dir-parent ≠ show-toplevel` comparison reliable for
 /// multi-worktree detection.
 ///
-/// Returns `None` under the same conditions as [`git_common_dir`].
+/// Returns `None` when Git fails, emits no path, or emits invalid UTF-8 on
+/// platforms whose paths are UTF-8 encoded. Unix path bytes are preserved.
 pub(crate) fn git_show_toplevel(cwd: &Path) -> Option<PathBuf> {
     let out = std::process::Command::new("git")
-        .args(["-C", &cwd.to_string_lossy(), "rev-parse", "--show-toplevel"])
+        .arg("-C")
+        .arg(cwd)
+        .args(["rev-parse", "--show-toplevel"])
         .output()
         .ok()?;
     if !out.status.success() {
         return None;
     }
-    let raw = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    // Git terminates the record with one newline. Remove only that delimiter;
+    // trimming or lossy UTF-8 conversion changes valid filesystem paths.
+    let raw = out.stdout.strip_suffix(b"\n")?;
     if raw.is_empty() {
         return None;
     }
-    let p = PathBuf::from(&raw);
-    let abs = if p.is_absolute() { p } else { cwd.join(p) };
-    Some(abs)
+    #[cfg(unix)]
+    let path = {
+        use std::os::unix::ffi::OsStringExt;
+        PathBuf::from(std::ffi::OsString::from_vec(raw.to_vec()))
+    };
+    #[cfg(not(unix))]
+    let path = PathBuf::from(String::from_utf8(raw.to_vec()).ok()?);
+    Some(if path.is_absolute() {
+        path
+    } else {
+        cwd.join(path)
+    })
 }
 
 /// Run `git rev-parse --git-dir` from `cwd` and return the canonicalized
@@ -183,5 +198,37 @@ mod tests {
         let canon_tmp = std::fs::canonicalize(tmp.path()).unwrap();
         let canon_top = std::fs::canonicalize(&top).unwrap();
         assert_eq!(canon_top, canon_tmp, "show-toplevel should equal repo root");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "APFS rejects non-UTF-8 filenames with EILSEQ"
+    )]
+    fn git_show_toplevel_preserves_non_utf8_bytes_and_trailing_spaces() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp
+            .path()
+            .join(std::ffi::OsString::from_vec(b"repo \xff ".to_vec()));
+        std::fs::create_dir_all(&repo).unwrap();
+        init_git_repo(&repo);
+
+        let result = git_show_toplevel(&repo).expect("Git root path should be returned");
+        assert_eq!(result, std::fs::canonicalize(&repo).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_show_toplevel_preserves_trailing_spaces() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo with trailing spaces  ");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_git_repo(&repo);
+
+        let result = git_show_toplevel(&repo).expect("Git root path should be returned");
+        assert_eq!(result, std::fs::canonicalize(&repo).unwrap());
     }
 }

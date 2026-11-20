@@ -12,9 +12,17 @@
 
 **Rule**: Epic = container. If you have 1 PRD and 1 RFC — an Epic is not needed.
 
-## Required Sections
+## Authoring Checklist
 
-| # | Section | Required? | Validation |
+These are content conventions, not promises of automatic quantitative or
+semantic enforcement. The validator checks the presence of Vision, Outcomes,
+Children/Artifacts, Phases, and Progress; it does not prove a one-sentence
+vision, two measurable outcomes, or that progress bars aggregate correctly.
+Base metadata rules check `id` and `status` presence, not valid lifecycle
+values. Other checklist details need review; validation and activation
+readiness are separate.
+
+| # | Section | Authoring expectation | Content guidance |
 |---|---------|-----------|------------|
 | 1 | **Meta Header** | ✅ MUST | Status, Owner, Created, Target (quarter) |
 | 2 | **Vision** | ✅ MUST | 1 sentence — what we want to achieve |
@@ -39,11 +47,17 @@ TOTAL                              15/26 (57.7%)
 
 ## Status Lifecycle
 
+```text
+draft --activate--> active
+active --> superseded | deprecated | stale
+stale --renew--> active
+stale --reopen--> deprecated + new draft
+stale --deprecate--> deprecated
 ```
-Draft → Active → Done → Archived
-          ↓
-      Cancelled (with reason)
-```
+
+`superseded` and `deprecated` are terminal. Done, Archived and Cancelled may be
+process labels in prose, not values of persisted `status`; `review` is a check,
+not a status transition.
 
 ## Numbering
 
@@ -51,4 +65,4 @@ Draft → Active → Done → Archived
 |--------|---------|
 | ID | `EPIC-NNN` |
 | File | `EPIC-{NNN}-{kebab-case}.md` |
-| Path | `docs/epics/EPIC-003-auth-system.md` |
+| Path | `.forgeplan/epics/EPIC-003-auth-system.md` |

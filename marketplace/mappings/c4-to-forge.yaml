@@ -2,10 +2,18 @@
 # c4-to-forge.yaml — Canonical mapping: C4 architecture docs → Forge artifacts
 # =====================================================================
 #
+# Applicability: reference mapping, not an end-to-end import guarantee.
+# The current engine exposes `section.body`/heading metadata, not the
+# `section.purpose`/`responsibilities`/`algorithm`/`description` fields used
+# below. `heading_path` supports a trailing "*" over a matched parent's children.
+# Supply/implement the matching source contract before applying this example;
+# otherwise rules may fail to render or select no drafts. EPIC-007 is an
+# illustrative existing target, not an epic this mapping creates.
+#
 # Purpose:
 #   Translates output of the `c4-architecture` plugin (Markdown C4 docs at
 #   `C4-Documentation/code/`) into Forge artifacts living under
-#   `.forgeplan/{notes,epics}/`. Each generated artifact carries a
+#   `.forgeplan/notes/`, with intended links to an existing epic. Each draft has a
 #   mandatory `## Sources` section pointing back to the originating
 #   markdown line range — ADR-009 hallucination-proof invariant.
 #

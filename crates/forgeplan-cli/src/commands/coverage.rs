@@ -1,9 +1,9 @@
 use std::env;
 
+use crate::commands::common;
 use forgeplan_core::coverage;
-use forgeplan_core::db::store::LanceStore;
 use forgeplan_core::hints::{self, Hint};
-use forgeplan_core::workspace;
+use forgeplan_core::projection;
 
 /// `forgeplan scan [--path <dir>]` — scan codebase for modules
 pub async fn run_scan(path: Option<&str>) -> anyhow::Result<()> {
@@ -65,17 +65,57 @@ pub async fn run_scan(path: Option<&str>) -> anyhow::Result<()> {
 }
 
 /// `forgeplan coverage` — show decision coverage per module
-pub async fn run_coverage() -> anyhow::Result<()> {
-    let cwd = env::current_dir()?;
-    let ws = workspace::find_workspace(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
-
+pub async fn run_coverage(json: bool) -> anyhow::Result<()> {
+    let ws = common::find_workspace_path()?;
+    // SPEC-013 lazy sync: reconcile canonical markdown before the read lock —
+    // maintain_index takes the exclusive workspace lock per commit.
+    common::reconcile_workspace_for_read(&ws).await;
+    let read_guard = forgeplan_core::workspace::lock::acquire_workspace_read_lock(&ws).await?;
+    let (_, store) = common::open_store_tolerating_constellation().await?;
     let project_root = ws.parent().unwrap_or(&ws);
-    let store = LanceStore::open(&ws).await?;
+
+    let mut modules = coverage::scan_modules(project_root).await?;
+    let report = if let Some(store) = store {
+        coverage::build_coverage(&mut modules, &store, &read_guard).await?
+    } else {
+        let read = forgeplan_core::constellation::facade::open_workspace_read_with_permit(
+            &ws,
+            &read_guard,
+        )
+        .await?;
+        coverage::build_coverage_from_records(&mut modules, read.records())
+    };
+
+    if json {
+        // Mirrors the `forgeplan_coverage` MCP wire shape: CoverageReport
+        // serializes straight through, plus the `_next_action` marker.
+        let next_action = if report.total_modules == 0 {
+            "No code modules detected. Coverage scans known languages (Rust/TS/Python).".to_string()
+        } else if report.uncovered_modules == 0 {
+            format!(
+                "All {} module(s) covered ({:.0}%). Strong architectural trace.",
+                report.total_modules, report.coverage_percent
+            )
+        } else {
+            format!(
+                "{}/{} module(s) covered ({:.0}%). Create ADR for the next blind spot: \
+                 `forgeplan_new kind=adr title=\"...\"`.",
+                report.covered_modules, report.total_modules, report.coverage_percent
+            )
+        };
+        let mut payload = serde_json::to_value(&report)?;
+        payload
+            .as_object_mut()
+            .expect("CoverageReport serializes to an object")
+            .insert(
+                "_next_action".to_string(),
+                serde_json::Value::String(next_action),
+            );
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(());
+    }
 
     println!("  Scanning codebase...");
-    let mut modules = coverage::scan_modules(project_root).await?;
-    let report = coverage::build_coverage(&mut modules, &store).await?;
 
     println!();
     println!(
@@ -132,12 +172,50 @@ pub async fn run_coverage() -> anyhow::Result<()> {
 
 /// `forgeplan coverage --backfill` — add "Affected Files" section to artifacts missing it
 pub async fn run_backfill() -> anyhow::Result<()> {
-    let cwd = env::current_dir()?;
-    let ws = workspace::find_workspace(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("No .forgeplan/ found. Run `forgeplan init` first."))?;
+    let (ws, lock, store) = common::open_store_locked_checked(&[]).await?;
+    let migrated = store.is_none();
+    let updated = match store {
+        Some(store) => coverage::backfill_affected_files(&store, &lock)
+            .await
+            .map_err(|error| common::describe_possible_legacy_partial_commit(true, error))?,
+        None => {
+            let read =
+                forgeplan_core::constellation::facade::open_workspace_read_with_permit(&ws, &lock)
+                    .await?;
+            let ctx = projection::MutationContext::new(&ws, &lock, None);
+            let mut updated = Vec::new();
 
-    let store = LanceStore::open(&ws).await?;
-    let updated = coverage::backfill_affected_files(&store).await?;
+            for record in read.records() {
+                if record.status != "active"
+                    || !matches!(record.kind.as_str(), "prd" | "rfc" | "adr")
+                {
+                    continue;
+                }
+                let Some(new_body) = coverage::body_with_affected_file_backfill(&record.body)
+                else {
+                    continue;
+                };
+                if let Err(e) =
+                    projection::update_body_with_projection(&ctx, &record.canonical_key, &new_body)
+                        .await
+                {
+                    eprintln!("  Warning: backfill failed for {}: {e}", record.id);
+                    continue;
+                }
+                updated.push(record.id.clone());
+            }
+            updated
+        }
+    };
+
+    if !migrated && !updated.is_empty() {
+        drop(lock);
+        common::drain_legacy_semantic_after_mutation(&ws).await?;
+    } else if migrated && !updated.is_empty() {
+        common::note_constellation_owns_index();
+        drop(lock);
+        common::reconcile_after_file_mutation(&ws).await;
+    }
 
     let hint_list: Vec<Hint> = if updated.is_empty() {
         println!("  All active PRD/RFC/ADR already have 'Affected Files' section.");

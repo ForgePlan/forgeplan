@@ -7,38 +7,38 @@ use crate::commands::common;
 use crate::ui;
 
 pub async fn run(id: Option<&str>, json: bool, adversarial: bool, ci: bool) -> anyhow::Result<()> {
-    let store = common::store().await?;
-    let all_records = store.list_records(None).await?;
-
-    if all_records.is_empty() {
+    enum ValidationSource {
+        All(common::ReadSource),
+        One(common::SelectedReadSource),
+    }
+    let (_ws, source, _read_guard, all_records) = if let Some(target) = id {
+        let (ws, selected, key, _, guard) = common::open_selected_source(target).await?;
+        let record = match &selected {
+            common::SelectedReadSource::Legacy(store) => store
+                .get_record(&guard, &key)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("Artifact '{target}' missing after resolution"))?,
+            common::SelectedReadSource::Captured(read) => read.record().clone(),
+        };
+        (ws, ValidationSource::One(selected), guard, vec![record])
+    } else {
+        let (ws, source, guard) = common::open_read_source().await?;
+        let records = match &source {
+            common::ReadSource::Legacy(store) => store.list_records(&guard, None).await?,
+            common::ReadSource::Captured(read) => read.records().to_vec(),
+        };
+        (ws, ValidationSource::All(source), guard, records)
+    };
+    if all_records.is_empty() && !json {
         println!("No artifacts found.");
         return Ok(());
     }
-
-    let to_validate: Vec<_> = if let Some(target_id) = id {
-        // PROB-060 / SPEC-005 Phase 1.5b — accept slug or display id.
-        // Resolver returns the canonical DB id when input matches a slug;
-        // for display-id input it normalises case+padding. Fall back to
-        // the legacy uppercase-match if resolver returns None (covers edge
-        // case where DB id differs from any resolve path).
-        let canonical = store.resolve_id(target_id).await?;
-        let upper_input = target_id.to_uppercase();
-        all_records
-            .into_iter()
-            .filter(|r| match &canonical {
-                Some(c) => r.id == *c,
-                None => r.id.to_uppercase() == upper_input,
-            })
-            .collect()
-    } else if ci {
-        // CI mode: validate active + stale (stale = expired but still live decisions)
-        all_records
-            .into_iter()
-            .filter(|r| r.status == "active" || r.status == "stale")
-            .collect()
-    } else {
-        all_records
-    };
+    let to_validate: Vec<_> = all_records
+        .iter()
+        .filter(|record| {
+            id.is_some() || !ci || record.status == "active" || record.status == "stale"
+        })
+        .collect();
 
     if to_validate.is_empty()
         && let Some(target_id) = id
@@ -58,7 +58,20 @@ Fix: forgeplan list",
     for record in &to_validate {
         // #446 — the link-less reconstruction made body-links-drift compare
         // against an empty set and warn on correctly linked artifacts.
-        let fm = store.frontmatter_map_with_links(record).await;
+        let fm = match &source {
+            ValidationSource::All(common::ReadSource::Legacy(store))
+            | ValidationSource::One(common::SelectedReadSource::Legacy(store)) => {
+                store
+                    .frontmatter_map_with_links(&_read_guard, record)
+                    .await?
+            }
+            ValidationSource::All(common::ReadSource::Captured(read)) => {
+                read.frontmatter_map_with_links(record)
+            }
+            ValidationSource::One(common::SelectedReadSource::Captured(read)) => {
+                read.frontmatter_map_with_links()
+            }
+        };
 
         let kind = record.kind.parse::<ArtifactKind>().unwrap_or_else(|_| {
             if !json {
@@ -83,6 +96,8 @@ Fix: forgeplan list",
         if json {
             json_results.push(serde_json::json!({
                 "artifact_id": result.artifact_id,
+                "id": record.id,
+                "canonical_key": record.canonical_key,
                 "kind": result.kind,
                 "depth": result.depth,
                 "passed": result.passed(),
@@ -161,7 +176,9 @@ Fix: forgeplan list",
     }
 
     // Session: advance to Coding when single artifact validates PASS
-    if id.is_some() && total_errors == 0 && total_passed > 0 {
+    let diagnostic_only = matches!(&source,
+        ValidationSource::One(common::SelectedReadSource::Captured(read)) if !read.is_complete_capture());
+    if id.is_some() && total_errors == 0 && total_passed > 0 && !diagnostic_only {
         common::advance_session(forgeplan_core::session::Phase::Coding, None);
     }
 
@@ -184,7 +201,7 @@ Fix: forgeplan list",
             to_validate.len()
         );
         std::process::exit(1);
-    } else if ci {
+    } else if ci && !json {
         println!(
             "CI PASSED — {} artifact(s) validated, 0 MUST errors",
             to_validate.len()

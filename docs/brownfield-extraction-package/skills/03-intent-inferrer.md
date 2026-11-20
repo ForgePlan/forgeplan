@@ -2,6 +2,8 @@
 
 > Given a code pattern, generates 3+ candidate hypotheses explaining **why** it's this way.
 
+> Proposed skill design. Three or more alternatives are a local anti-anchoring requirement here, not a statistical confidence guarantee or a universal FPF minimum. The current core tool does not implement this skill from the presence of this document. See [implementation status](../README.md#implementation-status-2026-10-23).
+
 ## Why this skill exists
 
 Code shows **what** the system does. Business documentation requires **why**. Intent is not directly in code — it's inferred. Multiple explanations are often plausible; without explicit hypothesis generation, agents tend to pick the first plausible explanation and present it as fact.
@@ -14,7 +16,7 @@ Code shows **what** the system does. Business documentation requires **why**. In
 
 ## Output
 
-`hypothesis` artifacts (one per alternative, all linked to the same observation).
+`hypothesis` artifacts scoped to observations, with the candidate alternatives grouped in each register as specified by `artifact-kinds/hypothesis.md`. The skill-local frontmatter sketch below is not the current native wire schema.
 
 Frontmatter:
 ```yaml
@@ -168,7 +170,7 @@ See `references/infer-adi.md` (full prompt with personas).
 
 ## Example
 
-See `examples/tripsales-scenario-sample.md` for one domain's hypotheses.
+See [the hypothesis-kind example](../artifact-kinds/hypothesis.md#example-tripsales) for candidate hypotheses. The scenario sample only references a hypothesis; it does not contain the candidate register.
 
 ## Testing
 

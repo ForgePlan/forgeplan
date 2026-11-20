@@ -40,9 +40,9 @@ forgeplan update [OPTIONS] <ID>
 2. Parses frontmatter and body.
 3. Applies the supplied overrides (title, status, depth, body).
 4. Rewrites the file with updated frontmatter.
-5. Re-indexes the artifact in LanceDB so search and graph stay in sync.
+5. Synchronizes derived state where supported. Migrated writes reconcile after canonical mutation and can leave publication pending.
 
-The `updated_at` timestamp in frontmatter is refreshed automatically.
+Mutation helpers maintain their own timestamps; do not rely on a newly added `updated_at` frontmatter field as proof of publication.
 
 ## Examples
 
@@ -64,17 +64,11 @@ Replace body from a file:
 forgeplan update NOTE-042 --body @./draft.md
 ```
 
-Force-set status (skipping the lifecycle state machine - use with care):
-
-```bash
-forgeplan update PRD-001 --status active
-```
-
 ## Prefer lifecycle commands for status changes
 
-Direct `--status` edits bypass the validation gate. For PRD / RFC / ADR / Epic /
-Spec, this can create "active" artifacts that fail `forgeplan validate`. Use the
-dedicated commands instead:
+Direct CLI status changes to `active`, `superseded` or `deprecated` are rejected.
+Captured help lists those values but does not expose these handler refusals.
+Use the dedicated lifecycle commands so their transition and evidence gates run:
 
 | Goal                     | Command                                                |
 |--------------------------|--------------------------------------------------------|
@@ -84,27 +78,49 @@ dedicated commands instead:
 | stale → active           | [`forgeplan renew`](/docs/cli/renew/)                  |
 | stale → draft (new copy) | [`forgeplan reopen`](/docs/cli/reopen/)                |
 
-## Direct markdown edits are often faster
+## Canonical edits and index publication
 
-Because the markdown files are the source of truth (ADR-003), editing
-`.forgeplan/<kind>s/<id>.md` in your editor and then running
-[`forgeplan scan-import`](/docs/cli/scan-import/) is often the most ergonomic
-workflow - especially for body edits, structured field updates, or batch
-changes. `forgeplan update` shines when you are scripting or want to avoid
-opening the file at all.
+Agents and scripts should use `forgeplan update`, including `--body @file`.
+Human editor changes to canonical Markdown follow the project's own policy.
+The derived index is then reconciled through `forgeplan index` or the appropriate
+`forgeplan reindex` path, not `scan-import`. See [Constellation](/docs/reference/constellation/)
+for captured versus published reads and migrated-layout limitations.
 
 ## Notes
 
 - The `--body` flag replaces the entire body. There is no partial-edit mode.
 - Use `@filepath` prefix to read body content from a file instead of passing it
   inline on the command line.
-- After any direct edit (via CLI or editor), the LanceDB index is the cache, not
-  the truth. If you suspect drift, run `forgeplan scan-import` to rebuild.
+- The index is a cache, not the source of truth. If it is stale, preserve Markdown
+  and config and use the appropriate `index`/`reindex` path.
 
 ## See also
 
 - [CLI overview](/docs/cli/)
 - [`forgeplan activate`](/docs/cli/activate/) - preferred way to change status
-- [`forgeplan scan-import`](/docs/cli/scan-import/) - rebuild index after direct edits
+- [`forgeplan reindex`](/docs/cli/reindex/) - reconcile the derived index
 - [`forgeplan validate`](/docs/cli/validate/) - check that the artifact is still valid
 - [Methodology guide](/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan update --help`.
+
+```text
+Update artifact metadata or body
+
+Usage: forgeplan update [OPTIONS] <ID>
+
+Arguments:
+  <ID>  Artifact ID
+
+Options:
+      --status <STATUS>  New status (draft, active, superseded, deprecated)
+      --title <TITLE>    New title
+      --depth <DEPTH>    New depth (tactical, standard, deep)
+      --body <BODY>      New body content (use @filepath to read from file)
+  -h, --help             Print help
+  -V, --version          Print version
+```
+<!-- forgeplan-runtime:end -->

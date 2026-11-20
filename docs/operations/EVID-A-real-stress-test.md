@@ -4,6 +4,21 @@
 **Дата**: 2026-05-07  
 **Автор**: Worker 2 (deployment engineer)
 
+> **Уточнение 2026-10-23: это невыполненный план, не receipt PASS.**
+> Числа и успешный вывод ниже — целевые/иллюстративные значения. В проверенном
+> `scripts/stress-test-real-gh.sh` ветки/PR/labels создаются последовательными
+> циклами; затем скрипт ждёт фиксированные 60 секунд и делает best-effort cleanup.
+> Он не собирает assignment-результаты, уникальность, последовательность или p95
+> и скрывает часть ошибок через `|| true`. Его exit 0 не доказывает критерии ниже.
+> В `.github/workflows/assign-id.yml` есть `cancel-in-progress: false`, но это
+> не очередь всех десяти запусков: стандартная concurrency group заменяет уже
+> ожидающий pending run новым. См. [GitHub concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
+> До реального запуска нужны отдельно исправленный/проверенный harness и workflow,
+> явное разрешение на GitHub-записи и сверка всех десяти outcomes. В текущем
+> workflow build также называет `-p forgeplan-cli`, тогда как пакет CLI —
+> `forgeplan`; этот prerequisite здесь не исправлен. Риск ADR-012 не закрыт
+> этим планом, а historical pins и исходный шаблон evidence сохранены.
+
 ---
 
 ## Цель

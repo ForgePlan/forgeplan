@@ -1,0 +1,1038 @@
+//! Canonical artifact identity: the permanent key, the display alias, and the
+//! single resolution algorithm both are read through.
+//!
+//! ADR-030 makes the **canonical key** the authoritative identity of a
+//! document and the display id (`PRD-074`) a repeatable alias. SPEC-009
+//! freezes the key format and the resolution order:
+//!
+//! 1. an empty or unusable selector is rejected;
+//! 2. an exact canonical-key match wins — and several files claiming one key
+//!    are a conflict, never a winner;
+//! 3. otherwise the display id is normalised and **all** matches are
+//!    collected: one is the result, several are an ambiguity, none is "not
+//!    found";
+//! 4. a numeric-shaped canonical key does not take priority over a competing
+//!    display alias of the same shape.
+//!
+//! Nothing here selects by filename prefix, by array order, by the most
+//! recent file, by a database row, or by title similarity. Those are exactly
+//! the rules that let two documents answer to one name.
+//!
+//! The key itself is minted from the operating-system random source only
+//! (SPEC-009 "Key independence from mutable and ambient data"): never from
+//! the timestamp, the display number, the process id, the path, or a hash of
+//! the content. Uniqueness is therefore probabilistic at 128 bits, which the
+//! contract accepts.
+
+use std::path::PathBuf;
+
+use crate::artifact::frontmatter::{parse_frontmatter_borrowed, slug_from_frontmatter};
+use crate::artifact::types::{ArtifactKind, MAX_SLUG_LEN, slugify};
+
+/// Random bytes behind the key's hexadecimal suffix.
+const KEY_ENTROPY_BYTES: usize = 16;
+
+/// Hexadecimal characters in the rendered suffix — two per random byte.
+const KEY_HEX_LEN: usize = KEY_ENTROPY_BYTES * 2;
+
+/// Fixed characters a minted key spends on separators and the `k` marker:
+/// one dash after the kind, `-k` before the suffix.
+const KEY_FIXED_OVERHEAD: usize = 1 + 2;
+
+/// Title part used when the title slugifies to nothing — an all-Cyrillic or
+/// all-CJK title produces an empty ASCII slug.
+const EMPTY_TITLE_FALLBACK: &str = "document";
+
+/// The permanent identity of a document: its canonical key and its display
+/// alias.
+///
+/// The key is the identity; the display id is an alias that may repeat inside
+/// a workspace and across projects. Callers that must name exactly one
+/// document use the key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactIdentity {
+    /// The permanent key: `<kind>-<title-part>-k<32 lowercase hex>` for a
+    /// minted document, the ADR-012 slug for a preserved one, the display id
+    /// for a legacy document that carries no slug.
+    pub canonical_key: String,
+    /// The human-facing alias: `PRD-074`.
+    pub display_id: String,
+}
+
+/// One document that a selector resolved to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedArtifact {
+    /// The identity of the resolved document.
+    pub identity: ArtifactIdentity,
+    /// Workspace-relative path of the resolved document. Never absolute.
+    pub relative_path: PathBuf,
+}
+
+/// One document that a selector may have matched.
+///
+/// Candidates are what an ambiguity or a conflict names, so a caller can show
+/// the operator *which* documents were in play without exposing absolute
+/// paths or another source's data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactCandidate {
+    /// The document's canonical key.
+    pub canonical_key: String,
+    /// The document's display alias.
+    pub display_id: String,
+    /// The document's title.
+    pub title: String,
+    /// Workspace-relative path of the document.
+    pub relative_path: PathBuf,
+}
+
+/// Why a selector did not name exactly one document.
+///
+/// The four outcomes are deliberately distinct: "not found", "ambiguous",
+/// "conflicting", and "the selector is not a selector" are different facts,
+/// and a caller must be able to tell them apart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolveError {
+    /// The selector matched more than one document by display alias.
+    Ambiguous {
+        /// The selector as the caller wrote it.
+        input: String,
+        /// Every document that matched, sorted by canonical key then path.
+        candidates: Vec<ArtifactCandidate>,
+    },
+    /// More than one document claims the same canonical key.
+    ConflictingCanonicalKey {
+        /// The contested key.
+        key: String,
+        /// Every document claiming it, sorted by canonical key then path.
+        candidates: Vec<ArtifactCandidate>,
+    },
+    /// The selector is empty or is not a usable reference.
+    InvalidSelector {
+        /// The selector as the caller wrote it.
+        input: String,
+    },
+    /// The document set could not be fully parsed, so any answer computed over
+    /// it would be partial.
+    IncompleteCapture {
+        /// What was missing from the document set.
+        message: String,
+    },
+}
+
+impl std::fmt::Display for ResolveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ambiguous { input, candidates } => write!(
+                f,
+                "selector {input:?} matches {} documents; address one by its canonical key",
+                candidates.len()
+            ),
+            Self::ConflictingCanonicalKey { key, candidates } => write!(
+                f,
+                "canonical key {key:?} is claimed by {} documents",
+                candidates.len()
+            ),
+            Self::InvalidSelector { input } => {
+                write!(f, "selector {input:?} is not a valid artifact reference")
+            }
+            Self::IncompleteCapture { message } => {
+                write!(f, "document set is incomplete: {message}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ResolveError {}
+
+/// Mint the canonical key of a new document.
+///
+/// The key is `<kind>-<title-part>-k<32 lowercase hex>`:
+///
+/// * `<kind>` is the artifact kind's **key** segment — the vocabulary SPEC-009
+///   names (`prd`, `spec`, `rfc`, `adr`, `note`, `epic`, `problem`,
+///   `solution`, `evidence`, `refresh`). It is deliberately NOT the display
+///   number prefix: `PROB-037` and `prob-037` are display forms, while the
+///   key segment spells the kind out (`problem-…`). The two vocabularies are
+///   separate, so a key never has to be reverse-engineered from its display
+///   id;
+/// * `<title-part>` is the slugified title, truncated at a hyphen boundary so
+///   the whole key stays within [`MAX_SLUG_LEN`]; an all-Cyrillic title
+///   slugifies to nothing and becomes `document`;
+/// * `k<32 lowercase hex>` is 16 bytes from the operating-system random
+///   source. The `k` marker keeps the key from ever being numeric-only.
+///
+/// The key never derives from the timestamp, the display number, the process
+/// id, the path, or a content hash, so editing a document never changes its
+/// identity. A failure of the entropy source fails the whole call: no key is
+/// returned, so no file, index row, relation, or claim can be written under a
+/// half-minted identity.
+pub fn mint_artifact_key(kind: &ArtifactKind, title: &str) -> anyhow::Result<String> {
+    mint_artifact_key_with_entropy(kind, title, fill_from_operating_system)
+}
+
+/// The canonical key of a document that carries no minted key.
+///
+/// ADR-030's legacy rule: a document keeps the canonical key it already has
+/// — the ADR-012 `slug:` when the frontmatter declares a valid one, and its
+/// display id when it declares none. The constellation capture derives its
+/// canonical key by exactly this rule, so a record built here and a document
+/// read from the same workspace agree on one identity.
+///
+/// The declared `slug:` is a canonical key when it is a **minted** key
+/// (SPEC-009's format) or a **grandfathered** slug (the SPEC-005 grammar the
+/// historical corpus uses). Both answer the same question — "what is this
+/// document's identity?" — so both are accepted here. A slug that is neither
+/// is not an identity and the display id stands in for it.
+///
+/// `document` is the document's markdown text — the whole file, frontmatter
+/// included, which is how the store keeps it. A document without a parseable
+/// frontmatter keeps its display id: it declares no slug, so it has no other
+/// identity.
+pub fn canonical_key_from_document(display_id: &str, document: &str) -> String {
+    match parse_frontmatter_borrowed(document) {
+        Ok((frontmatter, _body)) => match slug_from_frontmatter(&frontmatter) {
+            Some(slug) if crate::artifact::types::is_canonical_key(slug) => slug.to_string(),
+            _ => display_id.to_string(),
+        },
+        Err(_) => display_id.to_string(),
+    }
+}
+
+/// The minting rule with the entropy source injected.
+///
+/// The seam exists so the failure path is testable without mocking the
+/// operating system: a caller that cannot produce random bytes gets an error
+/// instead of a key built from a predictable source.
+fn mint_artifact_key_with_entropy<F>(
+    kind: &ArtifactKind,
+    title: &str,
+    fill: F,
+) -> anyhow::Result<String>
+where
+    F: FnOnce(&mut [u8]) -> anyhow::Result<()>,
+{
+    // The key's kind segment is the key vocabulary, NOT the display-number
+    // prefix: SPEC-009 names `problem`, `solution`, `evidence` and
+    // `refresh` where the display prefixes abbreviate them.
+    let kind_prefix = kind.canonical_key_kind();
+
+    let mut title_part = slugify(title);
+    if title_part.is_empty() {
+        title_part = EMPTY_TITLE_FALLBACK.to_string();
+    }
+
+    let mut entropy = [0u8; KEY_ENTROPY_BYTES];
+    fill(&mut entropy)?;
+    let suffix = render_hex_lower(&entropy);
+
+    // The assembled key must satisfy its grammar after title truncation.
+    let key = assemble_key(kind_prefix, &title_part, &suffix);
+    if !crate::artifact::types::is_minted_canonical_key(&key) {
+        anyhow::bail!(
+            "cannot build a canonical key for kind {kind_prefix:?} from title {title:?}: \
+             the assembled key {key:?} does not satisfy the canonical key format"
+        );
+    }
+
+    Ok(key)
+}
+
+/// Compose `<kind>-<title>-k<suffix>`, truncating only the title part.
+fn assemble_key(kind_prefix: &str, title_part: &str, suffix: &str) -> String {
+    let budget = MAX_SLUG_LEN
+        .saturating_sub(kind_prefix.len())
+        .saturating_sub(KEY_FIXED_OVERHEAD)
+        .saturating_sub(KEY_HEX_LEN);
+    let title_part = truncate_at_hyphen(title_part, budget);
+    format!("{kind_prefix}-{title_part}-k{suffix}")
+}
+
+/// Truncate only at a hyphen boundary, falling back if no word fits.
+fn truncate_at_hyphen(part: &str, budget: usize) -> &str {
+    if part.len() <= budget {
+        return part;
+    }
+    part.char_indices()
+        .take_while(|(index, _)| *index <= budget)
+        .filter(|(_, character)| *character == '-')
+        .map(|(index, _)| &part[..index])
+        .last()
+        .filter(|prefix| !prefix.is_empty())
+        .unwrap_or(EMPTY_TITLE_FALLBACK)
+}
+
+/// Render bytes as lowercase hexadecimal, two characters per byte.
+fn render_hex_lower(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(DIGITS[usize::from(byte >> 4)] as char);
+        out.push(DIGITS[usize::from(byte & 0x0f)] as char);
+    }
+    out
+}
+
+/// Fill a buffer from the operating-system random source.
+fn fill_from_operating_system(buffer: &mut [u8]) -> anyhow::Result<()> {
+    use rand::TryRngCore;
+
+    let mut source = rand::rngs::OsRng;
+    source
+        .try_fill_bytes(buffer)
+        .map_err(|error| anyhow::anyhow!("operating-system entropy source failed: {error:?}"))
+}
+
+/// Resolve a selector against a fully parsed document set.
+///
+/// This is **the** resolution algorithm (SPEC-009 "One resolution algorithm").
+/// The document set is the whole corpus, not a filtered slice: the resolution
+/// order depends on knowing every document that carries the name.
+///
+/// 1. an empty or unusable selector is [`ResolveError::InvalidSelector`];
+/// 2. an exact canonical-key match wins. Several files claiming that key are
+///    [`ResolveError::ConflictingCanonicalKey`], naming every claimant;
+/// 3. otherwise the display id is normalised and **all** matches are
+///    collected: exactly one is the result, several are
+///    [`ResolveError::Ambiguous`], none is `Ok(None)` — "not found";
+/// 4. a numeric-shaped canonical key does not take priority over a competing
+///    display alias of the same shape, so a legacy `PRD-001` and another
+///    document aliasing `PRD-001` are an ambiguity, not a silent winner.
+///
+/// Candidates are sorted by canonical key, then by relative path, so the same
+/// input always reports the same candidates in the same order.
+pub fn resolve_artifact(
+    input: &str,
+    documents: &[ArtifactCandidate],
+) -> Result<Option<ResolvedArtifact>, ResolveError> {
+    resolve_borrowed(input, documents.iter(), false).map(|value| value.map(resolved))
+}
+
+/// Resolve a local structural target using the historical link-target grammar.
+/// Unlike user selectors, an absent legacy identifier remains a forward link.
+pub fn resolve_structural_target(
+    target: &str,
+    documents: &[ArtifactCandidate],
+) -> Result<Option<ResolvedArtifact>, ResolveError> {
+    resolve_borrowed(target, documents.iter(), true).map(|value| value.map(resolved))
+}
+
+/// The shared resolver over a complete candidate closure. Indexed callers must
+/// include every exact canonical claimant and every exact or normalized alias
+/// claimant, including all claimants of any matched canonical key.
+pub(crate) fn resolve_borrowed<'a, I>(
+    input: &str,
+    documents: I,
+    structural: bool,
+) -> Result<Option<&'a ArtifactCandidate>, ResolveError>
+where
+    I: Iterator<Item = &'a ArtifactCandidate> + Clone,
+{
+    let selector = if structural { input } else { input.trim() };
+    let valid = if structural {
+        let overflow = selector.split_once('-').is_some_and(|(prefix, number)| {
+            !prefix.is_empty()
+                && prefix.bytes().all(|c| c.is_ascii_alphabetic())
+                && !number.is_empty()
+                && number.bytes().all(|c| c.is_ascii_digit())
+                && number.parse::<u32>().is_err()
+        });
+        crate::db::store::validate_artifact_id(selector).is_ok() && !overflow
+    } else {
+        is_valid_selector(selector, documents.clone())
+    };
+    if !valid {
+        return Err(ResolveError::InvalidSelector {
+            input: input.to_string(),
+        });
+    }
+    let mut keys = documents.clone().filter(|d| d.canonical_key == selector);
+    let key = keys.next();
+    if let Some(first) = key {
+        if let Some(second) = keys.next() {
+            let mut all = vec![first, second];
+            all.extend(keys);
+            return Err(ResolveError::ConflictingCanonicalKey {
+                key: selector.to_string(),
+                candidates: sort_candidates(all),
+            });
+        }
+        if is_numeric_shaped(&first.canonical_key) {
+            let mut competing = documents.clone().filter(|d| {
+                d.canonical_key != first.canonical_key
+                    && display_id_matches(&d.display_id, selector)
+            });
+            if let Some(other) = competing.next() {
+                let mut all = vec![first, other];
+                all.extend(competing);
+                return Err(ResolveError::Ambiguous {
+                    input: selector.to_string(),
+                    candidates: sort_candidates(all),
+                });
+            }
+        }
+        return Ok(Some(first));
+    }
+    let mut aliases = documents
+        .clone()
+        .filter(|d| display_id_matches(&d.display_id, selector));
+    let Some(first) = aliases.next() else {
+        return Ok(None);
+    };
+    if let Some(second) = aliases.next() {
+        let mut all = vec![first, second];
+        all.extend(aliases);
+        return Err(ResolveError::Ambiguous {
+            input: selector.to_string(),
+            candidates: sort_candidates(all),
+        });
+    }
+    let mut claimants = documents.filter(|d| d.canonical_key == first.canonical_key);
+    let claimant = claimants
+        .next()
+        .expect("the alias match belongs to the document set");
+    if let Some(second) = claimants.next() {
+        let mut all = vec![claimant, second];
+        all.extend(claimants);
+        return Err(ResolveError::ConflictingCanonicalKey {
+            key: first.canonical_key.clone(),
+            candidates: sort_candidates(all),
+        });
+    }
+    Ok(Some(first))
+}
+
+/// A selector must be a display id, a canonical key, or an exact historical
+/// identity from the captured documents (for example a filename-derived key).
+/// Display-shaped numeric overflow is never a valid selector.
+fn is_valid_selector<'a>(
+    selector: &str,
+    mut documents: impl Iterator<Item = &'a ArtifactCandidate>,
+) -> bool {
+    if selector.is_empty()
+        || !selector
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-')
+        || !selector.bytes().any(|c| c.is_ascii_alphanumeric())
+    {
+        return false;
+    }
+    if let Some((prefix, number)) = selector.split_once('-')
+        && !prefix.is_empty()
+        && prefix.bytes().all(|c| c.is_ascii_alphabetic())
+        && !number.is_empty()
+        && number.bytes().all(|c| c.is_ascii_digit())
+    {
+        return normalize_display_id(selector).is_some();
+    }
+    crate::artifact::types::is_canonical_key(selector)
+        || (selector
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
+            && selector
+                .as_bytes()
+                .last()
+                .is_some_and(u8::is_ascii_alphanumeric)
+            && documents.any(|document| {
+                document.canonical_key == selector || document.display_id == selector
+            }))
+}
+
+/// Whether a document's display id answers to the selector.
+///
+/// Exact equality always matches. A display-shaped selector (`prd-74`) also
+/// matches the normalised form of a display id, so the same document answers
+/// to `PRD-074`, `prd-74` and `PRD-74`.
+fn display_id_matches(display_id: &str, selector: &str) -> bool {
+    if display_id == selector {
+        return true;
+    }
+    match (
+        normalize_display_id(display_id),
+        normalize_display_id(selector),
+    ) {
+        (Some(display), Some(selector)) => display == selector,
+        _ => false,
+    }
+}
+
+/// Normalise a display id to its canonical `PREFIX-NNN` form.
+///
+/// Returns `None` for anything that is not a display id — a slug, a literal
+/// id (`mem-my-note`), a predicted id (`PRD-74?`) — because those are
+/// compared verbatim instead.
+pub(crate) fn normalize_display_id(value: &str) -> Option<String> {
+    let (prefix, number) = value.split_once('-')?;
+    if prefix.is_empty()
+        || number.is_empty()
+        || !prefix
+            .chars()
+            .all(|character| character.is_ascii_alphabetic())
+        || !number.chars().all(|character| character.is_ascii_digit())
+    {
+        return None;
+    }
+    let kind = ArtifactKind::from_slug_prefix(&prefix.to_ascii_lowercase())?;
+    let number: u32 = number.parse().ok()?;
+    Some(format!(
+        "{}-{:03}",
+        kind.prefix().trim_end_matches('-').to_ascii_uppercase(),
+        number
+    ))
+}
+
+/// Whether a key has the shape of a display id — `PRD-074`, `prd-074`.
+///
+/// Such a key is a legacy document's number standing in for its identity, so
+/// it must not outrank a document that carries the same shape as an alias.
+fn is_numeric_shaped(key: &str) -> bool {
+    normalize_display_id(key).is_some()
+}
+
+/// The resolved shape of one matched document.
+fn resolved(candidate: &ArtifactCandidate) -> ResolvedArtifact {
+    ResolvedArtifact {
+        identity: ArtifactIdentity {
+            canonical_key: candidate.canonical_key.clone(),
+            display_id: candidate.display_id.clone(),
+        },
+        relative_path: candidate.relative_path.clone(),
+    }
+}
+
+/// Sort candidates by canonical key, then by relative path.
+fn sort_candidates(candidates: Vec<&ArtifactCandidate>) -> Vec<ArtifactCandidate> {
+    let mut owned: Vec<ArtifactCandidate> = candidates.into_iter().cloned().collect();
+    owned.sort_by(|left, right| {
+        left.canonical_key
+            .cmp(&right.canonical_key)
+            .then_with(|| left.relative_path.cmp(&right.relative_path))
+    });
+    owned
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::artifact::types::validate_slug;
+    use std::path::Path;
+
+    fn candidate(key: &str, display: &str, title: &str, path: &str) -> ArtifactCandidate {
+        ArtifactCandidate {
+            canonical_key: key.to_string(),
+            display_id: display.to_string(),
+            title: title.to_string(),
+            relative_path: PathBuf::from(path),
+        }
+    }
+
+    /// A document with a minted key.
+    fn minted(title: &str, path: &str) -> ArtifactCandidate {
+        candidate(
+            &mint_artifact_key(&ArtifactKind::Prd, title).unwrap(),
+            "PRD-001",
+            title,
+            path,
+        )
+    }
+
+    #[test]
+    fn two_documents_with_the_same_title_get_different_keys() {
+        let first = mint_artifact_key(&ArtifactKind::Prd, "Weekly review").unwrap();
+        let second = mint_artifact_key(&ArtifactKind::Prd, "Weekly review").unwrap();
+        assert_ne!(
+            first, second,
+            "the key must come from the random source, not from the title"
+        );
+    }
+
+    #[test]
+    fn a_cyrillic_title_falls_back_to_the_word_document() {
+        let key = mint_artifact_key(&ArtifactKind::Prd, "Еженедельный обзор").unwrap();
+        assert!(
+            key.starts_with("prd-document-k"),
+            "an all-Cyrillic title must fall back to `document`, got {key:?}"
+        );
+        assert_eq!(key.len(), "prd-document-k".len() + 32);
+    }
+
+    #[test]
+    fn a_minted_key_stays_within_the_length_limit() {
+        let long_title = "weekly ".repeat(60);
+        let key = mint_artifact_key(&ArtifactKind::Prd, &long_title).unwrap();
+        assert!(
+            key.len() <= MAX_SLUG_LEN,
+            "key must stay within {MAX_SLUG_LEN} characters, got {} ({key:?})",
+            key.len()
+        );
+        assert!(
+            crate::artifact::types::is_canonical_key(&key),
+            "a minted key must satisfy the canonical key grammar: {key:?}"
+        );
+    }
+
+    #[test]
+    fn long_first_word_falls_back_without_cutting_the_word() {
+        for title in ["a".repeat(100), format!("{} following", "a".repeat(100))] {
+            let key = mint_artifact_key(&ArtifactKind::Prd, &title).unwrap();
+            assert!(key.starts_with("prd-document-k"), "{key}");
+            assert!(key.len() <= MAX_SLUG_LEN);
+            assert!(crate::artifact::types::is_minted_canonical_key(&key));
+        }
+    }
+
+    #[test]
+    fn truncation_retains_complete_words_including_boundary_at_budget() {
+        assert_eq!(truncate_at_hyphen("abc-def-ghi", 7), "abc-def");
+        assert_eq!(truncate_at_hyphen("abc-def-ghi", 6), "abc");
+        assert_eq!(truncate_at_hyphen("abcdefgh-next", 7), "document");
+        assert_eq!(truncate_at_hyphen("abc-def", 7), "abc-def");
+    }
+
+    #[test]
+    fn a_minted_key_has_the_frozen_shape() {
+        let key = mint_artifact_key(&ArtifactKind::Rfc, "mTLS rollout").unwrap();
+        let (kind, rest) = key.split_once('-').unwrap();
+        assert_eq!(kind, "rfc");
+        let (title, suffix) = rest.rsplit_once("-k").unwrap();
+        assert_eq!(title, "mtls-rollout");
+        assert_eq!(suffix.len(), 32, "32 hexadecimal characters: {suffix:?}");
+        assert!(
+            suffix
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "the suffix must be lowercase hexadecimal: {suffix:?}"
+        );
+        assert!(
+            !suffix.chars().all(|c| c.is_ascii_digit()),
+            "the `k` marker keeps the key from being numeric-only"
+        );
+    }
+
+    #[test]
+    fn a_title_that_would_use_a_reserved_prefix_still_yields_a_valid_key() {
+        let key = mint_artifact_key(&ArtifactKind::Prd, "Draft alternative").unwrap();
+        assert!(
+            crate::artifact::types::is_canonical_key(&key),
+            "the reserved-prefix rule must not make a document unmintable: {key:?}"
+        );
+        assert!(key.starts_with("prd-"));
+    }
+
+    /// The key's kind segment is the SPEC-009 vocabulary, not the display
+    /// number prefix. `problem`, `solution`, `evidence` and `refresh` are
+    /// spelled out; the legacy abbreviations `prob`, `sol`, `evid` and `ref`
+    /// belong to the display-number vocabulary and must not appear in a key.
+    #[test]
+    fn a_minted_key_uses_the_specified_key_kind_vocabulary() {
+        for (kind, expected) in [
+            (ArtifactKind::ProblemCard, "problem"),
+            (ArtifactKind::SolutionPortfolio, "solution"),
+            (ArtifactKind::EvidencePack, "evidence"),
+            (ArtifactKind::RefreshReport, "refresh"),
+            (ArtifactKind::Prd, "prd"),
+            (ArtifactKind::Spec, "spec"),
+            (ArtifactKind::Rfc, "rfc"),
+            (ArtifactKind::Adr, "adr"),
+            (ArtifactKind::Note, "note"),
+            (ArtifactKind::Epic, "epic"),
+        ] {
+            let key = mint_artifact_key(&kind, "Weekly review").unwrap();
+            let (segment, _) = key.split_once('-').unwrap();
+            assert_eq!(
+                segment, expected,
+                "the key kind segment for {kind:?} must be {expected:?}, got {key:?}"
+            );
+        }
+    }
+
+    /// The key kind vocabulary is independent of the display-number prefix:
+    /// `PROB-001` names the same kind as the key `problem-…`, and the two
+    /// vocabularies never borrow from each other.
+    #[test]
+    fn the_key_kind_vocabulary_is_independent_of_the_display_prefix() {
+        assert_eq!(
+            ArtifactKind::ProblemCard.prefix().trim_end_matches('-'),
+            "prob",
+            "the display-number prefix keeps its legacy abbreviation"
+        );
+        assert_eq!(
+            ArtifactKind::ProblemCard.canonical_key_kind(),
+            "problem",
+            "the key kind segment spells the kind out"
+        );
+        for legacy in ["prob", "sol", "evid", "ref"] {
+            assert!(
+                !crate::artifact::types::is_canonical_key_kind(legacy),
+                "{legacy:?} is a display prefix, never a key kind segment"
+            );
+        }
+        for key_kind in [
+            "problem", "solution", "evidence", "refresh", "prd", "spec", "rfc", "adr", "note",
+            "epic",
+        ] {
+            assert!(
+                crate::artifact::types::is_canonical_key_kind(key_kind),
+                "{key_kind:?} must be a key kind segment"
+            );
+        }
+    }
+
+    /// A minted key is a canonical key even though it is not a SPEC-005
+    /// slug: its kind segment (`problem`) is not one the slug grammar
+    /// accepts. The two grammars are separate, and the key grammar is the
+    /// one an identity obeys.
+    #[test]
+    fn a_minted_key_is_a_canonical_key_even_when_it_is_not_a_slug() {
+        let key = mint_artifact_key(&ArtifactKind::ProblemCard, "Weekly review").unwrap();
+        assert!(
+            validate_slug(&key).is_err(),
+            "the key kind segment is outside the slug grammar: {key:?}"
+        );
+        assert!(
+            crate::artifact::types::is_canonical_key(&key),
+            "a minted key is a canonical key: {key:?}"
+        );
+    }
+
+    /// The key a document declares is read back as that key — a minted one
+    /// as well as a grandfathered slug. A document whose key cannot be
+    /// recognised keeps its display id.
+    #[test]
+    fn a_declared_minted_key_is_read_back_as_the_key() {
+        let key = mint_artifact_key(&ArtifactKind::ProblemCard, "Weekly review").unwrap();
+        let document = format!("---\nid: PROB-001\nkind: problem\nslug: {key}\n---\n\nBody.\n");
+        assert_eq!(
+            canonical_key_from_document("PROB-001", &document),
+            key,
+            "the declared key must survive the round trip"
+        );
+    }
+
+    #[test]
+    fn a_failing_entropy_source_fails_the_whole_mint() {
+        let error = mint_artifact_key_with_entropy(&ArtifactKind::Prd, "Weekly review", |_| {
+            anyhow::bail!("entropy source unavailable")
+        })
+        .expect_err("a failing entropy source must not produce a key");
+        assert!(
+            error.to_string().contains("entropy source unavailable"),
+            "the failure must name the entropy source, got {error}"
+        );
+    }
+
+    #[test]
+    fn an_exact_key_match_resolves() {
+        let document = minted("Weekly review", "prds/prd-weekly-review.md");
+        let key = document.canonical_key.clone();
+        let resolved = resolve_artifact(&key, std::slice::from_ref(&document))
+            .unwrap()
+            .expect("the key must resolve");
+        assert_eq!(resolved.identity.canonical_key, key);
+        assert_eq!(resolved.identity.display_id, "PRD-001");
+        assert_eq!(
+            resolved.relative_path,
+            Path::new("prds/prd-weekly-review.md")
+        );
+    }
+
+    #[test]
+    fn a_lowercase_display_id_resolves_to_the_same_document() {
+        let document = candidate(
+            "prd-weekly-review-k0123456789abcdef0123456789abcdef",
+            "PRD-074",
+            "Weekly review",
+            "prds/a.md",
+        );
+        let resolved = resolve_artifact("prd-74", std::slice::from_ref(&document))
+            .unwrap()
+            .expect("a lowercase display id must resolve");
+        assert_eq!(
+            resolved.identity.canonical_key,
+            "prd-weekly-review-k0123456789abcdef0123456789abcdef"
+        );
+        assert_eq!(resolved.identity.display_id, "PRD-074");
+    }
+
+    #[test]
+    fn a_reference_that_names_no_document_is_not_found() {
+        let document = minted("Weekly review", "prds/a.md");
+        assert!(
+            resolve_artifact("PRD-999", std::slice::from_ref(&document))
+                .unwrap()
+                .is_none(),
+            "an absent document is `Ok(None)`, not an error"
+        );
+    }
+
+    #[test]
+    fn an_empty_or_unusable_selector_is_rejected() {
+        let document = minted("Weekly review", "prds/a.md");
+        for input in [
+            "",
+            "   ",
+            "prd 001",
+            "PRD-001@other-source",
+            "../etc/passwd",
+        ] {
+            let error = resolve_artifact(input, std::slice::from_ref(&document))
+                .expect_err("an unusable selector must be rejected");
+            assert!(
+                matches!(error, ResolveError::InvalidSelector { .. }),
+                "expected InvalidSelector for {input:?}, got {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn selector_grammar_preserves_legacy_and_rejects_malformed_inputs() {
+        let legacy = candidate("PRD-001-filenameonly", "PRD-001", "Legacy", "prds/old.md");
+        let memory = candidate("mem-my-note", "mem-my-note", "Memory", "memories/old.md");
+        let documents = [legacy, memory];
+        for selector in ["PRD-001-filenameonly", "mem-my-note", "prd-1", " PRD-001 "] {
+            assert!(
+                resolve_artifact(selector, &documents).unwrap().is_some(),
+                "{selector}"
+            );
+        }
+        for selector in [
+            "PRD-4294967295",
+            "prd-auth-system",
+            "problem-title-k0123456789abcdef0123456789abcdef",
+        ] {
+            assert!(
+                resolve_artifact(selector, &[]).unwrap().is_none(),
+                "{selector}"
+            );
+        }
+        for selector in [
+            "---",
+            "PRD-4294967296",
+            "prd-",
+            "unknown-key",
+            "prd bad",
+            "PRD-1@other",
+        ] {
+            assert!(
+                matches!(
+                    resolve_artifact(selector, &[]),
+                    Err(ResolveError::InvalidSelector { .. })
+                ),
+                "{selector}"
+            );
+        }
+    }
+
+    #[test]
+    fn structural_targets_preserve_forward_names_without_masking_conflicts() {
+        assert!(resolve_structural_target("RFC-A01", &[]).unwrap().is_none());
+        assert!(matches!(
+            resolve_artifact("RFC-A01", &[]),
+            Err(ResolveError::InvalidSelector { .. })
+        ));
+        for bad in ["---", "PRD-4294967296"] {
+            assert!(matches!(
+                resolve_structural_target(bad, &[]),
+                Err(ResolveError::InvalidSelector { .. })
+            ));
+        }
+        let first = candidate("rfc-one", "RFC-001", "One", "rfcs/one.md");
+        let second = candidate("rfc-two", "RFC-001", "Two", "rfcs/two.md");
+        assert!(matches!(
+            resolve_structural_target("RFC-001", &[first.clone(), second]),
+            Err(ResolveError::Ambiguous { .. })
+        ));
+        let duplicate = candidate("rfc-one", "RFC-002", "Copy", "rfcs/copy.md");
+        assert!(matches!(
+            resolve_structural_target("rfc-one", &[first, duplicate]),
+            Err(ResolveError::ConflictingCanonicalKey { .. })
+        ));
+    }
+
+    #[test]
+    fn two_documents_sharing_a_display_id_are_ambiguous() {
+        let first = candidate(
+            "prd-first-k0123456789abcdef0123456789abcdef",
+            "PRD-074",
+            "First",
+            "prds/first.md",
+        );
+        let second = candidate(
+            "prd-second-k0123456789abcdef0123456789abcdef",
+            "PRD-074",
+            "Second",
+            "prds/second.md",
+        );
+        let error = resolve_artifact("PRD-074", &[first.clone(), second.clone()])
+            .expect_err("a shared display id must not pick a winner");
+        match error {
+            ResolveError::Ambiguous { input, candidates } => {
+                assert_eq!(input, "PRD-074");
+                assert_eq!(candidates.len(), 2, "both documents must be named");
+                assert_eq!(candidates[0].canonical_key, first.canonical_key);
+                assert_eq!(candidates[1].canonical_key, second.canonical_key);
+                assert_eq!(candidates[0].title, "First");
+                assert_eq!(candidates[1].title, "Second");
+            }
+            other => panic!("expected Ambiguous, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn two_files_claiming_one_canonical_key_are_a_conflict() {
+        let first = candidate(
+            "prd-shared-k0123456789abcdef0123456789abcdef",
+            "PRD-001",
+            "First",
+            "prds/first.md",
+        );
+        let second = candidate(
+            "prd-shared-k0123456789abcdef0123456789abcdef",
+            "PRD-002",
+            "Second",
+            "prds/second.md",
+        );
+        let key = "prd-shared-k0123456789abcdef0123456789abcdef";
+        let error = resolve_artifact(key, &[first.clone(), second.clone()])
+            .expect_err("two claimants of one key must not produce a winner");
+        match error {
+            ResolveError::ConflictingCanonicalKey {
+                key: contested,
+                candidates,
+            } => {
+                assert_eq!(contested, key);
+                assert_eq!(candidates.len(), 2, "every claimant must be named");
+                assert_eq!(candidates[0].relative_path, Path::new("prds/first.md"));
+                assert_eq!(candidates[1].relative_path, Path::new("prds/second.md"));
+            }
+            other => panic!("expected ConflictingCanonicalKey, got {other:?}"),
+        }
+        let error = resolve_artifact("PRD-001", &[first.clone(), second.clone()])
+            .expect_err("a unique alias cannot select a conflicted canonical key");
+        match error {
+            ResolveError::ConflictingCanonicalKey {
+                key: contested,
+                candidates,
+            } => {
+                assert_eq!(contested, key);
+                assert_eq!(candidates, vec![first, second]);
+            }
+            other => panic!("expected ConflictingCanonicalKey, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_numeric_legacy_key_does_not_shadow_a_display_alias() {
+        // A legacy document without a slug keeps its number as its key; a
+        // second document carries the same number as its display alias.
+        let legacy = candidate("PRD-001", "PRD-001", "Legacy", "prds/legacy.md");
+        let alias_holder = candidate(
+            "prd-holder-k0123456789abcdef0123456789abcdef",
+            "PRD-001",
+            "Holder",
+            "prds/holder.md",
+        );
+        let error = resolve_artifact("PRD-001", &[legacy.clone(), alias_holder.clone()])
+            .expect_err("a numeric key must not outrank a competing display alias");
+        match error {
+            ResolveError::Ambiguous { candidates, .. } => {
+                assert_eq!(candidates.len(), 2, "both documents must be named");
+                let keys: Vec<&str> = candidates
+                    .iter()
+                    .map(|candidate| candidate.canonical_key.as_str())
+                    .collect();
+                assert!(keys.contains(&"PRD-001"));
+                assert!(keys.contains(&"prd-holder-k0123456789abcdef0123456789abcdef"));
+            }
+            other => panic!("expected Ambiguous, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn candidates_are_reported_in_a_stable_order() {
+        // Both documents carry the SAME display alias, so the alias names more
+        // than one document and the resolver must report both — sorted by
+        // canonical key, regardless of the order they arrived in.
+        let second = candidate(
+            "prd-b-k0123456789abcdef0123456789abcdef",
+            "PRD-001",
+            "B",
+            "prds/b.md",
+        );
+        let first = candidate(
+            "prd-a-k0123456789abcdef0123456789abcdef",
+            "PRD-001",
+            "A",
+            "prds/a.md",
+        );
+        let error = resolve_artifact("PRD-001", &[second, first]).expect_err("shared alias");
+        match error {
+            ResolveError::Ambiguous { candidates, .. } => {
+                assert_eq!(
+                    candidates[0].canonical_key,
+                    "prd-a-k0123456789abcdef0123456789abcdef"
+                );
+                assert_eq!(
+                    candidates[1].canonical_key,
+                    "prd-b-k0123456789abcdef0123456789abcdef"
+                );
+            }
+            other => panic!("expected Ambiguous, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_document_with_a_slug_keeps_it_as_its_canonical_key() {
+        let document = "---\nid: PRD-001\nkind: prd\nslug: prd-auth-system\n---\n\nBody.\n";
+        assert_eq!(
+            canonical_key_from_document("PRD-001", document),
+            "prd-auth-system"
+        );
+    }
+
+    #[test]
+    fn quoted_top_level_slug_uses_the_shared_parsed_extractor() {
+        for key in ["\"slug\"", "'slug'"] {
+            let document =
+                format!("---\nid: PRD-001\nkind: prd\n{key}: prd-auth-system\n---\n\nBody.\n");
+            let (frontmatter, _) = parse_frontmatter_borrowed(&document).unwrap();
+            assert_eq!(slug_from_frontmatter(&frontmatter), Some("prd-auth-system"));
+            assert_eq!(
+                canonical_key_from_document("PRD-001", &document),
+                "prd-auth-system"
+            );
+        }
+    }
+
+    #[test]
+    fn nested_mapping_is_not_a_top_level_slug_but_legacy_wrappers_are_parsed() {
+        let nested_mapping =
+            "---\nid: PRD-001\nkind: prd\nmetadata:\n  'slug': prd-inner\n---\n\nBody.\n";
+        assert_eq!(
+            canonical_key_from_document("PRD-001", nested_mapping),
+            "PRD-001"
+        );
+
+        let wrapper = "---\nid: PRD-001\nkind: prd\n---\n\n---\nid: PRD-001\nkind: prd\n\"slug\": prd-inner\n---\n\nBody.\n";
+        let (frontmatter, _) = parse_frontmatter_borrowed(wrapper).unwrap();
+        assert_eq!(slug_from_frontmatter(&frontmatter), Some("prd-inner"));
+        assert_eq!(canonical_key_from_document("PRD-001", wrapper), "prd-inner");
+
+        let outer = "---\nid: PRD-001\nkind: prd\n'slug': prd-outer\n---\n\n---\nid: PRD-001\nkind: prd\n\"slug\": prd-inner\n---\n\nBody.\n";
+        assert_eq!(canonical_key_from_document("PRD-001", outer), "prd-outer");
+    }
+
+    #[test]
+    fn a_legacy_document_without_a_slug_keeps_its_display_id() {
+        let document = "---\nid: PRD-002\nkind: prd\n---\n\nBody.\n";
+        assert_eq!(canonical_key_from_document("PRD-002", document), "PRD-002");
+    }
+
+    #[test]
+    fn a_document_with_an_unparsable_frontmatter_keeps_its_display_id() {
+        assert_eq!(
+            canonical_key_from_document("PRD-003", "no frontmatter here"),
+            "PRD-003"
+        );
+    }
+}

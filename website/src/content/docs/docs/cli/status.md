@@ -1,24 +1,22 @@
 ---
 title: forgeplan status
-description: "Quick summary dashboard - kind × status breakdown and recent activity"
+description: "Workspace dashboard with total artifacts and separate kind/status counts"
 ---
 
-`forgeplan status` prints a compact snapshot of the workspace: how many
-artifacts of each kind exist, what their lifecycle status is, and what has
-changed recently. It is the "what's in this project?" command, not the
-"what's broken?" command - for problem detection use `forgeplan health`.
+`forgeplan status` prints project/workspace metadata, the artifact total and
+separate counts by kind and by status. It does not show a kind×status cross-tab
+or recent activity. For problems use `health`; for historical events inspect
+the applicable journal or change-log command.
 
-Use it when you open a project you have not touched in a week, when you
-want to see sprint velocity at a glance, or when you are writing a status
-report and need the current counts.
+Use it for orientation and current counts, not to measure sprint velocity.
 
 ## When to use
 
 - Getting oriented in an unfamiliar workspace
 - Writing a weekly/sprint status report
-- Confirming that `forgeplan scan-import` picked up recently edited files
+- Confirming artifact counts after importing foreign documents
 - Sanity check after a bulk import or merge
-- Pre-standup - see what moved since yesterday
+- Pre-standup — inspect the current inventory
 - Demo - quick overview slide for stakeholders
 
 ## When NOT to use
@@ -49,30 +47,14 @@ forgeplan status
 forgeplan status
 ```
 
-Typical output:
+The text dashboard has these sections:
 
-```
-Forgeplan Workspace: /Users/me/Work/forgeplan
-================================================
+- Project, Workspace, Created and Artifacts metadata
+- By kind — counts per artifact kind
+- By status — counts per stored lifecycle state
 
-Artifacts by kind:
-  PRD       42  (draft: 3, active: 35, superseded: 4)
-  RFC       18  (draft: 2, active: 14, deprecated: 2)
-  ADR       12  (active: 10, superseded: 2)
-  Epic       4  (active: 4)
-  Spec       8  (active: 6, draft: 2)
-  Evidence  56  (active: 56)
-  Problem    5  (active: 3, resolved: 2)
-  Note      20  (active: 14, expired: 6)
-  --------
-  Total    165
-
-Recent activity (last 7 days):
-  2026-04-10  PRD-042  created   "OAuth2 login flow"
-  2026-04-10  RFC-018  activated
-  2026-04-09  EVID-056 linked to PRD-041
-  2026-04-08  ADR-012  activated
-```
+It does not print the dated recent-activity rows or synthetic `resolved`/`expired`
+states shown in older examples. Counts and dates must come from the actual workspace.
 
 ### Example 2: Post-import sanity check
 
@@ -81,8 +63,9 @@ forgeplan scan-import
 forgeplan status
 ```
 
-Confirms that the expected number of artifacts was picked up after manual
-markdown edits. If counts look wrong, re-run `scan-import` with `--verbose`.
+Compare the expected artifact count after an import. `scan-import` has no
+`--verbose`; preview foreign documents with `--dry-run`. For canonical-file
+maintenance use the owning index pipeline, not another external import.
 
 ### Example 3: Sprint standup one-liner
 
@@ -90,27 +73,17 @@ markdown edits. If counts look wrong, re-run `scan-import` with `--verbose`.
 forgeplan status | head -15
 ```
 
-Dump the header and counts into a chat message without the recent-activity
-tail.
+Truncates the text dashboard; the result is not a stable machine-readable schema.
+No recent-activity tail is produced by this command.
 
 ## Output interpretation
 
-- **Artifacts by kind** - totals per ArtifactKind, split by lifecycle status.
-  `draft`, `active`, `stale`, `superseded`, `deprecated`, `expired` are the
-  possible states. Draft-heavy means unfinished work; superseded-heavy means
-  healthy evolution.
-- **Recent activity** - last 7 days of create / update / link / activate /
-  supersede events. Pulled from the decision journal.
-
-Red flags:
-
-- Many drafts and no active - you create artifacts but never finish them
-- Zero recent activity over multiple days - project may be abandoned or work
-  happening outside the CLI (direct markdown edits without `scan-import`)
-- Evidence count disproportionately low vs PRD count - missing evidence
-  coverage; run `forgeplan health` for specifics
-- Notes with many `expired` entries - auto-expiration working as intended,
-  no action needed
+- **By kind** and **By status** are independent totals, not a cross-tab.
+- Core stored statuses are `draft`, `active`, `stale`, `superseded`, `deprecated`.
+- Counts alone do not prove a project is abandoned, healthy or moving quickly.
+- A low evidence count can motivate inspection; use `health` and the actual links
+  rather than deriving evidence coverage from a simple ratio.
+- This dashboard does not implement or verify automatic Note expiration.
 
 ## How it fits the workflow
 
@@ -130,5 +103,21 @@ session start → [status] → health → route → Shape → ...
 - [`forgeplan health`](/docs/cli/health/) - problem detection and next actions
 - [`forgeplan list`](/docs/cli/list/) - filterable artifact listing
 - [`forgeplan search`](/docs/cli/search/) - keyword / semantic search
-- [`forgeplan context`](/docs/cli/context/) - per-artifact full view
-- [`forgeplan journal`](/docs/cli/journal/) - full decision history
+- [`forgeplan context`](/docs/cli/context/) - per-artifact metadata, validation, scoring and links, without the body
+- [`forgeplan journal`](/docs/cli/journal/) - decision journal
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan status --help`.
+
+```text
+Show project status dashboard
+
+Usage: forgeplan status
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

@@ -1,22 +1,21 @@
 ---
 title: forgeplan decay
-description: "Preview how upcoming evidence expirations will impact R_eff scores across the project."
+description: "Show the current R_eff impact of already expired linked evidence."
 ---
 
-`forgeplan decay` looks ahead at the `valid_until` fields on every EvidencePack and
-shows which decisions will lose R_eff soon. Remember: expired evidence does not
-disappear - it caps at 0.1 (stale, not absent). Because R_eff is a weakest-link
-function, one expiring piece of evidence can drag a previously-green decision into
-the red.
+`forgeplan decay` reports decisions with already expired, scoring-eligible linked
+EvidencePacks. It compares R_eff as if those packs were fresh with R_eff now.
+Expired evidence remains in the weakest-link calculation with its expiry penalty;
+terminal displaced packs are excluded.
 
-This is the tool for planning a **Refresh sprint**: see who is about to go stale,
-schedule a `RefreshReport`, and renew the evidence before it bites.
+Use the report to plan a **Refresh sprint**: review the affected evidence,
+record new observations in a `RefreshReport`, and renew only after re-verification.
 
 ## When to use
 
 - Start of the month: "which decisions will need re-verification this sprint?"
-- Before relying on an old decision - is its R_eff about to drop?
-- After bulk-creating evidence with the same expiry - spot the cliff before it hits.
+- Before relying on an old decision - has expired evidence reduced its R_eff?
+- After reviewing evidence validity dates - identify decisions already affected.
 - Session start alongside `forgeplan health` for the full "what needs attention" view.
 
 ## When NOT to use
@@ -39,24 +38,20 @@ forgeplan decay
 
 ## Examples
 
-### See upcoming decay impact
+### See current decay impact
 
 ```bash
 forgeplan decay
 ```
 
-Output:
+Illustrative output, not a captured runtime transcript:
 
 ```text
-Evidence decay report
-─────────────────────
-EVID-012  expires in  14d  PRD-003: R_eff 0.90 → 0.70
-EVID-018  expires in  30d  ADR-005: R_eff 1.00 → 0.10  ⚠ cliff
-EVID-021  expires in  45d  PRD-007: R_eff 0.80 → 0.60
-EVID-030  expires in  60d  PRD-011: R_eff 0.90 → 0.80
+Evidence Decay Report — 1 artifact(s) affected:
 
-4 evidence packs expiring within 60 days
-2 decisions will drop below 0.7 (trust threshold)
+  PRD-003 "Authentication"
+    R_eff: 0.90 → 0.10 (drop: 0.80)
+    ⚠ EVID-012 expired 2026-10-01 (22 days ago, score=0.9)
 ```
 
 ### Feed into a sprint plan
@@ -64,7 +59,7 @@ EVID-030  expires in  60d  PRD-011: R_eff 0.90 → 0.80
 Combine with `stale` and `health`:
 
 ```bash
-forgeplan decay          # what's coming
+forgeplan decay          # current score loss from expired evidence
 forgeplan stale          # what's already expired
 forgeplan health         # overall blind-spot view
 ```
@@ -73,10 +68,10 @@ Those three commands are the full "refresh backlog" picture.
 
 ## Output interpretation
 
-- **expires in Xd** - days until `valid_until`.
-- **R_eff X → Y** - current cached R_eff vs projected after decay.
-- **⚠ cliff** - flagged when a single expiry takes R_eff across a trust boundary (0.9 → 0.1 is a cliff; 0.9 → 0.8 is not).
-- Cliffs are the priority: schedule a `forgeplan new refresh "Re-verify EVID-XXX"` before the date.
+- **expired DATE (N days ago)** - the evidence's elapsed validity date.
+- **R_eff X → Y** - fresh-evidence counterfactual versus current score.
+- **drop** - the difference between those scores, not a future prediction.
+- Prioritize re-verification; the command does not detect future expiry cliffs.
 
 ## How it fits the workflow
 
@@ -84,8 +79,8 @@ Those three commands are the full "refresh backlog" picture.
 monthly review → decay → plan refresh sprint → renew evidence → score
 ```
 
-Decay is preventive. Stale is reactive. Run decay before evidence expires; run stale
-to catch the ones you missed.
+Both `decay` and `stale` report elapsed validity. `decay` explains score impact;
+inspect upcoming `valid_until` dates separately when planning preventive reviews.
 
 ## See also
 
@@ -94,3 +89,19 @@ to catch the ones you missed.
 - [`forgeplan renew`](/docs/cli/renew/) - extend valid_until on stale artifacts
 - [Evidence methodology](/docs/methodology/evidence/) - decay formula and CL penalties
 - [CLI overview](/docs/cli/)
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan decay --help`.
+
+```text
+Show evidence decay impact on R_eff scores
+
+Usage: forgeplan decay
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

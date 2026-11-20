@@ -56,7 +56,7 @@ All memories in a category:
 forgeplan recall --category build
 ```
 
-Dump everything as JSON:
+Write up to 1000 matching records as JSON (not an exhaustive export):
 
 ```bash
 forgeplan recall --json --limit 1000 > memories.json
@@ -64,7 +64,7 @@ forgeplan recall --json --limit 1000 > memories.json
 
 ## Output interpretation
 
-Each hit shows a short card:
+Illustrative memory content, not a project policy or runtime transcript:
 
 ```
 [2026-04-05]  build    Do not delete feature branches after merge
@@ -72,11 +72,14 @@ Each hit shows a short card:
    branch until the PR is closed for at least a week.
 ```
 
-Columns: date, category, title, then a body excerpt. `--json` returns the
-full record including any tags and the source (manual vs auto-retain).
+Text includes ID, category, author, date and an 80-character excerpt.
+JSON wraps records in `memories` with `id`, `category`, `author`, `created_at`
+and `text`; it does not supply arbitrary tags or a manual/auto source field.
 
 Unlike [`search`](/docs/cli/search/), `recall` is pure substring match with
 category filtering - fast and predictable, no BM25 or semantic ranking.
+
+This is Forgeplan's local memory, distinct from an external Hindsight service.
 
 ## How it fits
 
@@ -96,3 +99,25 @@ link it - that's when it earns lifecycle and evidence.
 - [`forgeplan search`](/docs/cli/search/) - artifact search
 - [`forgeplan journal`](/docs/cli/journal/) - decision timeline
 - [`forgeplan new note`](/docs/cli/new/) - promote a memory to a Note
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan recall --help`.
+
+```text
+Recall memories — search, filter, list
+
+Usage: forgeplan recall [OPTIONS] [QUERY]
+
+Arguments:
+  [QUERY]  Search query (substring match in title/body)
+
+Options:
+  -c, --category <CATEGORY>  Filter by category
+  -n, --limit <LIMIT>        Max results (default: 10) [default: 10]
+      --json                 Output as JSON for machine consumption
+  -h, --help                 Print help
+  -V, --version              Print version
+```
+<!-- forgeplan-runtime:end -->

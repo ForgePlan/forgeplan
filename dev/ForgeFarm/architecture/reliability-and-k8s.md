@@ -6,13 +6,17 @@
 > Принцип: **K8s-ready by design, K8s-deployed по flip-сигналу** — сейчас
 > local-first compose (развилка №2), но каждое дизайн-решение Phase 1
 > выбирается так, чтобы миграция была деплой-операцией, а не рефакторингом.
+>
+> Это проектные требования ForgeFarm, не проверенная отказоустойчивость.
+> K8s-ready означает цель снизить цену переноса, а не доказательство
+> миграции без рефакторинга; restore/replay и multi-host поведение ещё требуют испытаний.
 
 ## 1. Слоёный data-стек: что где живёт (по пунктам владельца)
 
 | Слой | Решение | Статус |
 |---|---|---|
 | **Статы** | два уровня: (а) runtime-метрики — считаются из projection DB + `audit_events` (timestamps есть у каждого перехода; throughput/lead-time выводятся запросом); (б) `forgeplan activity-stats` — телеметрия артефактных операций (call counts, error counts, p50/p95) — готовый вход, не дублировать | решено |
-| **ForgePlan** | artifact kernel, единственная истина по артефактам; мутации только CLI/MCP; LanceDB — derived, восстанавливается `scan-import` | решено (ADR-001) |
+| **ForgePlan** | artifact kernel, единственная истина по артефактам; мутации только CLI/MCP; индекс derived: для Constellation — `forgeplan index`, для legacy — соответствующий `reindex`. `scan-import` импортирует внешние документы, не восстанавливает индекс | решено (ADR-001 ForgeFarm) |
 | **История** | три несмешиваемых вида: (а) git history — история кода и артефактов; (б) **hash-chained `audit_events`** (`hash_prev`/`hash_self`, append-only) — история переходов и privileged-действий, тампер-видимая; (в) `run_events` — потоковая история ранов (RunEvents). «Историю» никогда не выводить из labels/доски | решено |
 | **Mem0** | **reject на MVP** (развилка №4) — добавляет сервис и вторую семантическую истину; flip-сигнал: память как сетевой сервис для не-ForgeFarm клиентов (маловероятно) | решено |
 | **Hindsight** | episodic-слой (ретроспективы ранов, уроки) — уже существует у пользователя per-project banks; retrospective writeback при закрытии ранов (Phase 4). Приоритет памяти: **artifacts > policy > retrieval > hindsight** — hindsight никогда не перекрывает артефакты | решено |
@@ -25,16 +29,21 @@
 |---|---|
 | **Projection DB (Postgres)** | операционная истина: tasks, leases, runs, gate_decisions, eval-строки. Единственный stateful-сервис MVP |
 | **Object store (логи/большие evidence)** | сырые логи ранов, стенограммы — не в Postgres и не в git; MVP: каталог на диске / MinIO опционально; K8s: S3-совместимый |
-| **Retrieval index** | LanceDB/fastembed per store (уже в ForgePlan); федерация — deferred |
+| **Retrieval index** | artifact retrieval ForgePlan; историческое имя fastembed в R3 не описывает текущий движок: выбранная версия использует BGE-M3 на `tract`; межпроектные предложения ниже не доказывают готовность федерации |
 | **Секреты** | MVP: env/файл вне git; K8s: Secrets/External Secrets. API-ключи провайдеров живут ТОЛЬКО в Model Gateway/Broker-слое, агентам не передаются |
 | **Конфиг-поверхности** | все — с классификацией committed intent vs local resolution (state-and-truth §8) |
 
+В строке о секретах зафиксирован gateway-вариант. Прямые API-адаптеры
+из `executor-sessions.md` описывают иной credential path — env дочернего
+процесса. Этот конфликт дизайна требуется разрешить до реализации;
+строки не дают разрешения передавать секреты untrusted-коду.
+
 ## 2. Безотказность: инженерный контракт
 
-Свойство, из которого выводится всё остальное (R3): **projection DB —
-rebuildable**: `git (код+артефакты) + tracker + audit-журнал` достаточны для
-пересборки операционного состояния. Поэтому катастрофа деградирует до
-«пересобрать проекцию», а не «потеряли фабрику».
+Цель дизайна (R3): **projection DB — rebuildable** из `git
+(код+артефакты) + tracker + сохранённый audit/run-журнал`.
+Это требует полноты журнала, атомарной записи событий и реализованного replay.
+Одна hash-chain не восстанавливает потерянные события и не заменяет backup.
 
 1. **Идемпотентные переходы:** каждый переход state machine — CAS-запись
    (`WHERE status = expected`) + уникальные ключи на lease; повторная
@@ -67,12 +76,12 @@ rebuildable**: `git (код+артефакты) + tracker + audit-журнал` 
 
 ## 3. K8s на будущее: ready by design
 
-**Дизайн-гарантии, закладываемые в Phase 1 (бесплатные сейчас):**
+**Требования к Phase 1 для последующего K8s-переноса (стоимость и корректность ещё не измерены):**
 
 1. **Stateless бинари:** `ff-api`, `ff-scheduler` не держат состояния вне
    Postgres → в K8s это обычные Deployments; scheduler — replicas=1 c
-   leader-election через Postgres advisory lock (закладывается сразу —
-   это одна строка, а не рефакторинг).
+   leader-election через Postgres advisory lock; корректность удержания
+   лидерства при сбоях соединения и рестартах должна быть проверена.
 2. **12-factor конфиг:** env + файлы, никаких «локальных путей в коде»;
    секреты через env → K8s Secrets без изменений.
 3. **Health/readiness endpoints** в `ff-api` с первого дня → K8s probes.
@@ -107,9 +116,9 @@ rebuildable**: `git (код+артефакты) + tracker + audit-журнал` 
 ## 4. Сессии executors (CC/Codex/OpenCode) — указатель
 
 Управление сессиями (spawn/resume/headless, session-id, передача модели и
-worktree per run) — отдельный документ `executor-sessions.md`, пишется по
-результатам фактического research (headless-режимы и per-run параметризация
-CC/Codex/OpenCode). Контрактная рамка уже зафиксирована: ExecutorDriver
+worktree per run) описано в `executor-sessions.md` по исследованию июля
+2026; его version-specific утверждения не заменяют проверку выбранного CLI.
+Контрактная рамка дизайна: ExecutorDriver
 (createRun/streamEvents/cancelRun/collectOutcome) + spawned `forgeplan serve`
 per worktree + двухканальное состояние (контрактный + PTY-эвристика, Herdr
 H-1) + persistent sessions под супервизором (Herdr H-5).

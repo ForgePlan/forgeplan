@@ -2,7 +2,7 @@
 
 ## Обзор
 
-Forgeplan требует, чтобы каждый артефакт (PRD, RFC, ADR, EPIC, SPEC, PROB), упомянутый в pull request, имел связанное **доказательство** (evidence) перед созданием PR. Это гарантирует, что архитектурные и функциональные решения подкреплены фактами: тестами, бенчмарками, аудитами или измерениями.
+Конвенция проекта evidence-before-PR требует связанных **доказательств** решений. Репозиторный Claude Code hook выполняет ограниченную проверку, когда подключён в этом host; это не универсальное правило GitHub branch protection и не проверка качества или истинности evidence.
 
 **Доказательство** представляется артефактом `EVID` (EvidencePack) с типизированной связью `informs` или `based_on` на артефакт, для которого оно служит доказательством.
 
@@ -23,22 +23,22 @@ Forgeplan требует, чтобы каждый артефакт (PRD, RFC, AD
 ## Трёхслойный стек enforcement'а доказательств
 
 ### Layer 1: Agent Skills (Wave 2 W5+W6)
-Плагин маркетплейса `fpl-skills` v1.5.0+ включает улучшенные скиллы `/audit`, `/sprint`, `/build`, которые **автопубликуют EVID** после работы агента. Эти скиллы:
+В Wave 2 описана автопубликация evidence скиллами marketplace `fpl-skills` v1.5.0+ `/audit`, `/sprint`, `/build`. Предполагаемая интеграция:
 - Захватывают вывод тестов, findings аудитов, результаты бенчмарков
 - Автоматически создают артефакт `EVID` со структурированными полями
 - Автоматически связывают с затронутым PRD/RFC/ADR связью `informs`
 - Эмитируют `_next_action: forgeplan activate <ID>` hint
 
-Этот слой ловит workflows, порождённые агентами, и гарантирует, что доказательство создаётся во время работы, а не после.
+Это контракт агентской интеграции, не гарантия для любого host или версии skill; проверяйте фактический результат и связанный артефакт.
 
 ### Layer 2: Pre-PR Hook (FR-014, этот документ)
-Перед `gh pr create`, запускается `.claude/hooks/pre-pr-evidence-check.sh`:
+При подключении в Claude Code PreToolUse `.claude/hooks/pre-pr-evidence-check.sh` анализирует предлагаемую команду `gh pr create`:
 1. Парсит имя ветки и последние 20 коммитов на предмет artifact ID (PRD-NNN, RFC-NNN и т.д.)
-2. Для каждого найденного артефакта (кроме EVID) проверяет граф на наличие связей `informs` или `based_on`
+2. Для найденных артефактов, кроме EVID и NOTE, проверяет evidence edges графа; fallback эвристически читает body-секции Related/Links/Relations
 3. **Блокирует создание PR** (exit код 2), если доказательство отсутствует
 4. Предоставляет чёткие инструкции по обходу для легитимных исключений
 
-Этот слой — жёсткий gate на границе человеческого PR. Вы не можете пройти дальше без доказательства или явного обхода.
+Этот gate локален для host. Он не анализирует PR body, допускает документированные branch/environment bypasses и возвращает 0, если подходящего binary нет. Наличие связанной записи само по себе её тезисы не доказывает.
 
 ### Layer 3: Health Verdict (post-hoc reporting)
 `forgeplan health` детектирует `blind_spots` — активные артефакты без связанных доказательств. Это reported в:
@@ -107,11 +107,11 @@ FORGEPLAN_SKIP_EVIDENCE=1 gh pr create --title "[HOTFIX] Auth token expiry bug" 
 
 ### Шаг 1: Создайте артефакт EVID
 ```bash
-forgeplan new evidence "Feature X: test coverage 92%, p95 latency 180ms"
+forgeplan new evidence "Feature X: measured verification results"
 ```
 
 ### Шаг 2: Заполните structured fields
-Отредактируйте `.forgeplan/evidence/EVID-NNN-*.md` и добавьте:
+Подготовьте полный prose body во временном файле, включая реальные наблюдения и эти поля, затем примените `forgeplan update EVID-NNN --body @/tmp/evid-body.md`. Canonical `.forgeplan/` артефакты напрямую не редактируйте:
 ```markdown
 ## Structured Fields
 
@@ -146,7 +146,7 @@ gh pr create --title "[Evidence] Add EVID-NNN for PRD-MMM" \
 
 EvidencePack, утверждающий, что код изменился, может объявить три дополнительных поля
 в том же блоке `## Structured Fields`. **Все три или ни одного** — частичный claim
-отвергается как `Incomplete`:
+даёт verdict `Incomplete`; блокировка активации зависит от режима gate:
 
 ```markdown
 base_sha: 92154e19                        # состояние ДО изменения
@@ -191,12 +191,17 @@ shallow-клоне) всегда только **предупреждает**, н
 | Статус эвиденции | Участвует в min()? | Почему |
 |---|---|---|
 | `draft` | **да** | свежее измерение, ждущее активации — score-гейт идёт ДО активации в стандартном flow |
-| `active` | **да** | текущее показание; активный `refutes` обнуляет score |
+| `active` | **да** | текущее показание; непросроченный `refutes` даёт ноль |
 | `stale` | **да** | не терминальный — помечен к пересмотру, но не вытеснен; истёкший `valid_until` отдельно роняет score пакета до 0.1 (decay) |
 | `superseded` | **нет** | вытеснен наследником (`supersede <старый> --by <новый>`) — история остаётся в графе, но о текущей надёжности больше не говорит |
 | `deprecated` | **нет** | закрыт (например, дубль, deprecated с `--reason "superseded by EVID-y"`) |
 
 Каждое исключение логируется в factors (`Skipped EVID-x (status: superseded)`) и помечается в breakdown (`excluded from min`) — вытеснение всегда видимо, никогда не молчаливо. Если ВСЯ слинкованная эвиденция терминальна — артефакт деградирует к **no active evidence** (R_eff 0.0): для восстановления пакет-замена должен быть *слинкован* с артефактом, а не просто существовать.
+
+Явный recursive score учитывает также допустимые зависимости и evidence-type
+modifiers (test/measurement 0, benchmark 0.1, audit 0.2). Flat captured score
+их и рекурсию не включает; поверхности нельзя отождествлять. Expiry возвращает
+0.1 даже для refuting evidence, раньше арифметики verdict.
 
 Честный способ убрать устаревший слабый пакет — вытеснение: слинковать эвиденцию ре-верификации и вытеснить старый пакет. Править verdict пакета ради поднятия score — фальсификация истории; граф хранит исходный пакет ровно для того, чтобы этого никогда не требовалось.
 
@@ -267,16 +272,16 @@ Blind Spots (artifacts without evidence):
 О: Используйте `FORGEPLAN_SKIP_EVIDENCE=1 gh pr create`. Но документируйте в теле PR почему вы пропускаете. Retroactively attach EVID в follow-up PR если причина обхода это оправдывает.
 
 **В: Нужно ли доказательство для documentation-only PRs?**
-О: Нет — ветки `docs/*` auto-bypass. Branch protection предполагает, что изменения docs не нуждаются в архитектурном доказательстве.
+О: Локальный hook пропускает `docs/*` по имени ветки; это не проверка documentation-only diff и не универсальное исключение branch protection.
 
 **В: Что если binary `forgeplan` не установлен?**
 О: Hook soft-fails (exits 0) вместо блокировки. Вы всё ещё можете создавать PRs, но теряете gate. Это intentional для fresh clones без построенных binaries.
 
 **В: Могу ли я wire hook в Git вместо Claude Code?**
-О: Да — скопируйте `.claude/hooks/pre-pr-evidence-check.sh` в `.git/hooks/pre-push` (или custom hook) и переименуйте на `pre-push`. Убедитесь что ваш hook invokes его перед `git push`.
+О: Простого переименования недостаточно. Скрипт ожидает Claude Code JSON на stdin; Git pre-push передаёт другой протокол и не перехватывает `gh pr create`. Нужен отдельно проверенный адаптер.
 
 **В: Что если мой артефакт действительно ad-hoc и не нужно доказательство?**
-О: Создайте PROB или decision note объясняя почему, затем решите: (1) reclassify как `NOTE` (ephemeral, auto-expires), (2) retroactively create minimal EVID, или (3) использовать bypass + документировать.
+О: Зафиксируйте обоснование и выберите lightweight NOTE, реальные EVID или явно обоснованный bypass. При создании NOTE срок в 90 дней автоматически не назначается.
 
 ## Reference
 

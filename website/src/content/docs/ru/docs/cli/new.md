@@ -40,6 +40,10 @@ forgeplan new [OPTIONS] <KIND> <TITLE>
 
 Forgeplan выполняет проверку на сходство с существующими артефактами и предупреждает, если заголовок выглядит как дубликат. Передайте `--allow-duplicate` / `--force`, чтобы обойти это, если вы намеренно хотите создать параллельный артефакт (например, второй PRD, исследующий ту же область с другого ракурса).
 
+Без `--allow-duplicate` возможен best-effort fetch и проверка `origin/dev`.
+Подтверждение дубликата интерактивно лишь в терминале; скрипт получает
+явный отказ вместо запроса.
+
 ## Примеры
 
 ### Пример 1: Создание PRD для новой функции
@@ -48,7 +52,7 @@ Forgeplan выполняет проверку на сходство с суще�
 forgeplan new prd "OAuth2 login"
 ```
 
-Создаёт `.forgeplan/prds/prd-NNN-oauth2-login.md` с шаблоном PRD. Немедленно откройте его и заполните разделы Problem, Goals, Non-Goals, Target Users, Related и Functional Requirements - затем запустите `forgeplan validate PRD-NNN`, чтобы убедиться в отсутствии ошибок MUST, прежде чем продолжить.
+Создаёт slug-файл вроде `.forgeplan/prds/prd-oauth2-login.md`; используйте фактически выданные путь и ID. Заполните обязательные разделы, затем валидируйте. Не воссоздавайте выведенные из эксплуатации таблицы артефактов.
 
 ### Пример 2: Запись сигнала о проблеме
 
@@ -56,7 +60,7 @@ forgeplan new prd "OAuth2 login"
 forgeplan new problem "Slow search on 10k+ artifacts"
 ```
 
-Создаёт ProblemCard с разделами Signal / Context / Goals / Anti-Goodhart indicators. ProblemCard не требуют дизайна - заполните Signal и Context, затем свяжите с любым Evidence, который у вас уже есть. Проблемы не требуют гейта валидации для активации, поэтому вы можете активировать их, как только карточка станет связной.
+Создаёт шаблон ProblemCard. Заполните обязательные разделы и свяжите доказательства. Активация выполняет правила типа/глубины через отдельную команду; ProblemCard не означает универсальный обход валидации.
 
 ### Пример 3: Прикрепление бенчмарка в качестве доказательства
 
@@ -66,7 +70,7 @@ forgeplan link EVID-NNN PRD-012 --relation informs
 forgeplan score PRD-012
 ```
 
-Тела Evidence ДОЛЖНЫ содержать структурированные поля (`verdict`, `congruence_level`, `evidence_type`) - без них парсер R_eff возвращается к CL0 и снижает оценку. Свяжите с артефактом, который подтверждает Evidence, затем переоцените, чтобы увидеть изменение R_eff.
+Для расчёта evidence указывайте структурированные `verdict` и `congruence_level`. Отсутствующие или нераспознанные поля оценки могут дать CL0; пропущенный `evidence_type` по умолчанию означает measurement. Свяжите evidence с подтверждаемым артефактом и проверьте результат, не предполагая обязательный рост оценки.
 
 ## Как это вписывается в рабочий процесс
 
@@ -79,3 +83,24 @@ forgeplan score PRD-012
 - [`forgeplan route`](/docs/cli/route/) - определяет глубину + конвейер перед созданием артефакта
 - [`forgeplan health`](/docs/cli/health/) - выявляет заготовки и слепые пятна после создания
 - [Методология: модель артефакта](/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan new --help`.
+
+```text
+Create a new artifact from template
+
+Usage: forgeplan new [OPTIONS] <KIND> <TITLE>
+
+Arguments:
+  <KIND>   Artifact kind: prd, epic, spec, rfc, adr, problem, solution, evidence, note, refresh
+  <TITLE>  Artifact title
+
+Options:
+      --allow-duplicate  Skip duplicate-detection prompt and create anyway [alias: --force]
+  -h, --help             Print help
+  -V, --version          Print version
+```
+<!-- forgeplan-runtime:end -->

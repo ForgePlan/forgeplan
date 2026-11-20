@@ -1,109 +1,115 @@
 ---
-title: Инструменты MCP
-description: "Справочник по всем 73 инструментам Model Context Protocol, предоставляемым `forgeplan serve`."
+title: "Инструменты MCP"
+description: "Раздельные каталоги full и constellation-read из живого сервера."
 ---
 
-Forgeplan поставляется с **73 инструментами MCP**, которые агент ИИ может вызывать через Model Context Protocol (транспорт stdio).
+Снимок интерфейса: `forgeplan 0.39.0+constellation.s1.1`.
 
-Запустите сервер MCP:
+**full сохраняет запись.** Дополнительный профиль constellation-read её не заменяет. Числа ниже — зарегистрированные инструменты, не число проверенных end-to-end сценариев. Некоторые инструменты требуют плагин.
+
+- [Настройка подключения](/ru/docs/guides/mcp-setup/)
+- [Практический сценарий Constellation](/ru/docs/guides/constellation/)
+- [Контракты, ограничения и диагностика](/ru/docs/reference/constellation/)
+
+## `full` — 76 инструментов
 
 ```bash
-forgeplan serve
+forgeplan serve --profile full
 ```
 
-Настройте своего агента (Claude Code, Cursor и т. д.) для подключения, затем вызовите любой из перечисленных ниже инструментов.
-
-### Рабочее пространство и данные
-
-| Инструмент | Описание |
+| Инструмент | Назначение из tools/list |
 |---|---|
-| [`forgeplan_export`](/ru/docs/mcp/forgeplan_export/) | Экспортирует все артефакты и связи в JSON-пакет. Возвращает экспортированные данные напрямую для программного использования или записывает их по указанному пути к файлу. |
-| [`forgeplan_import`](/ru/docs/mcp/forgeplan_import/) | Импортирует артефакты и связи из JSON-пакета экспорта. Установите force=true, чтобы перезаписать существующие артефакты. |
-| [`forgeplan_init`](/ru/docs/mcp/forgeplan_init/) | Инициализирует новое рабочее пространство .forgeplan/. Создает таблицы LanceDB, конфигурацию и подкаталоги артефактов. |
+| [`forgeplan_activate`](/ru/docs/mcp/forgeplan_activate/) | Activate an artifact (draft → active). Requires all MUST validation rules to pass. |
+| [`forgeplan_activity`](/ru/docs/mcp/forgeplan_activity/) | Query the activity log — append-only JSONL record of every MCP tool invocation at .forgeplan/logs/tools-YYYY-MM-DD.jsonl. Use this to reconstruct what the agent did over a time window, attribute LLM-token spend, or audit destructive operations. Params: since_hours (default 24, max 720), tool (comma-separated names to filter), status (ok/tool_err/rpc_err), limit (default 500, max 5000 — keeps most recent). |
+| [`forgeplan_activity_stats`](/ru/docs/mcp/forgeplan_activity_stats/) | Aggregate statistics from the activity log grouped by tool name: count, error count, p50/p95 duration, total time. Use to attribute LLM-token spend and identify slow tools. Params: since_hours (default 24, max 720). |
+| [`forgeplan_anomalies`](/ru/docs/mcp/forgeplan_anomalies/) | Issue #289 — detect pipeline anomalies (stuck drafts, orphan links, mis-typed based_on, missing MUST sections, expired evidence, cycles, duplicates, etc.). Returns structured list with severity + tier + suggested_resolution so orchestrators (`/forge-cycle`, `/forge-cleanup`) can dispatch auto/adi/user tiers without re-classifying. |
+| [`forgeplan_blindspots`](/ru/docs/mcp/forgeplan_blindspots/) | Show blind spots — decisions (PRD/RFC/ADR/Epic) without linked evidence, and orphan artifacts with no connections. |
+| [`forgeplan_blocked`](/ru/docs/mcp/forgeplan_blocked/) | Show blocked artifacts and their unmet dependencies. Only draft artifacts block — deprecated and superseded are considered resolved. Uses structural relations only (based_on, refines, supersedes, contradicts). |
+| [`forgeplan_calibrate`](/ru/docs/mcp/forgeplan_calibrate/) | Suggest depth level (Tactical/Standard/Deep/Critical) for artifacts based on content analysis. Detects security sections, breaking changes, link count, body complexity. |
+| [`forgeplan_capture`](/ru/docs/mcp/forgeplan_capture/) | Capture a decision from conversation into a Note or ADR artifact. Auto-detects type: simple decisions become Notes, architectural decisions become ADRs. Requires LLM provider. |
+| [`forgeplan_claim`](/ru/docs/mcp/forgeplan_claim/) | Claim an artifact for exclusive work. Writes .forgeplan/claims/&lt;id&gt;.yaml with the caller's agent identity, timestamp, and TTL. Fails if a live claim by a different agent exists — same-agent calls renew the TTL. Advisory: other tools do not block on claims, but orchestrators should use `forgeplan_claims --active` to avoid double-assigning work. |
+| [`forgeplan_claims`](/ru/docs/mcp/forgeplan_claims/) | List live claims in the workspace, sorted by expiry ascending. Skips expired claims (they're considered practically released). Used by orchestrators to build dispatch plans and by sub-agents to avoid double-claiming. |
+| [`forgeplan_constellation_get`](/ru/docs/mcp/forgeplan_constellation_get/) | Read ONE artifact at the pinned Constellation generation —                        exact match on `canonical_key` or the human id (`SPEC-001`).                        Returns the stored row verbatim: body, digests, semantic_state.                        A miss is `found: false`, never a substituted row. |
+| [`forgeplan_constellation_search`](/ru/docs/mcp/forgeplan_constellation_search/) | Lexical search over the pinned Constellation artifacts table —                        case-insensitive substring match on canonical_key, title and body                        at the *published* generation (a pinned reader, never latest).                        Each hit reports its stored `semantic_state` honestly; ANN/vector                        search is a later stage and is not claimed here. |
+| [`forgeplan_constellation_status`](/ru/docs/mcp/forgeplan_constellation_status/) | Constellation index status — the published generation, its coverage,                        and the pinned table versions it serves from. This is the corrected                        0A/0B index; `present: false` means `forgeplan index` has not run on                        this workspace yet. |
+| [`forgeplan_contradictions`](/ru/docs/mcp/forgeplan_contradictions/) | Issue #287 Phase C — detect cross-artifact contradictions (v1: hypothesis_duplicate via Jaccard ≥ 0.6 on titles). Three other classes (invariant_conflict, glossary_divergence, scenario_vs_invariant) require LLM judgement and are deferred — buckets included in response with empty arrays + limitations list. |
+| [`forgeplan_coverage`](/ru/docs/mcp/forgeplan_coverage/) | Show decision coverage per code module — which modules have architectural decisions and which are blind spots. |
+| [`forgeplan_coverage_business`](/ru/docs/mcp/forgeplan_coverage_business/) | Issue #287 Phase C — compute extract_score (0.0-1.0) for a Domain Model. Reads the DM's ## Composition section to derive expected counts of glossary / use_cases / invariants / scenarios / hypotheses; counts actuals across the workspace; returns weighted extract_score. Canonical fields (DDL/SDL/pseudo-code) default to 0/false until marketplace#79 Phase E lands. |
+| [`forgeplan_decay`](/ru/docs/mcp/forgeplan_decay/) | Show evidence decay impact on R_eff scores. Lists artifacts where expired evidence has degraded quality scores, with current vs fresh R_eff comparison. |
+| [`forgeplan_decompose`](/ru/docs/mcp/forgeplan_decompose/) | Decompose a PRD into RFC tasks using AI. Analyzes functional requirements and suggests 3-7 RFCs with titles, descriptions, scope, and dependencies. Requires LLM provider. |
+| [`forgeplan_delete`](/ru/docs/mcp/forgeplan_delete/) | Delete an artifact: writes a soft-delete receipt, moves its markdown projection into `.forgeplan/trash/`, and drops the legacy projection row on workspaces whose index the legacy store still owns. |
+| [`forgeplan_deprecate`](/ru/docs/mcp/forgeplan_deprecate/) | Deprecate an artifact (active → deprecated) with a reason. |
+| [`forgeplan_discover_complete`](/ru/docs/mcp/forgeplan_discover_complete/) | Complete a discovery session. Generates a summary report with findings per phase/tier, runs forgeplan health, and marks the session as completed. |
+| [`forgeplan_discover_finding`](/ru/docs/mcp/forgeplan_discover_finding/) | Report a discovery finding. The agent calls this after analyzing a file/module/git-log during a phase. ForgePlan creates an artifact (note/prd/rfc/problem/evidence) with the finding content, tags it with the source tier, and links it to the discovery session. |
+| [`forgeplan_discover_start`](/ru/docs/mcp/forgeplan_discover_start/) | Start a brownfield discovery session. Returns a structured protocol (7 phases: detect/structure/code/git/tests/docs/synthesize) that the AI agent follows to map an existing codebase. ForgePlan provides the protocol; the agent parses code and reports findings via forgeplan_discover_finding. |
+| [`forgeplan_dispatch`](/ru/docs/mcp/forgeplan_dispatch/) | Compute a parallel-safe work plan for N sub-agents. Returns buckets (one per agent), a serial queue for leftover work, and human-readable reasoning for every placement decision. Skips artifacts already claimed, defers artifacts with file-overlap &gt;= threshold (default Jaccard 0.3), and when agent_skills is provided routes by domain match. Read-only — does not mutate workspace state. |
+| [`forgeplan_drift`](/ru/docs/mcp/forgeplan_drift/) | Check for drifted decisions — affected files that changed after ADR/RFC was created. |
+| [`forgeplan_estimate`](/ru/docs/mcp/forgeplan_estimate/) | Estimate effort for an artifact based on FR and Phase items. Returns multi-grade breakdown (Junior/Middle/Senior/Principal/AI) with confidence scoring. |
+| [`forgeplan_export`](/ru/docs/mcp/forgeplan_export/) | Export all artifacts and relations to a JSON bundle. Returns the exported data directly for programmatic use, or writes to a file path. |
+| [`forgeplan_fpf_check`](/ru/docs/mcp/forgeplan_fpf_check/) | Check which FPF rules match a given artifact, showing all matched rules, the winning rule (first in priority order, same as runtime), and rules that did not match. Use this to understand FPF engine behavior for a specific artifact before acting on it. |
+| [`forgeplan_fpf_list`](/ru/docs/mcp/forgeplan_fpf_list/) | List all available FPF (First Principles Framework) sections in the knowledge base. |
+| [`forgeplan_fpf_rules`](/ru/docs/mcp/forgeplan_fpf_rules/) | List active FPF rules from the workspace. By default returns all rules with full condition trees and messages. Parameters allow filtering: `action` (EXPLORE/INVESTIGATE/EXPLOIT) to show only rules for that action category; `name` to fetch a single rule by name; `summary: true` to return only name/priority/action without condition details (useful for quick overviews); `source` (config/default) for debugging which rule source is active. If workspace has user-defined rules in .forgeplan/config.yaml under fpf.rules, those take precedence; otherwise built-in defaults are returned. |
+| [`forgeplan_fpf_search`](/ru/docs/mcp/forgeplan_fpf_search/) | Search FPF (First Principles Framework) knowledge base. Default is keyword search. Pass `semantic: true` for vector similarity search via BGE-M3 embeddings (requires the `semantic-search` build feature). When `semantic: true` but the feature is not compiled in, the query gracefully falls back to keyword search and the response includes a `warning` field. Note: the first invocation with `semantic: true` may take several minutes if the BGE-M3 model needs to be downloaded (~2.1 GB). Params: query (required, 1..=8192 chars), limit (default 5, max 50), semantic (default false). |
+| [`forgeplan_fpf_section`](/ru/docs/mcp/forgeplan_fpf_section/) | Get full content of a specific FPF section by ID (e.g. 'B.3', 'C.2.2', 'A.1'). |
+| [`forgeplan_generate`](/ru/docs/mcp/forgeplan_generate/) | Generate an artifact using AI from a natural language description. Requires an LLM provider in .forgeplan/config.yaml. Supports OpenAI-compatible HTTP providers, Claude, Gemini, Ollama, and explicit subscription-authenticated local CLI providers. |
+| [`forgeplan_get`](/ru/docs/mcp/forgeplan_get/) | Read a full artifact by ID. Returns all metadata and body content. |
+| [`forgeplan_graph`](/ru/docs/mcp/forgeplan_graph/) | Generate a mermaid dependency graph of all linked artifacts. Includes explicit links and parent_epic belongs_to edges. Issue #287 Phase F: pass `brownfield_only: true` to filter to UC/GLOS/INV/SCEN/HYP/DM edges only. |
+| [`forgeplan_guard`](/ru/docs/mcp/forgeplan_guard/) | Check if a methodology **session phase** transition is allowed (idle → routing → shaping → coding → evidence → pr). Use before performing session-level actions to avoid blocked operations. Example: can I go from 'shaping' to 'coding'? Returns allowed=true/false with reason. NOTE: this guards the methodology session phase machine, NOT the artifact lifecycle phase machine (shape/validate/adi/code/test/audit/evidence/done) — for that use `forgeplan_phase_advance`. The `target_session_phase` argument is the canonical name; `target_phase` is accepted as a deprecated alias for backward compatibility (PROB-065). |
+| [`forgeplan_health`](/ru/docs/mcp/forgeplan_health/) | Show project health dashboard — gaps, risks, blind spots, orphans, stale evidence, and recommended next actions. Returns aggregate `verdict` field ("healthy" \| "needs_attention" \| "unhealthy") + `verdict_summary` for one-line human rendering. Branch on `verdict` for CI gates and agent decision logic. No LLM needed. |
+| [`forgeplan_hypothesis_promote`](/ru/docs/mcp/forgeplan_hypothesis_promote/) | Promote a hypothesis along the verification state machine (parked → inferred → strong-inferred → verified; or any → refuted; or any → parked). Mutates the artifact body via file-first projection: updates the `hypothesis_state:` frontmatter field and appends an audit entry to the `## Lifecycle State` section. Returns a list of artifacts that informs / based_on the hypothesis (cascade) — informational only, not auto-bumped. Rejects illegal transitions with a structured error enumerating the allowed next states. |
+| [`forgeplan_hypothesis_status`](/ru/docs/mcp/forgeplan_hypothesis_status/) | Issue #287 Phase C — query hypothesis lifecycle state. Returns workspace-wide state distribution (verified / strong-inferred / inferred / refuted / parked) plus best-effort recent transitions (last 30 days, audit-line extraction from `## Lifecycle State` sections). Optional `id` filter narrows to a single HYP- artifact. |
+| [`forgeplan_import`](/ru/docs/mcp/forgeplan_import/) | Import artifacts and relations from a JSON export bundle. Set force=true to overwrite existing artifacts. |
+| [`forgeplan_ingest`](/ru/docs/mcp/forgeplan_ingest/) | Plan an ingest run (mapping YAML × source file). Wave 3: dry-run-only — returns drafts without writing artifacts. Set `dry_run: false` to indicate intent to write, but the MCP surface still defers actual writes to the `forgeplan ingest` CLI (Wave 4 will wire artifact::Store). PRD-066 AC-1. |
+| [`forgeplan_init`](/ru/docs/mcp/forgeplan_init/) | Initialize a new .forgeplan/ workspace. Creates LanceDB tables, config, and artifact subdirectories. |
+| [`forgeplan_interview_packet_draft`](/ru/docs/mcp/forgeplan_interview_packet_draft/) | experimental: draft an interview packet to validate brownfield hypotheses. STUB — the full implementation ships with the `forgeplan-brownfield-pack` plugin (marketplace issue #79). Without the plugin installed this tool echoes a `not_implemented` envelope so agents can detect the gap and surface the install hint. |
+| [`forgeplan_interview_packet_ingest`](/ru/docs/mcp/forgeplan_interview_packet_ingest/) | experimental: ingest a completed interview transcript and propose HYP / UC / INV artifacts. STUB — the full implementation ships with the `forgeplan-brownfield-pack` plugin (marketplace issue #79). Stub returns a `not_implemented` envelope so agents can detect the gap and surface the install hint. |
+| [`forgeplan_journal`](/ru/docs/mcp/forgeplan_journal/) | Show decision journal — chronological timeline of ADR, Note, Problem, Solution artifacts with R_eff scores and evidence status. |
+| [`forgeplan_link`](/ru/docs/mcp/forgeplan_link/) | Link two artifacts with a typed relationship. Valid types: informs, based_on, supersedes, contradicts, refines. |
+| [`forgeplan_list`](/ru/docs/mcp/forgeplan_list/) | List artifacts with optional kind/status filters. Returns ID, kind, status, and title for each artifact. |
+| [`forgeplan_new`](/ru/docs/mcp/forgeplan_new/) | Create a new artifact from template. Generates a sequential ID (e.g., PRD-001), renders the template, and writes the canonical markdown projection. On a workspace whose index is owned by the Constellation protocol the derived row is published by the reconcile pass reported as `index_pending` in the response; elsewhere it also takes the legacy projection. |
+| [`forgeplan_order`](/ru/docs/mcp/forgeplan_order/) | Show artifacts in topological order (dependency order). Returns ordered list, ready/blocked classification, and cycle detection. Uses structural relations only. |
+| [`forgeplan_orphans`](/ru/docs/mcp/forgeplan_orphans/) | Issue #287 Phase C — surface brownfield orphans: uncovered use cases (no scenario links), unverified invariants (no scenario links), orphan glossary terms (not referenced in any UC/INV body), un-triangulated hypotheses (&lt; 2 evidence refs). |
+| [`forgeplan_phase`](/ru/docs/mcp/forgeplan_phase/) | Read advisory phase state for an artifact. Returns current_phase, workflow_type, timestamps, and the full append-only transition history from `.forgeplan/state/&lt;id&gt;.yaml`. If no state file exists yet (pre-PRD-056 artifact or phase tracking was disabled), returns `current_phase: unknown` — never an error. Phase tracking is advisory and never blocks other tools. |
+| [`forgeplan_phase_advance`](/ru/docs/mcp/forgeplan_phase_advance/) | Manually advance (or set) the advisory **artifact lifecycle phase** marker for an artifact (shape/validate/adi/code/test/audit/evidence/done). Appends a transition to the history. Forward and out-of-order jumps are allowed, including a direct `done` override, and so is moving BACKWARDS — this tool is the deliberate-correction path (PRD-086 FR-007). Automatic advancement triggered by other tools refuses to move a phase backwards. Full phase enforcement lands in a later PRD under EPIC-005. Use when auto-advancement missed a transition or when reclassifying workflow state. NOTE: this targets the artifact lifecycle phase machine, NOT the methodology session phase machine (idle/routing/shaping/coding/evidence/pr) — for that use `forgeplan_guard` (PROB-065). |
+| [`forgeplan_playbook_list`](/ru/docs/mcp/forgeplan_playbook_list/) | List all discoverable playbooks (workspace + Claude plugin packs). Returns name, title, step count, and source path for each. PRD-065 AC-1. Read-only filesystem scan. |
+| [`forgeplan_playbook_run`](/ru/docs/mcp/forgeplan_playbook_run/) | Run a playbook end-to-end. Wave 4 wires the production plugin/agent/skill/command/forgeplan_core dispatchers via `RoutingDispatcher`. Refuses without `yes: true` (ADR-009 security gate). Playbooks containing `Delegation::Command` (shell-exec) steps additionally require `allow_shell: true` (PRD-074 / PROB-053, default-deny). Workspaces can pre-approve trusted-local shell exec via `[playbook] allow_shell = true` in `.forgeplan/config.yaml`. Use `dry_run: true` to enumerate steps without invoking dispatchers. |
+| [`forgeplan_playbook_show`](/ru/docs/mcp/forgeplan_playbook_show/) | Show full details of a single playbook (resolved by name or path). Returns the parsed Playbook struct + source path. PRD-065 AC-1. |
+| [`forgeplan_playbook_validate`](/ru/docs/mcp/forgeplan_playbook_validate/) | Validate a playbook YAML file (parse + structural checks: cycles, unknown step refs, mapping/produces_at consistency). Returns `passed` flag + list of errors. PRD-065 AC-2. |
+| [`forgeplan_plugins_doctor`](/ru/docs/mcp/forgeplan_plugins_doctor/) | Health-check across the full plugin registry: separates ok / outdated / missing entries and surfaces install hints for the missing ones. PRD-067 AC-2. |
+| [`forgeplan_plugins_info`](/ru/docs/mcp/forgeplan_plugins_info/) | Show details for a single plugin from the extended registry. Returns the static PluginInfo plus, if installed, the InstalledPlugin runtime record (detected path + version). PRD-067. |
+| [`forgeplan_plugins_list`](/ru/docs/mcp/forgeplan_plugins_list/) | List installed plugins detected on disk (Claude plugins + agentskills + Cursor) + missing entries from the extended registry. PRD-067 AC-1. Read-only filesystem scan. |
+| [`forgeplan_progress`](/ru/docs/mcp/forgeplan_progress/) | Show checkbox progress for artifacts. Parses markdown checkboxes (- [ ] / - [x]) and computes completion percentages. |
+| [`forgeplan_reason`](/ru/docs/mcp/forgeplan_reason/) | Analyze an artifact using FPF ADI reasoning cycle: Abduction (3+ hypotheses) → Deduction (evaluate each) → Induction (synthesize recommendation). Requires LLM provider. |
+| [`forgeplan_release`](/ru/docs/mcp/forgeplan_release/) | Release an active claim. Refuses if the claim is held by a different agent (use `force: true` to override — the orchestrator's escape hatch for a crashed sub-agent). Missing claim is a no-op (idempotent). |
+| [`forgeplan_release_notes`](/ru/docs/mcp/forgeplan_release_notes/) | Auto-generate Keep-a-Changelog–shaped release notes from artifacts that changed between two git refs. Walks `git log` over `.forgeplan/{prds, problems, evidence, rfcs, adrs, specs, epics, solutions}/`, classifies each touched artifact (PRD→Added, PROB→Fixed, EVID-on-security→Security, RFC/ADR→Changed) and emits the structured payload. Quality gate (default): only artifacts with status==active or r_eff_score &gt; 0 are included. Pass `draft: true` to waive the gate. `since` defaults to the latest git tag, `until` defaults to HEAD. Example: `{since: "v0.30.0", draft: false}`. |
+| [`forgeplan_restore`](/ru/docs/mcp/forgeplan_restore/) | Restore a soft-deleted artifact from the most recent non-consumed receipt in `.forgeplan/trash/`. Works for delete (recreates row + moves projection back), supersede (resets status + drops link), and deprecate (resets status). Refuses if a different artifact with the same ID currently exists (manual resolution required). TTL default: 30 days from the destructive op. |
+| [`forgeplan_review`](/ru/docs/mcp/forgeplan_review/) | Review an artifact — run validation and show lifecycle checklist. Shows MUST/SHOULD findings and whether artifact can be activated. |
+| [`forgeplan_route`](/ru/docs/mcp/forgeplan_route/) | Suggest depth level (Tactical/Standard/Deep/Critical) and artifact pipeline for a task description. Uses LLM classification (Level 1) when API key is configured, falls back to rule-based keywords (Level 0). |
+| [`forgeplan_score`](/ru/docs/mcp/forgeplan_score/) | Compute R_eff quality score for an artifact based on linked evidence. R_eff uses the weakest-link principle: score = min(evidence_scores) over the artifact's CURRENT evidence — packs with a terminal status (superseded/deprecated) are excluded from the min (ADR-020) but stay listed with `excluded: true`. An active refutes pack still zeroes the score. |
+| [`forgeplan_search`](/ru/docs/mcp/forgeplan_search/) | Smart search across artifacts: BM25 keyword + optional semantic + graph expansion. Supports filters by kind/status/depth/evidence/since and graph expansion toggle. |
+| [`forgeplan_session`](/ru/docs/mcp/forgeplan_session/) | Show current methodology session state — phase (idle/routing/shaping/coding/evidence/pr), active artifact, depth, enforcement status. Use this to know where in the workflow you are. |
+| [`forgeplan_stale`](/ru/docs/mcp/forgeplan_stale/) | Detect stale artifacts with expired valid_until dates. Returns the list of expired artifacts with days since expiry. |
+| [`forgeplan_status`](/ru/docs/mcp/forgeplan_status/) | Show project status dashboard — total artifacts, counts by kind and status. |
+| [`forgeplan_supersede`](/ru/docs/mcp/forgeplan_supersede/) | Supersede an artifact (active → superseded). Creates link to replacement and notifies dependents. |
+| [`forgeplan_undo_last`](/ru/docs/mcp/forgeplan_undo_last/) | Reverse the most recent destructive operation (delete, supersede, or deprecate) by reading the soft-delete trash and applying forgeplan_restore to the most recently written non-consumed receipt. Params: within_hours (default 24, max 720). If no matching receipt is found, returns an error with guidance; the tool never guesses. |
+| [`forgeplan_unlink`](/ru/docs/mcp/forgeplan_unlink/) | Remove a typed relation between two artifacts. Mirror of `forgeplan_link` for undoing or fixing mis-typed edges. Issue #286. |
+| [`forgeplan_update`](/ru/docs/mcp/forgeplan_update/) | Update artifact metadata (status, title) and/or body. Re-renders markdown projection after update. |
+| [`forgeplan_validate`](/ru/docs/mcp/forgeplan_validate/) | Validate artifact completeness against schema rules. Checks required sections per artifact kind and depth level. Returns structured findings with severity (MUST/SHOULD/COULD). |
 
-### Создание артефактов
+## `constellation-read` — 9 инструментов
 
-| Инструмент | Описание |
+```bash
+forgeplan serve --profile constellation-read
+```
+
+| Инструмент | Назначение из tools/list |
 |---|---|
-| [`forgeplan_capture`](/ru/docs/mcp/forgeplan_capture/) | Захватывает решение из беседы в артефакт Note или ADR. Автоматически определяет тип: простые решения становятся Note, архитектурные решения - ADR. Требуется провайдер LLM. |
-| [`forgeplan_generate`](/ru/docs/mcp/forgeplan_generate/) | Генерирует артефакт с помощью ИИ из описания на естественном языке. Требуется провайдер LLM, настроенный в .forgeplan/config.yaml. Поддерживает OpenAI, Claude, Gemini, Ollama и любую совместимую с OpenAI конечную точку. |
-| [`forgeplan_new`](/ru/docs/mcp/forgeplan_new/) | Создает новый артефакт из шаблона. Генерирует последовательный ID (например, PRD-001), рендерит шаблон, сохраняет в LanceDB и записывает проекцию в формате Markdown. |
-
-### Чтение артефактов
-
-| Инструмент | Описание |
-|---|---|
-| [`forgeplan_blocked`](/ru/docs/mcp/forgeplan_blocked/) | Показывает заблокированные артефакты и их неудовлетворенные зависимости. Блокируют только черновики артефактов - устаревшие и замещённые считаются разрешенными. Использует только структурные связи (based_on, refines, supersedes, contradicts). |
-| [`forgeplan_get`](/ru/docs/mcp/forgeplan_get/) | Считывает полный артефакт по ID. Возвращает все метаданные и содержимое тела. |
-| [`forgeplan_graph`](/ru/docs/mcp/forgeplan_graph/) | Генерирует граф зависимостей Mermaid для всех связанных артефактов. Включает явные связи и рёбра belongs_to из parent_epic. |
-| [`forgeplan_journal`](/ru/docs/mcp/forgeplan_journal/) | Показывает журнал решений - хронологическую временную шкалу артефактов ADR, Note, Problem, Solution с оценками R_eff и статусом доказательств. |
-| [`forgeplan_list`](/ru/docs/mcp/forgeplan_list/) | Выводит список артефактов с необязательными фильтрами по типу/статусу. Возвращает ID, тип, статус и заголовок для каждого артефакта. |
-| [`forgeplan_order`](/ru/docs/mcp/forgeplan_order/) | Показывает артефакты в топологическом порядке (порядке зависимостей). Возвращает упорядоченный список, классификацию на готовые/заблокированные и обнаружение циклов. Использует только структурные связи. |
-| [`forgeplan_progress`](/ru/docs/mcp/forgeplan_progress/) | Показывает прогресс выполнения артефактов на основе чекбоксов. Анализирует чекбоксы Markdown (- [ ] / - [x]) и вычисляет проценты завершения. |
-| [`forgeplan_search`](/ru/docs/mcp/forgeplan_search/) | Умный поиск по артефактам: поиск по ключевым словам BM25 + опциональный семантический поиск + расширение графа. Поддерживает фильтры по типу/статусу/глубине/доказательствам/дате и переключение расширения графа. |
-| [`forgeplan_session`](/ru/docs/mcp/forgeplan_session/) | Показывает текущее состояние сессии методологии - фазу (idle/routing/shaping/coding/evidence/pr), активный артефакт, глубину, статус принудительного применения. Используйте, чтобы знать, на каком этапе рабочего процесса вы находитесь. |
-
-### Редактирование артефактов
-
-| Инструмент | Описание |
-|---|---|
-| [`forgeplan_delete`](/ru/docs/mcp/forgeplan_delete/) | Удаляет артефакт из LanceDB и удаляет его файл проекции markdown. |
-| [`forgeplan_link`](/ru/docs/mcp/forgeplan_link/) | Связывает два артефакта типизированным отношением. Допустимые типы: informs, based_on, supersedes, contradicts, refines. |
-| [`forgeplan_update`](/ru/docs/mcp/forgeplan_update/) | Обновляет метаданные артефакта (статус, заголовок) и/или тело. Перерисовывает проекцию markdown после обновления. |
-
-### Качество и валидация
-
-| Инструмент | Описание |
-|---|---|
-| [`forgeplan_calibrate`](/ru/docs/mcp/forgeplan_calibrate/) | Предлагает уровень глубины (Tactical/Standard/Deep/Critical) для артефактов на основе анализа содержимого. Обнаруживает разделы безопасности, критические изменения, количество ссылок, сложность содержимого. |
-| [`forgeplan_coverage`](/ru/docs/mcp/forgeplan_coverage/) | Показывает покрытие решений по модулю кода - какие модули имеют архитектурные решения, а какие являются слепыми пятнами. |
-| [`forgeplan_decay`](/ru/docs/mcp/forgeplan_decay/) | Показывает влияние устаревания доказательств на оценки R_eff. Перечисляет артефакты, где просроченные доказательства снизили оценки качества, со сравнением текущего и обновлённого R_eff. |
-| [`forgeplan_drift`](/ru/docs/mcp/forgeplan_drift/) | Проверяет дрейфующие решения - затронутые файлы, которые изменились после создания ADR/RFC. |
-| [`forgeplan_estimate`](/ru/docs/mcp/forgeplan_estimate/) | Оценивает трудозатраты для артефакта на основе пунктов FR и этапов реализации. Возвращает разбивку по грейдам (Junior/Middle/Senior/Principal/AI) с оценкой достоверности. |
-| [`forgeplan_guard`](/ru/docs/mcp/forgeplan_guard/) | Проверяет, разрешён ли переход между фазами методологии. Используйте перед выполнением действий, чтобы избежать заблокированных операций. Пример: могу ли я перейти от 'shaping' к 'coding'? Возвращает allowed=true/false с указанием причины. |
-| [`forgeplan_review`](/ru/docs/mcp/forgeplan_review/) | Проверяет артефакт - запускает валидацию и показывает контрольный список жизненного цикла. Показывает результаты MUST/SHOULD и готовность артефакта к активации. |
-| [`forgeplan_score`](/ru/docs/mcp/forgeplan_score/) | Вычисляет показатель качества R_eff для артефакта на основе связанных доказательств. R_eff использует принцип слабого звена: показатель = min(показатели_доказательств). |
-| [`forgeplan_stale`](/ru/docs/mcp/forgeplan_stale/) | Обнаруживает просроченные артефакты с истёкшими датами valid_until. Возвращает список просроченных артефактов с указанием количества дней с момента истечения срока. |
-| [`forgeplan_validate`](/ru/docs/mcp/forgeplan_validate/) | Валидирует полноту артефакта в соответствии с правилами схемы. Проверяет обязательные разделы для каждого типа артефакта и уровня глубины. Возвращает структурированные результаты с указанием серьёзности (MUST/SHOULD/COULD). |
-
-### Жизненный цикл
-
-| Инструмент | Описание |
-|---|---|
-| [`forgeplan_activate`](/ru/docs/mcp/forgeplan_activate/) | Активирует артефакт (draft → active). Требует прохождения всех правил валидации MUST. |
-| [`forgeplan_deprecate`](/ru/docs/mcp/forgeplan_deprecate/) | Отменяет артефакт (active → deprecated) с указанием причины. |
-| [`forgeplan_supersede`](/ru/docs/mcp/forgeplan_supersede/) | Замещает артефакт (active → superseded). Создаёт ссылку на замену и уведомляет зависимые элементы. |
-
-### Рассуждения и ИИ
-
-| Инструмент | Описание |
-|---|---|
-| [`forgeplan_decompose`](/ru/docs/mcp/forgeplan_decompose/) | Декомпозирует PRD на задачи RFC с помощью ИИ. Анализирует функциональные требования и предлагает 3-7 RFC с заголовками, описаниями, областью действия и зависимостями. Требует провайдера LLM. |
-| [`forgeplan_reason`](/ru/docs/mcp/forgeplan_reason/) | Анализирует артефакт с использованием цикла рассуждений FPF ADI: Абдукция (3+ гипотезы) → Дедукция (оценка каждой) → Индукция (синтез рекомендации). Требует провайдера LLM. |
-| [`forgeplan_route`](/ru/docs/mcp/forgeplan_route/) | Предлагает уровень глубины (Tactical/Standard/Deep/Critical) и конвейер артефактов для описания задачи. Использует классификацию LLM (Уровень 1), если ключ API настроен, в противном случае возвращается к классификации на основе правил по ключевым словам (Уровень 0). |
-
-### Панели мониторинга
-
-| Инструмент | Описание |
-|---|---|
-| [`forgeplan_blindspots`](/ru/docs/mcp/forgeplan_blindspots/) | Показывает слепые пятна - решения (PRD/RFC/ADR/Epic) без связанных доказательств, а также сироты (артефакты без связей). |
-| [`forgeplan_health`](/ru/docs/mcp/forgeplan_health/) | Показывает дашборд состояния проекта - пробелы, риски, слепые пятна, сироты, просроченные доказательства и рекомендуемые дальнейшие действия. LLM не требуется. |
-| [`forgeplan_status`](/ru/docs/mcp/forgeplan_status/) | Показывает дашборд статуса проекта - общее количество артефактов, количество по типу и статусу. |
-
-### База знаний FPF
-
-| Инструмент | Описание |
-|---|---|
-| [`forgeplan_fpf_check`](/ru/docs/mcp/forgeplan_fpf_check/) | Оценивает, какие правила FPF применяются к данному артефакту, показывая все совпавшие правила, выигрышное правило (первое в порядке приоритета, как и во время выполнения) и правила, которые не совпали. Используйте, чтобы понять поведение движка FPF для конкретного артефакта перед принятием действий. |
-| [`forgeplan_fpf_list`](/ru/docs/mcp/forgeplan_fpf_list/) | Перечисляет все доступные разделы базы знаний FPF (First Principles Framework). |
-| [`forgeplan_fpf_rules`](/ru/docs/mcp/forgeplan_fpf_rules/) | Перечисляет активные правила FPF из рабочего пространства. По умолчанию возвращает все правила с полными деревьями условий и сообщениями. Параметры позволяют фильтровать: `action` (EXPLORE/INVESTIGATE/EXPLOIT) для показа только правил этой категории; `name` для получения одного правила по имени; `summary: true` для получения только name/priority/action без деталей условий; `source` (config/default) для отладки активного источника правил. Если в .forgeplan/config.yaml определены пользовательские правила в fpf.rules, они имеют приоритет; в противном случае используются встроенные значения по умолчанию. |
-| [`forgeplan_fpf_search`](/ru/docs/mcp/forgeplan_fpf_search/) | Поиск по базе знаний FPF (First Principles Framework). По умолчанию используется поиск по ключевым словам. Передайте `semantic: true` для поиска по векторному сходству через эмбеддинги BGE-M3 (требуется функция сборки `semantic-search`). Если `semantic: true` передано, но функция не скомпилирована, запрос корректно возвращается к поиску по ключевым словам, и ответ включает поле `warning`. Примечание: первое обращение с `semantic: true` может занять 10-30 секунд, если модель BGE-M3 необходимо загрузить (~150 МБ). Параметры: query (обязательный, 1..=8192 символов), limit (по умолчанию 5, макс. 50), semantic (по умолчанию false). |
-| [`forgeplan_fpf_section`](/ru/docs/mcp/forgeplan_fpf_section/) | Получает полное содержимое конкретного раздела FPF по ID (например, 'B.3', 'C.2.2', 'A.1'). |
-
-### Исследование Brownfield
-
-| Инструмент | Описание |
-|---|---|
-| [`forgeplan_discover_complete`](/ru/docs/mcp/forgeplan_discover_complete/) | Завершает сессию исследования. Генерирует сводный отчёт с результатами по фазам/уровням, запускает forgeplan health и помечает сессию как завершённую. |
-| [`forgeplan_discover_finding`](/ru/docs/mcp/forgeplan_discover_finding/) | Сообщает об обнаруженном факте. Агент вызывает это после анализа файла/модуля/git-лога во время фазы. ForgePlan создаёт артефакт (note/prd/rfc/problem/evidence) с содержимым, помечает его уровнем источника и связывает с сессией исследования. |
-| [`forgeplan_discover_start`](/ru/docs/mcp/forgeplan_discover_start/) | Запускает сессию исследования brownfield. Возвращает структурированный протокол (7 фаз: detect/structure/code/git/tests/docs/synthesize), которому следует ИИ-агент для составления карты существующей кодовой базы. ForgePlan предоставляет протокол; агент анализирует код и сообщает результаты через forgeplan_discover_finding. |
+| [`constellation_close`](/ru/docs/mcp/constellation_close/) | Close a scope or snapshot handle. After closing, reads through                        it answer `snapshot_expired`/`unknown_handle` — there is no way                        to re-read fresh bytes under a dead handle. |
+| [`constellation_get`](/ru/docs/mcp/constellation_get/) | Fetch one artifact by canonical key or display id. A `key@fragment`                        qualifier narrows the scope first; an unqualified id claimed by                        two sources answers `ambiguous` with the claimers. |
+| [`constellation_graph`](/ru/docs/mcp/constellation_graph/) | The relation graph of the scope's live sources or a snapshot's                        pinned revisions: every artifact as a source-qualified node,                        every declared link as a typed edge carrying its relation and                        the source/file that declared it. Bounded — `truncated` marks                        a view cut at the limit, `partial` marks sources that did not                        answer. |
+| [`constellation_impact`](/ru/docs/mcp/constellation_impact/) | Explainable impact: who depends on the artifact, by which                        relation path, and where the bounded walk stopped. `based_on`                        and friends propagate transitively; `references`/`informs`                        only mark the direct neighbor. |
+| [`constellation_open`](/ru/docs/mcp/constellation_open/) | Open a read scope: resolve a named (or the active) constellation's                        source list once and return an opaque `scope-…` handle. Later reads                        use the handle — the source set cannot widen mid-session even if                        `constellation use` moves elsewhere. |
+| [`constellation_pack`](/ru/docs/mcp/constellation_pack/) | Build a budgeted ContextPack for a task over the scope's live                        sources or a snapshot's pinned revisions: lexically ranked                        evidence units with roles, named omissions and a spend receipt. |
+| [`constellation_search`](/ru/docs/mcp/constellation_search/) | Lexical search across the scope's live sources or a snapshot's                        pinned revisions. Each hit names its source and the version it                        was read at. |
+| [`constellation_snapshot`](/ru/docs/mcp/constellation_snapshot/) | Pin the scope's git sources at their current HEAD and return a                        `snap-…` handle. Non-git sources are recorded in the lockfile as                        skipped — a snapshot read reports them, it does not silently                        read them live. |
+| [`constellation_sources`](/ru/docs/mcp/constellation_sources/) | List the sources bound to a scope handle. |

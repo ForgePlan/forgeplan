@@ -8,36 +8,51 @@ description: "Запуск сервера Forgeplan MCP (транспорт stdi
 ## Использование
 
 ```text
-forgeplan serve
+forgeplan serve [OPTIONS]
 ```
 
 ## Опции
 
 ```text
-  -h, --help     Вывести справку
-  -V, --version  Вывести версию
+      --auto-index        Фоновое обслуживание индекса Constellation
+      --profile <PROFILE> full (по умолчанию) или constellation-read
+      --workspace <PATH>  Default сервера (окружение на старте приоритетнее)
+  -h, --help              Вывести справку
+  -V, --version           Вывести версию
 ```
 
 ## Что он предоставляет
 
-73 MCP-инструмента, сопоставленных с основными операциями Forgeplan:
+Профиль `full` по умолчанию содержит инструменты чтения **и записи**.
+Актуальный для версии интерфейс смотрите в [обзоре MCP](/ru/docs/mcp/) и
+`tools/list` работающего сервера. Регистрация инструмента не доказывает,
+что он поддерживает мигрированное пространство.
 
-- **Жизненный цикл артефактов** - `new`, `validate`, `review`, `activate`, `supersede`, `deprecate`, `stale`, `renew`, `reopen`
-- **Запросы + обнаружение** - `list`, `get`, `search`, `blocked`, `order`, `tree`, `discover`, `blindspots`, `gaps`
-- **Оценка + рассуждение** - `score`, `fgr`, `reason`, `route`, `estimate`
-- **Доказательства + связи** - `link`, `unlink`, `new_evidence`
-- **Теги** - `tag`, `untag`
-- **Здоровье + наблюдаемость** - `health`, `status`, `coverage`, `drift`
-- **База знаний FPF** - `fpf_search`, `fpf_section`, `fpf_check`
-- **Память** - `remember`, `recall`, `promote`
+В локальной сборке `0.39.0+constellation.s1.1` (не опубликованной 0.38.0)
+`--profile constellation-read` выбирает отдельный интерфейс чтения с registry
+и handles. Это не read-only переключатель полного пространства имён.
+См. [настройку Constellation](/ru/docs/guides/constellation/) и
+[контракты чтения](/ru/docs/reference/constellation/).
 
-Forgeplan является **MCP-ориентированным**: CLI - это удобная обёртка, а вся мощь инструмента предназначена для управления ИИ-агентами через этот сервер.
+`--auto-index` включает обслуживание индекса, но само по себе не создаёт
+эмбеддинги. Обработка очереди векторов также требует сборки с
+`semantic-search`, явной секции `embedding:` с `model: bge-m3`, полного
+снапшота модели в кэше и работающего maintenance host. Для уже мигрированного
+пространства обслуживание включается автоматически.
 
 ## Транспорт
 
 - **Только stdio** - без HTTP, без сокетов, без сетевого доступа. MCP-клиент владеет процессом и общается через каналы.
-- **Одно рабочее пространство на сервер** - сервер запускается в текущей рабочей директории и работает с `./.forgeplan/`. Запускайте его из корневой директории проекта.
-- **Без сохранения состояния** - нет долгосрочного состояния между запросами, кроме того, что хранится в LanceDB и markdown.
+- **Выбор workspace** - `--workspace` задаёт default сервера. На старте
+  full-сервера цель обслуживания: `FORGEPLAN_WORKSPACE` → default сервера →
+  поиск от текущего каталога. Задайте нужный проект или явно пустую строку:
+  при `unset` CLI может восстановить значение из `.env`. Захваченная справка
+  ниже не оговаривает этот приоритет.
+  Для инструментов с `workspace`: параметр запроса → окружение → default →
+  текущий каталог. Допустимы абсолютные пути и `~/`. Поздний запрос к другому
+  workspace не перемещает обслуживание.
+- **Состояние профиля** - scope/snapshot handles профиля чтения живут в
+  процессе сервера; после перезапуска они недействительны.
 
 ## Примеры
 
@@ -49,21 +64,23 @@ Forgeplan является **MCP-ориентированным**: CLI - это 
 
 ## Типичное использование (автоматическое)
 
-Обычно вы не запускаете `serve` вручную. MCP-клиенты запускают его как дочерний процесс через свой файл конфигурации. Для Claude Code добавьте в `~/.claude/mcp.json`:
+Обычно сервер запускает MCP-клиент. Для Claude Code используйте
+`forgeplan mcp install` или запись в проектном `.mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "forgeplan": {
       "command": "forgeplan",
-      "args": ["serve"],
-      "cwd": "/path/to/your/project"
+      "args": ["serve", "--profile", "full", "--workspace", "/path/to/your/project"],
+      "env": { "FORGEPLAN_WORKSPACE": "/path/to/your/project" }
     }
   }
 }
 ```
 
-Cursor (`~/.cursor/mcp.json`) и Windsurf используют ту же схему. Перезапустите клиент; инструменты Forgeplan (`mcp__forgeplan__*`) станут доступны агенту.
+Форматы конфигурации клиентов различаются. После правки перезапустите клиент
+и проверьте выбранный профиль через `tools/list`.
 
 ## Ручное использование (отладка)
 
@@ -85,14 +102,50 @@ forgeplan serve
 
 ## Устранение неполадок
 
-- **"Рабочее пространство не найдено"** - сервер был запущен в директории без `.forgeplan/`. Установите `cwd` в конфигурации вашего MCP-клиента на корневую директорию проекта.
+- **"Рабочее пространство не найдено"** - укажите корень нужного проекта через
+  `--workspace`; рабочий каталог агента и каталог сервера могут различаться.
 - **Инструменты отсутствуют в клиенте** - перезапустите MCP-клиент после редактирования его конфигурации; большинство клиентов считывают `mcp.json` только при запуске.
-- **Функции LLM не работают** - инструменты, поддерживаемые LLM (`reason`, `route`), требуют настройки провайдера в `.forgeplan/config.yaml`. См. руководство по LLM.
-- **Семантические инструменты неактивны** - флаг функции `embed` должен быть скомпилирован для семантического поиска; в противном случае эти инструменты возвращаются к поиску по ключевым словам.
+- **Функции LLM не работают** — `reason` и LLM-классификация маршрута требуют провайдера в `.forgeplan/config.yaml`; ключевая маршрутизация сама по себе LLM не требует.
+- **Семантический поиск недоступен** - различайте build feature
+  `semantic-search`, файлы модели в кэше и векторы в индексе. См.
+  [`forgeplan embed`](/ru/docs/cli/embed/). Принудительный semantic-поиск на
+  мигрированном workspace не обещает keyword fallback.
 
 ## См. также
 
-- [Обзор CLI](/docs/cli/)
-- [Справочник по MCP-инструментам](/docs/mcp/) - полный список предоставляемых инструментов
-- [`forgeplan health`](/docs/cli/health/) - проверка рабочего пространства перед запуском сервера
-- [`forgeplan reindex`](/docs/cli/reindex/) - перестроение индекса, если инструменты возвращают устаревшие данные
+- [Обзор CLI](/ru/docs/cli/)
+- [Справочник MCP](/ru/docs/mcp/) - интерфейс выбранного профиля
+- [`forgeplan health`](/ru/docs/cli/health/) - диагностика workspace
+- [`forgeplan index`](/ru/docs/cli/index-command/) - обслуживание Constellation; legacy `reindex` — только для подходящей раскладки
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan serve --help`.
+
+```text
+Start MCP server (stdio transport) for AI agent integration
+
+Usage: forgeplan serve [OPTIONS]
+
+Options:
+      --auto-index
+          Run a Constellation maintenance pass + embedding-queue drain in the background while serving (explicit opt-in; the index itself is never required for reads)
+
+      --profile <PROFILE>
+          Server profile: `full` (default — all tools) or `constellation-read` (stage-5 read profile — only scope/snapshot handle reads; no write tools, no raw paths accepted)
+          
+          [default: full]
+
+      --workspace <PATH>
+          Workspace this process maintains, when it is not the one the server was started in.
+          
+          Absent, the maintenance host follows the process's working directory. Present, it follows **this** path — so `serve --auto-index --workspace Y` in a checkout of X maintains Y and never X. Without the flag, `forgeplan serve` started in X had no way to keep a second workspace current at all, and any attempt to infer one from the server's own default resolution would silently pick X again.
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+```
+<!-- forgeplan-runtime:end -->

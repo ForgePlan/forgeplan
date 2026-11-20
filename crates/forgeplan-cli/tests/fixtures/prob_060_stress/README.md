@@ -20,12 +20,13 @@ gate per ADR-012's outcome-based reversal condition.
   parallel merges via `concurrency: forgeplan-id-assign` is documented behavior
   we trust at the API level (CL2 framing per Worker 1 prompt).
 - The test models the post-serialization world: 10 branches merged into `dev`
-  one at a time in a randomly permuted order. A property-style loop over 100
-  PRNG seeds verifies the final `assigned_number` set is always
-  `{74, 75, …, 83}` regardless of merge order.
+  one at a time in a seeded permutation. The current harness uses 3 git-backed
+  seeds in the default suite and 12 in the ignored full variant; the separate
+  in-process property loop covers 100 permutations. Each checks the final
+  `assigned_number` set `{74, 75, …, 83}` for its tested orders.
 - "Real-runtime concurrency under multi-runner contention" — Variant A — is
-  Worker 2's runbook scope. Variant B closes the binary's correctness gate;
-  Variant A closes the *runtime infrastructure* gate.
+  Worker 2's runbook scope in the original plan. This fixture does not establish
+  that Variant A ran or that either acceptance gate passed.
 
 ## Layout
 

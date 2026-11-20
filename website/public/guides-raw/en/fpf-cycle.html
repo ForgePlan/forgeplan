@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FPF · First Principles Framework - ForgePlan</title>
+<link rel="preconnect" href="https://rsms.me/">
+<link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@2.304/web/web.css">
+<style>
+  :root {
+    --bg: #050505; --bg-1: #0b0b0b; --bg-2: #141414; --bg-3: #1a1a1a;
+    --text: #f5f5f5; --text-1: #e5e5e5; --text-2: #a3a3a3; --text-3: #737373; --text-4: #525252;
+    --line: rgba(255, 255, 255, 0.06); --line-2: rgba(255, 255, 255, 0.14);
+    --accent: #ff5a1f; --accent-soft: #ff8a5b; --accent-bg: rgba(255, 90, 31, 0.18);
+    --ok: #22c55e; --err: #ef4444; --warn: #f59e0b; --info: #60a5fa;
+    --font-sans: "Inter", "Geist", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    --font-mono: "JetBrains Mono", "Geist Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --mode-decompose: #60a5fa;
+    --mode-evaluate: #22c55e;
+    --mode-reason: #ff5a1f;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text-1); font-family: var(--font-sans); }
+  body { line-height: 1.55; -webkit-font-smoothing: antialiased; background-image: radial-gradient(rgba(255, 255, 255, 0.10) 0.9px, transparent 1.4px); background-size: 24px 24px; }
+  main { max-width: 1080px; margin: 0 auto; padding: 64px 32px 96px; }
+
+  .eyebrow { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin: 0 0 14px; }
+  h1 { font-family: var(--font-sans); font-size: clamp(40px, 5.4vw, 60px); line-height: 1.05; letter-spacing: -0.02em; font-weight: 500; color: var(--text); margin: 0 0 18px; }
+  h2 { font-family: var(--font-sans); font-size: 28px; line-height: 1.25; letter-spacing: -0.015em; font-weight: 500; color: var(--text); margin: 64px 0 14px; }
+  h3 { font-family: var(--font-sans); font-size: 16px; line-height: 1.3; font-weight: 500; color: var(--text); margin: 0; }
+  p { margin: 0 0 16px; color: var(--text-2); font-size: 17px; line-height: 1.65; max-width: 760px; }
+  p.lead { font-size: 19.5px; color: var(--text-1); line-height: 1.6; max-width: 820px; }
+  code { font-family: var(--font-mono); font-size: 13px; color: var(--accent-soft); background: var(--accent-bg); padding: 1px 6px; border-radius: 0; }
+  b.k { color: var(--text); font-weight: 500; }
+  .m-dec { color: var(--mode-decompose); font-weight: 500; }
+  .m-eva { color: var(--mode-evaluate); font-weight: 500; }
+  .m-rea { color: var(--mode-reason); font-weight: 500; }
+
+  /* Pipeline */
+  .pipeline { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; gap: 4px; align-items: stretch; margin: 24px 0 0; }
+  .pipe-box { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 16px 18px; }
+  .pipe-box .step-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); margin-bottom: 4px; }
+  .pipe-box .step-title { font-size: 14px; color: var(--text); font-weight: 500; line-height: 1.3; }
+  .pipe-box .step-desc { font-size: 12.5px; color: var(--text-2); margin-top: 6px; line-height: 1.5; }
+  .pipe-arrow { display: flex; align-items: center; justify-content: center; color: var(--accent); font-family: var(--font-mono); font-size: 18px; letter-spacing: -0.05em; }
+
+  /* Concept */
+  .concept { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 28px 32px 30px; margin: 18px 0 0; }
+  .concept .concept-tag { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; }
+  .concept h3.concept-h { font-size: 22px; line-height: 1.25; letter-spacing: -0.01em; margin-bottom: 14px; }
+  .concept .analogy { color: var(--text-1); font-size: 15.5px; line-height: 1.6; max-width: 760px; }
+  .concept .analogy + .analogy { margin-top: 12px; }
+
+  .insight { background: var(--bg-2); border: 1px solid var(--line-2); border-left: 3px solid var(--accent); border-radius: 0; padding: 14px 18px; margin: 18px 0 0; }
+  .insight .insight-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
+  .insight p { margin: 0; color: var(--text-1); font-size: 14.5px; line-height: 1.55; max-width: 760px; }
+
+  /* Code block */
+  .code-block { background: var(--bg-3); border: 1px solid var(--line-2); border-radius: 0; padding: 16px 20px; margin: 16px 0 0; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.6; color: var(--text-1); white-space: pre-wrap; overflow-x: auto; }
+  .code-block .cb-tag { display: block; font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; font-weight: 500; font-family: var(--font-mono); }
+  .code-block .cb-prompt { color: var(--accent-soft); }
+  .code-block .cb-comment { color: var(--text-3); }
+  .code-block .cb-ok { color: var(--ok); }
+
+  /* 6 concepts grid */
+  .concepts-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 22px 0 0; }
+  .conc-card { background: var(--bg-2); border: 1px solid var(--line-2); border-top: 2px solid var(--accent); border-radius: 0; padding: 16px 18px 18px; }
+  .conc-card .cc-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
+  .conc-card .cc-name { font-size: 14px; color: var(--text); font-weight: 500; margin-bottom: 8px; line-height: 1.3; }
+  .conc-card .cc-desc { font-size: 12.5px; color: var(--text-2); line-height: 1.55; }
+  .conc-card .cc-meta { font-family: var(--font-mono); font-size: 11px; color: var(--text-3); letter-spacing: 0.02em; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+  .conc-card .cc-meta a { color: var(--accent); text-decoration: none; }
+  .conc-card .cc-meta a:hover { text-decoration: underline; }
+
+  /* 3 modes cards */
+  .modes-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 22px 0 0; }
+  .mode-card { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 18px 20px 20px; }
+  .mode-card.dec { border-top: 2px solid var(--mode-decompose); }
+  .mode-card.eva { border-top: 2px solid var(--mode-evaluate); }
+  .mode-card.rea { border-top: 2px solid var(--mode-reason); }
+  .mode-card .mc-cmd { font-family: var(--font-mono); font-size: 13px; font-weight: 500; margin-bottom: 6px; }
+  .mode-card.dec .mc-cmd { color: var(--mode-decompose); }
+  .mode-card.eva .mc-cmd { color: var(--mode-evaluate); }
+  .mode-card.rea .mc-cmd { color: var(--mode-reason); }
+  .mode-card .mc-title { font-size: 14px; color: var(--text); font-weight: 500; margin-bottom: 10px; line-height: 1.35; }
+  .mode-card .mc-desc { font-size: 13px; color: var(--text-2); line-height: 1.55; margin-bottom: 12px; }
+  .mode-card .mc-when { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-3); padding-top: 10px; border-top: 1px solid var(--line); }
+  .mode-card .mc-out { background: var(--bg-1); border-radius: 0; padding: 10px 12px; margin-top: 10px; font-size: 12px; color: var(--text-1); line-height: 1.55; font-family: var(--font-mono); }
+
+  /* Cross-links */
+  .cross-links { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 22px 0 0; }
+  .next-step { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 20px 22px; position: relative; }
+  .next-step::before { content: ""; position: absolute; left: 22px; bottom: 16px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+  .next-step .ns-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .next-step .ns-badge { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; padding: 3px 8px; background: var(--accent-bg); color: var(--accent); border-radius: 0; }
+  .next-step h3 { font-size: 15.5px; line-height: 1.3; }
+  .next-step p { margin: 6px 0 14px; font-size: 13px; color: var(--text-2); line-height: 1.5; }
+  .next-step a.ns-link { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--accent); border-radius: 0; transition: background .2s; }
+  .next-step a.ns-link:hover { background: var(--accent-bg); }
+
+  .teaching { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 22px 26px; margin: 18px 0 0; }
+  .teaching ol { margin: 8px 0 0 18px; padding: 0; color: var(--text-2); counter-reset: step; list-style: none; }
+  .teaching ol li { margin: 12px 0; font-size: 14.5px; line-height: 1.55; position: relative; padding-left: 24px; }
+  .teaching ol li::before { counter-increment: step; content: "0" counter(step); position: absolute; left: -8px; top: 1px; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em; color: var(--text-3); }
+  .teaching ol li b { color: var(--text); font-weight: 500; }
+
+  .footer { color: var(--text-3); font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; margin-top: 64px; border-top: 1px solid var(--line); padding-top: 18px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+  .footer .arrow { color: var(--accent); }
+
+  @media (max-width: 800px) {
+    .pipeline { grid-template-columns: 1fr; } .pipe-arrow { display: none; }
+    .concepts-grid, .modes-grid, .cross-links { grid-template-columns: 1fr; }
+    h1 { font-size: 32px; } .concept { padding: 22px 20px 24px; }
+  }
+</style>
+</head>
+<body>
+<main>
+
+  <p class="eyebrow">First-principles reasoning cycle · theory</p>
+  <h1>FPF · First Principles Framework</h1>
+  <p class="lead">
+    FPF is not "just another methodology". It is an <b class="k">operating system for thought</b>:
+    a layer that turns intelligence - human or machine - into structured
+    reasoning that works in collaborative settings. Trust Calculus and ADI, which I covered
+    separately, are two FPF techniques. This page selects six concepts, not the whole framework,
+    and three of the plugin's four modes: <code>/fpf decompose</code>,
+    <code>/fpf evaluate</code>, <code>/fpf reason</code>. The fourth is <code>/fpf lookup</code>.
+  </p>
+
+  <div class="pipeline">
+    <div class="pipe-box">
+      <div class="step-tag">01 · <span class="m-dec">decompose</span></div>
+      <div class="step-title">Break it into parts</div>
+      <div class="step-desc">when you need to understand a system</div>
+    </div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-box">
+      <div class="step-tag">02 · <span class="m-eva">evaluate</span></div>
+      <div class="step-title">Compare the options</div>
+      <div class="step-desc">when you need to choose</div>
+    </div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-box">
+      <div class="step-tag">03 · <span class="m-rea">reason</span></div>
+      <div class="step-title">Reason about the cause</div>
+      <div class="step-desc">when you need to understand why</div>
+    </div>
+  </div>
+
+  <!-- CONCEPT 01 · WHAT FPF IS -->
+  <h2>01 · What FPF is · six selected concepts</h2>
+  <div class="concept">
+    <div class="concept-tag">Concept 01 · an operating system for thought</div>
+    <h3 class="concept-h">Six concepts for this overview, not the full contents of FPF</h3>
+    <p class="analogy">
+      FPF provides <b class="k">concepts for building methodologies</b>, while tools
+      (CLI, MCP, files) apply their own adaptations. In current upstream FPF,
+      F is ordinal expression rigour, G is ClaimScope, and R is claim-specific warrant.
+      ADI is Abduction → Deduction → Induction. Upstream requires a serious rival
+      to the selected candidate, or justification for its absence, not a universal minimum of three.
+    </p>
+    <p class="analogy">
+      These six selected concepts help you see <b class="k">connections</b> between Trust
+      Calculus, ADI, depth routing and decomposition. Three or more approaches are a local
+      anti-anchoring habit and a product prompt request, not a parser guarantee.
+    </p>
+
+    <div class="concepts-grid">
+      <div class="conc-card">
+        <div class="cc-tag">01 · structure</div>
+        <div class="cc-name">Bounded Context</div>
+        <div class="cc-desc">A part of the system with explicit boundaries and its own vocabulary. Inside, one set of rules and terms applies; outside, another. It stops you from mixing up "authorization" in the frontend sense with "authorization" in the backend sense. FPF section: A.1.1.</div>
+        <div class="cc-meta">used in → /fpf decompose</div>
+      </div>
+      <div class="conc-card">
+        <div class="cc-tag">02 · quality</div>
+        <div class="cc-name">Trust Calculus</div>
+        <div class="cc-desc">A way to discuss a claim's warrant. The companion 3D lesson uses local 0–9 ratings and a min rule. That is a teaching rubric, not the upstream formula: F is ordinal expression rigour, G is ClaimScope, and R is claim-specific warrant. Current FPF has no universal min(F, G, R).</div>
+        <div class="cc-meta">FPF B.3 · deep dive → <a href="trust-calculus.html">trust-calculus.html (3D)</a></div>
+      </div>
+      <div class="conc-card">
+        <div class="cc-tag">03 · axes</div>
+        <div class="cc-name">F-G-R</div>
+        <div class="cc-desc">In current upstream FPF, <b class="k">F</b>ormality is expression rigour, <b class="k">G</b> is ClaimScope (scope of applicability), and <b class="k">R</b>eliability is claim-specific warrant. Granularity ("concreteness") is a local adaptation of G in the lesson and product, not the upstream definition. Your own measurement also needs assessment for applicability and quality.</div>
+        <div class="cc-meta">FPF C.2 · local adaptation → trust-calculus 3D scene</div>
+      </div>
+      <div class="conc-card">
+        <div class="cc-tag">04 · cycle</div>
+        <div class="cc-name">ADI Cycle</div>
+        <div class="cc-desc">Abduction → Deduction → Induction: propose explanations → derive checkable consequences → check against facts. FPF B.5.2 requires a serious rival to the selected candidate, or an explanation of why there is none. At least three hypotheses is a separate local exercise and product prompt request, not a universal FPF rule.</div>
+        <div class="cc-meta">FPF B.5 · local exercise → <a href="decision-cycle.html">decision-cycle.html</a></div>
+      </div>
+      <div class="conc-card">
+        <div class="cc-tag">05 · trap</div>
+        <div class="cc-name">Category Error</div>
+        <div class="cc-desc">Confusing a role with a function, a method with the work, a process with a result. "Tech lead" is a role; "ran the review" is work. The same person can play different roles in different contexts. FPF section: A.7 (strict distinction).</div>
+        <div class="cc-meta">checked in → /fpf decompose</div>
+      </div>
+      <div class="conc-card">
+        <div class="cc-tag">06 · assembly</div>
+        <div class="cc-name">Gamma Algebra</div>
+        <div class="cc-desc">The rules by which parts compose into a whole while keeping their properties. If every bounded context works correctly, that does <b>not</b> mean the whole system works - you need composition rules. FPF section: B.1 (universal algebra of aggregation, Γ).</div>
+        <div class="cc-meta">used in architecture discussions</div>
+      </div>
+    </div>
+
+    <div class="insight">
+      <div class="insight-tag">Not a methodology · a framework</div>
+      <p>
+        FPF provides a <b class="k">vocabulary and reasoning rules</b> on which working
+        methodologies can be built. This overview connects Trust Calculus and ADI
+        to six selected concepts without calling them the complete FPF kernel.
+        Teaching number rubrics and workflow rules must be distinguished from upstream definitions.
+      </p>
+    </div>
+  </div>
+
+  <!-- CONCEPT 02 · THREE MODES -->
+  <h2>02 · Three selected plugin modes</h2>
+  <div class="concept">
+    <div class="concept-tag">Concept 02 · three of the plugin's four modes</div>
+    <h3 class="concept-h">Modes help choose a perspective on the task</h3>
+    <p class="analogy">
+      This page selects three plugin <code>/fpf</code> modes, not an upstream FPF taxonomy:
+      <span class="m-dec">decompose</span> to understand a system's structure,
+      <span class="m-eva">evaluate</span> to compare options,
+      <span class="m-rea">reason</span> to explore causes and approaches. These perspectives
+      can complement each other. Choosing a mode shapes the agent's task,
+      but does not by itself guarantee the quality of the answer.
+    </p>
+    <p class="analogy">
+      <code>/fpf decompose</code>, <code>/fpf evaluate</code> and <code>/fpf reason</code> are
+      host-session commands of marketplace plugin fpf 1.7.1, not CLI subcommands. The fourth mode is
+      <code>/fpf lookup</code>. Its 0–3 Formality/Granularity/Reliability rubric is local,
+      not an upstream scale. The Rust <code>forgeplan fpf</code> group works with the knowledge base,
+      dashboard, sections and rules.
+    </p>
+
+    <div class="modes-grid">
+      <div class="mode-card dec">
+        <div class="mc-cmd">/fpf decompose</div>
+        <div class="mc-title">Break it into parts</div>
+        <div class="mc-desc">When you have a complicated system and need to understand its structure: who owns what, which subsystems exist, where the boundaries run.</div>
+        <div class="mc-out">
+<b>Requested in this example:</b>
+• table of contexts
+• diagram with boundaries
+• category-error check
+        </div>
+        <div class="mc-when">when - starting a new feature, analysing an existing system, planning</div>
+      </div>
+      <div class="mode-card eva">
+        <div class="mc-cmd">/fpf evaluate</div>
+        <div class="mc-title">Compare the options</div>
+        <div class="mc-desc">When you have to choose between alternatives with a count of the evidence. React vs Vue vs Svelte. SQLite vs PostgreSQL vs LanceDB.</div>
+        <div class="mc-out">
+<b>Requested in this example:</b>
+• strengths / weaknesses
+• F-G-R ratings using the plugin's local rubric
+• decision matrix
+• recommendation
+        </div>
+        <div class="mc-when">when - choosing a library, a vendor, an architectural approach</div>
+      </div>
+      <div class="mode-card rea">
+        <div class="mc-cmd">/fpf reason</div>
+        <div class="mc-title">Reason about the cause</div>
+        <div class="mc-desc">When you need to understand why something happens, or how to approach a problem. "Why did our response time degrade". "Why did conversion drop".</div>
+        <div class="mc-out">
+<b>Requested in this example:</b>
+• 3+ hypotheses as a local exercise (Abduction)
+• checkable consequences (Deduction)
+• check against facts (Induction)
+• scored hypotheses
+        </div>
+        <div class="mc-when">when - debugging, incident analysis, justifying architecture</div>
+      </div>
+    </div>
+
+    <div class="code-block">
+      <span class="cb-tag">Illustrative agent session with a plugin · not a verified shell transcript</span>
+<span class="cb-prompt">&gt;</span> /fpf decompose <span class="cb-comment">our authentication system</span>
+<span class="cb-ok">→</span> Table: Context · Responsibility · Roles · Interfaces
+<span class="cb-ok">→</span> Mermaid diagram with boundaries
+<span class="cb-ok">→</span> Check: is "token generation" a role or a function?
+
+<span class="cb-prompt">&gt;</span> /fpf evaluate <span class="cb-comment">React vs Vue vs Svelte for our SPA</span>
+<span class="cb-ok">→</span> Strengths / weaknesses for every option
+<span class="cb-ok">→</span> F-G-R ratings using the plugin's local rubric
+<span class="cb-ok">→</span> Matrix + recommendation
+
+<span class="cb-prompt">&gt;</span> /fpf reason <span class="cb-comment">why our API response times degraded</span>
+<span class="cb-ok">→</span> Abduction: 3+ hypotheses in this example (load / index / N+1 / GC pauses)
+<span class="cb-ok">→</span> Deduction: what should be observed for each
+<span class="cb-ok">→</span> Induction: check against metrics
+<span class="cb-ok">→</span> Conclusion + remaining uncertainties
+    </div>
+  </div>
+
+  <!-- CONCEPT 03 · KNOWLEDGE BASE & TIES -->
+  <h2>03 · Knowledge base and how it links to the other moves</h2>
+  <div class="concept">
+    <div class="concept-tag">Concept 03 · a searchable base of first principles</div>
+    <h3 class="concept-h">FPF ships as a searchable knowledge base and enriches the ADI analysis</h3>
+    <p class="analogy">
+      The full FPF specification can be indexed as a searchable base. That means you can
+      look up specific FPF sections and enrich the ADI analysis with them. For example, section <b class="k">B.3</b>
+      describes the Trust &amp; Assurance Calculus (F-G-R together with Congruence), while <b class="k">B.5</b> is
+      the canonical reasoning cycle, with the abductive loop <b class="k">B.5.2</b> inside it.
+      If in a complex ADI run
+      you want to use notions such as "bounded rationality" or the "exploration-exploitation
+      trade-off", the <code>--fpf</code> flag pulls the relevant context out of the base.
+    </p>
+
+    <div class="code-block">
+      <span class="cb-tag">Conceptual flow · working with the FPF base</span>
+<span class="cb-comment"># 1. Load the FPF specification into the index</span>
+<span class="cb-ok">→</span> sections indexed · the count depends on the revision of the loaded specification
+
+<span class="cb-comment"># 2. Find a specific section by keyword</span>
+<span class="cb-ok">→</span> search "bounded context" → A.1.1 (definition) · A.14 (composition) · A.7 (strict distinction)
+
+<span class="cb-comment"># 3. Open the full text of the section you need</span>
+<span class="cb-ok">→</span> section B.5 - the canonical reasoning cycle
+
+<span class="cb-comment"># 4. Run the ADI analysis enriched from the FPF base (the --fpf flag)</span>
+<span class="cb-ok">→</span> sections B.3 (Trust Calculus) + B.5 (ADI) pulled in
+<span class="cb-ok">→</span> hypotheses proposed with "bounded rationality" in mind
+    </div>
+
+    <div class="insight">
+      <div class="insight-tag">When to use --fpf, and when not to</div>
+      <p>
+        Without <code>--fpf</code> the ADI run works on general grounds. With <code>--fpf</code> the model
+        sees the concrete definitions and techniques from the specification, which often gives a deeper
+        analysis. But it costs extra LLM calls. Use <code>--fpf</code> for
+        Deep+ decisions, where the cost of a mistake pays for the overhead. For Standard - without the flag
+        is enough. On workspaces migrated to the new storage layout, the path with
+        <code>--fpf</code> may report that the knowledge base is unavailable: that is the expected answer,
+        not a breakage.
+      </p>
+    </div>
+
+    <p style="margin-top: 18px;">
+      <b class="k">The three selected plugin modes can form a chain</b> with resulting artefacts.
+      <code>/fpf decompose</code> helps you take a new system apart - the result becomes the basis
+      of a requirements document. <code>/fpf evaluate</code> gives you a comparison of options - the output
+      becomes the rationale for an architectural decision. <code>/fpf reason</code> runs the ADI analysis,
+      which lands in the "options considered" section of the accepted decision.
+    </p>
+  </div>
+
+  <div class="footer">
+    <span>fpf-cycle · explainer · v1</span>
+    <span><span class="arrow">→</span> forgeplan.dev/docs/guides/fpf</span>
+  </div>
+
+</main>
+</body>
+</html>

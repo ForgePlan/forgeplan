@@ -5,7 +5,7 @@
 Forgeplan может автоматически предоставлять контекст проекта AI-агентам через хуки.
 Это руководство описывает интеграцию с Claude Code, но те же принципы применимы к любому агентному фреймворку.
 
-## Хук SessionStart (Claude Code)
+## Хук UserPromptSubmit (Claude Code)
 
 Добавьте в `.claude/settings.json`:
 
@@ -14,8 +14,9 @@ Forgeplan может автоматически предоставлять ко�
   "hooks": {
     "UserPromptSubmit": [
       {
-        "matcher": "",
-        "command": "forgeplan health --compact --json 2>/dev/null || true"
+        "hooks": [
+          {"type": "command", "command": "forgeplan health --compact"}
+        ]
       }
     ]
   }
@@ -26,24 +27,14 @@ Forgeplan может автоматически предоставлять ко�
 
 ### Что видит агент
 
-`forgeplan health --compact --json` возвращает компактный JSON-пакет (< 500 токенов):
+`forgeplan health --compact` выдаёт компактный текст. Для структурированных
+данных используйте `forgeplan health --json` или MCP `forgeplan_health`.
 
-```json
-{
-  "total": 27,
-  "active": 11,
-  "draft": 16,
-  "blind_spots": 0,
-  "at_risk": 2,
-  "stale": 1,
-  "next_action": "Review EVID-003 — evidence expires in 3 days"
-}
-```
-
-Это сообщает агенту:
-- Сколько артефактов существует и их распределение по статусам
-- Есть ли слепые зоны (решения без доказательств)
-- Какое следующее действие наиболее срочное
+`--json` приоритетнее `--compact`: вместе они возвращают полный JSON dashboard,
+а не пакет с лимитом 500 токенов. Среди полей — `total`, `by_status`,
+массивы `blind_spots`/`at_risk`, `stale_count` и CLI hint `_next_action`.
+Размер зависит от данных workspace; смотрите реальный ответ. Хук даёт
+справочный контекст, но не доказывает прохождение validation или release gates.
 
 ## Хук PostToolUse
 
@@ -55,7 +46,9 @@ Forgeplan может автоматически предоставлять ко�
     "PostToolUse": [
       {
         "matcher": "Edit|Write",
-        "command": "echo '[Forgeplan] Consider: does this change represent a decision worth capturing? Use forgeplan capture if so.'"
+        "hooks": [
+          {"type": "command", "command": "echo '[Forgeplan] Consider: does this change represent a decision worth capturing? Use forgeplan capture if so.'"}
+        ]
       }
     ]
   }
@@ -73,22 +66,24 @@ Forgeplan может автоматически предоставлять ко�
   "hooks": {
     "UserPromptSubmit": [
       {
-        "matcher": "implement|build|create|add feature",
-        "command": "forgeplan route \"$PROMPT\" --json 2>/dev/null || true"
+        "hooks": [
+          {"type": "command", "command": "forgeplan route \"$(jq -r '.prompt // empty')\" --level 0"}
+        ]
       }
     ]
   }
 }
 ```
 
-Агент получает рекомендации по маршрутизации:
-```json
-{
-  "depth": "Standard",
-  "pipeline": ["PRD", "RFC"],
-  "confidence": 85
-}
-```
+Этот пример запускается на каждом промпте. У `UserPromptSubmit` нет фильтрации
+слов промпта через `matcher`; текст приходит в `.prompt` JSON stdin, а не в
+переменной `$PROMPT`. Нужен `jq`. Это примеры добровольной настройки, не установка
+и не изменение native settings этого репозитория.
+
+Агент получает текстовые CLI-рекомендации, не JSON. У `route` нет `--json`;
+`--level 0` явно исключает LLM routing. Не скрывайте stderr и exit status,
+чтобы отказ хука не выглядел успешной рекомендацией. Для структурированного
+ответа используйте контракт MCP `forgeplan_route`.
 
 ## MCP-сервер (рекомендуется)
 
@@ -98,27 +93,40 @@ Forgeplan может автоматически предоставлять ко�
 forgeplan serve
 ```
 
-Это предоставляет доступ к 26+ инструментам через MCP stdio transport, давая агенту полный CRUD-доступ к артефактам, валидации, оценке и поиску без необходимости CLI-хуков.
+В scoped-сборке `0.39.0+constellation.s1.1` зарегистрированы 76 full tools
+и отдельные 9 tools профиля `constellation-read`. Профиль `full` с записью остаётся
+профилем по умолчанию; регистрация сама по себе не доказывает проверку всех tools.
+CLI `validate` работает на legacy и migrated Constellation layout; full MCP
+`forgeplan_validate` также успешно проверен на migrated артефактах.
+Границы проверки см. в [оговорках пилота](CONSTELLATION-PILOT.ru.md).
 
 ### Конфигурация MCP для Claude Code
 
-Добавьте в `.claude/settings.json`:
+Добавьте в `.mcp.json` проекта (подставьте пути executable и workspace):
 
 ```json
 {
   "mcpServers": {
     "forgeplan": {
       "command": "forgeplan",
-      "args": ["serve"],
-      "cwd": "/path/to/your/project"
+      "args": ["serve", "--workspace", "/path/to/your/project"]
     }
   }
 }
 ```
 
+Для пилота Constellation задайте явный версионированный executable и
+`serve --profile full --auto-index --workspace <project-root>`. Startup
+maintenance scope предпочитает `FORGEPLAN_WORKSPACE` флагу; request selection
+предпочитает явный workspace запроса server defaults. Для pin проекта проверьте
+или снимите env override. Для automatic embedding нужны также активный `config.embedding`,
+полный snapshot BGE-M3 в кэше и сборка с semantic-search. См.
+[переносимый runbook](CONSTELLATION-PILOT.ru.md); read-only server не является writer.
+
 ## Хук безопасности (Forge Mode)
 
-Блокирует опасные команды даже в yolo/acceptEdits режиме:
+Если хук установлен и включён в Claude Code, он может отклонить совпавшие
+буквальные строки Bash-команд до исполнения:
 
 ```json
 {
@@ -146,9 +154,12 @@ forgeplan serve
 - `cargo publish`
 - `DROP TABLE`
 
-При обнаружении — exit 2, команда блокируется. Агент получает сообщение: "BLOCKED by forge-safety-hook".
+При буквальном совпадении чёрного списка в вызове `Bash` скрипт возвращает 2
+и `BLOCKED by forge-safety-hook`. Это не shell parser и не sandbox: другие
+tools и эквивалентные написания команд не покрыты гарантией.
+Запреты репозитория действуют и тогда, когда хук не распознал команду.
 
-### Три зоны доверия (FPF B.3)
+### Три зоны доверия (локальная учебная аналогия, не алгоритм FPF B.3)
 
 | Зона | Управляется | Механизм |
 |------|-------------|----------|
@@ -181,8 +192,8 @@ forgeplan serve
 
 ## Лучшие практики
 
-1. **Начинайте с health** — хук SessionStart даёт агенту ситуационную осведомлённость
-2. **MCP > хуки** — MCP предоставляет структурированный доступ к инструментам; хуки — только текст
-3. **Хуки должны быть легковесными** — `2>/dev/null || true` предотвращает блокировку агента из-за сбоев хуков
+1. **Начинайте с health** — `UserPromptSubmit` вызывается на каждом промпте; `SessionStart` нужен именно для начала сессии
+2. **У MCP и хуков разные задачи** — MCP предоставляет tools, эти command hooks печатают контекст и напоминания
+3. **Не скрывайте отказы** — `2>/dev/null || true` подавляет диагностику и статус ошибки; при осознанном использовании для необязательного контекста это не PASS гейта
 4. **Не злоупотребляйте автоматизацией** — хук PostToolUse должен предлагать, а не принуждать к созданию артефактов
 5. **Маршрутизация перед работой** — помогает агенту решить, нужно ли создавать артефакты или просто писать код

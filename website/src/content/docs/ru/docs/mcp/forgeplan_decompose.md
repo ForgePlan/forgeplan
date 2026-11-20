@@ -3,7 +3,7 @@ title: forgeplan_decompose
 description: "Декомпозирует PRD на задачи RFC с помощью ИИ. Анализирует функциональные требования и предлагает 3-7 RFC с заголовками, описаниями, областью действия и зависимостями. Требует поставщика LLM."
 ---
 
-Принимает валидированный PRD и декомпозирует его на 3–7 RFC, каждый с заголовком, областью действия, сопоставлением FR и зависимостями. Агент вызывает это, когда PRD слишком велик для реализации в одном спринте и требует разделения - decompose возвращает черновик DAG RFC, который агент затем может материализовать с помощью `forgeplan_new` + `forgeplan_update` + `forgeplan_link`.
+Запрашивает у настроенной LLM предложения задач RFC для PRD. Промпт просит 3–7 предложений с названиями, описанием, областью работ, зависимостями и оценкой глубины, но результат — свободный Markdown, а не проверенный DAG RFC. Сначала валидируйте PRD, затем проверьте сгенерированный текст перед созданием артефактов.
 
 **Категория**: Рассуждения и ИИ
 
@@ -23,27 +23,15 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::DecomposePara
 
 ## Возвращает
 
-Список предложенных RFC с заголовками, краткими описаниями области действия, ID покрываемых FR и DAG зависимостей, выраженным в виде массивов `depends_on`. Ответ является **черновиком** - ничто не сохраняется, пока агент явно не создаст артефакты с помощью `forgeplan_new`.
+Обработчик возвращает `prd_id`, `prd_title`, `tasks` (**строку** Markdown), `provider` и `model`, а также трассировку workspace и подсказку следующего действия. Предложенные RFC не сохраняются. Число задач и структура зависимостей схемой ответа не обеспечиваются.
 
-Пример структуры ответа:
+Учебный фрагмент ответа:
 
 ```json
 {
-  "source": "PRD-042",
-  "rfcs": [
-    {
-      "title": "Token issuer service",
-      "scope": "Signs JWTs, rotates keys, exposes /token endpoint.",
-      "covers": ["FR-001", "FR-002"],
-      "depends_on": []
-    },
-    {
-      "title": "Session blacklist store",
-      "scope": "Redis-backed revocation list with TTL.",
-      "covers": ["FR-003"],
-      "depends_on": ["Token issuer service"]
-    }
-  ]
+  "prd_id": "PRD-042",
+  "prd_title": "Система аутентификации",
+  "tasks": "1. Сервис выдачи токенов — покрывает FR-001 и FR-002.\n2. Отзыв сессий — покрывает FR-003; зависит от дизайна сервиса выдачи."
 }
 ```
 
@@ -75,3 +63,48 @@ _Источник схемы: `crates/forgeplan-mcp/src/server.rs::DecomposePara
 - [`forgeplan_reason`](/ru/docs/mcp/forgeplan_reason/) - предыдущий шаг рассуждений
 - [`forgeplan_new`](/ru/docs/mcp/forgeplan_new/) - материализация декомпозиции
 - [`forgeplan_link`](/ru/docs/mcp/forgeplan_link/) - связывание дочерних элементов с родительским PRD
+
+<!-- forgeplan-runtime:start -->
+## Снимок tools/list
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, профиль `full`.
+
+Decompose a PRD into RFC tasks using AI. Analyzes functional requirements and suggests 3-7 RFCs with titles, descriptions, scope, and dependencies. Requires LLM provider.
+
+### Входные параметры
+
+| Имя | Обязателен | Тип | Описание |
+|---|---|---|---|
+| `id` | да | string | PRD artifact ID to decompose into RFC tasks |
+| `workspace` | нет | string \| null | Optional explicit workspace directory for this call. When set, the MCP<br>server resolves the `.forgeplan/` projection from this path instead of<br>the server's startup CWD. Use this when the calling agent is running<br>in a git worktree separate from the MCP server's launch directory.<br>PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "id": {
+      "description": "PRD artifact ID to decompose into RFC tasks",
+      "type": "string"
+    },
+    "workspace": {
+      "default": null,
+      "description": "Optional explicit workspace directory for this call. When set, the MCP\nserver resolves the `.forgeplan/` projection from this path instead of\nthe server's startup CWD. Use this when the calling agent is running\nin a git worktree separate from the MCP server's launch directory.\nPRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "title": "DecomposeParams",
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

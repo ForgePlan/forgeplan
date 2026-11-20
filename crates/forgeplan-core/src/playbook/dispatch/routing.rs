@@ -43,10 +43,9 @@ impl RoutingDispatcher {
     /// The four subprocess dispatchers (plugin/agent/skill/command) receive
     /// the project root verbatim — that becomes the `cwd` for spawned
     /// processes so `produces_at` paths resolve correctly.
-    /// [`ForgeplanCoreDispatcher`] is constructed against `<root>/.forgeplan`
-    /// because its [`super::super::dispatch::forgeplan_core_dispatcher::ForgeplanCoreDispatcher`]
-    /// internals call [`crate::db::store::LanceStore::open`], which expects
-    /// the workspace dir (parent of `lance/`).
+    /// [`ForgeplanCoreDispatcher`] receives `<root>/.forgeplan`: canonical
+    /// captures, file-first mutations, the workspace lock and either index
+    /// owner all resolve from that directory, not its project-root parent.
     pub fn new(workspace_root: PathBuf) -> Self {
         let forgeplan_dir = workspace_root.join(".forgeplan");
         Self {

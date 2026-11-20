@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>First Artifact · 20-минутный walkthrough - ForgePlan</title>
+<title>Первый артефакт · интерактивный разбор - ForgePlan</title>
 <link rel="preconnect" href="https://rsms.me/">
 <link rel="stylesheet" href="https://rsms.me/inter/inter.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@2.304/web/web.css">
@@ -145,22 +145,23 @@
 <body>
 <main>
 
-  <p class="eyebrow">Practical · 20-минутный walkthrough</p>
-  <h1>First Artifact · от init до active за 10 шагов</h1>
+  <p class="eyebrow">Практика · иллюстративный разбор</p>
+  <h1>Первый артефакт · от init до active за 10 шагов</h1>
   <p class="lead">
-    Полный цикл от пустого репозитория до активированного PRD с подтверждённой надёжностью.
-    Реальная функция (<code>--dry-run</code> флаг для <code>forgeplan new</code>) проходит
-    через <b class="k">10 шагов</b>: routing → создание → проверка → разбор гипотез → сбор
-    доказательств → активация. На каждом шаге - терминал-симулятор с реальным выводом,
-    типичные ошибки с фиксом, и панель состояния вашего рабочего пространства справа.
-    Кликайте «дальше» - увидите, как растёт проект артефактов.
+    Предлагаемый флаг <code>--dry-run</code> для <code>forgeplan new</code> проходит путь
+    от выбора глубины и черновика до проверки, рассуждения, реализации и активации.
+    В выбранном CLI этого предлагаемого флага нет.
+    Терминал и панель состояния — <b class="k">авторские иллюстрации на JavaScript</b>,
+    не живой проект и не проверенная стенограмма. Кнопки не запускают команды.
+    Десять шагов посвящены одному PRD; для Standard нужен также RFC.
   </p>
+  <p>Замечания об интерфейсах относятся к проверенному снимку исходников <code>0.39.0+constellation.s1.1</code>, не к публичному релизу <code>0.38.0</code>. Синтаксис взят из captured help; оговорки о поведении — из ревью исходников и сохранённых наблюдений, не нового прогона.</p>
 
   <!-- Progress bar -->
   <div class="progress-wrap">
     <div class="progress-meta">
       <span class="pm-current" id="pm-current">Шаг 01 из 10</span>
-      <span class="pm-total">~20 минут целиком · кликайте по точкам, чтобы перейти</span>
+      <span class="pm-total">В своём темпе · кликайте по точкам для перехода</span>
     </div>
     <div class="progress-steps" id="progress-steps">
       <!-- populated by JS -->
@@ -177,7 +178,7 @@
         <div class="th-step" id="th-step">шаг 01 · init</div>
         <div class="th-title" id="th-title">Инициализация рабочего пространства</div>
       </div>
-      <span class="th-time" id="th-time">~1 минута</span>
+      <span class="th-time" id="th-time">На чтение: ~1 минута</span>
     </div>
 
     <div class="tutorial-body">
@@ -189,7 +190,7 @@
           <span class="tcb-prompt">$</span><span id="tut-cmd-text">forgeplan init -y</span>
         </div>
         <details class="tut-error" id="tut-error">
-          <summary id="tut-error-summary">Типичная ошибка на этом шаге</summary>
+          <summary id="tut-error-summary">Возможная проблема на этом шаге</summary>
           <div class="te-body" id="tut-error-body">
             <!-- populated -->
           </div>
@@ -202,14 +203,14 @@
             <span class="tb-dot r"></span>
             <span class="tb-dot y"></span>
             <span class="tb-dot g"></span>
-            <span class="tb-title" id="tb-title">~/forgeplan-tutorial · zsh</span>
+            <span class="tb-title" id="tb-title">~/forgeplan-tutorial · иллюстрация, не оболочка</span>
           </div>
           <div class="terminal-out" id="terminal-out">
             <!-- populated -->
           </div>
         </div>
         <div class="workspace">
-          <div class="ws-head">workspace state</div>
+          <div class="ws-head">Иллюстративное состояние проекта</div>
           <div id="ws-body">
             <div class="ws-empty">пусто · ещё ничего не создано</div>
           </div>
@@ -228,17 +229,17 @@
 
   <!-- Completion (hidden until last step done) -->
   <div class="completion" id="completion" style="display: none;">
-    <div class="comp-tag">✓ цикл завершён</div>
-    <h3>Поздравляю · у вас в проекте появилось первое полноценное решение</h3>
-    <p>За 10 шагов вы прошли полный цикл Forgeplan: routing → shape → validate → reason → build → prove → activate. PRD-001 теперь активен, R_eff = 1.00, проект здоров.</p>
-    <p style="margin-top: 18px; font-weight: 500; color: var(--text);">Что вы освоили:</p>
+    <div class="comp-tag">✓ иллюстрация завершена</div>
+    <h3>Вы рассмотрели путь решения к активации</h3>
+    <p>Десять авторских шагов показывают routing → shape → validate → reason → build → prove → activate. Проект не изменён, тесты не запускались, текущие R_eff и состояние проекта не измерены. Для реальной задачи Standard завершите также RFC и применимые проверки.</p>
+    <p style="margin-top: 18px; font-weight: 500; color: var(--text);">Полезные привычки:</p>
     <ul>
-      <li><b>Route first.</b> Не начали с кода - спросили инструмент, какой глубины задача</li>
-      <li><b>Shape before code.</b> PRD зафиксировал «зачем» и «что» до единой строки реализации</li>
-      <li><b>Validate early.</b> Проверка поймала implementation leakage и пустые секции до того, как они стали привычкой</li>
-      <li><b>Reason with ADI.</b> Сгенерировали альтернативы до решения - так избегаете «жаль, не подумали»</li>
-      <li><b>Prove with evidence.</b> R_eff - не украшение, это число, которое говорит, можно ли доверять собственному решению</li>
-      <li><b>Activate when ready.</b> Точка невозврата защищает от «активных PRD без кода» - ложного обещания будущим читателям</li>
+      <li><b>Сначала глубина.</b> Оцените задачу до выбора набора артефактов.</li>
+      <li><b>Требования до кода.</b> Зафиксируйте «зачем» и «что».</li>
+      <li><b>Ранняя проверка.</b> Читайте реальные замечания; проверка шаблона не доказывает поведение.</li>
+      <li><b>Рассуждение ADI.</b> Сравнивайте альтернативы и проверяйте их следствия.</li>
+      <li><b>Проверяемые доказательства.</b> R_eff — эвристика конкретной реализации, а не вероятность корректности.</li>
+      <li><b>Явная активация.</b> Выполните применимые условия. Активный файл остаётся редактируемым; существенные изменения связывайте с прежним решением.</li>
     </ul>
   </div>
 
@@ -253,92 +254,92 @@
   // ============ Steps data ============
   const steps = [
     {
-      tag: 'init', title: 'Инициализация рабочего пространства', time: '~1 минута',
-      desc: '<p>Forgeplan живёт в каталоге <code>.forgeplan/</code> вашего проекта. Команда <code>forgeplan init -y</code> создаёт структуру: каталоги под PRD, RFC, ADR, evidence, и config-файл.</p><p>Флаг <code>-y</code> - non-interactive режим: соглашаемся со всеми дефолтами. Для tutorial берём throwaway-каталог, чтобы не смешать с реальным проектом.</p>',
+      tag: 'init', title: 'Инициализация рабочего пространства', time: 'На чтение: ~1 минута',
+      desc: '<p>Forgeplan хранит артефакты в <code>.forgeplan/</code>. <code>forgeplan init -y</code> создаёт структуру проекта и конфигурацию. Флаг <code>-y</code> принимает значения по умолчанию без интерактивных запросов.</p><p>Для практики возьмите отдельный временный каталог, не существующий проект. Панель показывает авторские инструкции, а не выполнение команд.</p>',
       cmd: 'forgeplan init -y',
-      output: '<span class="to-prompt">$</span> mkdir ~/forgeplan-tutorial &amp;&amp; cd ~/forgeplan-tutorial\n<span class="to-prompt">$</span> forgeplan init -y\n\n<span class="to-ok">✓</span> Initialized .forgeplan/ workspace at /Users/you/forgeplan-tutorial/.forgeplan\n  <span class="to-key">Created:</span> prds/, rfcs/, adrs/, evidence/, notes/, problems/, ...\n  <span class="to-key">Created:</span> config.yaml\n<span class="to-val">Ready.</span>\n\n<span class="to-emph">Next:</span> forgeplan health',
-      error: { summary: 'Если каталог уже инициализирован', body: '<code>Error: .forgeplan/ already exists</code> - вы запустили init во второй раз или в каталоге с уже существующим workspace.<div class="te-fix">$ cd elsewhere &amp;&amp; mkdir new-dir &amp;&amp; cd new-dir &amp;&amp; forgeplan init -y</div>На реальном проекте перед удалением: <code>forgeplan export --output backup.json</code>.' },
+      output: '<span class="to-comment"># Иллюстрация — команды не выполняются</span>\n<span class="to-prompt">$</span> mkdir ~/forgeplan-tutorial &amp;&amp; cd ~/forgeplan-tutorial\n<span class="to-prompt">$</span> forgeplan init -y\n\n<span class="to-key">Назначение:</span> создать .forgeplan/ и config.yaml.\nПеред продолжением прочитайте реальный результат команды.\n\n<span class="to-emph">Далее:</span> forgeplan health',
+      error: { summary: 'Если каталог уже инициализирован', body: 'Не удаляйте существующее рабочее пространство ради повторения примера. Возьмите другой временный каталог.<div class="te-fix">$ mkdir another-tutorial &amp;&amp; cd another-tutorial &amp;&amp; forgeplan init -y</div>Синтаксис резервного экспорта в captured help: <code>forgeplan export --output backup.json</code>. Здесь рекомендация, не дословная зарегистрированная ошибка.' },
       workspace: { artifacts: [] }
     },
     {
-      tag: 'health', title: 'Проверка здоровья пустого workspace', time: '~30 секунд',
-      desc: '<p>Сразу после <code>init</code> запускаем <code>forgeplan health</code>, чтобы убедиться, что workspace настроен правильно. На пустом проекте - 0 артефактов, 0 пробелов. Это базовая привычка: запускать <code>health</code> в начале каждой сессии.</p>',
+      tag: 'health', title: 'Осмотр пустого рабочего пространства', time: 'На чтение: ~30 секунд',
+      desc: '<p><code>forgeplan health</code> показывает пробелы, риски и следующие действия. Полезно посмотреть его в начале сессии, но пустая панель не доказывает правильность установки, поведения или функции.</p><p>В браузере команда не запускается. Прочитайте фактический вывод в своём проекте.</p>',
       cmd: 'forgeplan health',
-      output: '<span class="to-prompt">$</span> forgeplan health\n\n<span class="to-key">Project Health</span>\n  <span class="to-key">Total artifacts:</span> 0\n  <span class="to-key">Blind spots:</span>    0\n  <span class="to-key">Orphans:</span>         0\n  <span class="to-key">Stale:</span>           0\n  <span class="to-key">Status:</span> <span class="to-ok">OK</span> - empty workspace\n\n<span class="to-emph">Next:</span> forgeplan route "your task"',
+      output: '<span class="to-comment"># Иллюстрация — состояние проекта не измерялось</span>\n<span class="to-prompt">$</span> forgeplan health\n\nПроверьте число артефактов, пробелы, сироты и просроченные записи.\nПустой проект ещё не содержит реализованной функции для проверки.\n\n<span class="to-emph">Далее:</span> forgeplan route "add --dry-run flag to forgeplan new for preview"',
       error: null,
       workspace: { artifacts: [] }
     },
     {
-      tag: 'route', title: 'Routing - какой глубины задача', time: '~30 секунд',
-      desc: '<p>Перед написанием PRD спрашиваем у инструмента, какая depth-уровень нужен для нашей задачи. Описываем задачу обычным языком - Forgeplan возвращает рекомендацию.</p><p>Наша задача: добавить флаг <code>--dry-run</code> в <code>forgeplan new</code>, чтобы пользователь мог посмотреть, что будет создано, без записи на диск. Должно получиться <span class="to-emph" style="background: var(--bg-3); padding: 1px 6px; border-radius: 0;">Standard</span>.</p>',
+      tag: 'route', title: 'Выбор глубины задачи', time: 'На чтение: ~30 секунд',
+      desc: '<p>Опишите задачу обычным языком и оцените рекомендацию. Для иллюстрации предлагаемого флага выбрана <span class="to-emph" style="background: var(--bg-3); padding: 1px 6px; border-radius: 0;">Standard</span>. Это не результат реального запуска маршрутизатора.</p><p>В выбранном парсере <code>new</code> нет <code>--dry-run</code>. Standard использует PRD → RFC; здесь рассматривается PRD, а не каждый артефакт проекта. Help называет уровень 0 значением по умолчанию; обработчик при настройке может выбрать LLM-маршрутизацию.</p>',
       cmd: 'forgeplan route "add --dry-run flag to forgeplan new for preview"',
-      output: '<span class="to-prompt">$</span> forgeplan route <span class="to-val">"add --dry-run flag to forgeplan new for preview"</span>\n\n<span class="to-key">Task:</span> add --dry-run flag to forgeplan new for preview\n<span class="to-key">Depth:</span>      <span class="to-emph">Standard</span>\n<span class="to-key">Pipeline:</span>   PRD → RFC\n<span class="to-key">Confidence:</span> 82%\n<span class="to-key">Signals:</span>\n  + new feature (not a fix)\n  + CLI UX surface change\n  + multiple possible implementations\n\n<span class="to-key">Recommendation:</span>\n  1. forgeplan new prd "CLI dry-run flag"\n  2. Fill MUST sections (Problem, Goals, FR)\n  3. forgeplan reason PRD-XXX  (recommended at Standard)\n\n<span class="to-emph">Next:</span> forgeplan new prd "CLI dry-run flag"',
-      error: { summary: 'Если router сказал Tactical', body: 'Иногда router возвращает <code>Tactical</code> для задач, которые на самом деле Standard (новая фича с CLI-surface изменением - частый пример). В tutorial-режиме переопределяем на Standard, чтобы пройти полный цикл.<div class="te-fix">Игнорируйте Tactical-вердикт, продолжайте как Standard</div>' },
+      output: '<span class="to-comment"># Авторский пример, не измеренная классификация</span>\n<span class="to-prompt">$</span> forgeplan route "add --dry-run flag to forgeplan new for preview"\n\n<span class="to-key">Выбранная для примера глубина:</span> Standard\n<span class="to-key">Конвейер Standard:</span> PRD → RFC\n<span class="to-key">Уверенность:</span> не измерена; показатель маршрутизатора не является вероятностью корректности.\n\n<span class="to-emph">Далее:</span> forgeplan new prd "CLI dry-run flag"',
+      error: { summary: 'Если рекомендация отличается', body: 'Проверьте сигналы задачи и политику проекта, а не переопределяйте ответ вслепую. Безопасность и публичный API могут требовать Deep, межкомандная работа — Standard.<div class="te-fix">Запишите, почему выбранная глубина соответствует реальному объёму задачи.</div>Выбор Standard в примере не задаёт универсальный конвейер.' },
       workspace: { artifacts: [] }
     },
     {
-      tag: 'new', title: 'Создание PRD с шаблоном', time: '~2 минуты',
-      desc: '<p>Команда <code>forgeplan new prd</code> создаёт файл с готовыми секциями - Problem, Goals, Non-Goals, Target Users, Functional Requirements. Ваша работа - заполнить их по существу.</p><p>В реальном tutorial вы открываете файл в редакторе и пишете содержимое. Здесь покажу, что должно получиться: каждая секция в формате <code>[Actor] can [capability]</code>, без implementation leakage.</p>',
+      tag: 'new', title: 'Создание и заполнение PRD', time: 'На чтение: ~2 минуты',
+      desc: '<p><code>forgeplan new prd "CLI dry-run flag"</code> создаёт черновик из местного шаблона. Заполните нужные секции содержательно. Формулируйте функциональные требования как <code>[Actor] can [capability]</code>, а не как выбор технологии.</p><p>Используйте ID и путь из фактического ответа. PRD-001 здесь условный. Для Standard создайте и завершите также RFC. Артефакты меняйте разрешёнными инструментами обновления.</p>',
       cmd: 'forgeplan new prd "CLI dry-run flag"',
-      output: '<span class="to-prompt">$</span> forgeplan new prd <span class="to-val">"CLI dry-run flag"</span>\n\n<span class="to-ok">✓</span> Created: PRD-001\n  <span class="to-key">Path:</span> .forgeplan/prds/PRD-001-cli-dry-run-flag.md\n  <span class="to-key">Status:</span> draft\n\n<span class="to-comment"># Откройте файл, заполните MUST секции:</span>\n<span class="to-comment">#   ## Problem</span>\n<span class="to-comment">#   ## Goals</span>\n<span class="to-comment">#   ## Non-Goals</span>\n<span class="to-comment">#   ## Target Users</span>\n<span class="to-comment">#   ## Functional Requirements</span>\n\n<span class="to-emph">Next:</span> forgeplan validate PRD-001',
+      output: '<span class="to-comment"># Иллюстрация — страница не записывает артефакт</span>\n<span class="to-prompt">$</span> forgeplan new prd "CLI dry-run flag"\n\n<span class="to-key">Условная запись:</span> PRD-001 · draft\n<span class="to-comment"># Заполните местный шаблон, включая:</span>\n  ## Problem\n  ## Goals\n  ## Non-Goals\n  ## Target Users\n  ## Functional Requirements\n\n<span class="to-emph">Далее:</span> forgeplan validate PRD-001',
       error: null,
       workspace: { artifacts: [{ id: 'PRD-001', name: 'CLI dry-run flag', status: 'draft' }] }
     },
     {
-      tag: 'validate', title: 'Проверка PRD на качество', time: '~2 минуты',
-      desc: '<p>Команда <code>forgeplan validate</code> запускает 30+ правил проверки: все ли MUST-секции на месте, нет ли implementation leakage в требованиях (упомянуты технологии вместо capabilities), нет ли filler-фраз, есть ли измеримые критерии.</p><p>В первый раз почти всегда есть ошибки. Это нормально - проверка ловит то, что глаз пропускает.</p>',
+      tag: 'validate', title: 'Проверка PRD', time: 'На чтение: ~2 минуты',
+      desc: '<p><code>forgeplan validate</code> проверяет полноту по правилам для типа и глубины артефакта: пропущенные секции, пустые фразы, размытые цели, утечку реализации в требования. Для Standard PRD утечка реализации — SHOULD, а не MUST.</p><p>Читайте фактические замечания. Captured help подтверждает синтаксис, но не работу каждого обработчика на любой раскладке. Выбранный CLI validate явно сообщает об ограничении legacy-store на migrated workspace.</p>',
       cmd: 'forgeplan validate PRD-001',
-      output: '<span class="to-prompt">$</span> forgeplan validate PRD-001\n\n<span class="to-err">PRD-001: FAIL ✗</span>\n  <span class="to-key">MUST errors:</span> 2\n  <span class="to-key">SHOULD warnings:</span> 1\n\n<span class="to-err">  ✗ MUST</span> implementation leakage in FR2\n      строка: "Use JSON output with serde"\n      <span class="to-comment">→ переписать как "User can see structured output"</span>\n\n<span class="to-err">  ✗ MUST</span> vague goal "system should be fast"\n      строка: G3\n      <span class="to-comment">→ заменить на измеримое (например "p99 &lt; 50ms на 1000 заметках")</span>\n\n<span class="to-warn">  ⚠ SHOULD</span> density: Problem section is terse (2 sentences)\n\n<span class="to-emph">Fix:</span> отредактируйте PRD-001, затем запустите forgeplan validate PRD-001',
-      error: { summary: 'После починки - повторите validate', body: 'После каждой правки запускайте <code>forgeplan validate PRD-001</code> заново - это итеративный процесс. Цель - <code>PASS ✓</code> с 0 MUST-ошибок.<div class="te-fix">$ forgeplan validate PRD-001 # повторяем, пока PASS</div>Aliases для секций работают: <code>## Motivation</code> = <code>## Problem</code>, <code>## Success Criteria</code> = <code>## Goals</code>.' },
+      output: '<span class="to-comment"># Иллюстративные замечания, не captured вывод CLI</span>\n<span class="to-prompt">$</span> forgeplan validate PRD-001\n\n<span class="to-warn">SHOULD:</span> Standard FR2 называет serde вместо возможности пользователя.\n  "Использовать JSON с serde"\n  → "Пользователь может просмотреть структурированный вывод"\n\n<span class="to-key">Ручное ревью:</span> сделайте "система должна быть быстрой" проверяемым.\n  Пример целевого критерия, не замера: p99 &lt; 50 мс на 1000 заметках.\n\n<span class="to-emph">Исправить:</span> уточнить требования и прочитать новый результат проверки.',
+      error: { summary: 'После правки проверьте снова', body: 'Повторяйте проверку после изменений и устраняйте применимые MUST. Чистый структурный отчёт не доказывает поведение.<div class="te-fix">$ forgeplan validate PRD-001</div>Если команда отказалась работать с раскладкой проекта, сохраните ошибку и используйте поддерживаемый разрешённый путь; не выдумывайте PASS.' },
       workspace: { artifacts: [{ id: 'PRD-001', name: 'CLI dry-run flag', status: 'draft' }] }
     },
     {
-      tag: 'reason', title: 'ADI · разбор с тремя гипотезами', time: '~3 минуты',
-      desc: '<p>На Standard ADI рекомендован, на Deep+ - обязателен. Команда <code>forgeplan reason</code> запускает цикл Abduction → Deduction → Induction: выписать минимум 3 гипотезы, для каждой описать проверяемое следствие, сверить с фактами.</p><p>Если в <code>.forgeplan/config.yaml</code> настроен LLM-провайдер - генерация автоматическая. Без LLM - заготовка с пустыми слотами, заполняете руками.</p>',
+      tag: 'reason', title: 'ADI · сравнение трёх альтернатив', time: 'На чтение: ~3 минуты',
+      desc: '<p>ADI — Abduction → Deduction → Induction: предложить альтернативы, вывести проверяемые следствия, сопоставить с наблюдениями. Промпт продукта запрашивает 3+ подхода; парсер не обеспечивает это число. Это местная эвристика против привязки к первой идее, не универсальный порог FPF.</p><p><code>forgeplan reason</code> требует настроенного LLM-провайдера. Без него команда завершается ошибкой, а не выдаёт офлайн-заготовку. Ручной разбор — отдельная работа, не успешное выполнение команды.</p>',
       cmd: 'forgeplan reason PRD-001',
-      output: '<span class="to-prompt">$</span> forgeplan reason PRD-001\n\n<span class="to-key">ADI cycle for PRD-001</span>\n<span class="to-key">─────────────────────</span>\n<span class="to-key">Abduction</span> - 3 гипотезы:\n  H1: --dry-run флаг короткого замыкания записи файла\n  H2: Отдельная команда `forgeplan preview new`\n  H3: Интерактивный prompt подтверждения (y/n)\n\n<span class="to-key">Deduction</span> - предсказания для каждой:\n  H1: минимальное изменение, 1 ветка в `new`\n  H2: дискаверабельно через --help, дублирует логику шаблона\n  H3: ломает порядок работы AI-агента (нарушает -y контракт)\n\n<span class="to-key">Induction</span> - сверка с фактами:\n  H1: <span class="to-ok">supports</span> - паттерн уже в `init -y`\n  H2: <span class="to-warn">weakens</span> - дублирование не оправдано\n  H3: <span class="to-err">refutes</span> - нарушает MUST из CLAUDE.md\n\n<span class="to-emph">Рекомендация:</span> H1\n<span class="to-emph">Confidence:</span> 0.87\n\n<span class="to-emph">Next:</span> implement H1, then create evidence',
-      error: { summary: 'Если нет LLM-провайдера', body: '<code>Error: no LLM provider configured</code> - добавьте provider блок в <code>.forgeplan/config.yaml</code>, либо заполните 3 гипотезы руками в PRD под секцией <code>## Reasoning</code>.<div class="te-fix">Для tutorial допустимо обойтись без LLM - ценность в мышлении, а не в выводе</div>' },
+      output: '<span class="to-comment"># Авторский пример ADI, не ответ провайдера</span>\n<span class="to-prompt">$</span> forgeplan reason PRD-001\n\n<span class="to-key">Abduction — альтернативы:</span>\n  H1: предлагаемый --dry-run без записи файла\n  H2: предлагаемая отдельная команда preview (её пока нет)\n  H3: предлагаемое интерактивное подтверждение\n\n<span class="to-key">Deduction — что проверить:</span>\n  H1: можно ли использовать общий рендерер для предпросмотра и записи?\n  H2: улучшает ли команда обнаружимость без дублирования?\n  H3: сохраняется ли неинтерактивная работа?\n\n<span class="to-key">Induction:</span> соберите наблюдения до выбора.\nУверенность и победитель здесь не измерялись.\n\n<span class="to-emph">Далее:</span> реализовать обоснованный выбор и собрать доказательства.',
+      error: { summary: 'Если провайдер не настроен', body: 'Команда требует LLM-провайдера. Прочитайте реальную ошибку и разрешённые настройки проекта; страница ничего не настраивает.<div class="te-fix">Можно записать альтернативы и проверки вручную, отдельно отметив, что reason не запускался успешно.</div>Это объяснение, а не дословный captured текст ошибки.' },
       workspace: { artifacts: [{ id: 'PRD-001', name: 'CLI dry-run flag', status: 'draft' }] }
     },
     {
-      tag: 'build', title: 'Build · пишем код и тесты', time: '~5 минут',
-      desc: '<p>В реальном tutorial - реализуете H1 и пишете тесты. В Forgeplan-проектах правило: <b class="k">0 предупреждений, 0 ошибок</b> на каждом коммите. <code>cargo test</code> или эквивалент должен зеленеть, <code>cargo fmt</code> должен пройти, <code>cargo check</code> - без warnings.</p><p>Для tutorial делаем вид, что реализация готова. В реальности после этого шага у вас есть рабочий код и проходящие тесты.</p>',
+      tag: 'build', title: 'Реализация и тесты', time: 'Только чтение примера; срок реализации зависит от задачи',
+      desc: '<p>Реализуйте выбранный подход и выполните проверки проекта. В Rust это могут быть тесты, форматирование и проверка компилятора. Запишите фактические результаты, включая ошибки и предупреждения.</p><p>Браузер ничего не собирает и не тестирует. Нажатие кнопки не реализует предлагаемую функцию; число тестов, длительность и версия релиза здесь не являются результатами прогона.</p>',
       cmd: 'cargo test  &amp;&amp;  cargo fmt --check  &amp;&amp;  cargo check',
-      output: '<span class="to-prompt">$</span> cargo test\n  Compiling forgeplan v0.30.0\n   Finished test [unoptimized + debuginfo] in 12.34s\n     Running unittests src/lib.rs\n\n<span class="to-ok">running 8 tests</span>\ntest cli::new::tests::test_dry_run_flag ... <span class="to-ok">ok</span>\ntest cli::new::tests::test_dry_run_no_write ... <span class="to-ok">ok</span>\ntest cli::new::tests::test_dry_run_stdout ... <span class="to-ok">ok</span>\ntest cli::new::tests::test_dry_run_exit_code ... <span class="to-ok">ok</span>\n...\n<span class="to-ok">test result: ok. 8 passed; 0 failed; 0 ignored</span>\n\n<span class="to-prompt">$</span> cargo fmt --check\n<span class="to-ok">✓</span> Formatting OK\n\n<span class="to-prompt">$</span> cargo check\n<span class="to-ok">✓</span> Finished dev [unoptimized + debuginfo] in 1.84s\n  <span class="to-key">0 warnings · 0 errors</span>\n\n<span class="to-emph">Next:</span> forgeplan new evidence "CLI dry-run - 8 tests pass"',
+      output: '<span class="to-comment"># Примеры проверок — NOT_RUN на этой странице</span>\n<span class="to-prompt">$</span> cargo test\n<span class="to-prompt">$</span> cargo fmt --check\n<span class="to-prompt">$</span> cargo check\n\nЗапишите фактический объём проверки, код выхода и вывод.\nНе пишите "тесты прошли", пока их не запустили.\n\n<span class="to-emph">Далее:</span> создать запись с наблюдаемым результатом.',
       error: null,
       workspace: { artifacts: [{ id: 'PRD-001', name: 'CLI dry-run flag', status: 'draft' }] }
     },
     {
-      tag: 'evidence', title: 'Создание Evidence с обязательными полями', time: '~2 минуты',
-      desc: '<p>Доказательство (Evidence) - это запись о том, что код работает. Создаётся командой <code>forgeplan new evidence</code> с кратким описанием.</p><p>В файле обязательно нужны три структурированных поля: <code>verdict</code> (supports/weakens/refutes), <code>congruence_level</code> (0-3), <code>evidence_type</code> (test/benchmark/measurement). <b class="k">Самая частая ошибка №1</b>: забыть эти поля. Без них парсер ставит CL0 (штраф 0.9) и R_eff падает почти до нуля.</p>',
-      cmd: 'forgeplan new evidence "CLI dry-run - 8 unit tests pass"',
-      output: '<span class="to-prompt">$</span> forgeplan new evidence <span class="to-val">"CLI dry-run - 8 unit tests pass"</span>\n\n<span class="to-ok">✓</span> Created: EVID-001\n  <span class="to-key">Path:</span> .forgeplan/evidence/EVID-001-cli-dry-run-...md\n  <span class="to-key">Status:</span> draft\n\n<span class="to-comment"># Откройте файл, добавьте в body:</span>\n<span class="to-comment">#   ## Structured Fields</span>\n<span class="to-comment">#   verdict: supports</span>\n<span class="to-comment">#   congruence_level: 3</span>\n<span class="to-comment">#   evidence_type: test</span>\n\n<span class="to-emph">Next:</span> forgeplan link EVID-001 PRD-001 --relation informs',
-      error: { summary: 'Самая частая ошибка №1', body: '<b class="k">Забыть Structured Fields в body</b>. Если в файле есть только проза без блока<br><code>verdict: supports / congruence_level: 3 / evidence_type: test</code><br>- парсер ставит CL0 (штраф 0.9), R_eff падает к 0.1 даже при сильных доказательствах.<div class="te-fix">Всегда добавляйте три обязательных поля в body EVID</div>' },
+      tag: 'evidence', title: 'Доказательство с полями для оценки', time: 'На чтение: ~2 минуты',
+      desc: '<p>Evidence фиксирует наблюдение и его границы, не просто утверждение «код работает». Название должно соответствовать реальному результату.</p><p>Добавьте отдельные строки body: <code>verdict</code> (supports/weakens/refutes), <code>congruence_level</code> (0–3), <code>evidence_type</code> (measurement/test/benchmark/audit). Отсутствующий или неизвестный verdict либо отсутствие CL дают CL0. Если тип не указан, используется measurement. Отдельная проверка полноты требует verdict и явный CL, не все три поля.</p>',
+      cmd: 'forgeplan new evidence "CLI dry-run verification record"',
+      output: '<span class="to-comment"># Условные поля — значения выбираются по реальным наблюдениям</span>\n<span class="to-prompt">$</span> forgeplan new evidence "CLI dry-run verification record"\n\n<span class="to-key">Условная запись:</span> EVID-001 · draft\n<span class="to-comment"># Строки body для действительно поддерживающего применимого теста:</span>\nverdict: supports\ncongruence_level: 3\nevidence_type: test\n\nУкажите ревизию, команду, вывод, объём и ограничения проверки.\nСами поля не доказывают запуск теста.\n\n<span class="to-emph">Далее:</span> forgeplan link EVID-001 PRD-001 --relation informs',
+      error: { summary: 'Если в evidence только проза', body: 'Парсер не выводит доверие из похвалы. Нужны явные verdict и CL отдельными строками body, не только в таблице или HTML-комментарии. Пропуск декларации даёт CL0 со штрафом 0.9 для неистёкшего доказательства.<div class="te-fix">Опишите наблюдение и обоснуйте поля; не повышайте CL ради числа.</div>' },
       workspace: { artifacts: [
         { id: 'PRD-001', name: 'CLI dry-run flag', status: 'draft' },
-        { id: 'EVID-001', name: 'CLI dry-run tests', status: 'draft' },
+        { id: 'EVID-001', name: 'CLI dry-run verification', status: 'draft' },
       ] }
     },
     {
-      tag: 'link', title: 'Связать Evidence с PRD + проверить R_eff', time: '~1 минута',
-      desc: '<p>Создание EVID - это половина работы. Чтобы доказательство влияло на R_eff конкретного решения, нужна связь через <code>forgeplan link</code>. Без связи EVID-001 будет «сиротой» - отдельным файлом, который ни на что не влияет.</p><p>После линковки запускаем <code>forgeplan score</code> - видим финальный R_eff.</p>',
+      tag: 'link', title: 'Связь доказательства и проверка R_eff', time: 'На чтение: ~1 минута',
+      desc: '<p>Свяжите доказательство с решением и прочитайте <code>forgeplan score</code>. Рекурсивный отчёт берёт слабейший допустимый вклад доказательств и зависимостей, а не min(F,G,R). Терминальные evidence исключаются, черновики остаются допустимыми.</p><p>Неистёкший supports/CL3/test даёт вклад 1.0, но не гарантирует итог решения 1.0: важны остальные evidence и зависимости. Истёкшее evidence даёт 0.1. Плоские поля записи могут отличаться от рекурсивного отчёта.</p>',
       cmd: 'forgeplan link EVID-001 PRD-001 --relation informs  &amp;&amp;  forgeplan score PRD-001',
-      output: '<span class="to-prompt">$</span> forgeplan link EVID-001 PRD-001 --relation informs\n<span class="to-ok">✓</span> Linked: EVID-001 → PRD-001 (informs)\n\n<span class="to-prompt">$</span> forgeplan score PRD-001\n\n<span class="to-key">PRD-001:</span> CLI dry-run flag\n  <span class="to-key">R_eff =</span> <span class="to-ok">1.00</span> - <span class="to-ok">Adequate</span>\n  <span class="to-key">Evidence:</span>\n    EVID-001: supports, CL3, test → score 1.0\n\n<span class="to-emph">Next:</span> forgeplan review PRD-001',
-      error: { summary: 'Если R_eff = 0.0', body: 'Если score показывает 0.0 - проверьте три вещи:<br>1. <code>forgeplan list evidence</code> - EVID-001 существует?<br>2. <code>cat .forgeplan/evidence/EVID-001-*.md | grep -E "verdict|congruence_level"</code> - поля на месте?<br>3. <code>forgeplan link</code> отработала без ошибок?<div class="te-fix">Чаще всего - забыли Structured Fields в EVID body</div>' },
+      output: '<span class="to-comment"># Иллюстрация — страница не записывает связи и оценки</span>\n<span class="to-prompt">$</span> forgeplan link EVID-001 PRD-001 --relation informs\n<span class="to-prompt">$</span> forgeplan score PRD-001\n\n<span class="to-key">Проверьте:</span> допустимые evidence, сроки, штрафы зависимостей, объём.\n<span class="to-key">Фактический R_eff:</span> здесь не измерен.\nОценка не является вероятностью корректности реализации.\n\n<span class="to-emph">Далее:</span> forgeplan review PRD-001',
+      error: { summary: 'Если оценка нулевая или неожиданная', body: 'Проверьте запись, поля, связи, сроки и все допустимые зависимости.<div class="te-fix">$ forgeplan list -t evidence<br>$ forgeplan get EVID-001 --json<br>$ forgeplan graph<br>$ forgeplan score PRD-001</div>Недостающее evidence — одна из причин, не универсальный диагноз.' },
       workspace: { artifacts: [
-        { id: 'PRD-001', name: 'CLI dry-run flag', status: 'draft', reff: '1.00' },
-        { id: 'EVID-001', name: 'CLI dry-run tests', status: 'draft' },
+        { id: 'PRD-001', name: 'CLI dry-run flag', status: 'draft', reff: 'не измерен' },
+        { id: 'EVID-001', name: 'CLI dry-run verification', status: 'draft' },
       ] }
     },
     {
-      tag: 'activate', title: 'Активация · точка невозврата', time: '~30 секунд',
-      desc: '<p>Финальный шаг. <code>forgeplan review</code> делает предполётную проверку (validation pass + R_eff > 0). <code>forgeplan activate</code> переводит PRD из draft в active - файл становится <b class="k">immutable</b>.</p><p>Изменения после активации - только через <code>forgeplan supersede</code> с созданием нового PRD, который явно заменяет старый. Это даёт честную историю решений: видно, что было решено тогда, что - потом, в каком порядке.</p>',
+      tag: 'activate', title: 'Активация · явный переход состояния', time: 'На чтение: ~30 секунд',
+      desc: '<p><code>forgeplan review</code> помогает оценить готовность; <code>forgeplan activate</code> пытается выполнить draft → active. Условия шире, чем validation плюс R_eff &gt; 0: учитываются длина, заглушки, связи evidence, MUST и отдельная обработка происхождения на уровне вызывающего интерфейса.</p><p>Активация не делает файл immutable. Разрешённые обновления возможны. При смене решения сначала создайте замену, затем <code>forgeplan supersede PRD-001 --by PRD-002</code>. Supersede связывает существующую замену, а не создаёт новый файл.</p>',
       cmd: 'forgeplan review PRD-001  &amp;&amp;  forgeplan activate PRD-001',
-      output: '<span class="to-prompt">$</span> forgeplan review PRD-001\n  <span class="to-key">Validation:</span> <span class="to-ok">PASS ✓</span>\n  <span class="to-key">Evidence:</span> 1 linked (R_eff = 1.00)\n  <span class="to-key">Status:</span> <span class="to-ok">ready to activate</span>\n\n<span class="to-prompt">$</span> forgeplan activate PRD-001\n\n<span class="to-ok">✓</span> PRD-001: <span class="to-key">draft</span> → <span class="to-ok">active</span>\n  <span class="to-key">Validation gate:</span> PASS\n  <span class="to-key">R_eff preserved:</span> 1.00\n\n<span class="to-prompt">$</span> forgeplan health\n\n<span class="to-key">Project Health</span>\n  <span class="to-key">Total artifacts:</span> 2 (PRD-001, EVID-001)\n  <span class="to-key">Active:</span>          1\n  <span class="to-key">Blind spots:</span>     0\n  <span class="to-key">Orphans:</span>          0\n  <span class="to-key">Stale:</span>            0\n  <span class="to-key">Status:</span> <span class="to-ok">HEALTHY ✓</span>\n\n<span class="to-emph">Done.</span>',
-      error: { summary: 'Если activate отклонён', body: 'Чаще всего - после успешного validate вы внесли правку в PRD, которая нарушила MUST.<div class="te-fix">$ forgeplan validate PRD-001 # перепроверить, починить, повторить activate</div>' },
+      output: '<span class="to-comment"># Авторская иллюстрация — активация и health не запускались</span>\n<span class="to-prompt">$</span> forgeplan review PRD-001\n<span class="to-prompt">$</span> forgeplan activate PRD-001\n\n<span class="to-key">Условный переход при выполнении применимых условий:</span> draft → active\n<span class="to-key">Реальный результат условий / R_eff:</span> здесь не измерен.\n\n<span class="to-prompt">$</span> forgeplan health\nПрочитайте фактический вердикт; страница не утверждает HEALTHY.\n\n<span class="to-emph">Готово:</span> только иллюстрация.',
+      error: { summary: 'Если активация отклонена', body: 'Прочитайте реальный отказ и устраните причину. Прежняя проверка не разрешает обойти последующие условия.<div class="te-fix">$ forgeplan review PRD-001<br>$ forgeplan validate PRD-001</div>Сохраняйте ошибки раскладки, evidence и происхождения, не представляя их как успешную активацию.' },
       workspace: { artifacts: [
-        { id: 'PRD-001', name: 'CLI dry-run flag', status: 'active', reff: '1.00' },
-        { id: 'EVID-001', name: 'CLI dry-run tests', status: 'draft' },
+        { id: 'PRD-001', name: 'CLI dry-run flag', status: 'active', reff: 'не измерен' },
+        { id: 'EVID-001', name: 'CLI dry-run verification', status: 'draft' },
       ] }
     },
   ];

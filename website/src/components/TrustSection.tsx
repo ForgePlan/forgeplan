@@ -5,7 +5,7 @@ import { COLORS, octPoints, octVertex } from '../tokens';
 const STORY_CARDS = [
   {
     title: 'Still valid?',
-    text: 'That benchmark from last quarter scored 0.9 when you ran it. But valid_until expired. Now it\'s 0.1 — stale, not deleted.',
+    text: 'Example: an unexpired supports/CL3 benchmark scores 0.9 in the recursive engine. After valid_until expires, it contributes 0.1; the record is not deleted.',
     detail: 'EVIDENCE DECAY',
     ringIdx: 0,
     side: 'left' as const,
@@ -14,8 +14,8 @@ const STORY_CARDS = [
   },
   {
     title: 'Source matters',
-    text: 'A Stack Overflow answer ≠ your own load test. Same conclusion, different trust. CL0 vs CL3 = 0.9 penalty gap.',
-    detail: 'CONTEXT LEVEL',
+    text: 'Check how well evidence matches the claim. CL0 and CL3 differ by a 0.9 congruence penalty; a source name alone does not establish that match.',
+    detail: 'CONGRUENCE LEVEL',
     ringIdx: 1,
     side: 'right' as const,
     vertexIdx: 1,
@@ -23,7 +23,7 @@ const STORY_CARDS = [
   },
   {
     title: 'Weakest link wins',
-    text: '3 strong evidences + 1 weak = weak decision. R_eff = min(), never average. One blind spot drags everything.',
+    text: 'Among eligible evidence and dependency contributions, R_eff takes the minimum, not the average. Retired evidence packs are excluded.',
     detail: 'R_EFF FORMULA',
     ringIdx: 4,
     side: 'left' as const,
@@ -32,7 +32,7 @@ const STORY_CARDS = [
   },
   {
     title: 'Prove it here',
-    text: 'Evidence from the same project, same context, same conditions. No penalties. Full trust. This is CL3.',
+    text: 'CL3 means no congruence penalty. Verdict, evidence type and expiry still affect the score; matching context alone does not prove the claim.',
     detail: 'SAME CONTEXT',
     ringIdx: 3,
     side: 'right' as const,
@@ -50,7 +50,7 @@ const STORY_CARDS = [
   },
 ];
 
-// Dashboard artifacts
+// Illustrative dashboard values, not measured workspace scores
 const DEMO_ARTIFACTS = [
   { id: 'PRD-018', score: 0.82, evidence: 3 },
   { id: 'RFC-003', score: 0.41, evidence: 1 },
@@ -90,7 +90,7 @@ export default function TrustSection() {
   ];
 
   // Title lines
-  const titleLines = ['Trust Is', 'Measured,', 'Not Assumed'];
+  const titleLines = ['Trust Is', 'Scored,', 'Not Assumed'];
   const titleStarts = [0.02, 0.06, 0.10];
 
   // Connector line endpoints
@@ -148,7 +148,7 @@ export default function TrustSection() {
           <text x={CX} y={CY + 30} textAnchor="middle"
             fontFamily="Geist Mono, monospace" fontSize={13} fill={COLORS.ember}
             opacity={fade(0.45)}>
-            R_eff = 0.82
+            Example: R_eff = 0.82
           </text>
 
           {/* Connector lines from cards to ring vertices */}
@@ -203,7 +203,7 @@ export default function TrustSection() {
         {/* Dashboard — bottom overlay */}
         <div className="absolute bottom-4 left-0 right-0 flex justify-center z-20" style={{ opacity: fade(0.72) }}>
           <div className="border border-forge-line bg-forge-bg/95 backdrop-blur-sm px-6 py-4 max-w-[500px] w-full">
-            <p className="font-mono text-[10px] tracking-[2px] text-forge-ember mb-3">LIVE SCORING</p>
+            <p className="font-mono text-[10px] tracking-[2px] text-forge-ember mb-3">ILLUSTRATIVE SCORES · NOT PROBABILITIES</p>
             <div className="space-y-2">
               {DEMO_ARTIFACTS.map((art, i) => {
                 const barFill = fade(0.76 + i * 0.04);

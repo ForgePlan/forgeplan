@@ -1,5 +1,7 @@
 # ForgePlan Protocol v1
 
+> Design draft, не опубликованный runtime-протокол. Пять схем в `protocol/schemas/` пока не реализуют все требования этого документа; импорт не подтверждает ни совместимость consumers, ни digest/signature. См. [статус пакета](../README.md).
+
 ## Назначение
 
 Protocol v1 является переносимым контрактом между ForgePlan Core, agent hosts, orchestrators, evidence providers и Web.
@@ -23,6 +25,8 @@ Protocol v1 является переносимым контрактом меж�
 - consumers обязаны отклонять неизвестную major version;
 - unknown optional fields должны сохраняться при round-trip;
 - canonical JSON используется для digest/signature.
+
+Эти правила — целевые требования. Текущие draft schemas с `additionalProperties: false` не обеспечивают указанное сохранение неизвестных optional fields; сам `protocol_version` с pattern `^1\.` не доказывает SemVer-совместимость. Алгоритм канонизации и digest/signature ещё должен быть определён в FPV-02 и проверен fixtures. Пример выше показывает только envelope, а не полный валидный WorkContract.
 
 ## Основные типы
 

@@ -1,11 +1,9 @@
 ---
 title: forgeplan fpf search
-description: "Поиск по базе знаний FPF с использованием того же конвейера BM25 + семантический поиск, что и для артефактов"
+description: "Поиск по загруженным разделам FPF: ключевые слова или кэшированные векторы BGE-M3."
 ---
 
-`forgeplan fpf search` запрашивает загруженную базу знаний **First Principles Framework**, используя тот же гибридный конвейер извлечения, который лежит в основе поиска артефактов - производственный BM25 (через крейт `bm25` v2.3.2), объединённый с семантическими векторами BGE-M3. Он выполняет поиск по всем 204 разделам FPF и возвращает ранжированные совпадения с идентификаторами разделов и предварительным просмотром.
-
-Представьте это как `forgeplan search`, направленный на корпус FPF вместо ваших собственных артефактов.
+`forgeplan fpf search` ищет по загруженной базе знаний **First Principles Framework**. По умолчанию используется поиск ключевых слов в заголовке и теле без учёта регистра. `--semantic` выбирает векторный поиск BGE-M3, а не слияние с keyword-результатами. Размер корпуса зависит от загруженных разделов и не зафиксирован на 204.
 
 ## Когда использовать
 
@@ -16,9 +14,9 @@ description: "Поиск по базе знаний FPF с использова�
 
 ## Когда НЕ использовать
 
-- Для поиска артефактов - используйте [`forgeplan search`](/docs/cli/search/) вместо этого.
-- Для чтения целого раздела - используйте [`forgeplan fpf section <id>`](/docs/cli/fpf-section/).
-- Для просмотра полного индекса - используйте [`forgeplan fpf list`](/docs/cli/fpf-list/).
+- Для артефактов используйте [`forgeplan search`](/ru/docs/cli/search/).
+- Для целого раздела используйте [`forgeplan fpf section <id>`](/ru/docs/cli/fpf-section/).
+- Для списка разделов используйте [`forgeplan fpf list`](/ru/docs/cli/fpf-list/).
 
 ## Использование
 
@@ -45,13 +43,13 @@ forgeplan fpf search [OPTIONS] <QUERY>
 ## Примеры
 
 ```bash
-# По умолчанию: поиск по ключевым словам BM25, 5 лучших результатов
+# По умолчанию: ключевые слова, до 5 результатов
 forgeplan fpf search "trust calculus"
 
 # Расширить окно результатов
 forgeplan fpf search "explore exploit tradeoff" --limit 10
 
-# Семантический векторный поиск (возвращается к BM25, если функция semantic-search отключена)
+# Векторный поиск; при недоступности предупреждение и переход к ключевым словам
 forgeplan fpf search "adversarial review" --semantic
 
 forgeplan fpf search "weakest link"
@@ -59,18 +57,17 @@ forgeplan fpf search "weakest link"
 
 ## Как работает конвейер
 
-Поиск FPF использует **тот же производственный конвейер версии 0.18.0**, что и поиск артефактов:
+Поиск FPF отличается от BM25-поиска артефактов:
 
-- **BM25** (крейт `bm25` v2.3.2) - токенизация с русской морфологией (Snowball stemmer), когда срабатывает `LanguageMode::Detect`.
-- **Удаление шума шаблонов** - удаляет стандартные заголовки перед ранжированием, чтобы запросы соответствовали содержательному контенту.
-- **Семантическое слияние** - косинусное сходство BGE-M3 накладывается сверху, когда включена функция `semantic-search`.
-- **Пакетный поиск O(N)** - эффективен для корпуса из 204 разделов.
+- **Ключевые слова** - совпадения подстрок в заголовке и теле; заголовок и полное совпадение запроса в нём имеют больший вес.
+- **Семантика** - явный векторный запрос BGE-M3; нужны совместимая сборка semantic-search, кэш модели и векторы загруженных разделов.
+- **Fallback** - ошибка инициализации, кодирования или векторного запроса выводит предупреждение и запускает keyword-поиск.
 
-Поскольку механика идентична, те же примечания по настройке и устранению неполадок из [руководства по поиску v2](/docs/guides/search-v2/) применимы и здесь.
+Этот путь не использует стемминг BM25 артефактов, очистку шаблонов или семантическое слияние. [Руководство поиска v2](/ru/docs/guides/search-v2/) описывает отдельный конвейер артефактов.
 
 ## Как это вписывается
 
-`fpf search` - это интерфейс запросов к базе знаний FPF. Он используется как людьми (инспектирование через CLI), так и `forgeplan reason --fpf`, который извлекает k лучших разделов в качестве контекста для промпта ADI.
+`fpf search` позволяет изучать KB. У `reason --fpf` отдельный путь загрузки контекста: в выбранной сборке на мигрированном workspace он пропускает legacy-контекст FPF, не открывая старые таблицы.
 
 ```
 загрузка → поиск → (человек читает ИЛИ reason потребляет) → лучшие решения
@@ -78,9 +75,30 @@ forgeplan fpf search "weakest link"
 
 ## Смотрите также
 
-- [`forgeplan fpf`](/docs/cli/fpf/) - родительская команда
-- [`forgeplan fpf section`](/docs/cli/fpf-section/) - прочитать конкретный результат
-- [`forgeplan fpf list`](/docs/cli/fpf-list/) - просмотреть все разделы
-- [`forgeplan search`](/docs/cli/search/) - поиск артефактов (тот же конвейер)
-- [Руководство по поиску v2](/docs/guides/search-v2/) - как работают BM25 + семантическое слияние
-- [`forgeplan reason`](/docs/cli/reason/) - ADI с контекстом FPF
+- [`forgeplan fpf`](/ru/docs/cli/fpf/) - родительская команда
+- [`forgeplan fpf section`](/ru/docs/cli/fpf-section/) - прочитать результат
+- [`forgeplan fpf list`](/ru/docs/cli/fpf-list/) - все разделы
+- [`forgeplan search`](/ru/docs/cli/search/) - отдельный конвейер артефактов
+- [Поиск v2](/ru/docs/guides/search-v2/) - BM25 и семантика артефактов
+- [`forgeplan reason`](/ru/docs/cli/reason/) - ADI
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan fpf search --help`.
+
+```text
+Search FPF knowledge base
+
+Usage: forgeplan fpf search [OPTIONS] <QUERY>
+
+Arguments:
+  <QUERY>  Search query
+
+Options:
+      --limit <LIMIT>  Max results [default: 5]
+      --semantic       Use semantic vector search (requires --features semantic-search; falls back to keyword otherwise)
+  -h, --help           Print help
+  -V, --version        Print version
+```
+<!-- forgeplan-runtime:end -->

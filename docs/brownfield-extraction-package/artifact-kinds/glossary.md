@@ -2,6 +2,8 @@
 
 > Captures a single business term — its meaning, aliases, usage, and confidence in that meaning.
 
+> Original proposed schema and illustrative TripSales data, not the native template or validator. Unshipped TERM/EVID IDs are external example references. Business intent and dual-confirm semantics remain unverified; see [implementation status](../README.md#implementation-status-2026-10-23).
+
 ## Purpose
 
 The glossary is the **foundation layer** of business documentation. Before a use-case, invariant, or scenario can be written unambiguously, every business term used in it must exist in the glossary with an agreed meaning.
@@ -28,7 +30,7 @@ code_usage:
     role: "enum value in status field"
   - path: "services/v5.orders.service.js"
     role: "set after _confirm when caller is forwarder employee"
-related_terms: ["cargo_owner_confirmed", "forwarder", "order_status"]
+related_terms: ["TERM-013", "TERM-005", "TERM-001"]
 contradictions: []    # list of term IDs that conflict
 verification:
   source: "inferred_from_code" | "domain_owner" | "external_doc"
@@ -63,7 +65,7 @@ code_usage:
     role: "ENUM value in status column"
   - path: "services/v5.orders.service.js"
     role: "set by action 'confirm' when caller.company.type_company='forwarder'"
-related_terms: ["cargo_owner_confirmed", "forwarder", "order_status", "fulfillment"]
+related_terms: ["TERM-013", "TERM-005", "TERM-001", "TERM-014"]
 contradictions: []
 verification:
   source: "inferred_from_code"
@@ -84,7 +86,7 @@ One of two confirmation-state values for an order:
 - `forwarder_confirmed`: set when the confirming caller is a forwarder employee.
 - `cargo_owner_confirmed`: set when the confirming caller is a cargo_owner employee.
 
-The order must pass through BOTH confirmation states before it can transition to `fulfillment`.
+Hypothesis, not established fact: both confirmations may be required before `fulfillment`. The package's C9 example explicitly raises a contrary trip-start observation; resolve this with pinned source evidence and the Domain Owner.
 
 ## Aliases
 - "forwarder confirmation" (used in UI strings)
@@ -127,4 +129,4 @@ Hypothesis (unverified by Domain Owner): this dual-confirm pattern exists becaus
 
 ## Freshness
 
-Re-validate every 60 days if code mentions have changed (detected via `forgeplan_drift`).
+Proposed freshness policy: re-validate every 60 days if code mentions changed. Current drift reports do not themselves implement this glossary re-verification workflow.

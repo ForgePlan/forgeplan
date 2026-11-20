@@ -3,13 +3,18 @@ title: SPARC Methodology
 description: Specification → Pseudocode → Architecture → Refinement → Completion
 ---
 
-:::caution[Experimental]
-The SPARC plugin is proposed but not yet verified in the `ForgePlan/marketplace` registry. The content below is a design specification. See [Plugin Development](/docs/marketplace/development/) if you want to contribute it.
+:::note[Registry snapshot]
+The [primary registry at b4e8a1b9](https://github.com/ForgePlan/marketplace/blob/b4e8a1b9bfaa4c9c44e6f8dc1039e09fa1b193f7/.claude-plugin/marketplace.json)
+lists `agents-sparc` **1.8.0**, stable: four phase specialists, a
+`sparc-orchestrator`, and a `sparc` skill. This establishes distribution,
+not that the installed host has exercised every phase.
 :::
 
 ## What is SPARC?
 
-SPARC is a structured development methodology with 5 phases, each handled by a specialized agent. Available as a plugin in the ForgePlan Marketplace.
+SPARC has five phases for one scoped feature in an existing, active system.
+Four phase agents do the specialist work; the orchestrator coordinates the
+cycle and Completion. It is not the default greenfield-product methodology.
 
 ## The 5 Phases
 

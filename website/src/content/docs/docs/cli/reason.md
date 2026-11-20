@@ -5,6 +5,8 @@ description: "Analyze an artifact using the FPF ADI reasoning cycle (Abduction�
 
 `forgeplan reason` runs a structured AI-driven analysis over an existing artifact using the FPF **ADI cycle**: **Abduction** (generate 3+ hypotheses) → **Deduction** (predict consequences of each) → **Induction** (check predictions against existing evidence). It's the gate between "PRD looks reasonable" and "I actually know which approach to take" - forcing the agent to enumerate alternatives instead of anchoring on the first plausible answer. For Deep and Critical depth it is **mandatory**: no code until `reason` has produced at least three competing hypotheses and a justified winner.
 
+This is the project's local ADI workflow, not proof of upstream FPF conformance. The LLM prompt requests 3+ hypotheses; the parser does not enforce that count. Review the result against the mandatory Deep/Critical requirement rather than treating a successful command as its fulfillment. A configured LLM provider is required: HTTP uses `llm.api_key_env`; opted-in local CLI providers reuse their own login only for personal local development.
+
 ## When to use
 
 - Right after `forgeplan new prd` + `forgeplan validate` PASS, before touching code.
@@ -13,7 +15,7 @@ description: "Analyze an artifact using the FPF ADI reasoning cycle (Abduction�
 
 ## When NOT to use
 
-- Depth is **Tactical** - a one-hour bug fix does not need three hypotheses.
+- Tactical work without a decision that needs alternatives; elapsed time alone does not establish depth.
 - MUST sections are not yet filled - ADI on a stub produces hallucinated context.
 - Artifact is a pure EvidencePack, Note, or RefreshReport (no decision to reason about).
 
@@ -47,9 +49,7 @@ forgeplan reason [OPTIONS] <ID>
 forgeplan reason PRD-001
 ```
 
-Reads `PRD-001`, pulls its Problem/Goals/Related sections, and asks the LLM to
-generate 3+ hypotheses for how to meet the goals. For each hypothesis it lists
-predicted consequences and which existing evidence supports or weakens it.
+Reads the artifact body and asks the configured LLM for hypotheses, assumptions, predictions, risks, feasibility, evidence needs and a recommendation. It does not limit its input to named Problem/Goals/Related sections.
 
 ### Example 2: ADI with FPF knowledge base context
 
@@ -57,10 +57,7 @@ predicted consequences and which existing evidence supports or weakens it.
 forgeplan reason PRD-001 --fpf
 ```
 
-`--fpf` injects relevant sections from the FPF knowledge base (B.3 Trust
-Calculus, B.5 Reasoning loops) into the prompt. Use this when the decision
-involves trust boundaries, reversibility, or reasoning quality - the LLM will
-score hypotheses against FPF invariants instead of just engineering intuition.
+`--fpf` requests knowledge-base context when that source is available. In the selected migrated CLI path the FPF enrichment is omitted; legacy lookup can enrich the prompt. Neither path guarantees particular upstream sections or mechanically scores FPF invariants. Check the supplied context and verify claims independently.
 
 ### Example 3: Persist the analysis as a Note
 
@@ -68,9 +65,7 @@ score hypotheses against FPF invariants instead of just engineering intuition.
 forgeplan reason PRD-001 --save
 ```
 
-Creates a `note-*` artifact containing the full ADI output and links it to the
-source PRD (`informs` relation). Useful when you want the reasoning to survive
-past the current terminal session and show up in `forgeplan get PRD-001 --graph`.
+Creates a Note containing the ADI output and links it to the source. Read it by its returned ID or use `forgeplan graph` for relationships; `forgeplan get` has no `--graph` option.
 
 ### Example 4: Machine-readable output for agents
 
@@ -78,29 +73,17 @@ past the current terminal session and show up in `forgeplan get PRD-001 --graph`
 forgeplan reason PRD-001 --json
 ```
 
-Emits structured JSON with `hypotheses[]`, each containing `summary`,
-`confidence`, `supporting_evidence[]`, `weakening_evidence[]`, and `verdict`.
-Consumed by MCP clients and audit scripts.
+The result contains artifact metadata and `adi_output` when structured parsing succeeds, otherwise raw `adi_analysis`. Structured hypotheses have `id`, `description`, `assumptions`, and string `confidence`; deductions contain `hypothesis_id`, `consequence`, `risks`, and `feasibility`. `evidence_needed` and `recommendation` are separate fields, not per-hypothesis evidence/verdict arrays.
 
 ## Output interpretation
 
-A typical markdown run prints three sections:
+Review the requested ADI stages:
 
-- **Abduction** - 3+ hypotheses, each with a one-line claim and a confidence
-  score (0-100%). If all three converge on the same approach, you can proceed
-  with high trust. If they diverge, treat this as a signal to discuss with a
-  human before coding.
-- **Deduction** - predicted consequences per hypothesis (performance, rollback
-  cost, blast radius, user impact).
-- **Induction** - verdict per hypothesis: `supported`, `weakened`, or
-  `insufficient evidence`. The final recommendation lists the winning
-  hypothesis and the evidence gaps that should become follow-up EvidencePacks.
+- **Abduction**: require at least three genuinely competing hypotheses for Deep/Critical; a successful parse does not enforce this.
+- **Deduction**: inspect predicted consequences, risks and feasibility.
+- **Induction**: check real evidence needs and the recommendation. The command does not run experiments or validate the recommendation.
 
-Red flags:
-
-- All hypotheses have confidence < 50% - the PRD is underspecified, go back to Shape
-- The winner is `insufficient evidence` - create targeted evidence before implementing
-- Only one hypothesis was generated - LLM anchoring, re-run with `--fpf` or a different model
+Confidence strings are model judgments, not calibrated percentages or empirical trust. Agreement among hypotheses is not independent evidence. Missing alternatives or evidence require further shaping or targeted evidence before the relevant gate can pass. EvidencePack `supports` / `weakens` / `refutes` labels are distinct from generated prose judgments.
 
 ## How it fits the workflow
 
@@ -113,3 +96,43 @@ This command belongs in the [full artifact lifecycle](/docs/guides/first-artifac
 - [`forgeplan validate`](/docs/cli/validate/) - prerequisite before reasoning
 - [`forgeplan generate`](/docs/cli/generate/) - draft artifact content
 - [Methodology: ADI cycle](/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan reason --help`.
+
+```text
+Analyze an artifact using FPF ADI reasoning cycle (Abduction→Deduction→Induction)
+
+REQUIRES LLM: generates structured three-hypothesis ADI output through the provider configured in `.forgeplan/config.yaml::llm`.
+
+AUTHENTICATION: HTTP providers use the API-key environment variable named by `llm.api_key_env`. Local subscription providers reuse an existing stock CLI login and need no API key in ForgePlan:
+
+llm: provider: codex-cli model: gpt-5.1-codex
+
+Supported local profiles are `claude-code`, `codex-cli`, `devin-cli`, `gemini-cli`, and `cursor-agent`. They are explicit opt-ins for personal local development, not production/shared/CI use. Each invocation consumes the corresponding vendor plan and is subject to that vendor's terms.
+
+Usage: forgeplan reason [OPTIONS] <ID>
+
+Arguments:
+  <ID>
+          Artifact ID to analyze
+
+Options:
+      --json
+          Output structured JSON instead of markdown
+
+      --save
+          Save ADI analysis as a Note artifact linked to the source
+
+      --fpf
+          Inject relevant FPF patterns into the ADI prompt
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+```
+<!-- forgeplan-runtime:end -->

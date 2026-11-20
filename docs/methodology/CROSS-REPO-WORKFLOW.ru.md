@@ -4,6 +4,10 @@
 > одной организации (`forgeplan` core ↔ `marketplace` ↔ `forgeplan-hud` ↔ ...)
 > чтобы знание не терялось и работа шла предсказуемо.
 
+> **Область документа:** датированное предложение rollout (2026-05-20), не
+> доказательство внедрения taxonomy, hooks или inbox tools во всех repos.
+> Незаполненные этапы ниже сохранены; примеры issues не заменяют их историю.
+
 ## Проблема которую это решает
 
 Когда работаешь в одном repo и наткнулся на bug **другого** repo, есть 5 типичных провалов:
@@ -59,7 +63,7 @@
 ├── В repo X → создавай issue в X
 ├── В upstream dependency (Y) → создавай issue в Y
 │   └── Если workaround есть в X → отдельный issue в X
-│       label: cross-repo + downstream:Y
+│       label: cross-repo + upstream:Y
 │       body: "Workaround for Y#NNN — remove when upstream fixes"
 └── Не понятно где → создавай в X, label: triage
 ```
@@ -120,6 +124,8 @@ GitHub поддерживает синтаксис:
 Closes ForgePlan/marketplace#86
 ```
 В PR body для cross-repo closure. Используй это вместо `Closes #86` если PR в другом repo.
+Auto-close зависит также от merge PR в default branch и настроек репозитория;
+простая ссылка или merge в другую ветку не доказывают закрытие.
 
 ### Referencing without closing
 
@@ -144,7 +150,7 @@ Refs ForgePlan/forgeplan#292
 3. **Inbox sweep** для всех repos в org:
    ```bash
    for repo in $(gh repo list ForgePlan --json name -q '.[].name'); do
-     gh issue list --repo ForgePlan/$repo --state open --label "cross-repo,severity:high,severity:critical" --json number,title,labels
+     gh issue list --repo ForgePlan/$repo --state open --search 'label:cross-repo label:"severity:high",label:"severity:critical"' --json number,title,labels
    done
    ```
 4. **Triage to user**: показать summary `N open issues across M repos (X critical, Y cross-repo)`. Спросить:

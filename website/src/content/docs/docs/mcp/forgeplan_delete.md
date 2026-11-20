@@ -1,9 +1,9 @@
 ---
 title: forgeplan_delete
-description: "Delete an artifact from LanceDB and remove its markdown projection file."
+description: "Soft-delete an artifact with a recovery receipt and move its Markdown projection to trash."
 ---
 
-Permanently removes an artifact from the workspace - both the LanceDB row and the markdown file on disk. This is destructive and unrecoverable (without an export backup), so agents should strongly prefer lifecycle transitions (`supersede`, `deprecate`) over deletion. Only call `forgeplan_delete` when the user explicitly asks to remove a typo, a test artifact, or a duplicate.
+Soft-deletes an artifact from the workspace. The server records a recovery receipt and moves the canonical Markdown projection into `.forgeplan/trash/`; it removes the derived row only on a legacy-owned index. Recovery uses `forgeplan_undo_last` or `forgeplan_restore`, subject to receipt availability, expiry, and collision checks. Prefer lifecycle transitions (`supersede`, `deprecate`) for retiring decisions. Only call `forgeplan_delete` when the user explicitly asks to remove a typo, a test artifact, or a duplicate.
 
 **Category**: Editing Artifacts
 
@@ -25,15 +25,16 @@ _Schema source: `crates/forgeplan-mcp/src/server.rs::DeleteParams`_
 
 ## Returns
 
-A confirmation object with the removed ID and the path of the markdown file that was unlinked. If the artifact had inbound links from other artifacts, the MCP server may refuse the delete and return an error listing the dependents so the agent can resolve them first.
+The response identifies the artifact and recovery receipt. The handler captures its relations for recovery; it does not implement the inbound-dependency refusal previously described here. On a migrated workspace, inspect the reconciliation fields such as `index_pending` separately from the canonical deletion.
 
-Example response shape:
+Illustrative response excerpt:
 
 ```json
 {
-  "ok": true,
-  "deleted": "NOTE-099",
-  "removed_path": ".forgeplan/notes/note-099-test.md"
+  "id": "NOTE-099",
+  "title": "Test note",
+  "message": "Soft-deleted — recoverable via forgeplan_undo_last",
+  "receipt_id": "illustrative-receipt-id"
 }
 ```
 
@@ -65,3 +66,48 @@ With typical agent context:
 - [`forgeplan_deprecate`](/docs/mcp/forgeplan_deprecate/) - reversible retirement
 - [`forgeplan_supersede`](/docs/mcp/forgeplan_supersede/) - replacement with history
 - [`forgeplan_export`](/docs/mcp/forgeplan_export/) - back up before destructive ops
+
+<!-- forgeplan-runtime:start -->
+## Captured tools/list
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `tools/list`, profile `full`.
+
+Delete an artifact: writes a soft-delete receipt, moves its markdown projection into `.forgeplan/trash/`, and drops the legacy projection row on workspaces whose index the legacy store still owns.
+
+### Input parameters
+
+| Name | Required | Type | Description |
+|---|---|---|---|
+| `id` | yes | string | Artifact ID to delete |
+| `workspace` | no | string \| null | Optional explicit workspace directory for this call. When set, the MCP<br>server resolves the `.forgeplan/` projection from this path instead of<br>the server's startup CWD. Use this when the calling agent is running<br>in a git worktree separate from the MCP server's launch directory.<br>PRD-078 / ADR-015. Accepts an absolute or tilde-expanded path. |
+
+<details>
+<summary>JSON Schema</summary>
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "id": {
+      "description": "Artifact ID to delete",
+      "type": "string"
+    },
+    "workspace": {
+      "default": null,
+      "description": "Optional explicit workspace directory for this call. When set, the MCP\nserver resolves the `.forgeplan/` projection from this path instead of\nthe server's startup CWD. Use this when the calling agent is running\nin a git worktree separate from the MCP server's launch directory.\nPRD-078 / ADR-015. Accepts an absolute or tilde-expanded path.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "title": "DeleteParams",
+  "type": "object"
+}
+```
+
+</details>
+<!-- forgeplan-runtime:end -->

@@ -2,6 +2,8 @@
 
 > A business rule that must hold at all times (or at specified points). Captures the **why**, not just the **what**.
 
+> Proposed package schema and illustrative domain example, not the native validator or an audited security guarantee. Source behavior and business rationale need separate evidence. See [implementation status](../README.md#implementation-status-2026-10-23).
+
 ## Purpose
 
 Invariants are the **rules of the business universe**. Violating one means the business has entered an impossible state. They are the atomic unit of correctness against which all scenarios and use-cases are verified.
@@ -118,7 +120,7 @@ Hypothesis (Domain Owner to verify): is an admin user (e.g. TripSales staff) ALS
 - `statement` must be one sentence, plain English (or Russian).
 - `category` must match the list above.
 - `affected_use_cases` must reference existing `use-case` IDs.
-- If `category = contradicts` relation exists → must be resolved before state `active`.
+- If a `contradicts` relation exists → the contradiction must be resolved before state `active`.
 
 ## Links
 

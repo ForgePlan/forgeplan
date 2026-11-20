@@ -1,13 +1,72 @@
 use console::style;
+use forgeplan_core::artifact::sanitize::sanitize_for_hint;
 use forgeplan_core::gaps::{self, GapSeverity};
 use forgeplan_core::hints::{self, Hint};
 
 use crate::commands::common;
 use crate::ui;
 
-pub async fn run() -> anyhow::Result<()> {
-    let store = common::store().await?;
-    let gaps = gaps::find_gaps(&store).await?;
+pub async fn run(json: bool) -> anyhow::Result<()> {
+    let (_, source, _read_guard) = common::open_read_source().await?;
+    let gaps = match source {
+        common::ReadSource::Legacy(store) => gaps::find_gaps(&store, &_read_guard).await?,
+        common::ReadSource::Captured(read) => gaps::find_gaps_captured(&read),
+    };
+
+    if json {
+        // No MCP twin: the shape follows the anomalies convention —
+        // counts by severity plus the gap list, closed by `_next_action`.
+        let must_count = gaps
+            .iter()
+            .filter(|g| g.severity == GapSeverity::Must)
+            .count();
+        let should_count = gaps
+            .iter()
+            .filter(|g| g.severity == GapSeverity::Should)
+            .count();
+        let could_count = gaps
+            .iter()
+            .filter(|g| g.severity == GapSeverity::Could)
+            .count();
+        let dtos: Vec<serde_json::Value> = gaps
+            .iter()
+            .map(|g| {
+                serde_json::json!({
+                    "artifact_id": g.artifact_id,
+                    "artifact_title": g.artifact_title,
+                    "severity": g.severity.label(),
+                    "message": g.message,
+                })
+            })
+            .collect();
+        let next_action = match gaps
+            .iter()
+            .find(|g| g.severity == GapSeverity::Must)
+            .or_else(|| gaps.iter().find(|g| g.severity == GapSeverity::Should))
+            .or_else(|| gaps.first())
+        {
+            Some(gap) => {
+                let id = sanitize_for_hint(&gap.artifact_id);
+                format!(
+                    "{} gap(s). Fix {} first: `forgeplan get {}`.",
+                    gaps.len(),
+                    gap.severity.label(),
+                    id
+                )
+            }
+            None => "No pipeline gaps found. All artifacts comply with depth rules.".to_string(),
+        };
+        let payload = serde_json::json!({
+            "gaps": dtos,
+            "total": gaps.len(),
+            "must": must_count,
+            "should": should_count,
+            "could": could_count,
+            "_next_action": next_action,
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(());
+    }
 
     if gaps.is_empty() {
         println!("No pipeline gaps found. All artifacts comply with depth rules.");

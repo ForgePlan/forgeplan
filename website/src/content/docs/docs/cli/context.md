@@ -3,23 +3,21 @@ title: forgeplan context
 description: "Single-call reasoning context - artifact + graph + validation + scoring in one payload"
 ---
 
-`forgeplan context` returns everything an AI agent needs to reason about an
-artifact in a single call: the artifact body, its parent/child relationships,
-validation results, R_eff score, and related memory. Instead of making five
-round-trips (`get`, `validate`, `score`, `graph`, `memory`), the agent asks
-once and receives a complete picture.
+`forgeplan context` combines artifact metadata, relationships, validation counts,
+R_eff, F-G-R and suggestions. The CLI payload does **not** include the artifact
+body or related memory; use `forgeplan get <ID> --json` for the body.
 
-It is the primary data endpoint for the Forgeplan MCP server - every
-`forgeplan_context` tool call goes through this command. CLI use is mostly
-for debugging what the agent actually sees.
+The captured MCP catalog for this build exposes no `forgeplan_context` tool, so
+this CLI projection is not an MCP response. MCP-side reads use the tools listed in
+[MCP overview](/docs/mcp/) (`forgeplan_get`, `forgeplan_search`, the Constellation
+tools).
 
 ## When to use
 
-- An AI agent (via MCP) needs full state of an artifact before editing or reasoning
-- Debugging what context is passed to `forgeplan reason` or `forgeplan generate`
+- Inspecting validation, scoring and relationships of one artifact before editing or reasoning
 - Writing an external script that analyzes artifact health and relationships
 - Auditing whether an artifact has enough linked evidence to be trustworthy
-- Preparing input for a manual review - single output covers everything
+- Preparing metadata, validation and relationship inputs for a manual review; read the body separately.
 
 ## When NOT to use
 
@@ -56,8 +54,8 @@ forgeplan context [OPTIONS] <ID>
 forgeplan context PRD-001
 ```
 
-Prints the PRD body, validation verdict, R_eff score, upstream/downstream
-links, and any related notes. Human-readable markdown by default.
+Prints metadata, validation status, R_eff, F-G-R, graph links and suggestions.
+The human-readable output does not print the artifact body.
 
 ### Example 2: JSON payload for an agent or script
 
@@ -65,19 +63,18 @@ links, and any related notes. Human-readable markdown by default.
 forgeplan context PRD-001 --json
 ```
 
-Emits structured JSON with top-level keys:
+Illustrative JSON excerpt showing selected fields, not a captured result:
 
 ```json
 {
-  "artifact": { "id": "PRD-001", "kind": "prd", "status": "active", "body": "..." },
-  "validation": { "verdict": "PASS", "must": [], "should": [] },
-  "scoring": { "r_eff": 0.82, "evidence_count": 4 },
+  "artifact": { "id": "PRD-001", "kind": "prd", "status": "active", "r_eff": 0.82 },
   "graph": {
-    "parents": [{ "id": "EPIC-002", "relation": "child_of" }],
-    "children": [{ "id": "RFC-018", "relation": "implements" }],
-    "evidence": [{ "id": "EVID-042", "verdict": "supports" }]
+    "parent": "EPIC-002",
+    "evidence": ["EVID-042"],
+    "depends_on": [], "dependents": [], "related": []
   },
-  "memory": [{ "key": "decision", "value": "..." }]
+  "validation": { "passed": true, "must_errors": 0, "should_warnings": 0 },
+  "fgr": { "formality": 1.0, "granularity": 0.8, "reliability": 0.7, "grade": "A" }
 }
 ```
 
@@ -87,42 +84,60 @@ Emits structured JSON with top-level keys:
 forgeplan context PRD-019 --json | jq '.graph.evidence'
 ```
 
-If an agent claims "no evidence linked" but you disagree, run this to see
-exactly what the MCP layer is returning.
+This CLI projection shows evidence IDs in its graph. Inspect the MCP tool's own
+response when investigating what an MCP agent received.
 
 ## Output interpretation
 
-The JSON payload has five sections; each is optional if empty:
+The CLI JSON contains:
 
-- **artifact** - frontmatter + markdown body exactly as stored on disk
-- **validation** - `verdict` is `PASS` or `FAIL`; `must` and `should` list rule violations
-- **scoring** - `r_eff` is the weakest-link evidence score (0.0-1.0);
-  `evidence_count` is the number of linked EvidencePacks
-- **graph** - `parents`, `children`, `evidence` arrays with IDs and relation type
-- **memory** - decision-memory entries scoped to this artifact
+- **artifact** — metadata including `r_eff`, title, depth and timestamps, not the body
+- **derived_status** — computed status label
+- **graph** — `parent` plus arrays of evidence, dependency, dependent and related IDs
+- **validation** — `passed`, `must_errors` and `should_warnings`
+- **fgr** — `formality`, `granularity`, `reliability` and `grade`
+- **suggestions**, **hints**, **_next_action** — guidance for the next step
 
-Red flags:
-
-- `r_eff: 0.0` and `evidence_count: 0` on an active artifact - blind spot, create evidence
-- `validation.verdict: "FAIL"` on an active artifact - should never happen, shows ingestion drift
-- Empty `graph.parents` on a PRD that claims to implement an Epic - missing link
+Inspect zero R_eff, failed validation or a missing expected parent separately.
+An active artifact can fail later validation after its content changes; that
+observation alone does not establish the cause.
 
 ## How it fits the workflow
 
 ```
 Shape → Validate → Reason → Code → Evidence → Activate
                     ^                   ^
-                context feeds here   context used in audits
+                optional manual context review
 ```
 
-- Called automatically by `forgeplan reason`, `forgeplan generate`, and MCP tools
-- Use manually to preview what an agent will see before invoking reasoning
-- Pair with `forgeplan audit` for bulk context sweeps across many artifacts
+- Use manually to inspect this CLI projection before preparing a reasoning request.
+- Read the artifact body separately with `get` when the task requires it.
+- For multiple artifacts, call `context` for each selected ID; there is no `forgeplan audit` CLI command.
 
 ## See also
 
 - [`forgeplan get`](/docs/cli/get/) - lighter subset (artifact only)
 - [`forgeplan validate`](/docs/cli/validate/) - validation subset
 - [`forgeplan score`](/docs/cli/score/) - scoring subset
-- [`forgeplan reason`](/docs/cli/reason/) - consumes context for ADI analysis
+- [`forgeplan reason`](/docs/cli/reason/) - ADI analysis with its own input preparation
 - [`forgeplan health`](/docs/cli/health/) - project-wide dashboard
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan context --help`.
+
+```text
+Single-call reasoning context — artifact + graph + validation + scoring
+
+Usage: forgeplan context [OPTIONS] <ID>
+
+Arguments:
+  <ID>  Artifact ID
+
+Options:
+      --json     Output as JSON for machine consumption (primary mode for AI agents)
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

@@ -37,9 +37,31 @@
 //! | Link | `add_link_with_projection`, `delete_link_with_projection` | Update both sides' frontmatter, then add/delete relation row |
 //! | Re-render | `render_projection`, `render_after_mutation`, `sync_before_mutation` | Idempotent file↔store reconciliation used by `activate`, `supersede`, etc. |
 //!
-//! All mutator helpers take a [`MutationContext`] (workspace path + store
-//! reference) so callers don't have to thread two arguments через every
+//! All mutator helpers take a [`MutationContext`] (workspace path + the
+//! caller's workspace-lock guard + the optional legacy derived-index sink)
+//! so callers don't have to thread those arguments through every
 //! invocation.
+//!
+//! # Two workspace layouts, one mutation flow
+//!
+//! [`MutationContext::legacy_sink`] is `Some` on a workspace whose derived
+//! index is still the legacy `artifacts.lance`, and `None` on a workspace
+//! the constellation protocol has claimed. Every helper here handles both:
+//!
+//! - **`Some`** — the historical file-first triplet: canonical Markdown
+//!   write, then the derived row.
+//! - **`None`** — the canonical Markdown write still happens, in full, with
+//!   the same validation and the same error ordering. Only the derived-sync
+//!   step is skipped, because there is no legacy index to write to and
+//!   `forgeplan index` / reconcile publishes the row afterwards.
+//!
+//! The rule that keeps this honest: a helper whose job includes a canonical
+//! Markdown mutation MUST NOT return a named refusal when the sink is
+//! `None`. Doing so would leave a real mutation unperformed. Only
+//! derived-index-ONLY helpers — orphan-row prunes, and the row drop after a
+//! soft delete whose file already moved — use
+//! [`MutationContext::require_legacy_sink`] and can therefore report
+//! [`MutationError::NoLegacySink`].
 //!
 //! # Failure semantics
 //!
@@ -91,9 +113,8 @@ pub use error::sanitize_path_for_display;
 /// Audit R1 CRITICAL (rust-expert) + MEDIUM-2 (code-reviewer):
 /// previously only `create_artifact_with_projection` applied this
 /// fallback. `sync_artifact_from_file`, `sync_body_from_file`,
-/// `render_projection*`, `read_file_body_if_newer`,
-/// `stamp_agent_identity`, and `remove_projection_at` reconstructed
-/// paths with raw `slugify(title)` and would resolve to `<id>-.md`
+/// `render_projection*`, `compare_projection`, and `stamp_agent_identity`
+/// reconstructed paths with raw `slugify(title)` and would resolve to `<id>-.md`
 /// after a non-ASCII-titled artifact had been created — producing
 /// spurious `FileNotFound` errors on every subsequent sync. This
 /// helper is the single source of truth for the slug-fallback
@@ -159,6 +180,11 @@ pub async fn render_projection(
         valid_until,
         body,
         links,
+        &[],
+        false,
+        ProjectionBodyMode::Body,
+        None,
+        None,
         false,
     )
     .await
@@ -216,29 +242,62 @@ async fn render_projection_record_inner(
 
     let slug = projection_slug(&record.title);
     let filename = format!("{}-{}.md", record.id, slug);
-    let filepath = dir.join(&filename);
+    let legacy = dir.join(&filename);
+    let filepath = match find_existing_projection_file(
+        workspace,
+        &record.id,
+        declared_canonical_key(Some(&record.canonical_key)),
+    )
+    .await?
+    {
+        Some(path) => path,
+        None if legacy.exists() => anyhow::bail!(
+            "projection destination already belongs to another document: {}",
+            legacy.display()
+        ),
+        None => legacy,
+    };
 
     // Files-first: preserve existing body + agent-owned fm keys (PRD-057 FR-009).
     // `force_body` (#478) opts out for mutations that append to the body.
+    //
+    // L02: an existing, parseable file's body is the canonical body **including
+    // when it is empty**. The earlier `!file_body.trim().is_empty()` guard read an
+    // intentionally cleared body as "no body yet" and restored `record.body` over
+    // it, so the very next mutation after a clear resurrected the text the user had
+    // deleted — and `sync_file_to_store` had already judged the cleared body a real
+    // change, so the two directions disagreed about the same file. A caller that
+    // genuinely means "write the row's body over the file" uses the `_with_body`
+    // forcing variant; there is no third reading of an empty body.
     let (effective_body, preserved_fm) = if force_body {
         (record.body.clone(), read_preserved_fm(&filepath).await)
     } else if filepath.exists() {
         match tokio::fs::read_to_string(&filepath).await {
             Ok(file_content) => match frontmatter::parse_frontmatter(&file_content) {
-                Ok((fm, file_body)) => {
-                    let preserved = filter_preserved(&fm);
-                    if !file_body.trim().is_empty() {
-                        (file_body.to_string(), preserved)
-                    } else {
-                        (record.body.clone(), preserved)
-                    }
-                }
+                Ok((fm, file_body)) => (file_body, filter_preserved(&fm)),
+                // Unparseable markdown is not a body and not an edit: this is
+                // the "could not look" case, and it leaves the row's text alone
+                // rather than claiming the file declared an empty body.
                 Err(_) => (record.body.clone(), None),
             },
             Err(_) => (record.body.clone(), None),
         }
     } else {
         (record.body.clone(), None)
+    };
+
+    // A document that does not exist yet declares the key it is created
+    // under. An existing document keeps the key it already carries.
+    let preserved_fm = match preserved_fm {
+        Some(fm) => Some(fm),
+        None => declared_canonical_key(Some(&record.canonical_key)).map(|key| {
+            let mut fm = Frontmatter::new();
+            fm.insert(
+                "slug".to_string(),
+                serde_yaml::Value::String(key.to_string()),
+            );
+            fm
+        }),
     };
 
     let content = render_markdown_with_extras(
@@ -254,6 +313,7 @@ async fn render_projection_record_inner(
         links,
         &record.tags,
         preserved_fm.as_ref(),
+        ProjectionBodyMode::Body,
     )?;
     // PRD-073 audit C1 (security): atomic tempfile+rename so a kill -9 between
     // truncate and write cannot zero-out the markdown projection. The previous
@@ -262,13 +322,14 @@ async fn render_projection_record_inner(
     Ok(filepath)
 }
 
-/// Like render_projection, but `force_body = true` uses the passed body
-/// instead of reading from file. Used by `update --body` to ensure the
-/// CLI-provided body takes precedence over the file on disk.
+/// Like render_projection, but the passed body takes precedence over the
+/// existing file. `canonical_key` selects an already identified document;
+/// when absent, `id` is resolved as a selector.
 #[allow(clippy::too_many_arguments)]
 pub async fn render_projection_with_body(
     workspace: &Path,
     id: &str,
+    canonical_key: Option<&str>,
     kind: &str,
     title: &str,
     status: &str,
@@ -278,6 +339,7 @@ pub async fn render_projection_with_body(
     valid_until: Option<&str>,
     body: &str,
     links: &[(String, String)],
+    tags: &[String],
 ) -> anyhow::Result<PathBuf> {
     render_projection_inner(
         workspace,
@@ -291,7 +353,12 @@ pub async fn render_projection_with_body(
         valid_until,
         body,
         links,
+        tags,
         true,
+        ProjectionBodyMode::Body,
+        canonical_key,
+        None,
+        false,
     )
     .await
 }
@@ -309,7 +376,12 @@ async fn render_projection_inner(
     valid_until: Option<&str>,
     body: &str,
     links: &[(String, String)],
+    tags: &[String],
     force_body: bool,
+    body_mode: ProjectionBodyMode,
+    canonical_key: Option<&str>,
+    explicit_path: Option<PathBuf>,
+    create_only: bool,
 ) -> anyhow::Result<PathBuf> {
     let artifact_kind = kind.parse::<ArtifactKind>().unwrap_or(ArtifactKind::Note);
     let dir = workspace.join(artifact_kind.dir_name());
@@ -317,11 +389,29 @@ async fn render_projection_inner(
 
     let slug = projection_slug(title);
     let filename = format!("{}-{}.md", id, slug);
-    let filepath = dir.join(&filename);
+    let filepath = match explicit_path {
+        Some(path) => path,
+        None => {
+            let legacy = dir.join(&filename);
+            match find_existing_projection_file(workspace, id, canonical_key).await? {
+                Some(path) => path,
+                None if legacy.exists() => anyhow::bail!(
+                    "projection destination already belongs to another document: {}",
+                    legacy.display()
+                ),
+                None => legacy,
+            }
+        }
+    };
 
-    // Files-first (RFC-004): preserve file body if file exists and has content.
+    // Files-first (RFC-004): preserve the file body when the file exists.
     // Only frontmatter is updated from LanceDB. Body comes from the file on disk.
     // Exception: force_body=true (from `update --body`) uses the passed body.
+    //
+    // L02: an existing, parseable file's body is canonical **including when it is
+    // empty** — same rule and same reason as `render_projection_record_inner`. A
+    // `link` / `tag` / `activate` re-render after a user cleared the body must not
+    // put the cleared text back, and must not need `update --body` to avoid it.
     //
     // PRD-057 FR-009: also preserve unknown frontmatter keys (anything not in
     // KNOWN_FM_KEYS) so agent-owned fields such as `last_modified_by` /
@@ -331,20 +421,29 @@ async fn render_projection_inner(
     } else if filepath.exists() {
         match tokio::fs::read_to_string(&filepath).await {
             Ok(file_content) => match frontmatter::parse_frontmatter(&file_content) {
-                Ok((fm, file_body)) => {
-                    let preserved = filter_preserved(&fm);
-                    if !file_body.trim().is_empty() {
-                        (file_body.to_string(), preserved)
-                    } else {
-                        (body.to_string(), preserved)
-                    }
-                }
+                Ok((fm, file_body)) => (file_body, filter_preserved(&fm)),
                 Err(_) => (body.to_string(), None),
             },
             Err(_) => (body.to_string(), None),
         }
     } else {
         (body.to_string(), None)
+    };
+
+    // A document that does not exist yet declares the key it is created
+    // under. An existing document keeps the key it already carries — the
+    // canonical key is immutable through ordinary updates, and the
+    // preserved frontmatter is where it survives a re-render.
+    let preserved_fm = match preserved_fm {
+        Some(fm) => Some(fm),
+        None => canonical_key.map(|key| {
+            let mut fm = Frontmatter::new();
+            fm.insert(
+                "slug".to_string(),
+                serde_yaml::Value::String(key.to_string()),
+            );
+            fm
+        }),
     };
 
     let content = render_markdown_with_extras(
@@ -358,11 +457,18 @@ async fn render_projection_inner(
         valid_until,
         &effective_body,
         links,
-        &[],
+        tags,
         preserved_fm.as_ref(),
+        body_mode,
     )?;
     // PRD-073 audit C1: atomic write protects against kill-mid-truncate window.
-    atomic_markdown_write(&filepath, content.as_bytes()).await?;
+    if create_only {
+        // Publication never clobbers: the write fails when the target path
+        // already exists, so an existing document is never overwritten.
+        atomic_markdown_create(&filepath, content.as_bytes()).await?;
+    } else {
+        atomic_markdown_write(&filepath, content.as_bytes()).await?;
+    }
 
     Ok(filepath)
 }
@@ -392,6 +498,28 @@ fn filter_preserved(fm: &Frontmatter) -> Option<Frontmatter> {
     if out.is_empty() { None } else { Some(out) }
 }
 
+/// The canonical key a freshly written document declares, if there is one.
+///
+/// An empty key is not a key: a row that carries none simply does not
+/// declare one, and the document keeps whatever it already had.
+fn declared_canonical_key(canonical_key: Option<&str>) -> Option<&str> {
+    canonical_key.filter(|key| !key.trim().is_empty())
+}
+
+/// Resolve an existing document over the complete workspace, never by filename.
+async fn find_existing_projection_file(
+    workspace: &Path,
+    id: &str,
+    canonical_key: Option<&str>,
+) -> anyhow::Result<Option<PathBuf>> {
+    let selector = declared_canonical_key(canonical_key).unwrap_or(id);
+    Ok(
+        crate::artifact::documents::resolve_in_workspace(workspace, selector)
+            .await?
+            .map(|document| workspace.join(document.relative_path)),
+    )
+}
+
 /// Sync file → store BEFORE mutation. Preserves any user edits to the
 /// markdown body that haven't been picked up yet.
 ///
@@ -403,12 +531,14 @@ fn filter_preserved(fm: &Frontmatter) -> Option<Frontmatter> {
 ///
 /// No-op if the artifact does not exist (e.g., create flow).
 pub async fn sync_before_mutation(
+    guard: &crate::workspace::lock::WorkspaceLock,
     workspace: &Path,
     store: &crate::db::store::LanceStore,
     id: &str,
 ) -> anyhow::Result<()> {
-    if let Some(record) = store.get_record(id).await? {
-        sync_file_to_store(store, workspace, &record).await?;
+    crate::workspace::lock::WorkspaceReadPermit::matches_workspace(guard, workspace)?;
+    if let Some(record) = store.get_record(guard, id).await? {
+        sync_file_to_store(guard, store, workspace, &record).await?;
     }
     Ok(())
 }
@@ -423,12 +553,14 @@ pub async fn sync_before_mutation(
 /// No-op if the artifact does not exist (e.g., delete flow already
 /// removed both file and record).
 pub async fn render_after_mutation(
+    guard: &crate::workspace::lock::WorkspaceLock,
     workspace: &Path,
     store: &crate::db::store::LanceStore,
     id: &str,
 ) -> anyhow::Result<()> {
-    if let Some(record) = store.get_record(id).await? {
-        let links = store.get_relations(id).await.unwrap_or_default();
+    crate::workspace::lock::WorkspaceReadPermit::matches_workspace(guard, workspace)?;
+    if let Some(record) = store.get_record(guard, id).await? {
+        let links = store.get_relations(guard, id).await?;
         render_projection_record(workspace, &record, &links).await?;
     }
     Ok(())
@@ -441,69 +573,1254 @@ pub async fn render_after_mutation(
 /// (#478). Requires that the handler synced file → store first, which
 /// `sync_before_mutation` does.
 pub async fn render_after_mutation_with_body(
+    guard: &crate::workspace::lock::WorkspaceLock,
     workspace: &Path,
     store: &crate::db::store::LanceStore,
     id: &str,
 ) -> anyhow::Result<()> {
-    if let Some(record) = store.get_record(id).await? {
-        let links = store.get_relations(id).await.unwrap_or_default();
+    crate::workspace::lock::WorkspaceReadPermit::matches_workspace(guard, workspace)?;
+    if let Some(record) = store.get_record(guard, id).await? {
+        let links = store.get_relations(guard, id).await?;
         render_projection_record_with_body(workspace, &record, &links).await?;
     }
     Ok(())
 }
 
-/// Sync file body to LanceDB store if file was edited by user.
-/// Call this before render_projection to ensure LanceDB has the latest body.
-/// Returns true if sync happened (file was newer).
+/// Which facets of the canonical projection the markdown file and the
+/// derived row disagree on.
+///
+/// Markdown is the source of truth (ADR-003), so every facet here is a case
+/// where the row has drifted away from the file. The three digests are
+/// deliberately separate fields rather than one "changed" boolean: `source`
+/// says the canonical bytes moved, `input` says the text that feeds the
+/// embedding moved, and `profile` says the embedding space moved. Folding
+/// them together is how a superseded vector keeps being served as current.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProjectionDrift {
+    pub source: bool,
+    pub input: bool,
+    pub profile: bool,
+    pub body: bool,
+    pub status: bool,
+    pub title: bool,
+    pub depth: bool,
+    pub valid_until: bool,
+    pub tags: bool,
+    pub outgoing: bool,
+    /// Facets that differ but have no writer on this path. Reported, never
+    /// silently applied — a facet nobody writes back is a facet that stays
+    /// wrong, and hiding that is how it stays wrong for years.
+    pub unwritable: Vec<crate::constellation::DiagnosticCode>,
+}
+
+impl ProjectionDrift {
+    /// Whether the file and the row agree on every comparable facet.
+    pub fn is_empty(&self) -> bool {
+        !self.source
+            && !self.input
+            && !self.profile
+            && !self.body
+            && !self.status
+            && !self.title
+            && !self.depth
+            && !self.valid_until
+            && !self.tags
+            && !self.outgoing
+            && self.unwritable.is_empty()
+    }
+
+    /// Whether applying this drift writes anything to the derived row.
+    ///
+    /// `source` and `input` alone do not: they describe the embedding
+    /// binding, and the vector column is cleared by the body write that a
+    /// real body change already triggers.
+    pub fn needs_store_write(&self) -> bool {
+        self.body
+            || self.status
+            || self.title
+            || self.depth
+            || self.valid_until
+            || self.tags
+            || self.outgoing
+    }
+}
+
+/// Resolve the document's actual path, including historical filenames.
+async fn document_file_by_id(
+    workspace: &Path,
+    _kind: &str,
+    key: Option<&str>,
+    id: &str,
+    _title: &str,
+) -> anyhow::Result<Option<PathBuf>> {
+    find_existing_projection_file(workspace, id, key).await
+}
+
+/// Normalise a body for comparison.
+///
+/// The renderer writes `<body>\n`, so a row produced by
+/// `render_projection*` and the same file read back differ by exactly one
+/// trailing newline. Everything else is compared verbatim: the previous
+/// `trim()`-based check is what made an emptied body look like "no change"
+/// and left a deleted document searchable forever.
+fn canonical_body(raw: &str) -> String {
+    let unified = if raw.contains('\r') {
+        raw.replace("\r\n", "\n")
+    } else {
+        raw.to_string()
+    };
+    match unified.strip_suffix('\n') {
+        Some(trimmed) => trimmed.to_string(),
+        None => unified,
+    }
+}
+
+/// Sync the canonical markdown projection into the derived row.
+///
+/// Comparison covers the **full captured bytes and config**, not just the
+/// body. Two defects this closes:
+///
+/// * A metadata-only edit — `status`, `title`, `depth`, `valid_until`,
+///   `tags`, `links` — used to be invisible here, so the next mutation
+///   re-rendered the file from a row that had never seen it and the edit was
+///   gone from both places.
+/// * A body replaced by an **empty** body used to be skipped entirely
+///   (`!file_trimmed.is_empty()`), so the previous text stayed in the row and
+///   kept answering searches for a document whose content was gone.
+///
+/// Missing frontmatter keys are not nulls: a field the file does not declare
+/// is left alone rather than written as empty, and a declared-but-empty body
+/// is content.
+///
+/// Returns `true` when anything was written to the row. Relations are
+/// replaced as an exact set, never unioned — a link deleted from the file
+/// disappears from the row, while a target that does not resolve locally
+/// keeps its edge.
 pub async fn sync_file_to_store(
+    guard: &crate::workspace::lock::WorkspaceLock,
     store: &crate::db::store::LanceStore,
     workspace: &Path,
     record: &crate::db::store::ArtifactRecord,
 ) -> anyhow::Result<bool> {
-    if let Some(file_body) = read_file_body_if_newer(
-        workspace,
-        &record.id,
-        &record.kind,
-        &record.title,
-        &record.body,
-    )
-    .await
-    {
-        store.update_body(&record.id, &file_body).await?;
-        Ok(true)
-    } else {
-        Ok(false)
+    let drift = compare_projection(guard, store, workspace, record).await?;
+    if !drift.unwritable.is_empty() {
+        anyhow::bail!(
+            "projection sync refused for '{}': source has unsupported changes ({:?})",
+            record.canonical_key,
+            drift.unwritable
+        );
+    }
+    Ok(drift.needs_store_write())
+}
+
+/// One exclusive, fully validated projection pass. Its private borrows prevent
+/// mixing a validated workspace with another store. Revalidate before success;
+/// individual store mutations retain their own permission checks.
+pub(crate) struct ProjectionBatch<'a> {
+    guard: &'a crate::workspace::lock::WorkspaceLock,
+    store: &'a crate::db::store::LanceStore,
+}
+
+impl<'a> ProjectionBatch<'a> {
+    pub(crate) fn new(
+        guard: &'a crate::workspace::lock::WorkspaceLock,
+        store: &'a crate::db::store::LanceStore,
+    ) -> anyhow::Result<Self> {
+        crate::workspace::lock::WorkspaceReadPermit::matches_workspace(
+            guard,
+            store.workspace_path(),
+        )?;
+        Ok(Self { guard, store })
+    }
+
+    pub(crate) fn revalidate(&self) -> anyhow::Result<()> {
+        crate::workspace::lock::WorkspaceReadPermit::matches_workspace(
+            self.guard,
+            self.store.workspace_path(),
+        )
     }
 }
 
-/// Check if a file's body differs from the LanceDB body.
-/// Returns Some(file_body) if the file was edited by the user, None otherwise.
-pub async fn read_file_body_if_newer(
+/// Inputs from one verified corpus/table snapshot during a bulk structural scan.
+/// The caller retains the workspace guard and rechecks source bytes afterwards.
+pub(crate) struct ProjectionSnapshot<'a> {
+    pub parsed: &'a crate::constellation::capture::ParsedArtifact,
+    pub candidates: &'a [crate::artifact::canonical_key::ArtifactCandidate],
+    pub stored_edges: &'a std::collections::BTreeSet<crate::constellation::capture::OutgoingEdge>,
+    pub chunk_size: usize,
+}
+
+/// Compare the canonical file with the derived row and apply every facet
+/// that differs.
+///
+/// Returns the observed drift either way — including the facets that were
+/// detected but not written — so callers that need to explain *why* a row
+/// still disagrees with its file can say so.
+pub async fn compare_projection(
+    guard: &crate::workspace::lock::WorkspaceLock,
+    store: &crate::db::store::LanceStore,
     workspace: &Path,
-    id: &str,
-    kind: &str,
-    title: &str,
-    db_body: &str,
-) -> Option<String> {
-    let artifact_kind = kind.parse::<ArtifactKind>().ok()?;
-    let dir = workspace.join(artifact_kind.dir_name());
-    let slug = projection_slug(title);
-    let filename = format!("{}-{}.md", id, slug);
-    let filepath = dir.join(&filename);
+    record: &crate::db::store::ArtifactRecord,
+) -> anyhow::Result<ProjectionDrift> {
+    crate::workspace::lock::WorkspaceReadPermit::matches_workspace(guard, workspace)?;
 
-    let file_content = tokio::fs::read_to_string(&filepath).await.ok()?;
-    let (_fm, file_body) = frontmatter::parse_frontmatter(&file_content).ok()?;
+    let selector = declared_canonical_key(Some(&record.canonical_key)).unwrap_or(&record.id);
+    let Some(document) =
+        crate::artifact::documents::resolve_in_workspace(workspace, selector).await?
+    else {
+        return Ok(ProjectionDrift::default());
+    };
+    let relative_path = document.relative_path.to_string_lossy().into_owned();
+    let bytes = tokio::fs::read(workspace.join(&document.relative_path)).await?;
+    let chunk_size = body_prefix_chars(workspace);
+    let parsed = crate::constellation::capture::parse_artifact_file(
+        &relative_path,
+        std::sync::Arc::<[u8]>::from(bytes),
+        chunk_size,
+    )
+    .map_err(|diagnostic| {
+        anyhow::anyhow!("projection sync failed {relative_path}: {diagnostic}")
+    })?;
+    let candidates = crate::artifact::documents::workspace_candidates(workspace).await?;
+    let stored_edges = store
+        .get_relations(guard, selector)
+        .await?
+        .into_iter()
+        .map(|(target, relation)| {
+            crate::constellation::capture::OutgoingEdge::new(target, relation)
+        })
+        .collect();
+    let batch = ProjectionBatch::new(guard, store)?;
+    let drift = compare_projection_with_snapshot(
+        &batch,
+        record,
+        ProjectionSnapshot {
+            parsed: &parsed,
+            candidates: &candidates,
+            stored_edges: &stored_edges,
+            chunk_size,
+        },
+    )
+    .await?;
+    batch.revalidate()?;
+    Ok(drift)
+}
 
-    let file_trimmed = file_body.trim();
-    let db_trimmed = db_body.trim();
+/// Apply the same projection contract without another whole-workspace census
+/// or per-record relation/journal validation inside an already validated batch.
+pub(crate) async fn compare_projection_with_snapshot(
+    batch: &ProjectionBatch<'_>,
+    record: &crate::db::store::ArtifactRecord,
+    snapshot: ProjectionSnapshot<'_>,
+) -> anyhow::Result<ProjectionDrift> {
+    let guard = batch.guard;
+    let store = batch.store;
+    let ProjectionSnapshot {
+        parsed,
+        candidates,
+        stored_edges,
+        chunk_size,
+    } = snapshot;
+    let selector = declared_canonical_key(Some(&record.canonical_key)).unwrap_or(&record.id);
+    let mut drift = ProjectionDrift::default();
+    let relative_path = &parsed.relative_path;
+    if !parsed.display_id.is_empty() && parsed.display_id != record.id {
+        anyhow::bail!("projection sync identity changed for {relative_path}");
+    }
 
-    if !file_trimmed.is_empty() && file_trimmed != db_trimmed {
-        Some(file_body.to_string())
-    } else {
-        None
+    let file_body = canonical_body(&parsed.body);
+    let db_body = canonical_body(&record.body);
+    let full_source = std::str::from_utf8(&parsed.raw_bytes)?;
+    // Legacy imports/repairs may store the complete canonical Markdown. That
+    // representation and the renderer's one final LF are not content edits:
+    // rewriting every unchanged row invalidates all vectors on each mutation.
+    drift.body = file_body != db_body
+        && !crate::db::migrate::indexed_body_matches_source(&record.body, &parsed.body)
+        && !crate::db::migrate::indexed_body_matches_source(&record.body, full_source);
+
+    drift.status = parsed.frontmatter.contains_key("status") && parsed.status != record.status;
+    drift.title = parsed.frontmatter.contains_key("title") && parsed.title != record.title;
+    drift.depth = match parsed.depth.as_deref() {
+        Some(depth) => record.depth.as_str() != depth,
+        None => false,
+    };
+
+    // The three digests stay separate facts.
+    drift.input =
+        crate::constellation::jobs::embedding_input_digest(&parsed.title, &parsed.body, chunk_size)
+            != crate::constellation::jobs::embedding_input_digest(
+                &record.title,
+                &record.body,
+                chunk_size,
+            );
+    // `compute_content_hash` returns an owned `String`; compare it as `&str`
+    // against the row's optional `&str`.
+    drift.source = record.body_hash.as_deref()
+        != Some(crate::db::store::compute_content_hash(&parsed.title, &parsed.body).as_str());
+    // The derived row carries no profile binding until the publisher writes
+    // one, so a profile can never drift here — and the flag stays visible so
+    // that the day a profile column exists it is compared rather than
+    // forgotten.
+    drift.profile = false;
+
+    // `valid_until` can be set but not cleared on this path: the mutator
+    // takes a value, not an option. Detected and reported instead of
+    // silently ignored.
+    match parsed.valid_until.as_deref() {
+        Some(valid_until) if !valid_until.is_empty() => {
+            drift.valid_until = record.valid_until.as_deref() != Some(valid_until);
+        }
+        _ => {
+            if record.valid_until.is_some() {
+                drift
+                    .unwritable
+                    .push(crate::constellation::DiagnosticCode::UnreadableSource);
+            }
+        }
+    }
+
+    if record.author.as_deref() != parsed.author.as_deref() {
+        drift
+            .unwritable
+            .push(crate::constellation::DiagnosticCode::UnreadableSource);
+    }
+    let (indexed_parent, declared_parent) =
+        if record.parent_epic.is_some() || parsed.parent_epic.is_some() {
+            (
+                record
+                    .parent_epic
+                    .as_deref()
+                    .map(|value| crate::db::migrate::resolve_reference(candidates, value))
+                    .transpose()?,
+                parsed
+                    .parent_epic
+                    .as_deref()
+                    .map(|value| crate::db::migrate::resolve_reference(candidates, value))
+                    .transpose()?,
+            )
+        } else {
+            (None, None)
+        };
+    if indexed_parent != declared_parent {
+        drift
+            .unwritable
+            .push(crate::constellation::DiagnosticCode::UnreadableSource);
+    }
+
+    let mut file_tags = parsed.tags.clone();
+    file_tags.sort();
+    file_tags.dedup();
+    let mut db_tags = record.tags.clone();
+    db_tags.sort();
+    db_tags.dedup();
+    drift.tags = file_tags != db_tags;
+
+    // The declared endpoints name documents by their display id; the store
+    // holds the edges by their canonical key. The declared side is
+    // translated first, so the comparison and the write below speak one
+    // language — otherwise every sync would find a difference, delete the
+    // stored edge and write it back under the same display id.
+    let declared = parsed
+        .outgoing
+        .iter()
+        .map(|edge| {
+            Ok(crate::constellation::capture::OutgoingEdge::new(
+                crate::db::migrate::resolve_reference(candidates, &edge.target)?,
+                edge.relation.clone(),
+            ))
+        })
+        .collect::<anyhow::Result<std::collections::BTreeSet<_>>>()?;
+    drift.outgoing = stored_edges != &declared;
+
+    // Do not partially update the index when a later render would lose
+    // source fields that this sync path cannot represent.
+    if !drift.unwritable.is_empty() || !drift.needs_store_write() {
+        return Ok(drift);
+    }
+
+    // Title before body: `update_body` stamps `body_hash` from the row's
+    // *current* title, so a title that changed in the same pass has to land
+    // first or the hash would be computed over the superseded title.
+    if drift.title {
+        store
+            .update_artifact(guard, selector, None, Some(&parsed.title))
+            .await?;
+    }
+    if drift.status {
+        store
+            .update_artifact(guard, selector, Some(&parsed.status), None)
+            .await?;
+    }
+    if drift.body {
+        store.update_body(guard, selector, &file_body).await?;
+    }
+    if drift.depth
+        && let Some(depth) = parsed.depth.as_deref()
+    {
+        store.update_depth(guard, selector, depth).await?;
+    }
+    if drift.valid_until
+        && let Some(valid_until) = parsed.valid_until.as_deref()
+    {
+        store
+            .update_valid_until(guard, selector, valid_until)
+            .await?;
+    }
+    if drift.tags {
+        let removed: Vec<String> = db_tags
+            .iter()
+            .filter(|t| !file_tags.contains(t))
+            .cloned()
+            .collect();
+        if !removed.is_empty() {
+            store.remove_tags(guard, selector, &removed).await?;
+        }
+        let added: Vec<String> = file_tags
+            .iter()
+            .filter(|t| !db_tags.contains(t))
+            .cloned()
+            .collect();
+        if !added.is_empty() {
+            store.add_tags(guard, selector, &added).await?;
+        }
+    }
+    if drift.outgoing {
+        // Exact replacement: first remove what the file no longer declares,
+        // then add what it newly does. Removing first also keeps
+        // `add_relation`'s duplicate guard honest for a retargeted edge.
+        for edge in stored_edges.difference(&declared) {
+            store
+                .delete_relation(guard, selector, &edge.target, &edge.relation)
+                .await?;
+        }
+        for edge in declared.difference(stored_edges) {
+            store
+                .add_relation(guard, selector, &edge.target, &edge.relation)
+                .await?;
+        }
+    }
+
+    Ok(drift)
+}
+
+/// Body prefix length that feeds the embedding input digest.
+///
+/// Read from the same config the rest of the tool uses, so the digest here
+/// and the digest in `constellation::capture` cannot disagree.
+fn body_prefix_chars(workspace: &Path) -> usize {
+    crate::workspace::load_config(workspace)
+        .ok()
+        .and_then(|config| config.embedding.map(|embedding| embedding.chunk_size))
+        .unwrap_or(crate::constellation::jobs::DEFAULT_BODY_PREFIX_CHARS)
+}
+
+#[cfg(test)]
+mod sync_drift_tests {
+    use super::*;
+    use crate::db::store::{ArtifactRecord, LanceStore, NewArtifact};
+    use crate::workspace::lock::WorkspaceLock;
+    use tempfile::TempDir;
+
+    fn art(id: &str, kind: &str, title: &str) -> NewArtifact {
+        NewArtifact {
+            canonical_key: id.to_string(),
+            id: id.to_string(),
+            kind: kind.to_string(),
+            status: "draft".to_string(),
+            title: title.to_string(),
+            body: "Original body.".to_string(),
+            depth: "standard".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        }
+    }
+
+    /// Legacy-index workspace: dir + LanceStore + the workspace lock every
+    /// `MutationContext` requires. The lock is acquired the way production
+    /// does (before the store) so a test cannot accidentally rely on an
+    /// ordering the real call sites do not have.
+    async fn fixture() -> (TempDir, PathBuf, LanceStore, WorkspaceLock) {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = LanceStore::init_new(&ws, &lock).await.unwrap();
+        (tmp, ws, store, lock)
+    }
+
+    /// Overwrite a projection file with exactly the frontmatter given and
+    /// exactly the body given.
+    fn write_projection(
+        ws: &Path,
+        id: &str,
+        kind: &str,
+        title: &str,
+        frontmatter: &str,
+        body: &str,
+    ) {
+        let dir = ws.join(kind.parse::<ArtifactKind>().unwrap().dir_name());
+        std::fs::create_dir_all(&dir).unwrap();
+        // The creator publishes a document under its canonical key
+        // (`<key>.md`); a legacy-named file is the fallback. Editing the
+        // wrong path would leave the real document untouched and make the
+        // sync test pass or fail for the wrong reason.
+        let keyed = dir.join(format!("{id}.md"));
+        let path = if keyed.exists() {
+            keyed
+        } else {
+            dir.join(format!("{}-{}.md", id, projection_slug(title)))
+        };
+        std::fs::write(&path, format!("---\n{frontmatter}---\n\n{body}")).unwrap();
+    }
+
+    async fn record(lock: &WorkspaceLock, store: &LanceStore, id: &str) -> ArtifactRecord {
+        store
+            .get_record(lock, id)
+            .await
+            .unwrap()
+            .expect("row exists")
+    }
+
+    #[tokio::test]
+    async fn projection_batch_rejects_a_foreign_store_and_later_journal_corruption() {
+        let (_tmp, ws, store, lock) = fixture().await;
+        let path = create_artifact_with_projection(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            &art("PRD-001", "prd", "Auth"),
+        )
+        .await
+        .unwrap();
+        let before = record(&lock, &store, "PRD-001").await;
+        let source = std::fs::read(&path).unwrap();
+        let (_other_tmp, _other_ws, other_store, _other_lock) = fixture().await;
+        assert!(ProjectionBatch::new(&lock, &other_store).is_err());
+        let batch = ProjectionBatch::new(&lock, &store).unwrap();
+        let journal = ws.join("identity-repair/repair-20261110T000000Z-11111111");
+        std::fs::create_dir_all(&journal).unwrap();
+        std::fs::write(journal.join("manifest.json"), b"{broken").unwrap();
+        assert!(
+            batch.revalidate().is_err(),
+            "a validated batch is not a permanent journal bypass"
+        );
+        assert!(ProjectionBatch::new(&lock, &store).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), source);
+        std::fs::remove_file(journal.join("manifest.json")).unwrap();
+        std::fs::remove_dir(journal).unwrap();
+        let after = record(&lock, &store, "PRD-001").await;
+        assert_eq!(after.canonical_key, before.canonical_key);
+        assert_eq!(after.body, before.body);
+        assert_eq!(after.updated_at, before.updated_at);
+    }
+
+    #[tokio::test]
+    async fn a_freshly_created_projection_has_nothing_to_sync() {
+        let (_tmp, ws, store, lock) = fixture().await;
+        create_artifact_with_projection(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            &art("PRD-001", "prd", "Auth"),
+        )
+        .await
+        .unwrap();
+
+        let drift = compare_projection(&lock, &store, &ws, &record(&lock, &store, "PRD-001").await)
+            .await
+            .unwrap();
+        assert!(
+            !drift.needs_store_write(),
+            "an unchanged projection must not churn the row: {drift:?}"
+        );
+        assert!(
+            !sync_file_to_store(&lock, &store, &ws, &record(&lock, &store, "PRD-001").await)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn unchanged_body_representations_do_not_rewrite_rows_but_edits_and_empty_body_do() {
+        let (_tmp, ws, store, lock) = fixture().await;
+        let artifact = art("PRD-001", "prd", "Auth");
+        let path = create_artifact_with_projection(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            &artifact,
+        )
+        .await
+        .unwrap();
+        let fm = "id: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth\ndepth: standard\n";
+        write_projection(&ws, "PRD-001", "prd", "Auth", fm, "Original content.\n\n");
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let (_, body) = frontmatter::parse_frontmatter(&raw).unwrap();
+        for representation in [raw.clone(), body.strip_suffix('\n').unwrap().to_string()] {
+            store
+                .update_body(&lock, "PRD-001", &representation)
+                .await
+                .unwrap();
+            let before = record(&lock, &store, "PRD-001").await;
+            let drift = compare_projection(&lock, &store, &ws, &before)
+                .await
+                .unwrap();
+            assert!(!drift.body, "{drift:?}");
+            let after = record(&lock, &store, "PRD-001").await;
+            assert_eq!(after.body, representation);
+            assert_eq!(after.updated_at, before.updated_at);
+        }
+        for replacement in ["Changed consumer-visible content.\n", ""] {
+            write_projection(&ws, "PRD-001", "prd", "Auth", fm, replacement);
+            let before = record(&lock, &store, "PRD-001").await;
+            let drift = compare_projection(&lock, &store, &ws, &before)
+                .await
+                .unwrap();
+            assert!(drift.body, "{drift:?}");
+            let after = record(&lock, &store, "PRD-001").await;
+            assert_eq!(after.body, canonical_body(replacement));
+            assert_eq!(after.canonical_key, before.canonical_key);
+        }
+    }
+
+    #[tokio::test]
+    async fn every_creator_refuses_duplicate_keys_and_incomplete_census() {
+        for legacy in [false, true] {
+            for creator in 0..3 {
+                let tmp = TempDir::new().unwrap();
+                let ws = tmp.path().join(".forgeplan");
+                tokio::fs::create_dir_all(&ws).await.unwrap();
+                let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+                let store = if legacy {
+                    Some(LanceStore::init_new(&ws, &lock).await.unwrap())
+                } else {
+                    None
+                };
+                let ctx = MutationContext::new(&ws, &lock, store.as_ref());
+                let mut first = art("PRD-101", "prd", "First");
+                first.canonical_key = "prd-first-k11111111111111111111111111111111".into();
+                let path = match creator {
+                    0 => create_artifact_with_projection(&ctx, &first).await,
+                    1 => create_artifact_with_canonical_key(&ctx, &first).await,
+                    _ => import_artifact_with_projection(&ctx, &first).await,
+                }
+                .unwrap();
+                let original = std::fs::read(&path).unwrap();
+                let original_row_body = match &store {
+                    Some(store) => Some(record(&lock, store, &first.canonical_key).await.body),
+                    None => None,
+                };
+                let mut duplicate = creation_row(&first);
+                duplicate.body = "Must not replace original.".into();
+                let result = match creator {
+                    0 => create_artifact_with_projection(&ctx, &duplicate).await,
+                    1 => create_artifact_with_canonical_key(&ctx, &duplicate).await,
+                    _ => import_artifact_with_projection(&ctx, &duplicate).await,
+                };
+                assert!(result.is_err());
+                assert_eq!(std::fs::read(&path).unwrap(), original);
+
+                let historical = ws.join("prds/historical.md");
+                std::fs::rename(&path, &historical).unwrap();
+                let result = match creator {
+                    0 => create_artifact_with_projection(&ctx, &duplicate).await,
+                    1 => create_artifact_with_canonical_key(&ctx, &duplicate).await,
+                    _ => import_artifact_with_projection(&ctx, &duplicate).await,
+                };
+                assert!(
+                    result.is_err(),
+                    "creator {creator} ignored the complete census"
+                );
+                assert_eq!(std::fs::read(&historical).unwrap(), original);
+                assert!(!path.exists());
+                if let Some(store) = &store {
+                    assert_eq!(
+                        Some(record(&lock, store, &first.canonical_key).await.body),
+                        original_row_body
+                    );
+                }
+
+                std::fs::write(ws.join("prds/broken.md"), b"not frontmatter").unwrap();
+                let mut new = art("PRD-102", "prd", "New");
+                new.canonical_key = "prd-new-k22222222222222222222222222222222".into();
+                let result = match creator {
+                    0 => create_artifact_with_projection(&ctx, &new).await,
+                    1 => create_artifact_with_canonical_key(&ctx, &new).await,
+                    _ => import_artifact_with_projection(&ctx, &new).await,
+                };
+                assert!(
+                    result.is_err(),
+                    "creator {creator} accepted an incomplete census"
+                );
+                assert!(
+                    !ws.join("prds")
+                        .join(format!("{}.md", new.canonical_key))
+                        .exists()
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_body_only_creators_never_replace_identity_or_occupied_path() {
+        for legacy in [false, true] {
+            for import in [false, true] {
+                let tmp = TempDir::new().unwrap();
+                let ws = tmp.path().join(".forgeplan");
+                tokio::fs::create_dir_all(&ws).await.unwrap();
+                let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+                let store = if legacy {
+                    Some(LanceStore::init_new(&ws, &lock).await.unwrap())
+                } else {
+                    None
+                };
+                let ctx = MutationContext::new(&ws, &lock, store.as_ref());
+                let mut first = art("PRD-201", "prd", "First");
+                first.canonical_key.clear();
+                let path = if import {
+                    import_artifact_with_projection(&ctx, &first).await
+                } else {
+                    create_artifact_with_projection(&ctx, &first).await
+                }
+                .unwrap();
+                let original = std::fs::read(&path).unwrap();
+                let mut duplicate = art("PRD-201", "prd", "Different");
+                duplicate.canonical_key.clear();
+                let result = if import {
+                    import_artifact_with_projection(&ctx, &duplicate).await
+                } else {
+                    create_artifact_with_projection(&ctx, &duplicate).await
+                };
+                assert!(result.is_err());
+                assert_eq!(std::fs::read(&path).unwrap(), original);
+                assert!(!ws.join("prds/PRD-201-different.md").exists());
+
+                let occupied = ws.join("prds/PRD-202-target.md");
+                let other = b"---\nid: PRD-203\nkind: prd\ntitle: Other\nslug: prd-other\n---\n\nKeep this.\n";
+                std::fs::write(&occupied, other).unwrap();
+                let mut target = art("PRD-202", "prd", "Target");
+                target.canonical_key.clear();
+                let result = if import {
+                    import_artifact_with_projection(&ctx, &target).await
+                } else {
+                    create_artifact_with_projection(&ctx, &target).await
+                };
+                assert!(result.is_err());
+                assert_eq!(
+                    std::fs::read(occupied).unwrap().as_slice(),
+                    other.as_slice()
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn mutation_refuses_unwritable_source_before_index_or_file_changes() {
+        for field in ["author", "parent_epic"] {
+            let (_tmp, ws, store, lock) = fixture().await;
+            let ctx = MutationContext::new(&ws, &lock, Some(&store));
+            let mut epic = art("EPIC-101", "epic", "Platform");
+            epic.canonical_key = "epic-platform-k11111111111111111111111111111111".into();
+            create_artifact_with_projection(&ctx, &epic).await.unwrap();
+            let child = art("PRD-101", "prd", "Child");
+            let path = create_artifact_with_projection(&ctx, &child).await.unwrap();
+            let original = std::fs::read_to_string(&path).unwrap();
+            let (old, new) = if field == "author" {
+                ("author: null", "author: New author")
+            } else {
+                ("parent_epic: null", "parent_epic: EPIC-101")
+            };
+            assert!(original.contains(old));
+            let edited = original
+                .replacen(old, new, 1)
+                .replace("Original body.", "Edited source body.");
+            std::fs::write(&path, edited.as_bytes()).unwrap();
+            let before = record(&lock, &store, "PRD-101").await;
+            assert!(
+                add_tags_with_projection(&ctx, "PRD-101", &["new-tag".into()])
+                    .await
+                    .is_err()
+            );
+            assert_eq!(std::fs::read(&path).unwrap().as_slice(), edited.as_bytes());
+            let after = record(&lock, &store, "PRD-101").await;
+            assert_eq!(after.body, before.body);
+            assert_eq!(after.tags, before.tags);
+            assert_eq!(after.author, before.author);
+            assert_eq!(after.parent_epic, before.parent_epic);
+        }
+    }
+
+    #[tokio::test]
+    async fn compare_parent_alias_without_rewriting_markdown() {
+        let (_tmp, ws, store, lock) = fixture().await;
+        let mut epic = art("EPIC-001", "epic", "Platform");
+        epic.canonical_key = "epic-platform-k11111111111111111111111111111111".to_string();
+        let mut child = art("PRD-001", "prd", "Child");
+        child.parent_epic = Some(epic.canonical_key.clone());
+        let ctx = MutationContext::new(&ws, &lock, Some(&store));
+        create_artifact_with_projection(&ctx, &epic).await.unwrap();
+        let path = create_artifact_with_projection(&ctx, &child).await.unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, text.replace(&epic.canonical_key, "EPIC-001")).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let selected = record(&lock, &store, "PRD-001").await;
+        let drift = compare_projection(&lock, &store, &ws, &selected)
+            .await
+            .unwrap();
+        assert!(drift.unwritable.is_empty(), "{drift:?}");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(
+            record(&lock, &store, "PRD-001").await.parent_epic,
+            child.parent_epic
+        );
+
+        let mut other = art("EPIC-001", "epic", "Other");
+        other.canonical_key = "epic-other-k22222222222222222222222222222222".to_string();
+        create_artifact_with_projection(&ctx, &other).await.unwrap();
+        assert!(
+            compare_projection(&lock, &store, &ws, &selected)
+                .await
+                .is_err()
+        );
+        assert_eq!(std::fs::read(path).unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn compare_parent_accepts_an_absent_historical_forward_reference() {
+        let (_tmp, ws, store, lock) = fixture().await;
+        let mut child = art("PRD-001", "prd", "Child");
+        child.parent_epic = Some("EPIC-A01".into());
+        let ctx = MutationContext::new(&ws, &lock, Some(&store));
+        let path = create_artifact_with_projection(&ctx, &child).await.unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let selected = record(&lock, &store, "PRD-001").await;
+        let drift = compare_projection(&lock, &store, &ws, &selected)
+            .await
+            .unwrap();
+        assert!(drift.unwritable.is_empty(), "{drift:?}");
+        assert_eq!(std::fs::read(path).unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn sync_uses_canonical_key_when_display_alias_is_shared() {
+        let (_tmp, ws, store, lock) = fixture().await;
+        let mut first = art("PRD-001", "prd", "First");
+        first.canonical_key = "prd-first-k11111111111111111111111111111111".to_string();
+        let mut second = art("PRD-001", "prd", "Second");
+        second.canonical_key = "prd-second-k22222222222222222222222222222222".to_string();
+        let ctx = MutationContext::new(&ws, &lock, Some(&store));
+        let path = create_artifact_with_projection(&ctx, &first).await.unwrap();
+        create_artifact_with_projection(&ctx, &second)
+            .await
+            .unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, text.replace("Original body.", "Updated first body.")).unwrap();
+
+        let selected = record(&lock, &store, &first.canonical_key).await;
+        assert!(
+            sync_file_to_store(&lock, &store, &ws, &selected)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            record(&lock, &store, &first.canonical_key).await.body,
+            "Updated first body."
+        );
+        assert_eq!(
+            record(&lock, &store, &second.canonical_key).await.body,
+            "Original body."
+        );
+    }
+
+    #[tokio::test]
+    async fn body_update_uses_canonical_key_with_shared_legacy_display_id() {
+        let (_tmp, ws, store, lock) = fixture().await;
+        let mut first = art("PRD-001", "prd", "First");
+        first.canonical_key = "prd-first-k11111111111111111111111111111111".to_string();
+        first.tags = vec!["layer=domain".to_string(), "owner=alpha".to_string()];
+        let mut second = art("PRD-001", "prd", "Second");
+        second.canonical_key = "prd-second-k22222222222222222222222222222222".to_string();
+        second.tags = vec!["owner=beta".to_string()];
+        let ctx = MutationContext::new(&ws, &lock, Some(&store));
+        let first_created = create_artifact_with_projection(&ctx, &first).await.unwrap();
+        let second_created = create_artifact_with_projection(&ctx, &second)
+            .await
+            .unwrap();
+        let first_path = ws.join("prds/PRD-001-first.md");
+        let second_path = ws.join("prds/PRD-001-second.md");
+        std::fs::rename(&first_created, &first_path).unwrap();
+        std::fs::rename(&second_created, &second_path).unwrap();
+        let second_before = std::fs::read(&second_path).unwrap();
+
+        update_body_with_projection(&ctx, &first.canonical_key, "Updated first body.")
+            .await
+            .unwrap();
+        let first_after = std::fs::read_to_string(&first_path).unwrap();
+        assert!(first_after.contains("Updated first body."));
+        assert!(first_after.contains(&first.canonical_key));
+        let (fm, _) = frontmatter::parse_frontmatter(&first_after).unwrap();
+        let expected_tags = serde_yaml::Value::Sequence(
+            first
+                .tags
+                .iter()
+                .cloned()
+                .map(serde_yaml::Value::String)
+                .collect(),
+        );
+        assert_eq!(fm.get("tags"), Some(&expected_tags));
+        assert_eq!(
+            record(&lock, &store, &first.canonical_key).await.tags,
+            first.tags
+        );
+        store
+            .remove_tags(&lock, &first.canonical_key, &first.tags)
+            .await
+            .unwrap();
+        let stale = record(&lock, &store, &first.canonical_key).await;
+        assert!(stale.tags.is_empty());
+        assert!(
+            sync_file_to_store(&lock, &store, &ws, &stale)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            record(&lock, &store, &first.canonical_key).await.tags,
+            first.tags
+        );
+        assert_eq!(
+            record(&lock, &store, &second.canonical_key).await.tags,
+            second.tags
+        );
+        assert_eq!(std::fs::read(&second_path).unwrap(), second_before);
+        assert!(
+            !first_created.exists(),
+            "the historical path must be retained"
+        );
+        assert_eq!(
+            record(&lock, &store, &first.canonical_key).await.body,
+            "Updated first body."
+        );
+        assert_eq!(
+            record(&lock, &store, &second.canonical_key).await.body,
+            "Original body."
+        );
+
+        let first_before_ambiguous_update = std::fs::read(&first_path).unwrap();
+        let error = update_body_with_projection(&ctx, "PRD-001", "Must not be written.")
+            .await
+            .expect_err("a shared display id must be rejected");
+        assert!(error.to_string().contains("matches 2 documents"), "{error}");
+        assert_eq!(
+            std::fs::read(&first_path).unwrap(),
+            first_before_ambiguous_update
+        );
+        assert_eq!(std::fs::read(&second_path).unwrap(), second_before);
+        assert_eq!(
+            record(&lock, &store, &first.canonical_key).await.body,
+            "Updated first body."
+        );
+        assert_eq!(
+            record(&lock, &store, &second.canonical_key).await.body,
+            "Original body."
+        );
+    }
+
+    #[tokio::test]
+    async fn body_update_accepts_an_unambiguous_display_id() {
+        let (_tmp, ws, store, lock) = fixture().await;
+        let mut artifact = art("PRD-002", "prd", "Only");
+        artifact.canonical_key = "prd-only-k33333333333333333333333333333333".to_string();
+        let ctx = MutationContext::new(&ws, &lock, Some(&store));
+        let path = create_artifact_with_projection(&ctx, &artifact)
+            .await
+            .unwrap();
+
+        update_body_with_projection(&ctx, "PRD-002", "Updated by display id.")
+            .await
+            .unwrap();
+        assert!(
+            std::fs::read_to_string(path)
+                .unwrap()
+                .contains("Updated by display id.")
+        );
+        assert_eq!(
+            record(&lock, &store, &artifact.canonical_key).await.body,
+            "Updated by display id."
+        );
+    }
+
+    #[tokio::test]
+    async fn a_metadata_only_edit_reaches_the_row() {
+        let (_tmp, ws, store, lock) = fixture().await;
+        create_artifact_with_projection(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            &art("PRD-002", "prd", "Auth"),
+        )
+        .await
+        .unwrap();
+
+        // Only the status changes in the file; the body is byte-identical.
+        write_projection(
+            &ws,
+            "PRD-002",
+            "prd",
+            "Auth",
+            "id: PRD-002\nkind: prd\nstatus: active\ntitle: Auth\ndepth: standard\n",
+            "Original body.",
+        );
+
+        assert!(
+            sync_file_to_store(&lock, &store, &ws, &record(&lock, &store, "PRD-002").await)
+                .await
+                .unwrap(),
+            "a metadata-only edit must not be skipped"
+        );
+        let after = record(&lock, &store, "PRD-002").await;
+        assert_eq!(after.status, "active");
+        assert_eq!(after.body, "Original body.", "the body was not touched");
+    }
+
+    #[tokio::test]
+    async fn a_tag_edit_reaches_the_row_as_an_exact_set() {
+        let (_tmp, ws, store, lock) = fixture().await;
+        let mut artifact = art("PRD-003", "prd", "Auth");
+        artifact.tags = vec!["source=code".to_string()];
+        create_artifact_with_projection(&MutationContext::new(&ws, &lock, Some(&store)), &artifact)
+            .await
+            .unwrap();
+
+        write_projection(
+            &ws,
+            "PRD-003",
+            "prd",
+            "Auth",
+            "id: PRD-003\nkind: prd\nstatus: draft\ntitle: Auth\ndepth: standard\ntags:\n  - legacy\n",
+            "Original body.",
+        );
+        assert!(
+            sync_file_to_store(&lock, &store, &ws, &record(&lock, &store, "PRD-003").await)
+                .await
+                .unwrap()
+        );
+        let mut tags = record(&lock, &store, "PRD-003").await.tags;
+        tags.sort();
+        assert_eq!(tags, vec!["legacy".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn an_emptied_body_is_a_change_not_a_no_op() {
+        let (_tmp, ws, store, lock) = fixture().await;
+        create_artifact_with_projection(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            &art("PRD-004", "prd", "Auth"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            record(&lock, &store, "PRD-004").await.body,
+            "Original body."
+        );
+
+        write_projection(
+            &ws,
+            "PRD-004",
+            "prd",
+            "Auth",
+            "id: PRD-004\nkind: prd\nstatus: draft\ntitle: Auth\ndepth: standard\n",
+            "",
+        );
+
+        assert!(
+            sync_file_to_store(&lock, &store, &ws, &record(&lock, &store, "PRD-004").await)
+                .await
+                .unwrap(),
+            "an emptied body is a content change, not an absence of one"
+        );
+        assert_eq!(
+            record(&lock, &store, "PRD-004").await.body,
+            "",
+            "the previous text must not survive in the row"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_removed_link_disappears_and_the_rest_are_kept() {
+        let (_tmp, ws, store, lock) = fixture().await;
+        let ctx = MutationContext::new(&ws, &lock, Some(&store));
+        create_artifact_with_projection(&ctx, &art("PRD-005", "prd", "Auth"))
+            .await
+            .unwrap();
+        for id in ["RFC-005", "ADR-005", "EVID-005"] {
+            create_artifact_with_projection(
+                &MutationContext::new(&ws, &lock, Some(&store)),
+                &art(
+                    id,
+                    if id.starts_with("RFC") {
+                        "rfc"
+                    } else if id.starts_with("ADR") {
+                        "adr"
+                    } else {
+                        "evidence"
+                    },
+                    id,
+                ),
+            )
+            .await
+            .unwrap();
+        }
+        for id in ["RFC-005", "ADR-005", "EVID-005"] {
+            add_link_with_projection(&ctx, "PRD-005", id, "informs")
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            store.get_relations(&lock, "PRD-005").await.unwrap().len(),
+            3
+        );
+
+        // Hand-edit the source file: drop ADR-005, keep the other two.
+        write_projection(
+            &ws,
+            "PRD-005",
+            "prd",
+            "Auth",
+            "id: PRD-005\nkind: prd\nstatus: draft\ntitle: Auth\ndepth: standard\nlinks:\n  - target: RFC-005\n    relation: informs\n  - target: EVID-005\n    relation: informs\n",
+            "Original body.",
+        );
+
+        assert!(
+            sync_file_to_store(&lock, &store, &ws, &record(&lock, &store, "PRD-005").await)
+                .await
+                .unwrap()
+        );
+        let mut edges = store.get_relations(&lock, "PRD-005").await.unwrap();
+        edges.sort();
+        assert_eq!(
+            edges,
+            vec![
+                ("EVID-005".to_string(), "informs".to_string()),
+                ("RFC-005".to_string(), "informs".to_string()),
+            ],
+            "the outgoing set is replaced exactly: no residue, no union"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_invalid_frontmatter_leaves_the_row_alone() {
+        let (_tmp, ws, store, lock) = fixture().await;
+        create_artifact_with_projection(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            &art("PRD-006", "prd", "Auth"),
+        )
+        .await
+        .unwrap();
+        let dir = ws.join("prds");
+        std::fs::write(dir.join("PRD-006-auth.md"), "---\nid: [unclosed\n").unwrap();
+
+        let error = sync_file_to_store(&lock, &store, &ws, &record(&lock, &store, "PRD-006").await)
+            .await
+            .expect_err("an incomplete document set must be refused");
+        assert!(error.to_string().contains("incomplete"));
+        let after = record(&lock, &store, "PRD-006").await;
+        assert_eq!(after.body, "Original body.");
+        assert_eq!(after.status, "draft");
+    }
+
+    #[tokio::test]
+    async fn a_missing_projection_file_is_a_no_op() {
+        let (_tmp, ws, store, lock) = fixture().await;
+        let created = create_artifact_with_projection(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            &art("PRD-007", "prd", "Auth"),
+        )
+        .await
+        .unwrap();
+        std::fs::remove_file(&created).unwrap();
+
+        assert!(
+            !sync_file_to_store(&lock, &store, &ws, &record(&lock, &store, "PRD-007").await)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            record(&lock, &store, "PRD-007").await.body,
+            "Original body."
+        );
+    }
+
+    #[tokio::test]
+    async fn comparison_reuses_the_writer_guard_for_its_entire_rescan() {
+        use std::time::Duration;
+
+        let (_tmp, ws, store, lock) = fixture().await;
+        let path = create_artifact_with_projection(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            &art("PRD-008", "prd", "Auth"),
+        )
+        .await
+        .unwrap();
+        let before = record(&lock, &store, "PRD-008").await;
+        let text = tokio::fs::read_to_string(&path).await.unwrap();
+        tokio::fs::write(&path, text.replace("Original body.", "Changed body."))
+            .await
+            .unwrap();
+
+        let drift = tokio::time::timeout(
+            Duration::from_secs(2),
+            compare_projection(&lock, &store, &ws, &before),
+        )
+        .await
+        .expect("rescan must not try to reacquire the exclusive lock")
+        .unwrap();
+        assert!(drift.body);
+        assert!(
+            record(&lock, &store, "PRD-008")
+                .await
+                .body
+                .contains("Changed body.")
+        );
+        assert!(
+            crate::workspace::lock::acquire_workspace_lock_with_timeout(
+                &ws,
+                Duration::from_millis(50),
+            )
+            .await
+            .is_err(),
+            "the original writer lock must remain held after the rescan"
+        );
+    }
+
+    #[test]
+    fn canonical_body_strips_only_the_renderers_trailing_newline() {
+        assert_eq!(canonical_body("text\n"), "text");
+        assert_eq!(canonical_body("text"), "text");
+        assert_eq!(canonical_body(""), "");
+        assert_eq!(canonical_body("\n"), "");
+        assert_eq!(canonical_body("  text  "), "  text  ");
+        assert_eq!(canonical_body("text\r\n"), "text");
+        assert_eq!(canonical_body("line\n\n"), "line\n");
+    }
+
+    #[test]
+    fn drift_reports_whether_a_store_write_is_needed() {
+        let mut drift = ProjectionDrift::default();
+        assert!(!drift.needs_store_write());
+        assert!(drift.is_empty());
+
+        drift.input = true;
+        drift.source = true;
+        assert!(
+            !drift.needs_store_write(),
+            "an embedding-binding change alone is not a row write"
+        );
+        assert!(!drift.is_empty());
+
+        drift.body = true;
+        assert!(drift.needs_store_write());
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProjectionBodyMode {
+    Body,
+    CanonicalFile,
+}
 /// Render markdown content with YAML frontmatter + body.
 ///
 /// Regenerates the known frontmatter keys from args and merges
@@ -525,7 +1842,26 @@ fn render_markdown_with_extras(
     links: &[(String, String)],
     tags: &[String],
     preserved_fm: Option<&Frontmatter>,
+    body_mode: ProjectionBodyMode,
 ) -> anyhow::Result<String> {
+    // Captured exports carry a complete canonical file, while old bundles
+    // carry its body. Do not add another wrapper around the same artifact.
+    let embedded =
+        if body_mode == ProjectionBodyMode::CanonicalFile && body.trim_start().starts_with("---") {
+            frontmatter::parse_frontmatter_borrowed(body)
+                .ok()
+                .filter(|(fm, _)| {
+                    fm.get("id").and_then(|v| v.as_str()) == Some(id)
+                        && fm.get("kind").and_then(|v| v.as_str()) == Some(kind)
+                })
+        } else {
+            None
+        };
+    let supplied_body = body;
+    let body = embedded
+        .as_ref()
+        .map_or(supplied_body, |(_, embedded_body)| *embedded_body);
+
     let mut fm = BTreeMap::new();
     fm.insert("id".to_string(), serde_yaml::Value::String(id.to_string()));
     fm.insert(
@@ -545,50 +1881,95 @@ fn render_markdown_with_extras(
         serde_yaml::Value::String(depth.to_string()),
     );
 
-    if let Some(a) = author {
+    // Missing values are explicit clears. Omitting their keys would allow an
+    // older nested projection to supply the value again on the next read.
+    for (key, value) in [
+        ("author", author),
+        ("parent_epic", parent_epic),
+        ("valid_until", valid_until),
+    ] {
         fm.insert(
-            "author".to_string(),
-            serde_yaml::Value::String(a.to_string()),
-        );
-    }
-    if let Some(pe) = parent_epic {
-        fm.insert(
-            "parent_epic".to_string(),
-            serde_yaml::Value::String(pe.to_string()),
-        );
-    }
-    if let Some(vu) = valid_until {
-        fm.insert(
-            "valid_until".to_string(),
-            serde_yaml::Value::String(vu.to_string()),
+            key.to_string(),
+            value
+                .map(|value| serde_yaml::Value::String(value.to_string()))
+                .unwrap_or(serde_yaml::Value::Null),
         );
     }
 
-    if !tags.is_empty() {
-        let tag_seq: Vec<serde_yaml::Value> = tags
-            .iter()
-            .map(|t| serde_yaml::Value::String(t.clone()))
-            .collect();
-        fm.insert("tags".to_string(), serde_yaml::Value::Sequence(tag_seq));
-    }
+    let tag_seq: Vec<serde_yaml::Value> = tags
+        .iter()
+        .map(|t| serde_yaml::Value::String(t.clone()))
+        .collect();
+    fm.insert("tags".to_string(), serde_yaml::Value::Sequence(tag_seq));
 
-    if !links.is_empty() {
-        let links_seq: Vec<serde_yaml::Value> = links
-            .iter()
-            .map(|(target, relation)| {
-                let mut m = serde_yaml::Mapping::new();
-                m.insert(
-                    serde_yaml::Value::String("target".to_string()),
-                    serde_yaml::Value::String(target.clone()),
-                );
-                m.insert(
-                    serde_yaml::Value::String("relation".to_string()),
-                    serde_yaml::Value::String(relation.clone()),
-                );
-                serde_yaml::Value::Mapping(m)
+    let links_seq: Vec<serde_yaml::Value> = links
+        .iter()
+        .map(|(target, relation)| {
+            let mut m = serde_yaml::Mapping::new();
+            m.insert(
+                serde_yaml::Value::String("target".to_string()),
+                serde_yaml::Value::String(target.clone()),
+            );
+            m.insert(
+                serde_yaml::Value::String("relation".to_string()),
+                serde_yaml::Value::String(relation.clone()),
+            );
+            serde_yaml::Value::Mapping(m)
+        })
+        .collect();
+    fm.insert("links".to_string(), serde_yaml::Value::Sequence(links_seq));
+
+    // A complete canonical source is the imported file, not a rendering
+    // template. Its metadata and historical aliases remain literal during
+    // import; later metadata mutations use the Body rendering path instead.
+    if embedded.is_some() && links.is_empty() {
+        return Ok(supplied_body.to_string());
+    }
+    if let Some((source_fm, _)) = &embedded {
+        let same_known_fields = KNOWN_FM_KEYS.iter().all(|key| match *key {
+            // Only canonical-file import owns the embedded edge set.
+            "links" if links.is_empty() => true,
+            "tags" => same_tag_set(source_fm, tags),
+            // Captured records expose an omitted depth as the empty string.
+            "depth" => {
+                source_fm
+                    .get("depth")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    == depth
+            }
+            _ => {
+                fm.get(*key).filter(|value| !value.is_null())
+                    == source_fm.get(*key).filter(|value| !value.is_null())
+            }
+        });
+        let same_preserved_fields = preserved_fm.is_none_or(|extras| {
+            extras.iter().all(|(key, value)| {
+                KNOWN_FM_KEYS.contains(&key.as_str())
+                    || source_fm.get(key) == Some(value)
+                    // An omitted slug already identifies this legacy document
+                    // by its exact id; declaring that same key changes no field.
+                    || (key == "slug"
+                        && !source_fm.contains_key(key)
+                        && value.as_str() == Some(id))
             })
-            .collect();
-        fm.insert("links".to_string(), serde_yaml::Value::Sequence(links_seq));
+        });
+        if same_known_fields && same_preserved_fields {
+            return Ok(supplied_body.to_string());
+        }
+
+        for (key, value) in source_fm {
+            if !KNOWN_FM_KEYS.contains(&key.as_str()) {
+                fm.insert(key.clone(), value.clone());
+            }
+        }
+        // This branch exists only for canonical-file import. Normal mutations
+        // never interpret a body as a source of edges.
+        if links.is_empty()
+            && let Some(value) = source_fm.get("links")
+        {
+            fm.insert("links".to_string(), value.clone());
+        }
     }
 
     // Merge preserved (agent-owned / user-custom) fields last — guaranteed
@@ -605,7 +1986,17 @@ fn render_markdown_with_extras(
     }
 
     let yaml = serde_yaml::to_string(&fm)?;
-    Ok(format!("---\n{}---\n\n{}\n", yaml, body))
+    Ok(format!("---\n{}---\n\n{}", yaml, body))
+}
+
+fn same_tag_set(source: &Frontmatter, tags: &[String]) -> bool {
+    let mut original = frontmatter::tags_from_frontmatter(source);
+    original.sort_unstable();
+    original.dedup();
+    let mut expected: Vec<&str> = tags.iter().map(String::as_str).collect();
+    expected.sort_unstable();
+    expected.dedup();
+    original.iter().map(String::as_str).eq(expected)
 }
 
 /// Stamp `last_modified_by` / `last_modified_at` onto an already-rendered
@@ -628,9 +2019,9 @@ pub async fn stamp_agent_identity(
 ) -> anyhow::Result<()> {
     let artifact_kind = kind.parse::<ArtifactKind>().unwrap_or(ArtifactKind::Note);
     let dir = workspace.join(artifact_kind.dir_name());
-    let slug = projection_slug(title);
-    let filename = format!("{}-{}.md", id, slug);
-    let filepath = dir.join(&filename);
+    let filepath = document_file_by_id(workspace, kind, None, id, title)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("no projection file for {id} under {}", dir.display()))?;
 
     let content = tokio::fs::read_to_string(&filepath).await?;
     let (mut fm, body) = frontmatter::parse_frontmatter(&content)?;
@@ -671,8 +2062,21 @@ async fn atomic_markdown_write(path: &Path, bytes: &[u8]) -> std::io::Result<()>
         std::process::id(),
     ));
     tokio::fs::write(&tmp, bytes).await?;
+    // Fault-injection seam (test-helpers only, no-op in production builds):
+    // the temp file is byte-complete here and the target still holds the old
+    // bytes. A SIGKILL at this stage proves the atomicity primitive — readers
+    // observe exactly the old file, and the staged temp carries the entire
+    // new render, never a truncated one.
+    crate::constellation::fault_barrier_if_selected("before_projection_rename");
     match tokio::fs::rename(&tmp, path).await {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            // The canonical file is now byte-complete new; nothing derived
+            // (LanceDB row, constellation generation) has been touched yet.
+            // A kill here is the ADR-003 file-first crash window: file new,
+            // index old, and the next sync/maintain reconciles from the file.
+            crate::constellation::fault_barrier_if_selected("after_projection_rename");
+            Ok(())
+        }
         Err(e) => {
             let _ = tokio::fs::remove_file(&tmp).await;
             Err(e)
@@ -680,108 +2084,16 @@ async fn atomic_markdown_write(path: &Path, bytes: &[u8]) -> std::io::Result<()>
     }
 }
 
-/// Remove a projection file for a deleted artifact.
-///
-/// PRD-073 audit C2 (security): the previous implementation matched
-/// `name.to_uppercase().starts_with(&id.to_uppercase())` and broke on
-/// the first match found via `read_dir` ordering. That collided in two
-/// ways: (a) memory IDs like `mem-auth` are a prefix of `mem-auth-system`,
-/// so deleting the first could clobber the second; (b) numeric IDs once
-/// they cross 999 (`PRD-100` is a prefix of `PRD-1000`).
-///
-/// The current implementation requires `<id>-` (trailing hyphen) as the
-/// prefix, which fixes the numeric case, AND walks the entire directory
-/// removing **every** matching file rather than just the first. The
-/// trailing-hyphen requirement also rejects bare-`<id>.md` names that
-/// don't follow the slug convention. For full correctness on the memory
-/// case, callers that know the title can use `remove_projection_at` to
-/// pin the exact filename.
-pub async fn remove_projection(workspace: &Path, id: &str, kind: &str) -> anyhow::Result<()> {
-    crate::db::store::validate_artifact_id(id)?;
-    let artifact_kind: ArtifactKind = kind
-        .parse()
-        .map_err(|e| anyhow::anyhow!("invalid kind '{kind}' for {id}: {e}"))?;
-    let dir = workspace.join(artifact_kind.dir_name());
-    if !dir.exists() {
-        return Ok(());
-    }
-    let needle = format!("{}-", id.to_uppercase());
-    let mut read_dir = tokio::fs::read_dir(&dir).await?;
-    while let Some(entry) = read_dir.next_entry().await? {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.ends_with(".md") && name.to_uppercase().starts_with(&needle) {
-            // Also reject candidates whose ID prefix is a strict-prefix of
-            // another ID (e.g. PRD-100 → "PRD-100-"; PRD-1000 → "PRD-1000-"
-            // — both start with "PRD-100-"? No: PRD-1000- contains digit '0'
-            // after the prefix-and-hyphen, so the trailing-hyphen check
-            // separates `prd-100-foo.md` from `prd-1000-foo.md`).
-            tokio::fs::remove_file(entry.path()).await?;
-        }
-    }
-    Ok(())
-}
-
-/// Remove a projection file at a specific path computed from `(id, kind, title)`.
-/// Use when you know the exact title (typically `original.title` from a
-/// fetched record) and want to avoid prefix collisions entirely.
-///
-/// Returns Ok(true) if the file existed and was removed, Ok(false) if
-/// nothing was there.
-pub async fn remove_projection_at(
-    workspace: &Path,
-    id: &str,
-    kind: &str,
-    title: &str,
-) -> anyhow::Result<bool> {
-    crate::db::store::validate_artifact_id(id)?;
-    let artifact_kind: ArtifactKind = kind
-        .parse()
-        .map_err(|e| anyhow::anyhow!("invalid kind '{kind}' for {id}: {e}"))?;
-    let dir = workspace.join(artifact_kind.dir_name());
-    let slug = projection_slug(title);
-    let filepath = dir.join(format!("{}-{}.md", id, slug));
-    if filepath.exists() {
-        tokio::fs::remove_file(&filepath).await?;
-        Ok(true)
-    } else {
-        Ok(false)
-    }
-}
-
-/// Remove the OLD projection file after a title change — but only if the title
-/// actually renamed the file.
-///
-/// A title edit that slugifies to the *same* filename (a case-only or
-/// punctuation-only change, or the identical title re-submitted) must NOT delete
-/// anything: the mutation path writes the new file at `slug(new_title)` first,
-/// and when `slug(old) == slug(new)` that is the very file we would then remove.
-/// `slugify` lowercases and collapses every non-alphanumeric run to `-`, so
-/// `"Auth system"`, `"Auth system!"` and `"auth system"` all map to
-/// `auth-system` — without this guard, `forgeplan_update --title` on any of
-/// those against an existing `auth-system` artifact deletes the markdown source
-/// of truth. `forgeplan_get` keeps working (the LanceDB row survives), so the
-/// loss is silent until the next `reindex` prunes the now-orphaned row —
-/// unrecoverable (ADR-003: markdown is the source of truth).
-///
-/// The comparison uses `projection_slug` — the same function that builds the
-/// on-disk filename from the title — so slug-equality is exactly file-path
-/// equality here (both paths share this artifact's id, kind and directory).
-///
-/// # Errors
-/// Same as [`remove_projection_at`]: invalid id/kind, or a filesystem error
-/// during removal.
-pub async fn remove_stale_projection_after_rename(
-    workspace: &Path,
-    id: &str,
-    kind: &str,
-    old_title: &str,
-    new_title: &str,
-) -> anyhow::Result<bool> {
-    if projection_slug(old_title) == projection_slug(new_title) {
-        // Same filename — the "old" file IS the file we just wrote. No-op.
-        return Ok(false);
-    }
-    remove_projection_at(workspace, id, kind, old_title).await
+/// Publish a new destination without replacing a file an external writer created.
+async fn atomic_markdown_create(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "projection has no parent")
+    })?;
+    let temporary = tempfile::Builder::new()
+        .prefix(".projection-")
+        .tempfile_in(parent)?;
+    tokio::fs::write(temporary.path(), bytes).await?;
+    tokio::fs::hard_link(temporary.path(), path).await
 }
 
 // =============================================================================
@@ -798,15 +2110,16 @@ pub async fn remove_stale_projection_after_rename(
 /// projection first, then sync to LanceDB. If the LanceDB insert fails,
 /// the orphan file is reconciled by the next `forgeplan reindex`.
 ///
-/// PRD-073 audit C3 fix: uses `render_projection_with_body` (force_body=true)
-/// so a stale file already at the slug path (e.g. left over from a previous
-/// failed create, or an unrelated `git checkout` artefact) is overwritten
-/// by the caller-supplied body. The previous force_body=false path would
-/// silently keep the on-disk body and stamp it into the new LanceDB row,
-/// guaranteeing file/DB divergence on creation.
+/// Refuses an existing canonical identity or destination instead of
+/// replacing another document. Publication is atomic and no-clobber.
 ///
 /// PRD-073 FR-001 helper. Used by `capture` / `remember` / `promote` /
 /// `reason` (note-creating commands).
+///
+/// With `ctx.legacy_sink == None` (constellation-managed workspace) the
+/// markdown write is the whole mutation and no database is opened; the
+/// derived row is published by the reconcile pass. The canonical bytes are
+/// identical either way.
 ///
 /// # Errors
 ///
@@ -815,45 +2128,165 @@ pub async fn remove_stale_projection_after_rename(
 /// - [`MutationError::InvalidKind`] if `artifact.kind` does not parse as
 ///   an `ArtifactKind`.
 /// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
-///   the underlying `LanceStore::create_artifact` call or the
-///   markdown-projection write fails. Categorisation via
+///   the underlying `LanceStore::create_artifact` call (only when a sink is
+///   present) or the markdown-projection write fails. Categorisation via
 ///   [`MutationError::from_store_err`] — fatal for schema corruption /
 ///   ENOENT, transient for EACCES / lock contention.
 pub async fn create_artifact_with_projection(
     ctx: &MutationContext<'_>,
     artifact: &crate::db::store::NewArtifact,
 ) -> MutationResult<PathBuf> {
-    let MutationContext { workspace, store } = *ctx;
-    // Audit 2026-05-01 #1 (security CRITICAL): validate id BEFORE composing
-    // it into a filesystem path. Without this, a JSON import with
-    // `"id": "../../etc/evil"` would write outside the workspace via
-    // `format!("{id}-{slug}.md")` resolved against `workspace/<kind>/`.
+    create_artifact_projection(ctx, artifact, ProjectionBodyMode::Body).await
+}
+
+/// Restore a bundle artifact whose body may be a complete canonical file.
+///
+/// Old body-only payloads retain the normal creation contract. A complete
+/// source belonging to this identity is restored without another wrapper.
+pub async fn import_artifact_with_projection(
+    ctx: &MutationContext<'_>,
+    artifact: &crate::db::store::NewArtifact,
+) -> MutationResult<PathBuf> {
+    create_artifact_projection(ctx, artifact, ProjectionBodyMode::CanonicalFile).await
+}
+
+/// The row a document's creation publishes.
+///
+/// The row is keyed by the document's **real** canonical key — the slug its
+/// frontmatter declares, or the display id when it declares none (ADR-030).
+/// A row keyed by the display id instead would put two rows in the
+/// workspace for one document, and that document would then read as an
+/// ambiguous alias.
+fn creation_row(artifact: &crate::db::store::NewArtifact) -> crate::db::store::NewArtifact {
+    // The caller's key wins: an import or a migration carries the identity
+    // the document already has, and recomputing it here would file the row
+    // under a fresh key while the file is published under the supplied one.
+    // Only a caller that supplies no key gets one derived from the document.
+    let canonical_key = if artifact.canonical_key.trim().is_empty() {
+        crate::artifact::canonical_key::canonical_key_from_document(&artifact.id, &artifact.body)
+    } else {
+        artifact.canonical_key.clone()
+    };
+    crate::db::store::NewArtifact {
+        id: artifact.id.clone(),
+        canonical_key,
+        kind: artifact.kind.clone(),
+        status: artifact.status.clone(),
+        title: artifact.title.clone(),
+        body: artifact.body.clone(),
+        depth: artifact.depth.clone(),
+        author: artifact.author.clone(),
+        parent_epic: artifact.parent_epic.clone(),
+        valid_until: artifact.valid_until.clone(),
+        tags: artifact.tags.clone(),
+    }
+}
+
+fn canonical_file_creation_row(
+    artifact: &crate::db::store::NewArtifact,
+    source: &str,
+) -> Option<crate::db::store::NewArtifact> {
+    let (fm, _) = frontmatter::parse_frontmatter(source).ok()?;
+    if fm.get("id").and_then(|value| value.as_str()) != Some(artifact.id.as_str())
+        || fm.get("kind").and_then(|value| value.as_str()) != Some(artifact.kind.as_str())
+    {
+        return None;
+    }
+
+    let mut row = creation_row(artifact);
+    row.body = source.to_string();
+    row.status = fm
+        .get("status")
+        .and_then(|value| value.as_str())
+        .unwrap_or("draft")
+        .to_lowercase();
+    row.title = fm
+        .get("title")
+        .and_then(|value| value.as_str())
+        .unwrap_or(&artifact.id)
+        .to_string();
+    row.depth = fm
+        .get("depth")
+        .and_then(|value| value.as_str())
+        .unwrap_or("standard")
+        .to_string();
+    row.author = frontmatter::author_from_frontmatter(&fm);
+    row.parent_epic = fm
+        .get("parent_epic")
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+    row.valid_until = fm
+        .get("valid_until")
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+    row.tags = frontmatter::tags_from_frontmatter(&fm);
+    Some(row)
+}
+
+/// Publish a newly created document under its canonical key.
+///
+/// SPEC-009 "New file naming": a newly created document is written to
+/// `<canonical_key>.md`. Existing files keep their paths — this path is
+/// for a document that is being created, never for one that already exists.
+///
+/// Publication never clobbers: an existing path aborts the creation, the
+/// existing document is not overwritten, and no second key is minted after
+/// relations have already been published against the first.
+///
+/// # Errors
+///
+/// - [`MutationError::InvalidId`] if `artifact.id` fails
+///   `validate_artifact_id`.
+/// - [`MutationError::InvalidKind`] if `artifact.kind` does not parse as
+///   an `ArtifactKind`.
+/// - [`MutationError::StoreFatal`] if the canonical key is not a usable
+///   file name, or if the target path already exists.
+pub async fn create_artifact_with_canonical_key(
+    ctx: &MutationContext<'_>,
+    artifact: &crate::db::store::NewArtifact,
+) -> MutationResult<PathBuf> {
+    let workspace = ctx.workspace;
+    let store = ctx.legacy_sink;
     crate::db::store::validate_artifact_id(&artifact.id)
         .map_err(|_| MutationError::InvalidId(artifact.id.clone()))?;
-    let _: ArtifactKind = artifact
-        .kind
-        .parse()
-        .map_err(
-            |e: crate::error::ForgeplanError| MutationError::InvalidKind {
-                id: artifact.id.clone(),
-                kind: artifact.kind.clone(),
-                reason: e.to_string(),
-            },
-        )?;
+    let artifact_kind: ArtifactKind =
+        artifact
+            .kind
+            .parse()
+            .map_err(
+                |e: crate::error::ForgeplanError| MutationError::InvalidKind {
+                    id: artifact.id.clone(),
+                    kind: artifact.kind.clone(),
+                    reason: e.to_string(),
+                },
+            )?;
+    let filename = crate::artifact::store::canonical_filename(&artifact.canonical_key)
+        .map_err(MutationError::StoreFatal)?;
+    let filepath = workspace.join(artifact_kind.dir_name()).join(&filename);
 
-    // PRD-073 Phase 3c CRITICAL fix (R1 audit): the slug-fallback rule for
-    // non-ASCII titles (Cyrillic, CJK, emoji) lives entirely inside
-    // `projection_slug` now, and `render_projection_with_body` calls it via
-    // `render_projection_inner`. So we pass the **real** title — the file
-    // frontmatter keeps the user's title verbatim, only the on-disk filename
-    // is sanitised. Previously this helper substituted "untitled" for the
-    // entire title, which lost the original from the file's frontmatter
-    // (the DB row was fine, but a `cat <id>-untitled.md` showed `title:
-    // untitled` instead of the user's Cyrillic).
-    //
-    // 1. File first — projection is the source of truth, with caller body
-    //    forced over any pre-existing file at the same slug path.
-    let path = render_projection_with_body(
+    // Publication never clobbers. The check is a courtesy — the write
+    // itself refuses to replace an existing file.
+    if tokio::fs::metadata(&filepath).await.is_ok() {
+        return Err(MutationError::StoreFatal(anyhow::anyhow!(
+            "refusing to publish canonical key '{}': {} already exists",
+            artifact.canonical_key,
+            filepath.display()
+        )));
+    }
+    let existing_documents = crate::artifact::documents::workspace_candidates(workspace)
+        .await
+        .map_err(MutationError::StoreFatal)?;
+    if existing_documents
+        .iter()
+        .any(|document| document.canonical_key == artifact.canonical_key)
+    {
+        return Err(MutationError::StoreFatal(anyhow::anyhow!(
+            "refusing to publish canonical key '{}': an existing document already declares it",
+            artifact.canonical_key
+        )));
+    }
+
+    let path = render_projection_inner(
         workspace,
         &artifact.id,
         &artifact.kind,
@@ -865,11 +2298,165 @@ pub async fn create_artifact_with_projection(
         artifact.valid_until.as_deref(),
         &artifact.body,
         &[],
+        &artifact.tags,
+        true,
+        ProjectionBodyMode::Body,
+        Some(&artifact.canonical_key),
+        Some(filepath),
+        true,
     )
     .await?;
 
-    // 2. Then derived index. If this fails, file remains and reindex recovers.
-    store.create_artifact(artifact).await?;
+    // Then the derived index — only when this workspace still has a legacy
+    // index. On a constellation-managed workspace the markdown write above
+    // is the whole mutation.
+    if let Some(store) = store {
+        // If this fails, the file remains and reindex recovers.
+        let row = creation_row(artifact);
+        store.create_artifact(ctx.guard(), &row).await?;
+    }
+    Ok(path)
+}
+
+async fn create_artifact_projection(
+    ctx: &MutationContext<'_>,
+    artifact: &crate::db::store::NewArtifact,
+    body_mode: ProjectionBodyMode,
+) -> MutationResult<PathBuf> {
+    let workspace = ctx.workspace;
+    let store = ctx.legacy_sink;
+    if body_mode == ProjectionBodyMode::CanonicalFile {
+        frontmatter::verify_import_canonical_key(
+            &artifact.id,
+            &artifact.kind,
+            &artifact.body,
+            &artifact.canonical_key,
+        )
+        .map_err(MutationError::StoreFatal)?;
+    }
+    // A document that carries its identity is published under its key, the
+    // same path the shared creator uses. The title-derived name this helper
+    // otherwise composes is for a caller that supplies no key; an import or a
+    // migration always does, and two documents that share a title must not
+    // land on one path.
+    // Audit 2026-05-01 #1 (security CRITICAL): validate id BEFORE composing
+    // it into a filesystem path. Without this, a JSON import with
+    // `"id": "../../etc/evil"` would write outside the workspace via
+    // `format!("{id}-{slug}.md")` resolved against `workspace/<kind>/`.
+    crate::db::store::validate_artifact_id(&artifact.id)
+        .map_err(|_| MutationError::InvalidId(artifact.id.clone()))?;
+    let artifact_kind: ArtifactKind =
+        artifact
+            .kind
+            .parse()
+            .map_err(
+                |e: crate::error::ForgeplanError| MutationError::InvalidKind {
+                    id: artifact.id.clone(),
+                    kind: artifact.kind.clone(),
+                    reason: e.to_string(),
+                },
+            )?;
+
+    let row = creation_row(artifact);
+    if crate::artifact::documents::workspace_candidates(workspace)
+        .await
+        .map_err(MutationError::StoreFatal)?
+        .iter()
+        .any(|document| document.canonical_key == row.canonical_key)
+    {
+        return Err(MutationError::StoreFatal(anyhow::anyhow!(
+            "canonical key {:?} is already claimed",
+            row.canonical_key
+        )));
+    }
+
+    if !artifact.canonical_key.trim().is_empty() {
+        let key = row.canonical_key.as_str();
+        let filename =
+            crate::artifact::store::canonical_filename(key).map_err(MutationError::StoreFatal)?;
+        let path = workspace.join(artifact_kind.dir_name()).join(&filename);
+        let published = render_projection_inner(
+            workspace,
+            &artifact.id,
+            &artifact.kind,
+            &artifact.title,
+            &artifact.status,
+            &artifact.depth,
+            artifact.author.as_deref(),
+            artifact.parent_epic.as_deref(),
+            artifact.valid_until.as_deref(),
+            &artifact.body,
+            &[],
+            &artifact.tags,
+            true,
+            body_mode,
+            Some(key),
+            Some(path),
+            true,
+        )
+        .await
+        .map_err(MutationError::StoreFatal)?;
+        if let Some(store) = store {
+            let row = if body_mode == ProjectionBodyMode::CanonicalFile {
+                let source = tokio::fs::read_to_string(&published)
+                    .await
+                    .map_err(|error| MutationError::StoreFatal(error.into()))?;
+                canonical_file_creation_row(artifact, &source)
+                    .unwrap_or_else(|| creation_row(artifact))
+            } else {
+                row
+            };
+            // The markdown is the source of truth; the legacy index row follows
+            // it, exactly as the shared creator does. Without this the document
+            // existed on disk and nowhere else, and every read said 'not found'.
+            store
+                .create_artifact(ctx.guard(), &row)
+                .await
+                .map_err(MutationError::StoreFatal)?;
+        }
+        return Ok(published);
+    }
+
+    // A legacy body-only import may have no explicit key. Its derived key
+    // was checked against the same complete census above; the historical
+    // filename remains supported, but must not replace an occupied path.
+    let legacy_path = workspace.join(artifact_kind.dir_name()).join(format!(
+        "{}-{}.md",
+        artifact.id,
+        projection_slug(&artifact.title)
+    ));
+    let path = render_projection_inner(
+        workspace,
+        &artifact.id,
+        &artifact.kind,
+        &artifact.title,
+        &artifact.status,
+        &artifact.depth,
+        artifact.author.as_deref(),
+        artifact.parent_epic.as_deref(),
+        artifact.valid_until.as_deref(),
+        &artifact.body,
+        &[],
+        &artifact.tags,
+        true,
+        body_mode,
+        None,
+        Some(legacy_path),
+        true,
+    )
+    .await?;
+    if let Some(store) = store {
+        let row = if body_mode == ProjectionBodyMode::CanonicalFile {
+            let source = tokio::fs::read_to_string(&path)
+                .await
+                .map_err(|error| MutationError::StoreFatal(error.into()))?;
+            canonical_file_creation_row(artifact, &source).unwrap_or_else(|| creation_row(artifact))
+        } else {
+            row
+        };
+        // If this fails, file remains and reindex recovers.
+        store.create_artifact(ctx.guard(), &row).await?;
+    }
     Ok(path)
 }
 
@@ -889,6 +2476,11 @@ pub async fn create_artifact_with_projection(
 /// without `forgeplan reindex`), the orphan is intentionally left behind to
 /// be surfaced by `forgeplan health` rather than guessed at.
 ///
+/// With `ctx.legacy_sink == None` there is no record to read the exact path
+/// from, so the file-first resolver (`resolve_artifact_path`) locates the
+/// canonical file instead — the same resolver the migrated CLI paths use.
+/// The missing-artifact case stays an idempotent no-op on both layouts.
+///
 /// # Errors
 ///
 /// - [`MutationError::InvalidId`] if `id` fails `validate_artifact_id`.
@@ -904,7 +2496,7 @@ pub async fn delete_artifact_with_projection(
     ctx: &MutationContext<'_>,
     id: &str,
 ) -> MutationResult<()> {
-    let MutationContext { workspace, store } = *ctx;
+    let workspace = ctx.workspace;
     crate::db::store::validate_artifact_id(id)
         .map_err(|_| MutationError::InvalidId(id.to_string()))?;
     // R1 audit H-2 (rust+architect+security): missing-row is *idempotent
@@ -915,7 +2507,28 @@ pub async fn delete_artifact_with_projection(
     // contract emerges, revisit; current state is two helpers, two policies,
     // both correct for their semantic class (idempotent destructor vs
     // input-validating mutator).
-    let record = match store.get_record(id).await? {
+    //
+    // Both branches below keep that policy: with no legacy sink the
+    // idempotence test is "no markdown file resolves for this id", which
+    // is the source-of-truth equivalent of "no row exists".
+    let Some(store) = ctx.legacy_sink else {
+        // Constellation-managed workspace: there is no row to consult and
+        // no row to cascade. The canonical mutation is the file removal,
+        // resolved by the same file-first resolver the no-store CLI paths
+        // use (`resolve_artifact_path`), so slug / display-id / literal-id
+        // input all bind the same file the index would have.
+        if let Some(document) = crate::artifact::documents::resolve_in_workspace(workspace, id)
+            .await
+            .map_err(anyhow::Error::from)?
+        {
+            tokio::fs::remove_file(workspace.join(document.relative_path))
+                .await
+                .map_err(anyhow::Error::from)?;
+        }
+        return Ok(());
+    };
+
+    let record = match store.get_record(ctx.guard(), id).await? {
         Some(r) => r,
         None => return Ok(()),
     };
@@ -933,13 +2546,42 @@ pub async fn delete_artifact_with_projection(
             },
         )?;
 
-    // 1. Remove file first (source of truth gone → workspace state unambiguous).
-    //    Exact-path removal — no prefix collision with sibling IDs.
-    let _ = remove_projection_at(workspace, id, &record.kind, &record.title).await?;
+    // Resolve over the complete document set before removing either source
+    // or index. A filename derived from the title is not proof of ownership.
+    if let Some(document) =
+        crate::artifact::documents::resolve_in_workspace(workspace, &record.canonical_key)
+            .await
+            .map_err(anyhow::Error::from)?
+    {
+        let canonical_path = workspace.join(document.relative_path);
+        // The durable intent precedes removing the source. If the process
+        // stops before the derived row is reconciled, recovery can distinguish
+        // this deletion (or replacement) from an unexplained orphan.
+        crate::db::migrate::begin_identity_delete_intent(
+            workspace,
+            ctx.guard(),
+            &record.canonical_key,
+            &canonical_path,
+        )
+        .await?;
+        tokio::fs::remove_file(canonical_path)
+            .await
+            .map_err(anyhow::Error::from)?;
+    } else {
+        // A soft delete may already have moved the source to trash. Without
+        // a matching durable preimage, a missing source is unexplained and
+        // must not authorize deleting its derived row.
+        crate::db::migrate::require_identity_delete_intent(
+            workspace,
+            ctx.guard(),
+            &record.canonical_key,
+        )
+        .await?;
+    }
 
     // 2. Cascade relations + record from the derived index.
-    store.delete_relations_for_artifact(id).await?;
-    store.delete_artifact(id).await?;
+    store.delete_relations_for_artifact(ctx.guard(), id).await?;
+    store.delete_artifact(ctx.guard(), id).await?;
     Ok(())
 }
 
@@ -961,6 +2603,9 @@ pub async fn delete_artifact_with_projection(
 ///   either argument is `Some` of a blank / whitespace string.
 /// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
 ///   the sync-before / `update_artifact` / render-after triplet fails.
+/// - [`MutationError::RowNotFound`] with no legacy sink, when no markdown
+///   file resolves for `id` — the canonical mutation cannot be performed,
+///   so it is reported rather than silently skipped.
 ///
 /// `(None, None)` short-circuits with `Ok(())` — no DB round-trip.
 pub async fn update_metadata_with_projection(
@@ -969,7 +2614,8 @@ pub async fn update_metadata_with_projection(
     status: Option<&str>,
     title: Option<&str>,
 ) -> MutationResult<()> {
-    let MutationContext { workspace, store } = *ctx;
+    let workspace = ctx.workspace;
+    let store = ctx.legacy_sink;
     // Audit follow-up: this helper is the canary for the `MutationError`
     // enum migration. Other helpers will follow in PRD-073 Phase 3c when
     // the typed-error contract is stable.
@@ -1001,9 +2647,54 @@ pub async fn update_metadata_with_projection(
     {
         return Err(MutationError::EmptyField { field: "title" });
     }
-    sync_before_mutation(workspace, store, id).await?;
-    store.update_artifact(id, status, title).await?;
-    render_after_mutation(workspace, store, id).await?;
+    let Some(store) = store else {
+        // Constellation-managed workspace: edit the canonical frontmatter
+        // in place (same `EmptyField` / `(None, None)` gates as the
+        // store path, applied above) and let reconcile publish the derived
+        // row. `update_metadata_file_first` renames to the canonical slug
+        // on a title change and is a no-op write when nothing changed.
+        let path = find_existing_projection_file(workspace, id, None)
+            .await?
+            .ok_or_else(|| MutationError::RowNotFound { id: id.to_string() })?;
+        update_metadata_file_first(&path, status, title, None).await?;
+        return Ok(());
+    };
+    if title.is_some() {
+        let record = store
+            .get_record(ctx.guard(), id)
+            .await?
+            .ok_or_else(|| MutationError::RowNotFound { id: id.to_string() })?;
+        // Validate the kind before touching the file: a corrupt kind must not
+        // reach the path computation.
+        record
+            .kind
+            .parse::<ArtifactKind>()
+            .map_err(|error| MutationError::InvalidKind {
+                id: id.to_string(),
+                kind: record.kind.clone(),
+                reason: format!("{error}"),
+            })?;
+        // The document's own file — a document minted under a key is filed
+        // as `<canonical_key>.md`, and a name derived from the id and the
+        // title names nothing.
+        let old_path = document_file_by_id(
+            workspace,
+            &record.kind,
+            Some(&record.canonical_key),
+            id,
+            &record.title,
+        )
+        .await?
+        .ok_or_else(|| MutationError::RowNotFound { id: id.to_string() })?;
+        sync_before_mutation(ctx.guard(), workspace, store, id).await?;
+        update_metadata_file_first(&old_path, status, title, None).await?;
+    } else {
+        sync_before_mutation(ctx.guard(), workspace, store, id).await?;
+    }
+    store
+        .update_artifact(ctx.guard(), id, status, title)
+        .await?;
+    render_after_mutation(ctx.guard(), workspace, store, id).await?;
     Ok(())
 }
 
@@ -1108,10 +2799,26 @@ pub async fn update_body_with_projection(
     id: &str,
     body: &str,
 ) -> MutationResult<()> {
-    let MutationContext { workspace, store } = *ctx;
+    let workspace = ctx.workspace;
+    let store = ctx.legacy_sink;
     crate::db::store::validate_artifact_id(id)
         .map_err(|_| MutationError::InvalidId(id.to_string()))?;
-    let record = match store.get_record(id).await? {
+    let Some(store) = store else {
+        // Constellation-managed workspace: the markdown body IS the row.
+        // `update_body_file_first` carries the same invariants as the
+        // store path below — `carry_identity_forward` on the replacement,
+        // the new body's own `status:` propagating into the projection
+        // block (audit-r7 F1), atomic write, no-op when unchanged — and
+        // resolves its own path, so a title rename from an earlier
+        // `update_metadata_with_projection` in the same command is
+        // followed correctly.
+        let path = find_existing_projection_file(workspace, id, None)
+            .await?
+            .ok_or_else(|| MutationError::RowNotFound { id: id.to_string() })?;
+        update_body_file_first(&path, body).await?;
+        return Ok(());
+    };
+    let record = match store.get_record(ctx.guard(), id).await? {
         Some(r) => r,
         None => {
             // Wave 1A audit follow-up: typed `RowNotFound` distinguishes the
@@ -1120,7 +2827,18 @@ pub async fn update_body_with_projection(
             return Err(MutationError::RowNotFound { id: id.to_string() });
         }
     };
-    let links = store.get_relations(id).await.unwrap_or_default();
+
+    // The canonical key is immutable through an ordinary update. A body
+    // that declares a different key — in its own frontmatter or in a
+    // nested one — is refused instead of written.
+    let current_key = if record.canonical_key.trim().is_empty() {
+        crate::artifact::canonical_key::canonical_key_from_document(&record.id, &record.body)
+    } else {
+        record.canonical_key.clone()
+    };
+    let links = store.get_relations(ctx.guard(), &current_key).await?;
+    frontmatter::refuse_canonical_key_change(&current_key, body)
+        .map_err(MutationError::StoreFatal)?;
 
     // PROB-060 / ADR-012: preserve the body-frontmatter fields the replacement
     // would otherwise delete — every field the record does not own, not just
@@ -1158,6 +2876,7 @@ pub async fn update_body_with_projection(
     render_projection_with_body(
         workspace,
         &record.id,
+        Some(&current_key),
         &record.kind,
         &record.title,
         effective_status,
@@ -1167,11 +2886,12 @@ pub async fn update_body_with_projection(
         record.valid_until.as_deref(),
         body,
         &links,
+        &record.tags,
     )
     .await?;
 
     // 2. DB second — sync the derived index. If this fails, reindex recovers.
-    store.update_body(id, body).await?;
+    store.update_body(ctx.guard(), &current_key, body).await?;
 
     // 3. Status sync (audit-r7 F1): if the new frontmatter declares a
     //    `status` that differs from the LanceDB row, propagate it.
@@ -1180,7 +2900,7 @@ pub async fn update_body_with_projection(
         && new_status != record.status
     {
         store
-            .update_artifact(id, Some(new_status), None)
+            .update_artifact(ctx.guard(), &current_key, Some(new_status), None)
             .await
             .map_err(MutationError::from)?;
     }
@@ -1197,17 +2917,30 @@ pub async fn update_body_with_projection(
 /// - [`MutationError::InvalidId`] if `id` fails `validate_artifact_id`.
 /// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
 ///   the sync-before / `update_depth` / render-after triplet fails.
+/// - [`MutationError::RowNotFound`] with no legacy sink and no resolvable
+///   markdown file for `id`.
 pub async fn update_depth_with_projection(
     ctx: &MutationContext<'_>,
     id: &str,
     depth: &str,
 ) -> MutationResult<()> {
-    let MutationContext { workspace, store } = *ctx;
+    let workspace = ctx.workspace;
+    let store = ctx.legacy_sink;
     crate::db::store::validate_artifact_id(id)
         .map_err(|_| MutationError::InvalidId(id.to_string()))?;
-    sync_before_mutation(workspace, store, id).await?;
-    store.update_depth(id, depth).await?;
-    render_after_mutation(workspace, store, id).await?;
+    let Some(store) = store else {
+        // Constellation-managed workspace: `depth:` is ordinary canonical
+        // frontmatter. Same helper as the metadata path — it validates a
+        // blank depth and no-ops an unchanged write.
+        let path = find_existing_projection_file(workspace, id, None)
+            .await?
+            .ok_or_else(|| MutationError::RowNotFound { id: id.to_string() })?;
+        update_metadata_file_first(&path, None, None, Some(depth)).await?;
+        return Ok(());
+    };
+    sync_before_mutation(ctx.guard(), workspace, store, id).await?;
+    store.update_depth(ctx.guard(), id, depth).await?;
+    render_after_mutation(ctx.guard(), workspace, store, id).await?;
     Ok(())
 }
 
@@ -1222,17 +2955,27 @@ pub async fn update_depth_with_projection(
 /// - [`MutationError::InvalidId`] if `id` fails `validate_artifact_id`.
 /// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
 ///   the sync-before / `add_tags` / render-after triplet fails.
+/// - [`MutationError::RowNotFound`] with no legacy sink and no resolvable
+///   markdown file for `id`.
 pub async fn add_tags_with_projection(
     ctx: &MutationContext<'_>,
     id: &str,
     tags: &[String],
 ) -> MutationResult<()> {
-    let MutationContext { workspace, store } = *ctx;
+    let workspace = ctx.workspace;
+    let store = ctx.legacy_sink;
     crate::db::store::validate_artifact_id(id)
         .map_err(|_| MutationError::InvalidId(id.to_string()))?;
-    sync_before_mutation(workspace, store, id).await?;
-    store.add_tags(id, tags).await?;
-    render_after_mutation(workspace, store, id).await?;
+    let Some(store) = store else {
+        let path = find_existing_projection_file(workspace, id, None)
+            .await?
+            .ok_or_else(|| MutationError::RowNotFound { id: id.to_string() })?;
+        update_tags_file_first(&path, tags, &[]).await?;
+        return Ok(());
+    };
+    sync_before_mutation(ctx.guard(), workspace, store, id).await?;
+    store.add_tags(ctx.guard(), id, tags).await?;
+    render_after_mutation(ctx.guard(), workspace, store, id).await?;
     Ok(())
 }
 
@@ -1245,117 +2988,218 @@ pub async fn add_tags_with_projection(
 /// - [`MutationError::InvalidId`] if `id` fails `validate_artifact_id`.
 /// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
 ///   the sync-before / `remove_tags` / render-after triplet fails.
+/// - [`MutationError::RowNotFound`] with no legacy sink and no resolvable
+///   markdown file for `id`.
 pub async fn remove_tags_with_projection(
     ctx: &MutationContext<'_>,
     id: &str,
     tags: &[String],
 ) -> MutationResult<()> {
-    let MutationContext { workspace, store } = *ctx;
+    let workspace = ctx.workspace;
+    let store = ctx.legacy_sink;
     crate::db::store::validate_artifact_id(id)
         .map_err(|_| MutationError::InvalidId(id.to_string()))?;
-    sync_before_mutation(workspace, store, id).await?;
-    store.remove_tags(id, tags).await?;
-    render_after_mutation(workspace, store, id).await?;
+    let Some(store) = store else {
+        let path = find_existing_projection_file(workspace, id, None)
+            .await?
+            .ok_or_else(|| MutationError::RowNotFound { id: id.to_string() })?;
+        update_tags_file_first(&path, &[], tags).await?;
+        return Ok(());
+    };
+    sync_before_mutation(ctx.guard(), workspace, store, id).await?;
+    store.remove_tags(ctx.guard(), id, tags).await?;
+    render_after_mutation(ctx.guard(), workspace, store, id).await?;
     Ok(())
 }
 
-/// Add a typed relation between two artifacts, then re-render the projection
-/// for **both** source and target. Without re-rendering both sides, the
-/// target file's frontmatter never picks up any drift correction it needed
-/// (see PROB-048 observed-symptom #2: phantom orphan health signal because
-/// only the source side was rendered). This is FR-005 in PRD-073.
+/// Add a typed relation and render its source's outgoing `links` block.
 ///
-/// Note: outgoing-only frontmatter means the new edge appears in the source
-/// file's `links:` block; the target file gets re-rendered as a side effect
-/// so its own outgoing links stay synchronized with LanceDB.
+/// Only the source is synchronized and rendered. An incoming edge does not
+/// change the target or authorize rewriting its source-only metadata.
 ///
 /// PRD-073 FR-001 / FR-005 helper. Used by `link` / `reason` (auto-linking).
 ///
-/// Audit fix: only the source-side pre-sync and the relation write itself
-/// are fatal. Target-side pre-sync and BOTH post-render calls are
-/// best-effort with `tracing::warn!` because the target may legitimately
-/// be in a state that doesn't have a local file (cross-workspace
-/// reference) and a transient FS error on rendering should not strand
-/// the relation that already landed in LanceDB.
+/// Local pre-sync and source post-render errors are returned. Qualified
+/// targets are external and are not resolved against the local store.
 ///
 /// # Errors
 ///
-/// - [`MutationError::InvalidId`] if `source` or `target` fails
-///   `validate_artifact_id`.
+/// - [`MutationError::InvalidId`] if `source` fails `validate_artifact_id`
+///   or `target` fails `validate_link_target` (plain id or
+///   `KEY@qualifier`).
 /// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
-///   source-side pre-sync or `add_relation` fails. Target-side pre-sync
-///   and post-render failures are logged via `tracing::warn!` and
-///   swallowed (best-effort) so a missing-target file does not strand the
-///   relation that already landed in LanceDB.
+///   pre-sync, relation insertion, or post-render fails. A post-render error
+///   can occur after the relation has been written.
+/// - [`MutationError::RowNotFound`] with no legacy sink and no resolvable
+///   source file.
 pub async fn add_link_with_projection(
     ctx: &MutationContext<'_>,
     source: &str,
     target: &str,
     relation: &str,
 ) -> MutationResult<()> {
-    let MutationContext { workspace, store } = *ctx;
+    let workspace = ctx.workspace;
+    let store = ctx.legacy_sink;
     crate::db::store::validate_artifact_id(source)
         .map_err(|_| MutationError::InvalidId(source.to_string()))?;
-    crate::db::store::validate_artifact_id(target)
+    // Qualified and unresolved forward targets remain literal.
+    crate::db::store::validate_link_target(target)
         .map_err(|_| MutationError::InvalidId(target.to_string()))?;
-    sync_before_mutation(workspace, store, source).await?;
-    if let Err(e) = sync_before_mutation(workspace, store, target).await {
-        tracing::warn!("add_link: pre-sync target {target} failed (continuing): {e}");
-    }
+    let documents = crate::artifact::documents::workspace_candidates(workspace).await?;
+    let canonical_target = if target.contains('@') {
+        target.to_string()
+    } else {
+        crate::artifact::canonical_key::resolve_structural_target(target, &documents)
+            .map_err(anyhow::Error::from)?
+            .map(|resolved| resolved.identity.canonical_key)
+            .unwrap_or_else(|| target.to_string())
+    };
+    let Some(store) = store else {
+        let selected = crate::artifact::canonical_key::resolve_artifact(source, &documents)
+            .map_err(anyhow::Error::from)?
+            .ok_or_else(|| MutationError::RowNotFound {
+                id: source.to_string(),
+            })?;
+        if selected
+            .identity
+            .canonical_key
+            .eq_ignore_ascii_case(&canonical_target)
+        {
+            return Err(MutationError::StoreFatal(anyhow::anyhow!(
+                "self-link is not allowed: {source} --{relation}--> {target}"
+            )));
+        }
+        let path = workspace.join(selected.relative_path);
+        let content = tokio::fs::read_to_string(&path)
+            .await
+            .map_err(anyhow::Error::from)?;
+        let (fm, _) = frontmatter::parse_frontmatter_borrowed(&content)?;
+        for (declared, kind) in frontmatter::links_from_frontmatter(&fm) {
+            let existing = if declared.contains('@') {
+                declared.clone()
+            } else {
+                crate::artifact::canonical_key::resolve_structural_target(&declared, &documents)
+                    .map_err(anyhow::Error::from)?
+                    .map(|resolved| resolved.identity.canonical_key)
+                    .unwrap_or_else(|| declared.clone())
+            };
+            if kind == relation && existing.eq_ignore_ascii_case(&canonical_target) {
+                return Err(
+                    anyhow::Error::new(crate::error::ForgeplanError::LinkExists {
+                        from: source.to_string(),
+                        relation: relation.to_string(),
+                        to: target.to_string(),
+                    })
+                    .into(),
+                );
+            }
+        }
+        crate::link::add_link_verbatim(&path, &canonical_target, relation).await?;
+        return Ok(());
+    };
+    sync_before_mutation(ctx.guard(), workspace, store, source).await?;
 
-    store.add_relation(source, target, relation).await?;
+    store
+        .add_relation(ctx.guard(), source, &canonical_target, relation)
+        .await?;
 
-    if let Err(e) = render_after_mutation(workspace, store, source).await {
-        tracing::warn!("add_link: post-render source {source} failed (continuing): {e}");
-    }
-    if let Err(e) = render_after_mutation(workspace, store, target).await {
-        tracing::warn!("add_link: post-render target {target} failed (continuing): {e}");
-    }
+    render_after_mutation(ctx.guard(), workspace, store, source).await?;
     Ok(())
 }
 
-/// Remove a typed relation between two artifacts and re-render projections
-/// for both source and target so neither file's frontmatter retains a stale
-/// edge.
+/// Remove a typed relation and update only its source's outgoing links.
 ///
-/// Audit fix: same warn-and-continue policy as `add_link_with_projection`.
-/// Source pre-sync and the relation delete are fatal; target pre-sync and
-/// both renders are best-effort.
+/// Local pre-sync and source rendering errors are returned, as for
+/// [`add_link_with_projection`].
 ///
 /// PRD-073 FR-005 helper. Used by `unlink`.
 ///
 /// # Errors
 ///
-/// - [`MutationError::InvalidId`] if `source` or `target` fails
-///   `validate_artifact_id`.
+/// - [`MutationError::InvalidId`] if `source` fails `validate_artifact_id`
+///   or `target` fails `validate_link_target` (plain id or
+///   `KEY@qualifier`).
 /// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
-///   source-side pre-sync or `delete_relation` fails. Target-side
-///   pre-sync and post-render failures are best-effort (warn-and-continue),
-///   matching `add_link_with_projection`.
+///   pre-sync, relation deletion, or post-render fails. A post-render error
+///   can occur after the relation has been deleted.
+/// - [`MutationError::RowNotFound`] with no legacy sink and no resolvable
+///   source file.
 pub async fn delete_link_with_projection(
     ctx: &MutationContext<'_>,
     source: &str,
     target: &str,
     relation: &str,
 ) -> MutationResult<()> {
-    let MutationContext { workspace, store } = *ctx;
+    let workspace = ctx.workspace;
+    let store = ctx.legacy_sink;
     crate::db::store::validate_artifact_id(source)
         .map_err(|_| MutationError::InvalidId(source.to_string()))?;
-    crate::db::store::validate_artifact_id(target)
+    // `unlink` must accept what `link` can store — qualified targets too.
+    crate::db::store::validate_link_target(target)
         .map_err(|_| MutationError::InvalidId(target.to_string()))?;
-    sync_before_mutation(workspace, store, source).await?;
-    if let Err(e) = sync_before_mutation(workspace, store, target).await {
-        tracing::warn!("delete_link: pre-sync target {target} failed (continuing): {e}");
-    }
+    let Some(store) = store else {
+        // Match both canonical keys and historical aliases without changing
+        // unrelated entries in the source document.
+        let path = find_existing_projection_file(workspace, source, None)
+            .await?
+            .ok_or_else(|| MutationError::RowNotFound {
+                id: source.to_string(),
+            })?;
+        let documents = crate::artifact::documents::workspace_candidates(workspace).await?;
+        let normalize = |value: &str| -> anyhow::Result<String> {
+            if value.contains('@') {
+                crate::db::store::validate_link_target(value)?;
+                return Ok(value.to_string());
+            }
+            Ok(
+                crate::artifact::canonical_key::resolve_structural_target(value, &documents)?
+                    .map(|resolved| resolved.identity.canonical_key)
+                    .unwrap_or_else(|| value.to_string()),
+            )
+        };
+        let canonical_target = normalize(target)?;
+        let content = tokio::fs::read_to_string(&path)
+            .await
+            .map_err(anyhow::Error::from)?;
+        let (mut fm, body) = frontmatter::parse_frontmatter_borrowed(&content)?;
+        let Some(links) = fm.get_mut("links") else {
+            return Ok(());
+        };
+        let seq = links
+            .as_sequence_mut()
+            .ok_or_else(|| anyhow::anyhow!("'links' field is not a sequence"))?;
+        let mut matching = Vec::new();
+        for (index, entry) in seq.iter().enumerate() {
+            let Some(declared) = entry.get("target").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let Some(kind) = entry.get("relation").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if kind.trim() == relation
+                && normalize(declared.trim())?.eq_ignore_ascii_case(&canonical_target)
+            {
+                matching.push(index);
+            }
+        }
+        if !matching.is_empty() {
+            for index in matching.into_iter().rev() {
+                seq.remove(index);
+            }
+            let rendered = frontmatter::render_frontmatter(&fm, body)?;
+            atomic_markdown_write(&path, rendered.as_bytes())
+                .await
+                .map_err(anyhow::Error::from)?;
+        }
+        return Ok(());
+    };
+    sync_before_mutation(ctx.guard(), workspace, store, source).await?;
 
-    store.delete_relation(source, target, relation).await?;
+    store
+        .delete_relation(ctx.guard(), source, target, relation)
+        .await?;
 
-    if let Err(e) = render_after_mutation(workspace, store, source).await {
-        tracing::warn!("delete_link: post-render source {source} failed (continuing): {e}");
-    }
-    if let Err(e) = render_after_mutation(workspace, store, target).await {
-        tracing::warn!("delete_link: post-render target {target} failed (continuing): {e}");
-    }
+    render_after_mutation(ctx.guard(), workspace, store, source).await?;
     Ok(())
 }
 
@@ -1381,12 +3225,9 @@ pub enum LinkUpsertOutcome {
 
 /// Idempotent link operation on the `(source, target)` pair.
 ///
-/// Issue #286: `add_link_with_projection` rejects parallel duplicates
-/// AND parallel-but-different-relation edges, leaving callers with no
-/// MCP-safe way to FIX a mis-typed relation. Editing the markdown
-/// `links:` frontmatter does not persist (LanceDB is source of truth
-/// for relations). `forgeplan_delete` is destructive. `forgeplan_supersede`
-/// operates on artifacts, not edges.
+/// Correct an edge's relation without changing its target's canonical file.
+/// Exact duplicates stay unchanged; different relations follow the upsert
+/// policy below rather than ordinary additive-link semantics.
 ///
 /// Semantics: find any existing edge `(source, target, *)`. If found
 /// with the requested relation → return `Unchanged`. If found with a
@@ -1404,45 +3245,121 @@ pub enum LinkUpsertOutcome {
 ///
 /// # Errors
 ///
-/// - [`MutationError::InvalidId`] if `source` or `target` fails
-///   `validate_artifact_id`.
+/// - [`MutationError::InvalidId`] if `source` fails `validate_artifact_id`
+///   or `target` fails `validate_link_target` (plain id or
+///   `KEY@qualifier`).
 /// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`]
-///   if source pre-sync, relation read, delete, or add fails. Target
-///   pre-sync and renders are best-effort, matching `add_link_with_projection`.
+///   if local pre-sync, relation read, delete, add, or source rendering fails.
 pub async fn replace_link_with_projection(
     ctx: &MutationContext<'_>,
     source: &str,
     target: &str,
     relation: &str,
 ) -> MutationResult<LinkUpsertOutcome> {
-    let MutationContext { workspace, store } = *ctx;
+    let workspace = ctx.workspace;
+    let store = ctx.legacy_sink;
     crate::db::store::validate_artifact_id(source)
         .map_err(|_| MutationError::InvalidId(source.to_string()))?;
-    crate::db::store::validate_artifact_id(target)
+    crate::db::store::validate_link_target(target)
         .map_err(|_| MutationError::InvalidId(target.to_string()))?;
-    sync_before_mutation(workspace, store, source).await?;
-    if let Err(e) = sync_before_mutation(workspace, store, target).await {
-        tracing::warn!("replace_link: pre-sync target {target} failed (continuing): {e}");
-    }
+    let documents = crate::artifact::documents::workspace_candidates(workspace).await?;
+    let normalize_target = |value: &str| -> anyhow::Result<String> {
+        if value.contains('@') {
+            crate::db::store::validate_link_target(value)?;
+            return Ok(value.to_string());
+        }
+        Ok(
+            crate::artifact::canonical_key::resolve_structural_target(value, &documents)?
+                .map(|resolved| resolved.identity.canonical_key)
+                .unwrap_or_else(|| value.to_string()),
+        )
+    };
+    let canonical_target = normalize_target(target)?;
+    let Some(store) = store else {
+        let selected = crate::artifact::canonical_key::resolve_artifact(source, &documents)
+            .map_err(anyhow::Error::from)?
+            .ok_or_else(|| MutationError::RowNotFound {
+                id: source.to_string(),
+            })?;
+        if selected
+            .identity
+            .canonical_key
+            .eq_ignore_ascii_case(&canonical_target)
+        {
+            return Err(MutationError::StoreFatal(anyhow::anyhow!(
+                "self-link is not allowed: {source} --{relation}--> {target}"
+            )));
+        }
+        let path = workspace.join(selected.relative_path);
+        let original = tokio::fs::read_to_string(&path)
+            .await
+            .map_err(anyhow::Error::from)?;
+        let (mut fm, body) = frontmatter::parse_frontmatter_borrowed(&original)?;
+        let links = fm
+            .entry("links".to_string())
+            .or_insert_with(|| serde_yaml::Value::Sequence(Vec::new()));
+        let seq = links
+            .as_sequence_mut()
+            .ok_or_else(|| anyhow::anyhow!("'links' field is not a sequence"))?;
+        let mut first = None;
+        for (index, entry) in seq.iter().enumerate() {
+            let Some(existing_target) = entry.get("target").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let Some(existing_relation) = entry.get("relation").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if normalize_target(existing_target.trim())?.eq_ignore_ascii_case(&canonical_target) {
+                if existing_relation.trim() == relation {
+                    return Ok(LinkUpsertOutcome::Unchanged);
+                }
+                if first.is_none() {
+                    first = Some((index, existing_relation.to_string()));
+                }
+            }
+        }
+        let outcome = if let Some((index, old_relation)) = first {
+            let map = seq[index]
+                .as_mapping_mut()
+                .expect("link with target and relation is a mapping");
+            map.insert(
+                serde_yaml::Value::String("relation".into()),
+                serde_yaml::Value::String(relation.into()),
+            );
+            LinkUpsertOutcome::Replaced { old_relation }
+        } else {
+            seq.push(
+                serde_yaml::to_value(BTreeMap::from([
+                    ("target", canonical_target.as_str()),
+                    ("relation", relation),
+                ]))
+                .map_err(anyhow::Error::from)?,
+            );
+            LinkUpsertOutcome::Created
+        };
+        let rendered = frontmatter::render_frontmatter(&fm, body)?;
+        atomic_markdown_write(&path, rendered.as_bytes())
+            .await
+            .map_err(anyhow::Error::from)?;
+        return Ok(outcome);
+    };
+    sync_before_mutation(ctx.guard(), workspace, store, source).await?;
 
-    // Read existing edges from `source`. We compare case-insensitively on
-    // the target id because Forgeplan stores ids in their canonical form
-    // (uppercase prefix for display ids, lowercase for slugs) but callers
-    // may pass either form.
+    // The index stores canonical keys; resolve a display alias before comparing.
     let existing = store
-        .get_relations(source)
+        .get_relations(ctx.guard(), source)
         .await
         .map_err(MutationError::from_store_err)?;
 
     let existing_same_target: Vec<(String, String)> = existing
         .into_iter()
-        .filter(|(t, _)| t.eq_ignore_ascii_case(target))
+        .filter(|(t, _)| t.eq_ignore_ascii_case(&canonical_target))
         .collect();
 
-    let outcome = if let Some((_, r)) = existing_same_target.iter().find(|(_, r)| r == relation) {
-        // Already present with the same relation — no-op.
-        let _ = r;
-        LinkUpsertOutcome::Unchanged
+    let outcome = if existing_same_target.iter().any(|(_, r)| r == relation) {
+        // Sync above may update the derived index, but a no-op must not render
+        // canonical keys over historical link spelling in the source file.
+        return Ok(LinkUpsertOutcome::Unchanged);
     } else if let Some((_, old_rel)) = existing_same_target.first() {
         // Present with a different relation — replace.
         //
@@ -1461,11 +3378,11 @@ pub async fn replace_link_with_projection(
         // attempts (db/store.rs:706-713) but the existing edge here has
         // a DIFFERENT relation, so the dedup check passes.
         store
-            .add_relation(source, target, relation)
+            .add_relation(ctx.guard(), source, &canonical_target, relation)
             .await
             .map_err(MutationError::from_store_err)?;
         store
-            .delete_relation(source, target, old_rel)
+            .delete_relation(ctx.guard(), source, &canonical_target, old_rel)
             .await
             .map_err(MutationError::from_store_err)?;
         LinkUpsertOutcome::Replaced {
@@ -1474,19 +3391,276 @@ pub async fn replace_link_with_projection(
     } else {
         // No prior edge — plain add.
         store
-            .add_relation(source, target, relation)
+            .add_relation(ctx.guard(), source, &canonical_target, relation)
             .await
             .map_err(MutationError::from_store_err)?;
         LinkUpsertOutcome::Created
     };
 
-    if let Err(e) = render_after_mutation(workspace, store, source).await {
-        tracing::warn!("replace_link: post-render source {source} failed (continuing): {e}");
-    }
-    if let Err(e) = render_after_mutation(workspace, store, target).await {
-        tracing::warn!("replace_link: post-render target {target} failed (continuing): {e}");
-    }
+    render_after_mutation(ctx.guard(), workspace, store, source).await?;
     Ok(outcome)
+}
+
+// =============================================================================
+// File-first helpers for constellation-migrated workspaces (no LanceStore)
+// -----------------------------------------------------------------------------
+// On a workspace whose index moved to the constellation protocol the legacy
+// `artifacts.lance` is retired and there is no store to sync through — the
+// markdown edit IS the whole mutation, and the reconcile pass
+// (`maintain_index` / `forgeplan index`) owns the derived row afterwards.
+// These are the no-store siblings of `update_*_with_projection`: they edit
+// the projection frontmatter / body in place with the same invariants
+// (files-first, carry-forward, atomic write) minus the store round-trip.
+// =============================================================================
+
+/// Update `status:` / `title:` / `depth:` inside an artifact's projection
+/// frontmatter in place — the no-store sibling of
+/// [`update_metadata_with_projection`] + [`update_depth_with_projection`].
+/// Every other frontmatter key and the body are preserved byte-for-byte.
+///
+/// Title changes preserve the document's existing path, including historical
+/// `{id}-{slug}.md` paths. Returns that path after the mutation. No-change
+/// input leaves the file untouched.
+///
+/// # Errors
+///
+/// - blank `status` / `title` / `depth` value (mirrors the `EmptyField`
+///   guards on `update_metadata_with_projection`)
+/// - unparseable frontmatter
+/// - I/O failures on read or atomic write
+pub async fn update_metadata_file_first(
+    artifact_path: &Path,
+    status: Option<&str>,
+    title: Option<&str>,
+    depth: Option<&str>,
+) -> anyhow::Result<PathBuf> {
+    for (field, value) in [("status", status), ("title", title), ("depth", depth)] {
+        if let Some(v) = value
+            && v.trim().is_empty()
+        {
+            anyhow::bail!("update: --{field} cannot be blank");
+        }
+    }
+
+    let content = tokio::fs::read_to_string(artifact_path).await?;
+    let (mut fm, body) = frontmatter::parse_frontmatter(&content)?;
+    if let Some(s) = status {
+        fm.insert(
+            "status".to_string(),
+            serde_yaml::Value::String(s.to_string()),
+        );
+    }
+    if let Some(t) = title {
+        fm.insert(
+            "title".to_string(),
+            serde_yaml::Value::String(t.to_string()),
+        );
+    }
+    if let Some(d) = depth {
+        fm.insert(
+            "depth".to_string(),
+            serde_yaml::Value::String(d.to_string()),
+        );
+    }
+    let rendered = frontmatter::render_frontmatter(&fm, &body)?;
+
+    // A title is metadata, not identity. Preserve the document's existing
+    // path even when it uses the historical `{id}-{title}.md` convention.
+    if rendered == content {
+        return Ok(artifact_path.to_path_buf());
+    }
+    atomic_markdown_write(artifact_path, rendered.as_bytes()).await?;
+    Ok(artifact_path.to_path_buf())
+}
+
+/// Replace an artifact's body — the no-store sibling of
+/// [`update_body_with_projection`]. "Body" is everything below the
+/// projection frontmatter block: the canonical body-frontmatter plus prose.
+///
+/// Same invariants as the store path:
+/// - [`carry_identity_forward`] — body-frontmatter fields the projection
+///   does not own (`slug`, `assigned_number`, `created`, …) survive a body
+///   replacement that omits them.
+/// - status sync — a `status:` declared inside the NEW body's own
+///   frontmatter propagates into the projection block (audit-r7 F1 rule).
+/// - the write is atomic and skipped when nothing would change.
+pub async fn update_body_file_first(artifact_path: &Path, new_body: &str) -> anyhow::Result<()> {
+    let content = tokio::fs::read_to_string(artifact_path).await?;
+    let (mut fm, body) = frontmatter::parse_frontmatter(&content)?;
+
+    // The canonical key is immutable through an ordinary update. A body
+    // that declares a different key — in its own frontmatter or in a
+    // nested one — is refused instead of written.
+    let current_key = {
+        let id = fm.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+        crate::artifact::canonical_key::canonical_key_from_document(id, &content)
+    };
+    frontmatter::refuse_canonical_key_change(&current_key, new_body)?;
+
+    let carried = carry_identity_forward(&body, new_body);
+    if let Some(derived_status) =
+        frontmatter::parse_frontmatter(&carried)
+            .ok()
+            .and_then(|(bfm, _)| {
+                bfm.get("status")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            })
+    {
+        fm.insert(
+            "status".to_string(),
+            serde_yaml::Value::String(derived_status),
+        );
+    }
+
+    let rendered = frontmatter::render_frontmatter(&fm, &carried)?;
+    if rendered == content {
+        return Ok(());
+    }
+    atomic_markdown_write(artifact_path, rendered.as_bytes()).await?;
+    Ok(())
+}
+
+/// Replace an artifact's `valid_until:` frontmatter field — the no-store
+/// sibling of [`LanceStore::update_valid_until`] that `forgeplan renew`
+/// (ADR-005) needs on a constellation-migrated workspace.
+///
+/// Same invariants as the other `*_file_first` writers: canonical
+/// frontmatter is edited in place, the write is atomic, and it is skipped
+/// when the field already holds the requested value (so a no-op renew leaves
+/// mtime alone and does not retrigger the watcher).
+///
+/// Only a non-empty value is accepted — `valid_until` has no "cleared" state
+/// in the renew path, and writing an empty `valid_until:` would render as a
+/// YAML null that every later parse reads as "present but unparseable".
+///
+/// # Errors
+///
+/// Blank value, unparseable frontmatter, or an I/O / atomic-write failure.
+/// The file is left untouched when the rendered bytes would be unchanged or
+/// the write fails.
+pub async fn update_valid_until_file_first(
+    artifact_path: &Path,
+    valid_until: &str,
+) -> anyhow::Result<()> {
+    if valid_until.trim().is_empty() {
+        anyhow::bail!("renew: valid_until cannot be blank");
+    }
+    let content = tokio::fs::read_to_string(artifact_path).await?;
+    let (mut fm, body) = frontmatter::parse_frontmatter(&content)?;
+    if fm
+        .get("valid_until")
+        .and_then(|v| v.as_str())
+        .is_some_and(|existing| existing == valid_until)
+    {
+        return Ok(());
+    }
+    fm.insert(
+        "valid_until".to_string(),
+        serde_yaml::Value::String(valid_until.to_string()),
+    );
+    let rendered = frontmatter::render_frontmatter(&fm, &body)?;
+    if rendered == content {
+        return Ok(());
+    }
+    atomic_markdown_write(artifact_path, rendered.as_bytes()).await?;
+    Ok(())
+}
+
+/// Set an artifact's `valid_until` with file-first guarantees: sync any user
+/// file edits, mutate, then re-render so the frontmatter reflects the new
+/// date.
+///
+/// # Errors
+///
+/// [`MutationError::InvalidId`] if `id` fails `validate_artifact_id`, or
+/// [`MutationError::RowNotFound`] with no legacy sink and no resolvable
+/// markdown file for `id`.
+pub async fn update_valid_until_with_projection(
+    ctx: &MutationContext<'_>,
+    id: &str,
+    valid_until: &str,
+) -> MutationResult<()> {
+    let workspace = ctx.workspace;
+    let store = ctx.legacy_sink;
+    crate::db::store::validate_artifact_id(id)
+        .map_err(|_| MutationError::InvalidId(id.to_string()))?;
+    let Some(store) = store else {
+        let path = find_existing_projection_file(workspace, id, None)
+            .await?
+            .ok_or_else(|| MutationError::RowNotFound { id: id.to_string() })?;
+        update_valid_until_file_first(&path, valid_until)
+            .await
+            .map_err(MutationError::from)?;
+        return Ok(());
+    };
+    sync_before_mutation(ctx.guard(), workspace, store, id).await?;
+    store
+        .update_valid_until(ctx.guard(), id, valid_until)
+        .await?;
+    render_after_mutation(ctx.guard(), workspace, store, id).await?;
+    Ok(())
+}
+
+/// Add and/or remove `tags:` entries in an artifact's projection
+/// frontmatter in place — the no-store sibling of
+/// [`add_tags_with_projection`] + [`remove_tags_with_projection`].
+///
+/// Semantics mirror the store path:
+/// - reads existing tags through `tags_from_frontmatter`, so a hand-written
+///   `tags: [a, b]` inline array or `"a, b"` CSV string normalizes to the
+///   same list the index would have held;
+/// - `add` appends tags not already present (exact match, same as
+///   `store.add_tags`);
+/// - `remove` drops exactly the named tags (exact match, same as
+///   `store.remove_tags`);
+/// - insertion order is preserved and existing order is kept, so a
+///   reconcile pass sees a stable diff rather than a reordering;
+/// - the write is atomic and skipped when the set is unchanged, so a
+///   no-op tag call leaves mtime alone and does not retrigger the watcher.
+///
+/// An empty `add` list with an empty `remove` list is a no-op.
+/// Removing a tag that is not present is not an error — same as the store
+/// path, where `remove_tags` deletes nothing and reports success.
+///
+/// # Errors
+///
+/// I/O or frontmatter-parse failures. The file is left untouched when the
+/// rendered bytes would be unchanged or the write fails.
+pub async fn update_tags_file_first(
+    artifact_path: &Path,
+    add: &[String],
+    remove: &[String],
+) -> anyhow::Result<()> {
+    let content = tokio::fs::read_to_string(artifact_path).await?;
+    let (mut fm, body) = frontmatter::parse_frontmatter(&content)?;
+
+    let mut tags = frontmatter::tags_from_frontmatter(&fm);
+    let before = tags.clone();
+    for tag in add {
+        if !tags.contains(tag) {
+            tags.push(tag.clone());
+        }
+    }
+    tags.retain(|t| !remove.contains(t));
+
+    if tags == before {
+        return Ok(());
+    }
+
+    // Keep the empty override: the unchanged body can contain an older tag
+    // set, which must not become current again after removing the last tag.
+    fm.insert(
+        "tags".to_string(),
+        serde_yaml::Value::Sequence(tags.into_iter().map(serde_yaml::Value::String).collect()),
+    );
+
+    let rendered = frontmatter::render_frontmatter(&fm, &body)?;
+    if rendered == content {
+        return Ok(());
+    }
+    atomic_markdown_write(artifact_path, rendered.as_bytes()).await?;
+    Ok(())
 }
 
 // =============================================================================
@@ -1533,11 +3707,18 @@ pub async fn replace_link_with_projection(
 /// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
 ///   `metadata` returns a non-ENOENT I/O error or `create_artifact`
 ///   fails. EACCES on the parent directory routes to `StoreTransient`.
+///
+/// With `ctx.legacy_sink == None` this returns `Ok(())` after validating the
+/// id and kind: the caller already holds the canonical file, and there is no
+/// legacy index to write it into. It is a no-op, not a refusal — the
+/// `FileNotFound` TOCTOU guard below protects a store write that is not
+/// happening.
 pub async fn sync_artifact_from_file(
     ctx: &MutationContext<'_>,
     artifact: &crate::db::store::NewArtifact,
 ) -> MutationResult<()> {
-    let MutationContext { workspace, store } = *ctx;
+    let workspace = ctx.workspace;
+    let store = ctx.legacy_sink;
     crate::db::store::validate_artifact_id(&artifact.id)
         .map_err(|_| MutationError::InvalidId(artifact.id.clone()))?;
     let kind: ArtifactKind = artifact
@@ -1550,11 +3731,32 @@ pub async fn sync_artifact_from_file(
                 reason: e.to_string(),
             },
         )?;
-    let path = workspace.join(kind.dir_name()).join(format!(
-        "{}-{}.md",
-        artifact.id,
-        projection_slug(&artifact.title)
-    ));
+    // The document's own file — a document filed under its canonical key is
+    // not named after its id and its title.
+    let path = document_file_by_id(
+        workspace,
+        &artifact.kind,
+        Some(&artifact.canonical_key),
+        &artifact.id,
+        &artifact.title,
+    )
+    .await?
+    .unwrap_or_else(|| {
+        workspace.join(kind.dir_name()).join(format!(
+            "{}-{}.md",
+            artifact.id,
+            projection_slug(&artifact.title)
+        ))
+    });
+    let Some(store) = store else {
+        // File→index direction with no legacy index to write. The caller
+        // already holds the canonical file (it just read it), so there is
+        // nothing to do and nothing to verify: reconcile owns publishing
+        // the derived row. Returning `Ok` — rather than a named refusal —
+        // keeps `watch` / `reindex` / `git-sync` reporting the file as
+        // handled rather than as a failure they must special-case.
+        return Ok(());
+    };
     // R1 audit M-1: distinguish ENOENT (real file-not-found) from EACCES /
     // other I/O errors. Treating "permission denied" as `FileNotFound`
     // would mislead an MCP client trying to remediate.
@@ -1587,7 +3789,7 @@ pub async fn sync_artifact_from_file(
             return Err(MutationError::from_store_err(e.into()));
         }
     }
-    store.create_artifact(artifact).await?;
+    store.create_artifact(ctx.guard(), artifact).await?;
     Ok(())
 }
 
@@ -1616,7 +3818,8 @@ pub async fn sync_body_from_file(
     title: &str,
     body: &str,
 ) -> MutationResult<()> {
-    let MutationContext { workspace, store } = *ctx;
+    let workspace = ctx.workspace;
+    let store = ctx.legacy_sink;
     crate::db::store::validate_artifact_id(id)
         .map_err(|_| MutationError::InvalidId(id.to_string()))?;
     let parsed_kind: ArtifactKind =
@@ -1627,11 +3830,25 @@ pub async fn sync_body_from_file(
                 reason: e.to_string(),
             },
         )?;
-    let path = workspace.join(parsed_kind.dir_name()).join(format!(
-        "{}-{}.md",
-        id,
-        projection_slug(title)
-    ));
+    let Some(store) = store else {
+        return Ok(());
+    };
+    let path = match document_file_by_id(workspace, kind, None, id, title).await? {
+        Some(path) => path,
+        None => {
+            let key = store
+                .get_record(ctx.guard(), id)
+                .await?
+                .map(|record| record.canonical_key)
+                .unwrap_or_else(|| id.to_string());
+            let filename = crate::artifact::store::canonical_filename(&key)
+                .map_err(MutationError::StoreFatal)?;
+            return Err(MutationError::FileNotFound {
+                id: id.to_string(),
+                path: PathBuf::from(parsed_kind.dir_name()).join(filename),
+            });
+        }
+    };
     // R1 audit M-1: ENOENT only — EACCES / other I/O fall through as StoreError.
     // R1 audit H-8 + R2 M-R2-1: strip workspace prefix; on strip failure, fall
     // back to file_name (never the absolute path) to avoid leaks under
@@ -1657,7 +3874,7 @@ pub async fn sync_body_from_file(
             return Err(MutationError::from_store_err(e.into()));
         }
     }
-    store.update_body(id, body).await?;
+    store.update_body(ctx.guard(), id, body).await?;
     Ok(())
 }
 
@@ -1691,7 +3908,7 @@ pub async fn sync_metadata_from_file(
     // Path-blind helper: `ctx.workspace` is unused today but kept on the
     // signature so Phase 3d can wire projection-mismatch checks without
     // breaking call sites again.
-    let store = ctx.store;
+    let store = ctx.legacy_sink;
     crate::db::store::validate_artifact_id(id)
         .map_err(|_| MutationError::InvalidId(id.to_string()))?;
     if status.is_none() && title.is_none() {
@@ -1707,7 +3924,13 @@ pub async fn sync_metadata_from_file(
     {
         return Err(MutationError::EmptyField { field: "title" });
     }
-    store.update_artifact(id, status, title).await?;
+    let Some(store) = store else {
+        // No legacy index to sync into — see `sync_artifact_from_file`.
+        return Ok(());
+    };
+    store
+        .update_artifact(ctx.guard(), id, status, title)
+        .await?;
     Ok(())
 }
 
@@ -1717,8 +3940,9 @@ pub async fn sync_metadata_from_file(
 ///
 /// # Errors
 ///
-/// - [`MutationError::InvalidId`] if `source` or `target` fails
-///   `validate_artifact_id`.
+/// - [`MutationError::InvalidId`] if `source` fails `validate_artifact_id`
+///   or `target` fails `validate_link_target` (plain id or
+///   `KEY@qualifier` — a `links:` block may name a foreign artifact).
 /// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
 ///   `add_relation` fails.
 pub async fn sync_relation_from_file(
@@ -1728,12 +3952,20 @@ pub async fn sync_relation_from_file(
     relation: &str,
 ) -> MutationResult<()> {
     // Path-blind helper — see `sync_metadata_from_file` note.
-    let store = ctx.store;
+    let store = ctx.legacy_sink;
     crate::db::store::validate_artifact_id(source)
         .map_err(|_| MutationError::InvalidId(source.to_string()))?;
-    crate::db::store::validate_artifact_id(target)
+    // A `links:` block may declare a qualified cross-source target —
+    // reindex / git-sync must restore it verbatim, not reject it.
+    crate::db::store::validate_link_target(target)
         .map_err(|_| MutationError::InvalidId(target.to_string()))?;
-    store.add_relation(source, target, relation).await?;
+    let Some(store) = store else {
+        // No legacy index to sync into — see `sync_artifact_from_file`.
+        return Ok(());
+    };
+    store
+        .add_relation(ctx.guard(), source, target, relation)
+        .await?;
     Ok(())
 }
 
@@ -1749,11 +3981,21 @@ pub async fn sync_relation_from_file(
 /// - [`MutationError::InvalidId`] if `id` fails `validate_artifact_id`.
 /// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
 ///   `delete_artifact` fails.
+/// - [`MutationError::NoLegacySink`] when the workspace has no legacy index.
+///   The markdown is already gone, so there is no canonical counterpart to
+///   perform; the orphan belongs to the constellation index, and this
+///   reports that rather than claiming a prune it did not make.
 pub async fn delete_orphan_artifact(ctx: &MutationContext<'_>, id: &str) -> MutationResult<()> {
-    let store = ctx.store;
     crate::db::store::validate_artifact_id(id)
         .map_err(|_| MutationError::InvalidId(id.to_string()))?;
-    store.delete_artifact(id).await?;
+    // Derived-index-only step: the markdown is already gone (reindex
+    // Phase 2 / git-sync on `'D'`), so there is no canonical mutation to
+    // perform and no counterpart to fall back to. With no legacy sink the
+    // row cannot exist, and the orphan this call prunes is the
+    // constellation index's business — report it as such rather than
+    // claiming the prune happened.
+    let store = ctx.require_legacy_sink("prune orphan artifact row")?;
+    store.delete_artifact(ctx.guard(), id).await?;
     Ok(())
 }
 
@@ -1762,23 +4004,217 @@ pub async fn delete_orphan_artifact(ctx: &MutationContext<'_>, id: &str) -> Muta
 ///
 /// # Errors
 ///
-/// - [`MutationError::InvalidId`] if `source` or `target` fails
-///   `validate_artifact_id`.
+/// - [`MutationError::InvalidId`] if `source` fails `validate_artifact_id`
+///   or `target` fails `validate_link_target` (plain id or
+///   `KEY@qualifier`). Phase 3 calls this on a qualified edge only when
+///   its *source* is gone — the qualified target itself counts as
+///   existing-elsewhere there.
 /// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
 ///   `delete_relation` fails.
+/// - [`MutationError::NoLegacySink`] when the workspace has no legacy index
+///   — see [`delete_orphan_artifact`].
 pub async fn delete_orphan_relation(
     ctx: &MutationContext<'_>,
     source: &str,
     target: &str,
     relation: &str,
 ) -> MutationResult<()> {
-    let store = ctx.store;
     crate::db::store::validate_artifact_id(source)
         .map_err(|_| MutationError::InvalidId(source.to_string()))?;
-    crate::db::store::validate_artifact_id(target)
+    // Qualified targets must also be *deletable* — reindex Phase 3 only
+    // calls this for them when the source artifact is gone (see the
+    // qualified-target exemption there), and refusing would leak the edge.
+    crate::db::store::validate_link_target(target)
         .map_err(|_| MutationError::InvalidId(target.to_string()))?;
-    store.delete_relation(source, target, relation).await?;
+    // Derived-index-only step — see `delete_orphan_artifact`.
+    let store = ctx.require_legacy_sink("prune orphan relation row")?;
+    store
+        .delete_relation(ctx.guard(), source, target, relation)
+        .await?;
     Ok(())
+}
+
+/// Restore bundle edges without re-rendering unchanged canonical files.
+///
+/// Complete-file bundles already declare their edges in `links`. Those edges
+/// count as restored, not as failed duplicate additions. A legacy index is
+/// updated separately; it must never render its cache over the imported bytes.
+pub async fn import_links_with_projection(
+    ctx: &MutationContext<'_>,
+    links: &[(String, String, String)],
+) -> MutationResult<usize> {
+    crate::workspace::lock::WorkspaceReadPermit::matches_workspace(ctx.guard(), ctx.workspace)?;
+    let documents = crate::artifact::documents::workspace_candidates(ctx.workspace).await?;
+    let normalize_target = |target: &str| -> anyhow::Result<String> {
+        crate::db::store::validate_link_target(target)?;
+        if target.contains('@') {
+            return Ok(target.to_string());
+        }
+        Ok(
+            crate::artifact::canonical_key::resolve_structural_target(target, &documents)?
+                .map(|resolved| resolved.identity.canonical_key)
+                .unwrap_or_else(|| target.to_string()),
+        )
+    };
+    type SourceEdges<'a> = (PathBuf, Vec<(&'a str, &'a str)>);
+
+    let mut sources: BTreeMap<String, SourceEdges<'_>> = BTreeMap::new();
+    for (source, target, relation) in links {
+        crate::db::store::validate_artifact_id(source)
+            .map_err(|_| MutationError::InvalidId(source.clone()))?;
+        let selected = crate::artifact::canonical_key::resolve_artifact(source, &documents)
+            .map_err(anyhow::Error::from)?
+            .ok_or_else(|| MutationError::RowNotFound { id: source.clone() })?;
+        let target_key = normalize_target(target)?;
+        if selected
+            .identity
+            .canonical_key
+            .eq_ignore_ascii_case(&target_key)
+        {
+            return Err(MutationError::StoreFatal(anyhow::anyhow!(
+                "self-link is not allowed: {source} --{relation}--> {target}"
+            )));
+        }
+        let entry = sources
+            .entry(selected.identity.canonical_key)
+            .or_insert_with(|| (ctx.workspace.join(selected.relative_path), Vec::new()));
+        entry.1.push((target, relation));
+    }
+    // Resolve every already-declared endpoint before writing any source.
+    // The captured candidate set stays fixed while links are applied.
+    for (path, _) in sources.values() {
+        let original = tokio::fs::read_to_string(path)
+            .await
+            .map_err(anyhow::Error::from)?;
+        let (fm, _) = frontmatter::parse_frontmatter_borrowed(&original)?;
+        if let Some(value) = fm.get("links") {
+            let entries = value
+                .as_sequence()
+                .ok_or_else(|| anyhow::anyhow!("'links' field is not a sequence"))?;
+            for entry in entries {
+                if let Some(target) = entry
+                    .get("target")
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    normalize_target(target)?;
+                }
+            }
+        }
+    }
+
+    let mut restored = 0;
+    for (source, (path, edges)) in sources {
+        // The path was resolved against the frozen candidate set above.
+        let original = tokio::fs::read_to_string(&path)
+            .await
+            .map_err(anyhow::Error::from)?;
+        let (mut fm, body) = frontmatter::parse_frontmatter_borrowed(&original)?;
+        let mut known: BTreeMap<String, std::collections::BTreeSet<&str>> = BTreeMap::new();
+        if let Some(value) = fm.get("links") {
+            let seq = value
+                .as_sequence()
+                .ok_or_else(|| anyhow::anyhow!("'links' field is not a sequence in {source}"))?;
+            for entry in seq {
+                if let (Some(target), Some(relation)) = (
+                    entry
+                        .get("target")
+                        .and_then(|value| value.as_str())
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty()),
+                    entry
+                        .get("relation")
+                        .and_then(|value| value.as_str())
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty()),
+                ) {
+                    known
+                        .entry(normalize_target(target)?.to_ascii_lowercase())
+                        .or_default()
+                        .insert(relation);
+                }
+            }
+        }
+        let mut accepted = Vec::with_capacity(edges.len());
+        let mut additions = Vec::new();
+        for (target, relation) in edges {
+            let canonical_target = normalize_target(target)?;
+            if known
+                .entry(canonical_target.to_ascii_lowercase())
+                .or_default()
+                .insert(relation)
+            {
+                additions.push((canonical_target.clone(), relation));
+            }
+            accepted.push((canonical_target, relation));
+        }
+        drop(known);
+        if !additions.is_empty() {
+            let value = fm
+                .entry("links".to_string())
+                .or_insert_with(|| serde_yaml::Value::Sequence(Vec::new()));
+            let seq = value
+                .as_sequence_mut()
+                .expect("links sequence validated above");
+            for (target, relation) in additions {
+                seq.push(
+                    serde_yaml::to_value(BTreeMap::from([
+                        ("target", target.as_str()),
+                        ("relation", relation),
+                    ]))
+                    .map_err(anyhow::Error::from)?,
+                );
+            }
+            let rendered = frontmatter::render_frontmatter(&fm, body)?;
+            atomic_markdown_write(&path, rendered.as_bytes())
+                .await
+                .map_err(anyhow::Error::from)?;
+        }
+
+        let Some(store) = ctx.legacy_sink else {
+            restored += accepted.len();
+            continue;
+        };
+        let stored = store.get_relations(ctx.guard(), &source).await?;
+        let mut indexed: BTreeMap<String, std::collections::BTreeSet<&str>> = BTreeMap::new();
+        for (target, relation) in &stored {
+            indexed
+                .entry(target.to_ascii_lowercase())
+                .or_default()
+                .insert(relation);
+        }
+        for (target, relation) in accepted {
+            let target_key = target.to_ascii_lowercase();
+            if indexed
+                .get(&target_key)
+                .is_some_and(|relations| relations.contains(relation))
+            {
+                restored += 1;
+                continue;
+            }
+            match store
+                .add_relation(ctx.guard(), &source, &target, relation)
+                .await
+            {
+                Ok(_) => {
+                    indexed.entry(target_key).or_default().insert(relation);
+                    restored += 1;
+                }
+                Err(error)
+                    if error
+                        .downcast_ref::<crate::artifact::canonical_key::ResolveError>()
+                        .is_some() =>
+                {
+                    return Err(MutationError::from_store_err(error));
+                }
+                Err(error) => tracing::warn!(
+                    "import links: indexing {source} --{relation}--> {target} failed: {error}"
+                ),
+            }
+        }
+    }
+    Ok(restored)
 }
 
 /// Add multiple links in one batch with deduplicated rendering.
@@ -1795,10 +4231,8 @@ pub async fn delete_orphan_relation(
 /// Result: `~2 × U` `get_record` calls + `~2 × U` file writes where U
 /// is the count of unique source-or-target IDs (typically << N).
 ///
-/// Per-link errors are collected and returned as a count; the function
-/// itself returns `Ok` after attempting every link unless one of the
-/// pre-sync calls fails (those are fatal because they snapshot user
-/// edits). Audit H6 (code-analyzer 2026-05-01).
+/// Per-link errors are counted, but pre-sync and post-render errors are
+/// returned. A post-render error can occur after some relations were added.
 ///
 /// PRD-073 FR-001 / FR-005 helper. Used by `import_cmd` /
 /// `forgeplan_import` / `ingest` (any caller that adds many relations
@@ -1806,12 +4240,17 @@ pub async fn delete_orphan_relation(
 ///
 /// # Errors
 ///
-/// - [`MutationError::InvalidId`] if any source or target id in the
-///   batch fails `validate_artifact_id`. Validation runs up front so a
-///   bad id rejects the batch before any write lands.
+/// - [`MutationError::InvalidId`] if any source id in the batch fails
+///   `validate_artifact_id` or any target fails `validate_link_target`
+///   (plain id or `KEY@qualifier`). Validation runs up front so a bad
+///   id rejects the batch before any write lands.
 /// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
 ///   any pre-sync call fails (those are fatal because they snapshot
 ///   user edits — losing them would corrupt the workspace).
+/// - [`MutationError::RowNotFound`] with no legacy sink, when a source id in
+///   the batch resolves to no markdown file.
+/// - [`MutationError::InvalidId`] is raised for the whole batch before any
+///   file is touched when any id is malformed, on both layouts.
 ///
 /// Per-link `add_relation` failures are counted and returned in the
 /// `Ok(usize)` payload (number of relations actually applied) — they do
@@ -1820,7 +4259,8 @@ pub async fn add_links_batch_with_projection(
     ctx: &MutationContext<'_>,
     links: &[(String, String, String)],
 ) -> MutationResult<usize> {
-    let MutationContext { workspace, store } = *ctx;
+    let workspace = ctx.workspace;
+    let store = ctx.legacy_sink;
     if links.is_empty() {
         return Ok(0);
     }
@@ -1832,9 +4272,45 @@ pub async fn add_links_batch_with_projection(
     for (source, target, _) in links {
         crate::db::store::validate_artifact_id(source)
             .map_err(|_| MutationError::InvalidId(source.clone()))?;
-        crate::db::store::validate_artifact_id(target)
+        crate::db::store::validate_link_target(target)
             .map_err(|_| MutationError::InvalidId(target.clone()))?;
     }
+
+    let Some(store) = store else {
+        // Constellation-managed workspace: each edge is written into its
+        // SOURCE file's `links:` block, which is the canonical form. The
+        // per-source file is resolved once and every edge for it applied
+        // in order, so the deduplicated-render property the store path
+        // gets from its post-render phase is preserved here in the only
+        // form a file write can offer: one file, all of its edges.
+        let mut applied = 0usize;
+        let mut resolved_sources: Vec<(String, PathBuf)> = Vec::new();
+        for (source, target, relation) in links {
+            let idx = match resolved_sources.iter().position(|(s, _)| s == source) {
+                Some(idx) => idx,
+                None => {
+                    let path = find_existing_projection_file(workspace, source, None)
+                        .await?
+                        .ok_or_else(|| MutationError::RowNotFound { id: source.clone() })?;
+                    resolved_sources.push((source.clone(), path));
+                    resolved_sources.len() - 1
+                }
+            };
+            let path = resolved_sources[idx].1.clone();
+            match crate::link::add_link_verbatim(&path, target, relation).await {
+                Ok(()) => applied += 1,
+                Err(e) => {
+                    // Same count-don't-abort policy as the store path: a
+                    // duplicate edge or an unresolvable target must not
+                    // strand the rest of the bundle.
+                    tracing::warn!(
+                        "add_links_batch (file-first): {source} --{relation}--> {target} failed: {e}",
+                    );
+                }
+            }
+        }
+        return Ok(applied);
+    };
 
     // Collect unique participants for one pre-sync per file.
     let mut unique_ids: Vec<&str> = Vec::with_capacity(links.len() * 2);
@@ -1847,11 +4323,11 @@ pub async fn add_links_batch_with_projection(
         }
     }
 
-    // Phase 1: pre-sync each unique participant ONCE (best-effort —
-    // missing target is a legitimate cross-workspace ref, not an error).
+    // Qualified targets belong to other sources and have no local row.
+    // Every local pre-sync must succeed before the batch writes anything.
     for id in &unique_ids {
-        if let Err(e) = sync_before_mutation(workspace, store, id).await {
-            tracing::warn!("add_links_batch: pre-sync {id} failed (continuing): {e}");
+        if !id.contains('@') {
+            sync_before_mutation(ctx.guard(), workspace, store, id).await?;
         }
     }
 
@@ -1859,7 +4335,10 @@ pub async fn add_links_batch_with_projection(
     // bulk imports surface "imported N of M" instead of stopping cold.
     let mut applied = 0usize;
     for (source, target, relation) in links {
-        match store.add_relation(source, target, relation).await {
+        match store
+            .add_relation(ctx.guard(), source, target, relation)
+            .await
+        {
             Ok(_) => applied += 1,
             Err(e) => {
                 tracing::warn!(
@@ -1869,11 +4348,10 @@ pub async fn add_links_batch_with_projection(
         }
     }
 
-    // Phase 3: render each affected file ONCE (warn-and-continue —
-    // see `add_link_with_projection` for the same policy on single ops).
+    // Render local participants once; preserve any lookup or rendering error.
     for id in &unique_ids {
-        if let Err(e) = render_after_mutation(workspace, store, id).await {
-            tracing::warn!("add_links_batch: post-render {id} failed (continuing): {e}");
+        if !id.contains('@') {
+            render_after_mutation(ctx.guard(), workspace, store, id).await?;
         }
     }
 
@@ -1894,17 +4372,31 @@ pub async fn add_links_batch_with_projection(
 /// - [`MutationError::InvalidId`] if `id` fails `validate_artifact_id`.
 /// - [`MutationError::StoreFatal`] / [`MutationError::StoreTransient`] if
 ///   `delete_artifact` fails.
+/// - [`MutationError::NoLegacySink`] when the workspace has no legacy index.
+///   The canonical half of the soft delete (moving the file to trash)
+///   already happened, so this reports the missing row drop instead of
+///   pretending it completed.
 pub async fn delete_artifact_after_soft_delete(
     ctx: &MutationContext<'_>,
     id: &str,
 ) -> MutationResult<()> {
-    // Path-blind helper — see `sync_metadata_from_file` note. The file
-    // has already been moved to trash by `soft_delete_capture` so this
-    // helper deliberately does not touch `ctx.workspace`.
-    let store = ctx.store;
+    // The source was moved by soft_delete_capture. Prove the corresponding
+    // durable preimage before removing any derived row.
     crate::db::store::validate_artifact_id(id)
         .map_err(|_| MutationError::InvalidId(id.to_string()))?;
-    store.delete_artifact(id).await?;
+    // The canonical half of the soft delete already happened (the file is
+    // in trash); this call only drops the derived row. With no legacy
+    // sink there is no row, so report that rather than claim the drop.
+    let store = ctx.require_legacy_sink("drop row after soft delete")?;
+    if let Some(record) = store.get_record(ctx.guard(), id).await? {
+        crate::db::migrate::require_identity_delete_intent(
+            ctx.workspace,
+            ctx.guard(),
+            &record.canonical_key,
+        )
+        .await?;
+    }
+    store.delete_artifact(ctx.guard(), id).await?;
     Ok(())
 }
 
@@ -1912,6 +4404,1366 @@ pub async fn delete_artifact_after_soft_delete(
 mod tests {
     use super::*;
     use tempfile::TempDir;
+    /// The file a document lives in: `<key>.md` for a document published
+    /// under its canonical key, the legacy `<id>-<slug>.md` otherwise.
+    ///
+    /// Tests that need the file on disk ask this helper instead of composing
+    /// a name: the name is a layout detail, the document is the subject.
+    async fn document_file(ws: &Path, id: &str, kind: &str, title: &str) -> PathBuf {
+        document_file_by_id(ws, kind, Some(id), id, title)
+            .await
+            .unwrap()
+            .unwrap_or_else(|| {
+                let dir = ws.join(kind.parse::<ArtifactKind>().unwrap().dir_name());
+                dir.join(format!("{id}-{}.md", projection_slug(title)))
+            })
+    }
+
+    #[tokio::test]
+    async fn publishes_a_new_document_under_its_canonical_key() {
+        use crate::workspace::lock::acquire_workspace_lock;
+
+        let tmp = TempDir::new().unwrap();
+        let ws = crate::workspace::init_workspace(tmp.path(), "canonical-key").unwrap();
+        let lock = acquire_workspace_lock(&ws).await.unwrap();
+        let ctx = MutationContext::new(&ws, &lock, None);
+        let key = "prd-auth-system-k0123456789abcdef0123456789abcdef";
+        let artifact = crate::db::store::NewArtifact {
+            canonical_key: key.to_string(),
+            id: "PRD-001".to_string(),
+            kind: "prd".to_string(),
+            status: "draft".to_string(),
+            title: "Auth system".to_string(),
+            body: "## Summary\n\nBody.\n".to_string(),
+            depth: "standard".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: vec![],
+        };
+        let path = create_artifact_with_canonical_key(&ctx, &artifact)
+            .await
+            .unwrap();
+        assert_eq!(path, ws.join("prds").join(format!("{key}.md")));
+
+        let text = tokio::fs::read_to_string(&path).await.unwrap();
+        let (fm, _body) = frontmatter::parse_frontmatter(&text).unwrap();
+        assert_eq!(
+            fm.get("slug").and_then(|v| v.as_str()),
+            Some(key),
+            "the published document declares the key it is filed under"
+        );
+
+        // Publishing onto the same path again aborts, and the existing
+        // document is not overwritten.
+        let err = create_artifact_with_canonical_key(&ctx, &artifact)
+            .await
+            .expect_err("publication must not clobber an existing document");
+        assert!(
+            err.to_string().contains("already exists"),
+            "unexpected error: {err}"
+        );
+        let after = tokio::fs::read_to_string(&path).await.unwrap();
+        assert_eq!(after, text, "the existing document must stay untouched");
+    }
+
+    #[tokio::test]
+    async fn an_update_cannot_change_the_canonical_key() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp
+            .path()
+            .join("prds")
+            .join("prd-auth-system-k0123456789abcdef0123456789abcdef.md");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "---\nid: PRD-001\nkind: prd\nstatus: draft\ntitle: Auth system\n\
+             slug: prd-auth-system-k0123456789abcdef0123456789abcdef\n---\n\n\
+             Original body.\n",
+        )
+        .unwrap();
+
+        let err = update_body_file_first(
+            &path,
+            "---\nslug: prd-other-system\n---\n\nReplacement body.\n",
+        )
+        .await
+        .expect_err("an ordinary update must not change the canonical key");
+        assert!(
+            err.to_string().contains("canonical key change refused"),
+            "unexpected error: {err:#}"
+        );
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            after.contains("Original body."),
+            "the document must stay untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn clearing_nested_edges_and_tags_survives_fresh_reads_for_both_owners() {
+        use crate::constellation::facade::open_workspace_read_with_permit;
+        use crate::db::store::{LanceStore, NewArtifact};
+        use crate::workspace::{init_workspace, lock::acquire_workspace_lock};
+
+        let stale = "---\nid: NOTE-001\nkind: note\nstatus: draft\ntitle: Source\ndepth: tactical\nslug: note-source\nauthor: old-author\nparent_epic: EPIC-007\nvalid_until: 2099-01-01\ntags: [obsolete]\nlinks:\n  - target: NOTE-002\n    relation: informs\n---\n\nKeep the original body.\n";
+        for legacy in [true, false] {
+            let tmp = TempDir::new().unwrap();
+            let ws = init_workspace(tmp.path(), "metadata-clears").unwrap();
+            let lock = acquire_workspace_lock(&ws).await.unwrap();
+            let store = if legacy {
+                Some(LanceStore::init_new(&ws, &lock).await.unwrap())
+            } else {
+                None
+            };
+            let ctx = MutationContext::new(&ws, &lock, store.as_ref());
+            let mut source_path: Option<PathBuf> = None;
+            for (id, title, body, tags) in [
+                ("NOTE-001", "Source", stale, vec!["obsolete".to_string()]),
+                ("NOTE-002", "Target", "Target body.", Vec::new()),
+            ] {
+                let path = create_artifact_with_projection(
+                    &ctx,
+                    &NewArtifact {
+                        canonical_key: id.to_string(),
+                        id: id.to_string(),
+                        kind: "note".to_string(),
+                        status: "draft".to_string(),
+                        title: title.to_string(),
+                        body: body.to_string(),
+                        depth: "tactical".to_string(),
+                        author: None,
+                        parent_epic: None,
+                        valid_until: None,
+                        tags,
+                    },
+                )
+                .await
+                .unwrap();
+                if id == "NOTE-001" {
+                    source_path = Some(path);
+                }
+            }
+            add_link_with_projection(&ctx, "NOTE-001", "NOTE-002", "informs")
+                .await
+                .unwrap();
+            delete_link_with_projection(&ctx, "NOTE-001", "NOTE-002", "informs")
+                .await
+                .unwrap();
+            remove_tags_with_projection(&ctx, "NOTE-001", &["obsolete".to_string()])
+                .await
+                .unwrap();
+
+            let source = tokio::fs::read_to_string(source_path.unwrap())
+                .await
+                .unwrap();
+            let (fm, body) = frontmatter::parse_frontmatter(&source).unwrap();
+            assert!(frontmatter::links_from_frontmatter(&fm).is_empty());
+            assert!(frontmatter::tags_from_frontmatter(&fm).is_empty());
+            assert!(fm["author"].is_null());
+            assert!(fm["parent_epic"].is_null());
+            assert!(fm["valid_until"].is_null());
+            assert_eq!(body.trim_end(), stale.trim_end());
+
+            let fresh = open_workspace_read_with_permit(&ws, &lock).await.unwrap();
+            let record = fresh.get_record("NOTE-001").unwrap();
+            assert!(fresh.get_relations("NOTE-001").is_empty());
+            assert!(record.tags.is_empty());
+            assert_eq!(record.author, None);
+            assert_eq!(record.parent_epic, None);
+            assert_eq!(record.valid_until, None);
+            if let Some(store) = &store {
+                assert!(
+                    store
+                        .get_relations(&lock, "NOTE-001")
+                        .await
+                        .unwrap()
+                        .is_empty()
+                );
+                assert!(
+                    store
+                        .get_record(&lock, "NOTE-001")
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .tags
+                        .is_empty()
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn incoming_link_changes_preserve_target_bytes_and_source_only_metadata() {
+        use crate::db::store::LanceStore;
+        use crate::workspace::{init_workspace, lock::acquire_workspace_lock};
+
+        for legacy in [true, false] {
+            let tmp = TempDir::new().unwrap();
+            let ws = init_workspace(tmp.path(), "incoming-link-owner").unwrap();
+            let lock = acquire_workspace_lock(&ws).await.unwrap();
+            let store = if legacy {
+                Some(LanceStore::init_new(&ws, &lock).await.unwrap())
+            } else {
+                None
+            };
+            let ctx = MutationContext::new(&ws, &lock, store.as_ref());
+            let source = create_artifact_with_projection(&ctx, &art("NOTE-801", "note"))
+                .await
+                .unwrap();
+            let target_artifact = art("NOTE-802", "note");
+            let target = create_artifact_with_projection(&ctx, &target_artifact)
+                .await
+                .unwrap();
+            let target_bytes = format!(
+                "---\nid: NOTE-802\nkind: note\ntitle: {}\nstatus: draft\ndepth: tactical\nauthor: Source-only author\ncustom: exact\n---\n\nKeep this target untouched.\n",
+                target_artifact.title,
+            );
+            tokio::fs::write(&target, &target_bytes).await.unwrap();
+
+            add_link_with_projection(&ctx, "NOTE-801", "NOTE-802", "informs")
+                .await
+                .unwrap();
+            assert_eq!(
+                tokio::fs::read_to_string(&target).await.unwrap(),
+                target_bytes
+            );
+            let raw = tokio::fs::read_to_string(&source).await.unwrap();
+            let (fm, _) = frontmatter::parse_frontmatter(&raw).unwrap();
+            assert_eq!(
+                frontmatter::links_from_frontmatter(&fm),
+                [("NOTE-802".to_string(), "informs".to_string())]
+            );
+
+            assert_eq!(
+                replace_link_with_projection(&ctx, "NOTE-801", "NOTE-802", "based_on")
+                    .await
+                    .unwrap(),
+                LinkUpsertOutcome::Replaced {
+                    old_relation: "informs".to_string()
+                }
+            );
+            assert_eq!(
+                tokio::fs::read_to_string(&target).await.unwrap(),
+                target_bytes
+            );
+            let raw = tokio::fs::read_to_string(&source).await.unwrap();
+            let (fm, _) = frontmatter::parse_frontmatter(&raw).unwrap();
+            assert_eq!(
+                frontmatter::links_from_frontmatter(&fm),
+                [("NOTE-802".to_string(), "based_on".to_string())]
+            );
+
+            delete_link_with_projection(&ctx, "NOTE-801", "NOTE-802", "based_on")
+                .await
+                .unwrap();
+            assert_eq!(
+                tokio::fs::read_to_string(&target).await.unwrap(),
+                target_bytes
+            );
+            let raw = tokio::fs::read_to_string(&source).await.unwrap();
+            let (fm, _) = frontmatter::parse_frontmatter(&raw).unwrap();
+            assert!(frontmatter::links_from_frontmatter(&fm).is_empty());
+            if let Some(store) = &store {
+                assert!(
+                    store
+                        .get_relations(&lock, "NOTE-801")
+                        .await
+                        .unwrap()
+                        .is_empty()
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn link_upsert_resolves_aliases_without_mutating_target() {
+        use crate::db::store::{LanceStore, NewArtifact};
+        use crate::workspace::{init_workspace, lock::acquire_workspace_lock};
+
+        for legacy in [false, true] {
+            let tmp = TempDir::new().unwrap();
+            let ws = init_workspace(tmp.path(), "link-alias-upsert").unwrap();
+            let lock = acquire_workspace_lock(&ws).await.unwrap();
+            let store = if legacy {
+                Some(LanceStore::init_new(&ws, &lock).await.unwrap())
+            } else {
+                None
+            };
+            let ctx = MutationContext::new(&ws, &lock, store.as_ref());
+            let artifact = |id: &str, key: &str| NewArtifact {
+                id: id.into(),
+                canonical_key: key.into(),
+                kind: "note".into(),
+                status: "draft".into(),
+                title: key.into(),
+                body: "Body".into(),
+                depth: "standard".into(),
+                author: None,
+                parent_epic: None,
+                valid_until: None,
+                tags: vec![],
+            };
+            let source =
+                create_artifact_with_projection(&ctx, &artifact("NOTE-001", "note-source"))
+                    .await
+                    .unwrap();
+            let target =
+                create_artifact_with_projection(&ctx, &artifact("NOTE-002", "note-target"))
+                    .await
+                    .unwrap();
+            let target_text = tokio::fs::read_to_string(&target).await.unwrap();
+            let target_text = target_text.replace("author: null", "author: Source-only author");
+            assert!(target_text.contains("Source-only author"));
+            tokio::fs::write(&target, &target_text).await.unwrap();
+
+            add_link_with_projection(&ctx, "note-source", "NOTE-002", "based_on")
+                .await
+                .unwrap();
+            assert_eq!(
+                replace_link_with_projection(&ctx, "note-source", "NOTE-002", "based_on")
+                    .await
+                    .unwrap(),
+                LinkUpsertOutcome::Unchanged
+            );
+            assert_eq!(
+                replace_link_with_projection(&ctx, "note-source", "NOTE-002", "informs")
+                    .await
+                    .unwrap(),
+                LinkUpsertOutcome::Replaced {
+                    old_relation: "based_on".into()
+                }
+            );
+            assert_eq!(
+                replace_link_with_projection(&ctx, "note-source", "note-target", "informs")
+                    .await
+                    .unwrap(),
+                LinkUpsertOutcome::Unchanged
+            );
+            let raw = tokio::fs::read_to_string(&source).await.unwrap();
+            let (fm, _) = frontmatter::parse_frontmatter(&raw).unwrap();
+            assert_eq!(
+                frontmatter::links_from_frontmatter(&fm),
+                vec![("note-target".into(), "informs".into())]
+            );
+            delete_link_with_projection(&ctx, "note-source", "NOTE-002", "informs")
+                .await
+                .unwrap();
+            let raw = tokio::fs::read_to_string(&source).await.unwrap();
+            let (fm, _) = frontmatter::parse_frontmatter(&raw).unwrap();
+            assert!(frontmatter::links_from_frontmatter(&fm).is_empty());
+            assert_eq!(
+                tokio::fs::read_to_string(&target).await.unwrap(),
+                target_text
+            );
+
+            for other in ["RFC-A01", "NOTE-002@remote"] {
+                assert_eq!(
+                    replace_link_with_projection(&ctx, "note-source", other, "informs")
+                        .await
+                        .unwrap(),
+                    LinkUpsertOutcome::Created
+                );
+                assert_eq!(
+                    replace_link_with_projection(&ctx, "note-source", other, "informs")
+                        .await
+                        .unwrap(),
+                    LinkUpsertOutcome::Unchanged
+                );
+            }
+            let raw = tokio::fs::read_to_string(&source).await.unwrap();
+            let (fm, _) = frontmatter::parse_frontmatter(&raw).unwrap();
+            let links = frontmatter::links_from_frontmatter(&fm);
+            assert!(links.contains(&("RFC-A01".into(), "informs".into())));
+            assert!(links.contains(&("NOTE-002@remote".into(), "informs".into())));
+            assert_eq!(
+                tokio::fs::read_to_string(&target).await.unwrap(),
+                target_text
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn import_links_canonicalizes_new_targets_but_keeps_historical_edges() {
+        use crate::db::store::{LanceStore, NewArtifact};
+        use crate::workspace::{init_workspace, lock::acquire_workspace_lock};
+
+        for legacy in [false, true] {
+            let tmp = TempDir::new().unwrap();
+            let ws = init_workspace(tmp.path(), "import-canonical-targets").unwrap();
+            let lock = acquire_workspace_lock(&ws).await.unwrap();
+            let store = if legacy {
+                Some(LanceStore::init_new(&ws, &lock).await.unwrap())
+            } else {
+                None
+            };
+            let ctx = MutationContext::new(&ws, &lock, store.as_ref());
+            let artifact = |id: &str, key: &str, body: &str| NewArtifact {
+                id: id.into(),
+                canonical_key: key.into(),
+                kind: "note".into(),
+                status: "draft".into(),
+                title: key.into(),
+                body: body.into(),
+                depth: "standard".into(),
+                author: None,
+                parent_epic: None,
+                valid_until: None,
+                tags: vec![],
+            };
+            create_artifact_with_projection(&ctx, &artifact("NOTE-002", "note-target", "Target"))
+                .await
+                .unwrap();
+            let source = create_artifact_with_projection(
+                &ctx,
+                &artifact("NOTE-001", "note-source", "Source"),
+            )
+            .await
+            .unwrap();
+            let historical = "---\nid: NOTE-003\nkind: note\nstatus: draft\ntitle: Historical\nslug: note-historical\nlinks:\n  - target: \" NOTE-002 \"\n    relation: based_on\n---\n\nKeep historical bytes.\n";
+            let old = import_artifact_with_projection(
+                &ctx,
+                &artifact("NOTE-003", "note-historical", historical),
+            )
+            .await
+            .unwrap();
+            let edges = vec![
+                ("note-source".into(), "NOTE-002".into(), "informs".into()),
+                ("note-source".into(), "RFC-A01".into(), "informs".into()),
+                (
+                    "note-source".into(),
+                    "NOTE-002@remote".into(),
+                    "informs".into(),
+                ),
+                (
+                    "note-historical".into(),
+                    "NOTE-002".into(),
+                    "based_on".into(),
+                ),
+            ];
+            assert_eq!(import_links_with_projection(&ctx, &edges).await.unwrap(), 4);
+            assert_eq!(tokio::fs::read_to_string(&old).await.unwrap(), historical);
+            let raw = tokio::fs::read_to_string(&source).await.unwrap();
+            let (fm, _) = frontmatter::parse_frontmatter(&raw).unwrap();
+            let links = frontmatter::links_from_frontmatter(&fm);
+            for target in ["note-target", "RFC-A01", "NOTE-002@remote"] {
+                assert!(links.contains(&(target.to_string(), "informs".into())));
+            }
+            let before = tokio::fs::read(&source).await.unwrap();
+            assert_eq!(import_links_with_projection(&ctx, &edges).await.unwrap(), 4);
+            assert_eq!(tokio::fs::read(&source).await.unwrap(), before);
+            assert_eq!(tokio::fs::read_to_string(&old).await.unwrap(), historical);
+            if !legacy {
+                assert!(
+                    add_link_with_projection(&ctx, "note-historical", "note-target", "based_on")
+                        .await
+                        .is_err()
+                );
+                assert_eq!(tokio::fs::read_to_string(&old).await.unwrap(), historical);
+                assert_eq!(
+                    replace_link_with_projection(
+                        &ctx,
+                        "note-historical",
+                        "note-target",
+                        "based_on"
+                    )
+                    .await
+                    .unwrap(),
+                    LinkUpsertOutcome::Unchanged
+                );
+                assert_eq!(tokio::fs::read_to_string(&old).await.unwrap(), historical);
+                assert_eq!(
+                    replace_link_with_projection(&ctx, "note-historical", "note-target", "informs")
+                        .await
+                        .unwrap(),
+                    LinkUpsertOutcome::Replaced {
+                        old_relation: "based_on".into()
+                    }
+                );
+                let raw = tokio::fs::read_to_string(&old).await.unwrap();
+                let (fm, _) = frontmatter::parse_frontmatter(&raw).unwrap();
+                let entry = &fm["links"].as_sequence().unwrap()[0];
+                assert_eq!(entry["target"].as_str(), Some(" NOTE-002 "));
+                delete_link_with_projection(&ctx, "note-historical", "NOTE-002", "informs")
+                    .await
+                    .unwrap();
+                let raw = tokio::fs::read_to_string(&old).await.unwrap();
+                let (fm, _) = frontmatter::parse_frontmatter(&raw).unwrap();
+                assert!(frontmatter::links_from_frontmatter(&fm).is_empty());
+            }
+        }
+    }
+
+    /// The upsert compares the target's CANONICAL endpoint, not the spelling
+    /// the caller used.
+    ///
+    /// The stored edge names the canonical key, so an upsert offered the
+    /// display alias must find that edge and report it unchanged — not miss
+    /// it and add a second one.
+    #[tokio::test]
+    async fn link_upsert_matches_the_stored_canonical_endpoint() {
+        use crate::db::store::{LanceStore, NewArtifact};
+        use crate::workspace::{init_workspace, lock::acquire_workspace_lock};
+
+        let tmp = TempDir::new().unwrap();
+        let ws = init_workspace(tmp.path(), "upsert-canonical-match").unwrap();
+        let lock = acquire_workspace_lock(&ws).await.unwrap();
+        let store = LanceStore::init_new(&ws, &lock).await.unwrap();
+        let ctx = MutationContext::new(&ws, &lock, Some(&store));
+        let artifact = |id: &str, key: &str| NewArtifact {
+            id: id.into(),
+            canonical_key: key.into(),
+            kind: "note".into(),
+            status: "draft".into(),
+            title: key.into(),
+            body: "Body".into(),
+            depth: "standard".into(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: vec![],
+        };
+        create_artifact_with_projection(&ctx, &artifact("NOTE-001", "note-source"))
+            .await
+            .unwrap();
+        create_artifact_with_projection(&ctx, &artifact("NOTE-002", "note-target"))
+            .await
+            .unwrap();
+
+        // The caller names the target by its display alias; the index must
+        // hold the canonical endpoint.
+        add_link_with_projection(&ctx, "note-source", "NOTE-002", "based_on")
+            .await
+            .unwrap();
+        assert_eq!(
+            store.get_relations(&lock, "note-source").await.unwrap(),
+            vec![("note-target".to_string(), "based_on".to_string())],
+        );
+
+        // Re-offering that edge — by alias or by key — is the same edge.
+        assert_eq!(
+            replace_link_with_projection(&ctx, "note-source", "NOTE-002", "based_on")
+                .await
+                .unwrap(),
+            LinkUpsertOutcome::Unchanged
+        );
+        assert_eq!(
+            replace_link_with_projection(&ctx, "note-source", "note-target", "based_on")
+                .await
+                .unwrap(),
+            LinkUpsertOutcome::Unchanged
+        );
+        assert_eq!(
+            store
+                .get_relations(&lock, "note-source")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // Replacing the relation rewrites that one edge, not a second one.
+        assert_eq!(
+            replace_link_with_projection(&ctx, "note-source", "NOTE-002", "informs")
+                .await
+                .unwrap(),
+            LinkUpsertOutcome::Replaced {
+                old_relation: "based_on".into()
+            }
+        );
+        assert_eq!(
+            store.get_relations(&lock, "note-source").await.unwrap(),
+            vec![("note-target".to_string(), "informs".to_string())],
+        );
+    }
+
+    /// An incoming edge change never touches the target — neither its file
+    /// nor its index row.
+    ///
+    /// The target's file carries metadata the index does not know. That
+    /// divergence is the target's own business: it must neither refuse the
+    /// incoming change nor be silently re-synced by it.
+    #[tokio::test]
+    async fn incoming_link_change_leaves_the_target_row_and_file_untouched() {
+        use crate::db::store::LanceStore;
+        use crate::workspace::{init_workspace, lock::acquire_workspace_lock};
+
+        let tmp = TempDir::new().unwrap();
+        let ws = init_workspace(tmp.path(), "incoming-link-target-untouched").unwrap();
+        let lock = acquire_workspace_lock(&ws).await.unwrap();
+        let store = LanceStore::init_new(&ws, &lock).await.unwrap();
+        let ctx = MutationContext::new(&ws, &lock, Some(&store));
+        let source = create_artifact_with_projection(&ctx, &art("NOTE-801", "note"))
+            .await
+            .unwrap();
+        let target = create_artifact_with_projection(&ctx, &art("NOTE-802", "note"))
+            .await
+            .unwrap();
+        let target_bytes = "---\nid: NOTE-802\nkind: note\ntitle: Test NOTE-802\nstatus: draft\ndepth: tactical\nauthor: Source-only author\ncustom: exact\n---\n\nKeep this target untouched.\n";
+        tokio::fs::write(&target, target_bytes).await.unwrap();
+        let before = store.get_record(&lock, "NOTE-802").await.unwrap().unwrap();
+
+        add_link_with_projection(&ctx, "NOTE-801", "NOTE-802", "informs")
+            .await
+            .unwrap();
+        replace_link_with_projection(&ctx, "NOTE-801", "NOTE-802", "based_on")
+            .await
+            .unwrap();
+        delete_link_with_projection(&ctx, "NOTE-801", "NOTE-802", "based_on")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            tokio::fs::read_to_string(&target).await.unwrap(),
+            target_bytes,
+            "an incoming edge must not rewrite the target's file"
+        );
+        let after = store.get_record(&lock, "NOTE-802").await.unwrap().unwrap();
+        assert_eq!(
+            after.author, before.author,
+            "the target's row must not be re-synced"
+        );
+        assert_eq!(after.body, before.body);
+        assert!(
+            store
+                .get_relations(&lock, "NOTE-801")
+                .await
+                .unwrap()
+                .is_empty(),
+            "the incoming edge was added and then removed"
+        );
+        let raw = tokio::fs::read_to_string(&source).await.unwrap();
+        let (fm, _) = frontmatter::parse_frontmatter(&raw).unwrap();
+        assert!(frontmatter::links_from_frontmatter(&fm).is_empty());
+    }
+
+    /// Imported edges are indexed under the target's canonical key, while the
+    /// document's own historical edge keeps the alias it was written with.
+    #[tokio::test]
+    async fn imported_edges_are_indexed_under_canonical_endpoints() {
+        use crate::db::store::{LanceStore, NewArtifact};
+        use crate::workspace::{init_workspace, lock::acquire_workspace_lock};
+
+        let tmp = TempDir::new().unwrap();
+        let ws = init_workspace(tmp.path(), "import-canonical-index").unwrap();
+        let lock = acquire_workspace_lock(&ws).await.unwrap();
+        let store = LanceStore::init_new(&ws, &lock).await.unwrap();
+        let ctx = MutationContext::new(&ws, &lock, Some(&store));
+        let artifact = |id: &str, key: &str, body: &str| NewArtifact {
+            id: id.into(),
+            canonical_key: key.into(),
+            kind: "note".into(),
+            status: "draft".into(),
+            title: key.into(),
+            body: body.into(),
+            depth: "standard".into(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: vec![],
+        };
+        create_artifact_with_projection(&ctx, &artifact("NOTE-002", "note-target", "Target"))
+            .await
+            .unwrap();
+        create_artifact_with_projection(&ctx, &artifact("NOTE-001", "note-source", "Source"))
+            .await
+            .unwrap();
+        let historical = "---\nid: NOTE-003\nkind: note\nstatus: draft\ntitle: Historical\nslug: note-historical\nlinks:\n  - target: \" NOTE-002 \"\n    relation: based_on\n---\n\nKeep historical bytes.\n";
+        let old = import_artifact_with_projection(
+            &ctx,
+            &artifact("NOTE-003", "note-historical", historical),
+        )
+        .await
+        .unwrap();
+        let indexed = store
+            .get_record(&lock, "note-historical")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(indexed.title, "Historical");
+        assert_eq!(indexed.status, "draft", "index status follows the source");
+        assert_eq!(indexed.body, historical);
+        let edges = vec![
+            ("note-source".into(), "NOTE-002".into(), "informs".into()),
+            ("note-source".into(), "RFC-A01".into(), "informs".into()),
+            (
+                "note-source".into(),
+                "NOTE-002@remote".into(),
+                "informs".into(),
+            ),
+            (
+                "note-historical".into(),
+                "NOTE-002".into(),
+                "based_on".into(),
+            ),
+        ];
+        assert_eq!(import_links_with_projection(&ctx, &edges).await.unwrap(), 4);
+
+        let mut source_edges = store.get_relations(&lock, "note-source").await.unwrap();
+        source_edges.sort();
+        assert_eq!(
+            source_edges,
+            vec![
+                ("NOTE-002@remote".to_string(), "informs".to_string()),
+                ("RFC-A01".to_string(), "informs".to_string()),
+                ("note-target".to_string(), "informs".to_string()),
+            ],
+            "a resolved target is indexed by its canonical key; a forward \
+             reference and a qualified reference keep their bytes"
+        );
+        assert_eq!(
+            store.get_relations(&lock, "note-historical").await.unwrap(),
+            vec![("note-target".to_string(), "based_on".to_string())],
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&old).await.unwrap(),
+            historical,
+            "the imported document keeps the alias it was written with"
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_upsert_noop_preserves_historical_source_bytes() {
+        use crate::db::store::{LanceStore, NewArtifact};
+        use crate::workspace::{init_workspace, lock::acquire_workspace_lock};
+
+        let tmp = TempDir::new().unwrap();
+        let ws = init_workspace(tmp.path(), "legacy-historical-upsert").unwrap();
+        let lock = acquire_workspace_lock(&ws).await.unwrap();
+        let store = LanceStore::init_new(&ws, &lock).await.unwrap();
+        let ctx = MutationContext::new(&ws, &lock, Some(&store));
+        let artifact = |id: &str, key: &str, title: &str, body: &str| NewArtifact {
+            id: id.into(),
+            canonical_key: key.into(),
+            kind: "note".into(),
+            status: "draft".into(),
+            title: title.into(),
+            body: body.into(),
+            depth: "standard".into(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: vec![],
+        };
+        let target = create_artifact_with_projection(
+            &ctx,
+            &artifact("NOTE-002", "note-target", "Target", "Target body"),
+        )
+        .await
+        .unwrap();
+        let target_before = tokio::fs::read(&target).await.unwrap();
+        let historical = "---\nid: NOTE-003\nkind: note\nstatus: draft\ntitle: Historical\nslug: note-historical\nlinks:\n  - target: \" NOTE-002 \"\n    relation: based_on\n  - target: RFC-A01\n    relation: informs\n---\n\nKeep this exact body.\n";
+        let source = import_artifact_with_projection(
+            &ctx,
+            &artifact("NOTE-003", "note-historical", "Historical", historical),
+        )
+        .await
+        .unwrap();
+        let before = tokio::fs::read(&source).await.unwrap();
+        assert_eq!(
+            replace_link_with_projection(&ctx, "note-historical", "NOTE-002", "based_on")
+                .await
+                .unwrap(),
+            LinkUpsertOutcome::Unchanged
+        );
+        assert_eq!(tokio::fs::read(&source).await.unwrap(), before);
+        assert_eq!(tokio::fs::read(&target).await.unwrap(), target_before);
+        let indexed = store.get_relations(&lock, "note-historical").await.unwrap();
+        assert!(indexed.contains(&("note-target".into(), "based_on".into())));
+        assert!(indexed.contains(&("RFC-A01".into(), "informs".into())));
+    }
+
+    #[tokio::test]
+    async fn historical_forward_links_survive_import_and_relation_addition() {
+        use crate::db::store::{LanceStore, NewArtifact};
+        use crate::workspace::{init_workspace, lock::acquire_workspace_lock};
+        for legacy in [false, true] {
+            let tmp = TempDir::new().unwrap();
+            let ws = init_workspace(tmp.path(), "forward-links").unwrap();
+            let lock = acquire_workspace_lock(&ws).await.unwrap();
+            let store = if legacy {
+                Some(LanceStore::init_new(&ws, &lock).await.unwrap())
+            } else {
+                None
+            };
+            let ctx = MutationContext::new(&ws, &lock, store.as_ref());
+            let artifact = NewArtifact {
+                canonical_key: "note-source".into(),
+                id: "NOTE-001".into(),
+                kind: "note".into(),
+                status: "draft".into(),
+                title: "Source".into(),
+                body: "Body".into(),
+                depth: "standard".into(),
+                author: None,
+                parent_epic: None,
+                valid_until: None,
+                tags: vec![],
+            };
+            let path = create_artifact_with_projection(&ctx, &artifact)
+                .await
+                .unwrap();
+            let links = vec![(
+                "note-source".to_string(),
+                "RFC-A01".to_string(),
+                "informs".to_string(),
+            )];
+            assert_eq!(import_links_with_projection(&ctx, &links).await.unwrap(), 1);
+            add_link_with_projection(&ctx, "note-source", "RFC-A02", "informs")
+                .await
+                .unwrap();
+            let before = tokio::fs::read(&path).await.unwrap();
+            let text = std::str::from_utf8(&before).unwrap();
+            assert!(text.contains("RFC-A01") && text.contains("RFC-A02"));
+            if let Some(store) = &store {
+                assert!(
+                    store
+                        .get_all_relations(&lock)
+                        .await
+                        .unwrap()
+                        .iter()
+                        .any(|(_, target, _)| target == "RFC-A01")
+                );
+            }
+            for bad in ["---", "PRD-4294967296"] {
+                assert!(
+                    add_link_with_projection(&ctx, "note-source", bad, "informs")
+                        .await
+                        .is_err()
+                );
+                let invalid = vec![(
+                    "note-source".to_string(),
+                    bad.to_string(),
+                    "informs".to_string(),
+                )];
+                assert!(import_links_with_projection(&ctx, &invalid).await.is_err());
+                assert_eq!(tokio::fs::read(&path).await.unwrap(), before);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn bundle_import_keeps_full_source_and_creation_keeps_literal_template_body() {
+        use crate::db::store::{LanceStore, NewArtifact};
+        use crate::workspace::{init_workspace, lock::acquire_workspace_lock};
+
+        let source = "---\nid: NOTE-001\nkind: note\nstatus: draft\ntitle: Snapshot\nslug: note-snapshot\ncreated: 2026-10-24\ntags: source=fixture, raw, source=fixture\nlinks:\n  - target: \" NOTE-002 \"\n    relation: \" informs \"\n---\n\n## Decision\n\nKeep the literal snapshot.\n";
+        let template = "---\nid: NOTE-003\nkind: note\nstatus: draft\ntitle: Template title\ndepth: tactical\nslug: note-template\n---\n\n## Decision\n\nKeep this complete template body.\n";
+        for legacy in [true, false] {
+            let tmp = TempDir::new().unwrap();
+            let ws = init_workspace(tmp.path(), "snapshot-import").unwrap();
+            let lock = acquire_workspace_lock(&ws).await.unwrap();
+            let store = if legacy {
+                Some(LanceStore::init_new(&ws, &lock).await.unwrap())
+            } else {
+                None
+            };
+            let ctx = MutationContext::new(&ws, &lock, store.as_ref());
+            let imported = import_artifact_with_projection(
+                &ctx,
+                &NewArtifact {
+                    canonical_key: "note-snapshot".to_string(),
+                    id: "NOTE-001".to_string(),
+                    kind: "note".to_string(),
+                    status: "draft".to_string(),
+                    title: "Snapshot".to_string(),
+                    body: source.to_string(),
+                    depth: String::new(),
+                    author: None,
+                    parent_epic: None,
+                    valid_until: None,
+                    tags: vec!["raw".to_string(), "source=fixture".to_string()],
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(tokio::fs::read_to_string(&imported).await.unwrap(), source);
+            let target = create_artifact_with_projection(&ctx, &art("NOTE-002", "note"))
+                .await
+                .unwrap();
+            let target_before = tokio::fs::read(&target).await.unwrap();
+
+            let created = create_artifact_with_projection(
+                &ctx,
+                &NewArtifact {
+                    canonical_key: "NOTE-003".to_string(),
+                    id: "NOTE-003".to_string(),
+                    kind: "note".to_string(),
+                    status: "draft".to_string(),
+                    title: "Selected display title".to_string(),
+                    body: template.to_string(),
+                    depth: "tactical".to_string(),
+                    author: None,
+                    parent_epic: None,
+                    valid_until: None,
+                    tags: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+            let created_before = tokio::fs::read(&created).await.unwrap();
+            let invalid = [
+                (
+                    "NOTE-001".to_string(),
+                    "NOTE-002".to_string(),
+                    "refines".to_string(),
+                ),
+                (
+                    "NOTE-003".to_string(),
+                    "../../escape".to_string(),
+                    "informs".to_string(),
+                ),
+            ];
+            assert!(import_links_with_projection(&ctx, &invalid).await.is_err());
+            assert_eq!(tokio::fs::read_to_string(&imported).await.unwrap(), source);
+            assert_eq!(tokio::fs::read(&created).await.unwrap(), created_before);
+
+            let edges = [
+                (
+                    "NOTE-001".to_string(),
+                    "NOTE-002".to_string(),
+                    "informs".to_string(),
+                ),
+                (
+                    "NOTE-003".to_string(),
+                    "NOTE-002".to_string(),
+                    "informs".to_string(),
+                ),
+            ];
+            assert_eq!(import_links_with_projection(&ctx, &edges).await.unwrap(), 2);
+            assert_eq!(tokio::fs::read_to_string(&imported).await.unwrap(), source);
+            assert_eq!(tokio::fs::read(&target).await.unwrap(), target_before);
+            let restored_once = tokio::fs::read(&created).await.unwrap();
+            assert_eq!(import_links_with_projection(&ctx, &edges).await.unwrap(), 2);
+            assert_eq!(tokio::fs::read(&created).await.unwrap(), restored_once);
+            let restored = tokio::fs::read_to_string(&created).await.unwrap();
+            let (fm, body) = frontmatter::parse_frontmatter(&restored).unwrap();
+            assert_eq!(fm["title"].as_str(), Some("Selected display title"));
+            assert_eq!(body.trim_end(), template.trim_end());
+            assert_eq!(
+                frontmatter::links_from_frontmatter(&fm),
+                [("NOTE-002".to_string(), "informs".to_string())]
+            );
+            if let Some(store) = &store {
+                for id in ["NOTE-001", "NOTE-003"] {
+                    assert_eq!(
+                        store.get_relations(&lock, id).await.unwrap(),
+                        [("NOTE-002".to_string(), "informs".to_string())]
+                    );
+                }
+                assert_eq!(
+                    store
+                        .get_record(&lock, "NOTE-001")
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .body,
+                    source
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn imported_alias_links_keep_source_bytes_and_refuse_ambiguous_targets() {
+        use crate::artifact::canonical_key::ResolveError;
+        use crate::db::store::{LanceStore, NewArtifact};
+        use crate::workspace::{init_workspace, lock::acquire_workspace_lock};
+
+        let tmp = TempDir::new().unwrap();
+        let ws = init_workspace(tmp.path(), "import-alias").unwrap();
+        let lock = acquire_workspace_lock(&ws).await.unwrap();
+        let store = LanceStore::init_new(&ws, &lock).await.unwrap();
+        let ctx = MutationContext::new(&ws, &lock, Some(&store));
+        let source = "---\nid: NOTE-001\nkind: note\nstatus: draft\ntitle: Source\nslug: note-source\nlinks:\n  - target: NOTE-002\n    relation: informs\n---\n\nOriginal source bytes.\n";
+        let target = "---\nid: NOTE-002\nkind: note\nstatus: draft\ntitle: Target\nslug: note-target\n---\n\nTarget body.\n";
+        let record = |id: &str, key: &str, title: &str, body: &str| NewArtifact {
+            canonical_key: key.to_string(),
+            id: id.to_string(),
+            kind: "note".to_string(),
+            status: "draft".to_string(),
+            title: title.to_string(),
+            body: body.to_string(),
+            depth: "standard".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        };
+        let source_path = import_artifact_with_projection(
+            &ctx,
+            &record("NOTE-001", "note-source", "Source", source),
+        )
+        .await
+        .unwrap();
+        let target_path = import_artifact_with_projection(
+            &ctx,
+            &record("NOTE-002", "note-target", "Target", target),
+        )
+        .await
+        .unwrap();
+        let edges = [(
+            "note-source".to_string(),
+            "note-target".to_string(),
+            "informs".to_string(),
+        )];
+        assert_eq!(import_links_with_projection(&ctx, &edges).await.unwrap(), 1);
+        assert_eq!(
+            tokio::fs::read(&source_path).await.unwrap(),
+            source.as_bytes()
+        );
+        assert_eq!(
+            store.get_relations(&lock, "note-source").await.unwrap(),
+            vec![("note-target".to_string(), "informs".to_string())]
+        );
+
+        let duplicate = ws.join("notes/NOTE-002-second.md");
+        let duplicate_bytes = b"---\nid: NOTE-002\nkind: note\nstatus: draft\ntitle: Second\nslug: note-second\n---\n\nSecond body.\n";
+        tokio::fs::write(&duplicate, duplicate_bytes).await.unwrap();
+        let target_before = tokio::fs::read(&target_path).await.unwrap();
+        let error = import_links_with_projection(&ctx, &edges)
+            .await
+            .unwrap_err();
+        let typed = match &error {
+            MutationError::StoreFatal(error) | MutationError::StoreTransient(error) => {
+                error.chain().any(|cause| {
+                    matches!(
+                        cause.downcast_ref::<ResolveError>(),
+                        Some(ResolveError::Ambiguous { .. })
+                    )
+                })
+            }
+            _ => false,
+        };
+        assert!(
+            typed,
+            "expected typed ambiguous selector error, got {error:?}"
+        );
+        assert_eq!(
+            tokio::fs::read(&source_path).await.unwrap(),
+            source.as_bytes()
+        );
+        assert_eq!(tokio::fs::read(&target_path).await.unwrap(), target_before);
+        assert_eq!(tokio::fs::read(&duplicate).await.unwrap(), duplicate_bytes);
+        assert_eq!(
+            store.get_relations(&lock, "note-source").await.unwrap(),
+            vec![("note-target".to_string(), "informs".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn interrupted_delete_intent_recovers_exact_remaining_documents_and_edges() {
+        use crate::db::store::LanceStore;
+        use crate::workspace::{init_workspace, lock::acquire_workspace_lock};
+
+        let tmp = TempDir::new().unwrap();
+        let ws = init_workspace(tmp.path(), "interrupted-delete").unwrap();
+        let lock = acquire_workspace_lock(&ws).await.unwrap();
+        let store = LanceStore::init_new(&ws, &lock).await.unwrap();
+        let ctx = MutationContext::new(&ws, &lock, Some(&store));
+        let victim = create_artifact_with_projection(&ctx, &art("NOTE-001", "note"))
+            .await
+            .unwrap();
+        let retained = create_artifact_with_projection(&ctx, &art("NOTE-002", "note"))
+            .await
+            .unwrap();
+        let target = create_artifact_with_projection(&ctx, &art("NOTE-003", "note"))
+            .await
+            .unwrap();
+        add_link_with_projection(&ctx, "NOTE-002", "NOTE-003", "informs")
+            .await
+            .unwrap();
+        let retained_bytes = tokio::fs::read(&retained).await.unwrap();
+        let target_bytes = tokio::fs::read(&target).await.unwrap();
+        crate::db::migrate::begin_identity_delete_intent(&ws, &lock, "NOTE-001", &victim)
+            .await
+            .unwrap();
+        tokio::fs::remove_file(&victim).await.unwrap();
+        // Crash boundary: the canonical unlink happened, but the old row has
+        // not been removed. Dropping the handle and lock models process exit.
+        assert!(store.get_record(&lock, "NOTE-001").await.unwrap().is_some());
+        drop(store);
+        drop(lock);
+
+        LanceStore::drain_identity_semantic_backlog(&ws)
+            .await
+            .unwrap();
+        LanceStore::drain_identity_semantic_backlog(&ws)
+            .await
+            .unwrap();
+        let permit = crate::workspace::lock::acquire_workspace_read_lock(&ws)
+            .await
+            .unwrap();
+        let reopened = LanceStore::open(&ws).await.unwrap();
+        assert_eq!(reopened.list_records(&permit, None).await.unwrap().len(), 2);
+        assert!(!victim.exists());
+        assert!(
+            reopened
+                .get_record(&permit, "NOTE-001")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(tokio::fs::read(&retained).await.unwrap(), retained_bytes);
+        assert_eq!(tokio::fs::read(&target).await.unwrap(), target_bytes);
+        assert!(
+            reopened
+                .get_record(&permit, "NOTE-002")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            reopened
+                .get_record(&permit, "NOTE-003")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            reopened.get_relations(&permit, "NOTE-002").await.unwrap(),
+            vec![("NOTE-003".to_string(), "informs".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn interrupted_force_replace_recovers_new_document_without_losing_other_rows() {
+        use crate::db::store::LanceStore;
+        use crate::workspace::{init_workspace, lock::acquire_workspace_lock};
+
+        let tmp = TempDir::new().unwrap();
+        let ws = init_workspace(tmp.path(), "interrupted-replace").unwrap();
+        let lock = acquire_workspace_lock(&ws).await.unwrap();
+        let store = LanceStore::init_new(&ws, &lock).await.unwrap();
+        let ctx = MutationContext::new(&ws, &lock, Some(&store));
+        let old_path = create_artifact_with_projection(&ctx, &art("NOTE-001", "note"))
+            .await
+            .unwrap();
+        let retained = create_artifact_with_projection(&ctx, &art("NOTE-002", "note"))
+            .await
+            .unwrap();
+        let retained_bytes = tokio::fs::read(&retained).await.unwrap();
+        delete_artifact_with_projection(&ctx, "NOTE-001")
+            .await
+            .unwrap();
+        assert!(!old_path.exists());
+        let replacement = "---\nid: NOTE-001\nkind: note\nstatus: draft\ntitle: Replacement\ndepth: tactical\n---\n\nReplacement content.\n";
+        let mut new_record = art("NOTE-001", "note");
+        new_record.title = "Replacement".to_string();
+        new_record.body = replacement.to_string();
+        let new_path = import_artifact_with_projection(&ctx, &new_record)
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::fs::read(&new_path).await.unwrap(),
+            replacement.as_bytes()
+        );
+        // Stop after the file-first replacement but before the post-write drain.
+        drop(store);
+        drop(lock);
+
+        LanceStore::drain_identity_semantic_backlog(&ws)
+            .await
+            .unwrap();
+        LanceStore::drain_identity_semantic_backlog(&ws)
+            .await
+            .unwrap();
+        let permit = crate::workspace::lock::acquire_workspace_read_lock(&ws)
+            .await
+            .unwrap();
+        let reopened = LanceStore::open(&ws).await.unwrap();
+        assert_eq!(reopened.list_records(&permit, None).await.unwrap().len(), 2);
+        let updated = reopened
+            .get_record(&permit, "NOTE-001")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.title, "Replacement");
+        assert!(updated.body.contains("Replacement content."));
+        assert_eq!(
+            tokio::fs::read(&new_path).await.unwrap(),
+            replacement.as_bytes()
+        );
+        assert_eq!(tokio::fs::read(&retained).await.unwrap(), retained_bytes);
+        assert!(
+            reopened
+                .get_record(&permit, "NOTE-002")
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_source_requires_a_real_prior_delete_intent_before_row_removal() {
+        use crate::db::store::LanceStore;
+        use crate::workspace::{init_workspace, lock::acquire_workspace_lock};
+
+        let tmp = TempDir::new().unwrap();
+        let ws = init_workspace(tmp.path(), "missing-source-intent").unwrap();
+        let lock = acquire_workspace_lock(&ws).await.unwrap();
+        let store = LanceStore::init_new(&ws, &lock).await.unwrap();
+        let ctx = MutationContext::new(&ws, &lock, Some(&store));
+        let source = create_artifact_with_projection(&ctx, &art("NOTE-001", "note"))
+            .await
+            .unwrap();
+        let retained = create_artifact_with_projection(&ctx, &art("NOTE-002", "note"))
+            .await
+            .unwrap();
+        let source_bytes = tokio::fs::read(&source).await.unwrap();
+        let retained_bytes = tokio::fs::read(&retained).await.unwrap();
+        let other_tmp = TempDir::new().unwrap();
+        let other_ws = init_workspace(other_tmp.path(), "other-workspace").unwrap();
+        let wrong_guard = acquire_workspace_lock(&other_ws).await.unwrap();
+        assert!(
+            crate::db::migrate::begin_identity_delete_intent(
+                &ws,
+                &wrong_guard,
+                "NOTE-001",
+                &source
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(tokio::fs::read(&source).await.unwrap(), source_bytes);
+        assert!(store.get_record(&lock, "NOTE-001").await.unwrap().is_some());
+        drop(wrong_guard);
+        tokio::fs::remove_file(&source).await.unwrap();
+        assert!(
+            delete_artifact_with_projection(&ctx, "NOTE-001")
+                .await
+                .is_err(),
+            "an unexplained missing source must not authorize row deletion"
+        );
+        assert!(store.get_record(&lock, "NOTE-001").await.unwrap().is_some());
+        assert_eq!(tokio::fs::read(&retained).await.unwrap(), retained_bytes);
+
+        // Restore the original preimage, then perform the same move with
+        // a durable intent, as soft-delete does before calling the helper.
+        tokio::fs::write(&source, &source_bytes).await.unwrap();
+        crate::db::migrate::begin_identity_delete_intent(&ws, &lock, "NOTE-001", &source)
+            .await
+            .unwrap();
+        tokio::fs::remove_file(&source).await.unwrap();
+        delete_artifact_with_projection(&ctx, "NOTE-001")
+            .await
+            .unwrap();
+        assert!(store.get_record(&lock, "NOTE-001").await.unwrap().is_none());
+        drop(store);
+        drop(lock);
+        LanceStore::drain_identity_semantic_backlog(&ws)
+            .await
+            .unwrap();
+        let permit = crate::workspace::lock::acquire_workspace_read_lock(&ws)
+            .await
+            .unwrap();
+        let reopened = LanceStore::open(&ws).await.unwrap();
+        assert_eq!(reopened.list_records(&permit, None).await.unwrap().len(), 1);
+        assert!(
+            reopened
+                .get_record(&permit, "NOTE-001")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            reopened
+                .get_record(&permit, "NOTE-002")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(tokio::fs::read(&retained).await.unwrap(), retained_bytes);
+    }
+
+    #[test]
+    fn a_complete_exported_artifact_round_trips_without_another_wrapper() {
+        let source = "---\nid: NOTE-001\nkind: note\nstatus: draft\ntitle: Snapshot\ndepth: tactical\nslug: note-snapshot\nassigned_number: 1\ncreated: 2026-10-24\ntags: [source=fixture]\nlinks:\n  - target: NOTE-002\n    relation: informs\n---\n\n## Decision\n\nKeep the literal source.\n";
+        let restored = render_markdown_with_extras(
+            "NOTE-001",
+            "note",
+            "Snapshot",
+            "draft",
+            "tactical",
+            None,
+            None,
+            None,
+            source,
+            &[],
+            &["source=fixture".to_string()],
+            None,
+            ProjectionBodyMode::CanonicalFile,
+        )
+        .unwrap();
+
+        assert_eq!(restored, source);
+        let (fm, body) = frontmatter::parse_frontmatter(&restored).unwrap();
+        assert_eq!(fm["slug"].as_str(), Some("note-snapshot"));
+        assert_eq!(
+            frontmatter::links_from_frontmatter(&fm),
+            [("NOTE-002".to_string(), "informs".to_string())]
+        );
+        assert_eq!(body, "## Decision\n\nKeep the literal source.\n");
+    }
+
+    #[test]
+    fn complete_source_metadata_is_preserved_when_explicit_fields_change() {
+        let source = "---\nid: NOTE-001\nkind: note\nstatus: draft\ntitle: Original\ndepth: tactical\nslug: note-original\ncreated: 2026-10-24\ncustom_field: keep-me\n---\n\n## Decision\n\nKeep this prose.\n";
+        let links = [("NOTE-002".to_string(), "informs".to_string())];
+        let changed = render_markdown_with_extras(
+            "NOTE-001",
+            "note",
+            "Renamed",
+            "active",
+            "deep",
+            None,
+            None,
+            None,
+            source,
+            &links,
+            &[],
+            None,
+            ProjectionBodyMode::CanonicalFile,
+        )
+        .unwrap();
+        let (fm, body) = frontmatter::parse_frontmatter(&changed).unwrap();
+
+        assert_eq!(fm["title"].as_str(), Some("Renamed"));
+        assert_eq!(fm["status"].as_str(), Some("active"));
+        assert_eq!(fm["depth"].as_str(), Some("deep"));
+        assert_eq!(fm["slug"].as_str(), Some("note-original"));
+        assert_eq!(fm["created"].as_str(), Some("2026-10-24"));
+        assert_eq!(fm["custom_field"].as_str(), Some("keep-me"));
+        assert_eq!(frontmatter::links_from_frontmatter(&fm), links);
+        assert_eq!(body.trim_end(), "## Decision\n\nKeep this prose.");
+    }
+
+    #[test]
+    fn quoted_foreign_artifact_is_body_text_not_the_restored_source() {
+        let foreign = "---\nid: NOTE-002\nkind: note\nslug: note-foreign\n---\n\nQuoted source.\n";
+        let rendered = render_markdown_with_extras(
+            "NOTE-001",
+            "note",
+            "Own artifact",
+            "draft",
+            "tactical",
+            None,
+            None,
+            None,
+            foreign,
+            &[],
+            &[],
+            None,
+            ProjectionBodyMode::CanonicalFile,
+        )
+        .unwrap();
+        let (fm, body) = frontmatter::parse_frontmatter(&rendered).unwrap();
+
+        assert_eq!(fm["id"].as_str(), Some("NOTE-001"));
+        assert_eq!(fm["title"].as_str(), Some("Own artifact"));
+        assert!(!fm.contains_key("slug"));
+        assert_eq!(body.trim_end(), foreign.trim_end());
+    }
 
     #[test]
     fn render_markdown_basic() {
@@ -1928,6 +5780,7 @@ mod tests {
             &[],
             &[],
             None,
+            ProjectionBodyMode::Body,
         )
         .unwrap();
         assert!(content.starts_with("---\n"));
@@ -1955,34 +5808,12 @@ mod tests {
             &links,
             &[],
             None,
+            ProjectionBodyMode::Body,
         )
         .unwrap();
         assert!(content.contains("links:"));
         assert!(content.contains("target: RFC-001"));
         assert!(content.contains("relation: informs"));
-    }
-
-    #[test]
-    fn render_markdown_optional_fields_omitted() {
-        let content = render_markdown_with_extras(
-            "NOTE-001",
-            "note",
-            "Quick Note",
-            "draft",
-            "tactical",
-            None,
-            None,
-            None,
-            "Content.",
-            &[],
-            &[],
-            None,
-        )
-        .unwrap();
-        assert!(!content.contains("author:"));
-        assert!(!content.contains("parent_epic:"));
-        assert!(!content.contains("valid_until:"));
-        assert!(!content.contains("links:"));
     }
 
     #[tokio::test]
@@ -2011,20 +5842,6 @@ mod tests {
         let content = tokio::fs::read_to_string(&path).await.unwrap();
         assert!(content.contains("id: PRD-001"));
         assert!(content.contains("## Summary"));
-    }
-
-    #[tokio::test]
-    async fn remove_projection_deletes_file() {
-        let tmp = TempDir::new().unwrap();
-        let ws = tmp.path().join(".forgeplan");
-        let prds = ws.join("prds");
-        tokio::fs::create_dir_all(&prds).await.unwrap();
-        tokio::fs::write(prds.join("PRD-001-auth.md"), "test")
-            .await
-            .unwrap();
-
-        remove_projection(&ws, "PRD-001", "prd").await.unwrap();
-        assert!(!prds.join("PRD-001-auth.md").exists());
     }
 
     #[tokio::test]
@@ -2097,10 +5914,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
 
-        let body = "## Summary\n\nSame content.";
+        let body = "## Summary\n\nSame content.\n\n";
 
         // Create initial projection
-        render_projection(
+        let initial_path = render_projection(
             &ws,
             "PRD-001",
             "prd",
@@ -2115,6 +5932,8 @@ mod tests {
         )
         .await
         .unwrap();
+        let initial = tokio::fs::read_to_string(&initial_path).await.unwrap();
+        let (_, initial_body) = frontmatter::parse_frontmatter(&initial).unwrap();
 
         // Re-render with same body but updated status — frontmatter updates, body preserved from file
         let path = render_projection(
@@ -2134,14 +5953,25 @@ mod tests {
         .unwrap();
 
         let result = tokio::fs::read_to_string(&path).await.unwrap();
-        assert!(
-            result.contains("status: active"),
-            "status should be updated"
-        );
-        assert!(
-            result.contains("Same content"),
-            "body should be preserved from file"
-        );
+        let (fm, after_status) = frontmatter::parse_frontmatter(&result).unwrap();
+        assert_eq!(fm["status"].as_str(), Some("active"));
+        assert_eq!(after_status, initial_body);
+
+        let record = crate::db::store::ArtifactRecord {
+            canonical_key: "PRD-001".to_string(),
+            id: "PRD-001".to_string(),
+            kind: "prd".to_string(),
+            title: "Test".to_string(),
+            status: "superseded".to_string(),
+            depth: "standard".to_string(),
+            body: "A stale cache must not replace the canonical body.".to_string(),
+            ..Default::default()
+        };
+        let path = render_projection_record(&ws, &record, &[]).await.unwrap();
+        let result = tokio::fs::read_to_string(path).await.unwrap();
+        let (fm, after_record) = frontmatter::parse_frontmatter(&result).unwrap();
+        assert_eq!(fm["status"].as_str(), Some("superseded"));
+        assert_eq!(after_record, initial_body);
     }
 
     #[tokio::test]
@@ -2211,9 +6041,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_file_body_if_newer_detects_edit() {
+    async fn sync_detects_a_user_edited_body_and_writes_it_to_the_row() {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         let db_body = "## Template\n\n{placeholder}";
         render_projection(
@@ -2231,22 +6065,52 @@ mod tests {
         )
         .await
         .unwrap();
+        store
+            .create_artifact(
+                &lock,
+                &crate::db::store::NewArtifact {
+                    canonical_key: "PRD-001".to_string(),
+                    id: "PRD-001".to_string(),
+                    kind: "prd".to_string(),
+                    status: "draft".to_string(),
+                    title: "Test".to_string(),
+                    body: db_body.to_string(),
+                    depth: "standard".to_string(),
+                    author: None,
+                    parent_epic: None,
+                    valid_until: None,
+                    tags: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
 
-        // Simulate user editing the file
-        let prds = ws.join("prds");
-        let filepath = prds.join("PRD-001-test.md");
+        // Simulate user editing the file.
+        let filepath = ws.join("prds").join("PRD-001-test.md");
         let edited = "---\nid: PRD-001\nkind: prd\nstatus: draft\ndepth: standard\ntitle: Test\n---\n\n## Real Content\n\nUser wrote this.\n";
         tokio::fs::write(&filepath, edited).await.unwrap();
 
-        let result = read_file_body_if_newer(&ws, "PRD-001", "prd", "Test", db_body).await;
-        assert!(result.is_some(), "should detect user edit");
-        assert!(result.unwrap().contains("User wrote this"));
+        let row = store.get_record(&lock, "PRD-001").await.unwrap().unwrap();
+        assert!(
+            sync_file_to_store(&lock, &store, &ws, &row).await.unwrap(),
+            "the edited body must be detected"
+        );
+        let after = store.get_record(&lock, "PRD-001").await.unwrap().unwrap();
+        assert!(
+            after.body.contains("User wrote this"),
+            "the row must carry the user's text, got {:?}",
+            after.body
+        );
     }
 
     #[tokio::test]
-    async fn read_file_body_if_newer_returns_none_when_same() {
+    async fn sync_is_a_no_op_when_the_file_matches_the_row() {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         let body = "## Summary\n\nSame content.";
         render_projection(
@@ -2264,9 +6128,33 @@ mod tests {
         )
         .await
         .unwrap();
+        store
+            .create_artifact(
+                &lock,
+                &crate::db::store::NewArtifact {
+                    canonical_key: "PRD-001".to_string(),
+                    id: "PRD-001".to_string(),
+                    kind: "prd".to_string(),
+                    status: "draft".to_string(),
+                    title: "Test".to_string(),
+                    body: body.to_string(),
+                    depth: "standard".to_string(),
+                    author: None,
+                    parent_epic: None,
+                    valid_until: None,
+                    tags: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
 
-        let result = read_file_body_if_newer(&ws, "PRD-001", "prd", "Test", body).await;
-        assert!(result.is_none(), "should return None when body matches");
+        let row = store.get_record(&lock, "PRD-001").await.unwrap().unwrap();
+        assert!(
+            !sync_file_to_store(&lock, &store, &ws, &row).await.unwrap(),
+            "an unchanged file must not churn the row"
+        );
+        let after = store.get_record(&lock, "PRD-001").await.unwrap().unwrap();
+        assert_eq!(after.body, body);
     }
 
     #[tokio::test]
@@ -2297,6 +6185,7 @@ mod tests {
         let path = render_projection_with_body(
             &ws,
             "PRD-001",
+            None,
             "prd",
             "Test",
             "draft",
@@ -2305,6 +6194,7 @@ mod tests {
             None,
             None,
             new_body,
+            &[],
             &[],
         )
         .await
@@ -2434,60 +6324,6 @@ mod tests {
         assert!(!out.contains("old prose"), "old prose must not resurrect");
     }
 
-    // ── #419 BLOCKER: same-slug title change must not delete the file ────
-
-    #[tokio::test]
-    async fn rename_helper_removes_old_file_on_a_real_rename() {
-        let tmp = TempDir::new().unwrap();
-        let ws = tmp.path();
-        let dir = ws.join("prds");
-        tokio::fs::create_dir_all(&dir).await.unwrap();
-        // Both files exist (new already written by the mutation path).
-        tokio::fs::write(dir.join("PRD-001-old-title.md"), "x")
-            .await
-            .unwrap();
-        tokio::fs::write(dir.join("PRD-001-new-title.md"), "x")
-            .await
-            .unwrap();
-
-        let removed =
-            remove_stale_projection_after_rename(ws, "PRD-001", "prd", "Old title", "New title")
-                .await
-                .unwrap();
-        assert!(removed, "a genuine rename must remove the stale file");
-        assert!(!dir.join("PRD-001-old-title.md").exists());
-        assert!(
-            dir.join("PRD-001-new-title.md").exists(),
-            "the new file must survive"
-        );
-    }
-
-    #[tokio::test]
-    async fn rename_helper_is_a_noop_when_slug_is_unchanged() {
-        // The #419 BLOCKER: "Probe" -> "probe" (or "Probe!") slugifies to the
-        // same filename. The helper must NOT delete the just-written file.
-        let tmp = TempDir::new().unwrap();
-        let ws = tmp.path();
-        let dir = ws.join("prds");
-        tokio::fs::create_dir_all(&dir).await.unwrap();
-        let f = dir.join("PRD-001-probe.md");
-        tokio::fs::write(&f, "the only copy").await.unwrap();
-
-        for (old, new) in [("Probe", "probe"), ("Probe", "Probe!"), ("Probe", "Probe")] {
-            let removed = remove_stale_projection_after_rename(ws, "PRD-001", "prd", old, new)
-                .await
-                .unwrap();
-            assert!(
-                !removed,
-                "same-slug edit {old:?}->{new:?} must be a no-op, not a delete"
-            );
-            assert!(
-                f.exists(),
-                "the artifact file must survive a same-slug edit {old:?}->{new:?}"
-            );
-        }
-    }
-
     #[test]
     fn filter_preserved_drops_known_keys() {
         let fm: Frontmatter = serde_yaml::from_str(
@@ -2534,6 +6370,7 @@ mod tests {
             &[],
             &[],
             Some(&extras),
+            ProjectionBodyMode::Body,
         )
         .unwrap();
         assert!(content.contains("last_modified_by: orchestrator/1.0"));
@@ -2566,6 +6403,7 @@ mod tests {
             &[],
             &[],
             Some(&bad_extras),
+            ProjectionBodyMode::Body,
         )
         .unwrap();
         assert!(content.contains("id: PRD-001"));
@@ -2692,10 +6530,13 @@ mod tests {
     async fn sync_before_mutation_is_noop_for_missing_artifact() {
         let temp = TempDir::new().unwrap();
         let ws = temp.path().to_path_buf();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         // Artifact does not exist — helper must not error.
-        let result = sync_before_mutation(&ws, &store, "PRD-NEVER-CREATED").await;
+        let result = sync_before_mutation(&lock, &ws, &store, "PRD-999").await;
         assert!(
             result.is_ok(),
             "sync_before_mutation should be no-op for missing artifact, got {result:?}"
@@ -2706,9 +6547,12 @@ mod tests {
     async fn render_after_mutation_is_noop_for_missing_artifact() {
         let temp = TempDir::new().unwrap();
         let ws = temp.path().to_path_buf();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
-        let result = render_after_mutation(&ws, &store, "PRD-NEVER-CREATED").await;
+        let result = render_after_mutation(&lock, &ws, &store, "PRD-999").await;
         assert!(
             result.is_ok(),
             "render_after_mutation should be no-op for missing artifact, got {result:?}"
@@ -2725,9 +6569,13 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let ws = temp.path().to_path_buf();
         tokio::fs::create_dir_all(ws.join("prds")).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         let new_artifact = crate::db::store::NewArtifact {
+            canonical_key: "PRD-901".to_string(),
             id: "PRD-901".to_string(),
             kind: "prd".to_string(),
             status: "draft".to_string(),
@@ -2739,10 +6587,12 @@ mod tests {
             valid_until: None,
             tags: vec![],
         };
-        store.create_artifact(&new_artifact).await.unwrap();
+        store.create_artifact(&lock, &new_artifact).await.unwrap();
 
         // Initial render — file has status: draft
-        render_after_mutation(&ws, &store, "PRD-901").await.unwrap();
+        render_after_mutation(&lock, &ws, &store, "PRD-901")
+            .await
+            .unwrap();
         let file_path = ws.join("prds/PRD-901-test-artifact.md");
         let initial = tokio::fs::read_to_string(&file_path).await.unwrap();
         assert!(
@@ -2754,13 +6604,15 @@ mod tests {
         // the projection. This is the bug pattern — store updated, file
         // stale.
         store
-            .update_artifact("PRD-901", Some("active"), None)
+            .update_artifact(&lock, "PRD-901", Some("active"), None)
             .await
             .unwrap();
 
         // The bug: without render_after_mutation, file would still say draft.
         // With our helper: file gets refreshed.
-        render_after_mutation(&ws, &store, "PRD-901").await.unwrap();
+        render_after_mutation(&lock, &ws, &store, "PRD-901")
+            .await
+            .unwrap();
         let after = tokio::fs::read_to_string(&file_path).await.unwrap();
         assert!(
             after.contains("status: active"),
@@ -2781,9 +6633,13 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         let evil = crate::db::store::NewArtifact {
+            canonical_key: "../../etc/evil".to_string(),
             id: "../../etc/evil".to_string(),
             kind: "note".to_string(),
             status: "draft".to_string(),
@@ -2796,7 +6652,8 @@ mod tests {
             tags: Vec::new(),
         };
         let result =
-            create_artifact_with_projection(&MutationContext::new(&ws, &store), &evil).await;
+            create_artifact_with_projection(&MutationContext::new(&ws, &lock, Some(&store)), &evil)
+                .await;
         assert!(result.is_err(), "must reject path-traversal id");
         // No file written outside the workspace.
         assert!(!tmp.path().join("../../etc/evil-evil.md").exists());
@@ -2810,11 +6667,15 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         // Create two memory artifacts where one ID is a strict prefix of the other.
         for (id, title) in [("mem-foo", "foo"), ("mem-foo-bar", "foo bar")] {
             let art = crate::db::store::NewArtifact {
+                canonical_key: id.to_string(),
                 id: id.to_string(),
                 kind: "memory".to_string(),
                 status: "active".to_string(),
@@ -2826,20 +6687,19 @@ mod tests {
                 valid_until: None,
                 tags: Vec::new(),
             };
-            create_artifact_with_projection(&MutationContext::new(&ws, &store), &art)
+            create_artifact_with_projection(&MutationContext::new(&ws, &lock, Some(&store)), &art)
                 .await
                 .unwrap();
         }
 
-        let mem_dir = ws.join("memory");
-        let foo_path = mem_dir.join("mem-foo-foo.md");
-        let foo_bar_path = mem_dir.join("mem-foo-bar-foo-bar.md");
+        let foo_path = document_file(&ws, "mem-foo", "memory", "foo").await;
+        let foo_bar_path = document_file(&ws, "mem-foo-bar", "memory", "foo bar").await;
         assert!(
             foo_path.exists() && foo_bar_path.exists(),
             "both files must exist before delete"
         );
 
-        delete_artifact_with_projection(&MutationContext::new(&ws, &store), "mem-foo")
+        delete_artifact_with_projection(&MutationContext::new(&ws, &lock, Some(&store)), "mem-foo")
             .await
             .unwrap();
 
@@ -2850,6 +6710,51 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn delete_refuses_a_duplicate_key_without_changing_either_document() {
+        for legacy in [false, true] {
+            let tmp = TempDir::new().unwrap();
+            let ws = crate::workspace::init_workspace(tmp.path(), "duplicate").unwrap();
+            let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+            let store = if legacy {
+                Some(
+                    crate::db::store::LanceStore::init_new(&ws, &lock)
+                        .await
+                        .unwrap(),
+                )
+            } else {
+                None
+            };
+            let ctx = MutationContext::new(&ws, &lock, store.as_ref());
+            let mut artifact = art("NOTE-811", "note");
+            artifact.canonical_key = "note-duplicate".to_string();
+            let first = create_artifact_with_projection(&ctx, &artifact)
+                .await
+                .unwrap();
+            let second = ws.join("notes/other.md");
+            let other = "---\nid: NOTE-812\nkind: note\ntitle: Other\nslug: note-duplicate\n---\n\nKeep me.\n";
+            tokio::fs::write(&second, other).await.unwrap();
+            let before = tokio::fs::read(&first).await.unwrap();
+
+            assert!(
+                delete_artifact_with_projection(&ctx, "note-duplicate")
+                    .await
+                    .is_err()
+            );
+            assert_eq!(tokio::fs::read(&first).await.unwrap(), before);
+            assert_eq!(tokio::fs::read_to_string(&second).await.unwrap(), other);
+            if let Some(store) = &store {
+                assert!(
+                    store
+                        .get_record(&lock, "note-duplicate")
+                        .await
+                        .unwrap()
+                        .is_some()
+                );
+            }
+        }
+    }
+
     /// Audit H2: `update_metadata_with_projection` must reject empty
     /// status/title at the helper boundary instead of writing yaml-null
     /// values into LanceDB.
@@ -2858,9 +6763,13 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         let art = crate::db::store::NewArtifact {
+            canonical_key: "PRD-901".to_string(),
             id: "PRD-901".to_string(),
             kind: "prd".to_string(),
             status: "draft".to_string(),
@@ -2872,12 +6781,12 @@ mod tests {
             valid_until: None,
             tags: Vec::new(),
         };
-        create_artifact_with_projection(&MutationContext::new(&ws, &store), &art)
+        create_artifact_with_projection(&MutationContext::new(&ws, &lock, Some(&store)), &art)
             .await
             .unwrap();
 
         let empty_status = update_metadata_with_projection(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             "PRD-901",
             Some(""),
             None,
@@ -2885,7 +6794,7 @@ mod tests {
         .await;
         assert!(empty_status.is_err(), "must reject empty status");
         let empty_title = update_metadata_with_projection(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             "PRD-901",
             None,
             Some("   "),
@@ -2901,9 +6810,13 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         let art = crate::db::store::NewArtifact {
+            canonical_key: "PRD-902".to_string(),
             id: "PRD-902".to_string(),
             kind: "prd".to_string(),
             status: "draft".to_string(),
@@ -2915,13 +6828,13 @@ mod tests {
             valid_until: None,
             tags: Vec::new(),
         };
-        create_artifact_with_projection(&MutationContext::new(&ws, &store), &art)
+        create_artifact_with_projection(&MutationContext::new(&ws, &lock, Some(&store)), &art)
             .await
             .unwrap();
 
         // Capture the original updated_at — short-circuit MUST NOT bump it.
         let before = store
-            .get_record("PRD-902")
+            .get_record(&lock, "PRD-902")
             .await
             .unwrap()
             .unwrap()
@@ -2929,12 +6842,17 @@ mod tests {
         // Sleep just enough that any DB touch would yield a different timestamp.
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 
-        update_metadata_with_projection(&MutationContext::new(&ws, &store), "PRD-902", None, None)
-            .await
-            .unwrap();
+        update_metadata_with_projection(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            "PRD-902",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         let after = store
-            .get_record("PRD-902")
+            .get_record(&lock, "PRD-902")
             .await
             .unwrap()
             .unwrap()
@@ -2946,6 +6864,7 @@ mod tests {
 
     fn art(id: &str, kind: &str) -> crate::db::store::NewArtifact {
         crate::db::store::NewArtifact {
+            canonical_key: id.to_string(),
             id: id.to_string(),
             kind: kind.to_string(),
             status: "draft".to_string(),
@@ -2965,11 +6884,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         let evil = art("../../etc/evil", "note");
         assert!(
-            sync_artifact_from_file(&MutationContext::new(&ws, &store), &evil)
+            sync_artifact_from_file(&MutationContext::new(&ws, &lock, Some(&store)), &evil)
                 .await
                 .is_err(),
             "must reject path-traversal id at sync_from_file boundary",
@@ -2982,10 +6904,13 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         let result = sync_body_from_file(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             "../etc/evil",
             "prd",
             "Title",
@@ -3001,11 +6926,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         assert!(
             sync_relation_from_file(
-                &MutationContext::new(&ws, &store),
+                &MutationContext::new(&ws, &lock, Some(&store)),
                 "../bad",
                 "PRD-001",
                 "informs"
@@ -3016,7 +6944,7 @@ mod tests {
         );
         assert!(
             sync_relation_from_file(
-                &MutationContext::new(&ws, &store),
+                &MutationContext::new(&ws, &lock, Some(&store)),
                 "PRD-001",
                 "../bad",
                 "informs"
@@ -3033,21 +6961,24 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         // Place an artifact on disk + in DB
         let a = art("PRD-905", "prd");
-        create_artifact_with_projection(&MutationContext::new(&ws, &store), &a)
+        create_artifact_with_projection(&MutationContext::new(&ws, &lock, Some(&store)), &a)
             .await
             .unwrap();
-        let file = ws.join("prds").join("PRD-905-test-prd-905.md");
+        let file = document_file(&ws, "PRD-905", "prd", "Test PRD-905").await;
         assert!(file.exists(), "setup: file should exist");
 
-        delete_orphan_artifact(&MutationContext::new(&ws, &store), "PRD-905")
+        delete_orphan_artifact(&MutationContext::new(&ws, &lock, Some(&store)), "PRD-905")
             .await
             .unwrap();
         // DB row gone
-        assert!(store.get_record("PRD-905").await.unwrap().is_none());
+        assert!(store.get_record(&lock, "PRD-905").await.unwrap().is_none());
         // File untouched (caller's responsibility — orphan helper assumes file already gone)
         assert!(
             file.exists(),
@@ -3061,18 +6992,21 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         let a = art("PRD-906", "prd");
         let b = art("EVID-906", "evidence");
-        create_artifact_with_projection(&MutationContext::new(&ws, &store), &a)
+        create_artifact_with_projection(&MutationContext::new(&ws, &lock, Some(&store)), &a)
             .await
             .unwrap();
-        create_artifact_with_projection(&MutationContext::new(&ws, &store), &b)
+        create_artifact_with_projection(&MutationContext::new(&ws, &lock, Some(&store)), &b)
             .await
             .unwrap();
         add_link_with_projection(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             "EVID-906",
             "PRD-906",
             "informs",
@@ -3081,7 +7015,7 @@ mod tests {
         .unwrap();
 
         delete_orphan_relation(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             "EVID-906",
             "PRD-906",
             "informs",
@@ -3089,8 +7023,259 @@ mod tests {
         .await
         .unwrap();
 
-        let rels = store.get_relations("EVID-906").await.unwrap();
+        let rels = store.get_relations(&lock, "EVID-906").await.unwrap();
         assert!(rels.is_empty(), "edge must be gone");
+    }
+
+    // ─── Constellation stage 4 — qualified cross-source link targets ───
+
+    /// Read the single `.md` projection under `ws/<dir>/` starting with `id-`.
+    async fn projection_file_content(ws: &Path, dir: &str, id: &str) -> String {
+        let mut rd = tokio::fs::read_dir(ws.join(dir)).await.unwrap();
+        let keyed = format!("{id}.md");
+        while let Some(entry) = rd.next_entry().await.unwrap() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == keyed || (name.starts_with(&format!("{id}-")) && name.ends_with(".md")) {
+                return tokio::fs::read_to_string(entry.path()).await.unwrap();
+            }
+        }
+        panic!("no projection file for {id} under {dir}");
+    }
+
+    /// A qualified target lands in the *source* file's `links:` block
+    /// verbatim, resolves to no local row, and produces no foreign file.
+    #[tokio::test]
+    async fn add_link_with_projection_stores_a_qualified_target_in_the_source_only() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
+
+        create_artifact_with_projection(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            &art("PRD-940", "prd"),
+        )
+        .await
+        .unwrap();
+
+        add_link_with_projection(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            "PRD-940",
+            "ADR-001@src:b7d6f0e1a2c3d4e5",
+            "based_on",
+        )
+        .await
+        .unwrap();
+
+        // The relation row stores the ref verbatim.
+        let rels = store.get_relations(&lock, "PRD-940").await.unwrap();
+        assert_eq!(
+            rels,
+            vec![(
+                "ADR-001@src:b7d6f0e1a2c3d4e5".to_string(),
+                "based_on".to_string()
+            )]
+        );
+
+        // The source file's frontmatter carries it — ADR-003 truth lives
+        // in markdown, not in LanceDB.
+        let content = projection_file_content(&ws, "prds", "PRD-940").await;
+        assert!(
+            content.contains("target: ADR-001@src:b7d6f0e1a2c3d4e5"),
+            "source file must carry the qualified target verbatim:\n{content}"
+        );
+
+        // No artifact was created for the qualified ref — the write is
+        // source-only; `ADR-001` here would be a foreign artifact's ghost.
+        assert!(store.get_record(&lock, "ADR-001").await.unwrap().is_none());
+        assert!(
+            store
+                .get_record(&lock, "ADR-001@src:b7d6f0e1a2c3d4e5")
+                .await
+                .is_err(),
+            "a qualified cross-source target is not a local selector"
+        );
+        let mut found_link_file = false;
+        for dir_name in crate::workspace::ARTIFACT_DIRS {
+            let dir = ws.join(dir_name);
+            if !dir.exists() {
+                continue;
+            }
+            let mut rd = tokio::fs::read_dir(&dir).await.unwrap();
+            while let Some(entry) = rd.next_entry().await.unwrap() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                assert!(
+                    !name.contains('@'),
+                    "no artifact file may be rendered for a qualified target: {name}"
+                );
+                if name.starts_with("ADR-001") {
+                    found_link_file = true;
+                }
+            }
+        }
+        assert!(!found_link_file, "no local ADR-001 projection may appear");
+    }
+
+    /// `reindex`/`git_sync` restore edges from `links:` blocks — a
+    /// qualified target must survive that path verbatim too.
+    #[tokio::test]
+    async fn sync_relation_from_file_restores_a_qualified_target() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
+
+        create_artifact_with_projection(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            &art("PRD-941", "prd"),
+        )
+        .await
+        .unwrap();
+
+        sync_relation_from_file(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            "PRD-941",
+            "ADR-001@ws-beta",
+            "informs",
+        )
+        .await
+        .unwrap();
+
+        let rels = store.get_relations(&lock, "PRD-941").await.unwrap();
+        assert_eq!(
+            rels,
+            vec![("ADR-001@ws-beta".to_string(), "informs".to_string())]
+        );
+    }
+
+    /// `unlink` accepts what `link` stored — the delete path validates the
+    /// same qualified shape and removes by verbatim string equality.
+    #[tokio::test]
+    async fn delete_link_with_projection_removes_a_qualified_edge() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
+
+        create_artifact_with_projection(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            &art("PRD-942", "prd"),
+        )
+        .await
+        .unwrap();
+        add_link_with_projection(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            "PRD-942",
+            "ADR-001@ws-beta",
+            "informs",
+        )
+        .await
+        .unwrap();
+
+        delete_link_with_projection(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            "PRD-942",
+            "ADR-001@ws-beta",
+            "informs",
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            store
+                .get_relations(&lock, "PRD-942")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let content = projection_file_content(&ws, "prds", "PRD-942").await;
+        assert!(
+            !content.contains("ADR-001@ws-beta"),
+            "the re-rendered source file must drop the qualified edge:\n{content}"
+        );
+    }
+
+    /// The qualifier charset is a filter-injection boundary: `delete_relation`
+    /// interpolates the stored string into `target_id = '…'`, so quotes and
+    /// separators stay rejected on the qualified form too.
+    #[tokio::test]
+    async fn add_link_with_projection_rejects_an_injectable_qualified_target() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
+
+        for bad in ["ADR-001@x' OR '1'='1", "ADR-001@a/b", "ADR-001@a b"] {
+            let err = add_link_with_projection(
+                &MutationContext::new(&ws, &lock, Some(&store)),
+                "PRD-001",
+                bad,
+                "informs",
+            )
+            .await
+            .expect_err("injectable qualified target must be rejected");
+            assert!(
+                matches!(err, MutationError::InvalidId(ref s) if s == bad),
+                "expected InvalidId({bad}), got {err:?}",
+            );
+        }
+    }
+
+    /// Orphan cleanup must be able to *remove* a qualified edge — Phase 3
+    /// only reaches one when its source artifact is gone.
+    #[tokio::test]
+    async fn delete_orphan_relation_drops_a_qualified_edge() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
+
+        create_artifact_with_projection(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            &art("PRD-943", "prd"),
+        )
+        .await
+        .unwrap();
+        add_link_with_projection(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            "PRD-943",
+            "ADR-001@src:b7d6f0e1a2c3d4e5",
+            "informs",
+        )
+        .await
+        .unwrap();
+
+        delete_orphan_relation(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            "PRD-943",
+            "ADR-001@src:b7d6f0e1a2c3d4e5",
+            "informs",
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            store
+                .get_relations(&lock, "PRD-943")
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     // ---------------------------------------------------------------------
@@ -3099,34 +7284,53 @@ mod tests {
 
     /// Create source + target artifacts in a fresh temp workspace. Shared
     /// setup for the three upsert-outcome tests below.
+    ///
+    /// The lock is returned rather than dropped: every caller mutates through
+    /// a `MutationContext` that borrows it, so the caller needs the same guard
+    /// the setup wrote with. It is bound last so it drops first, before the
+    /// store it protects.
     async fn upsert_test_workspace(
         src_id: &str,
         tgt_id: &str,
         src_kind: &str,
         tgt_kind: &str,
-    ) -> (TempDir, std::path::PathBuf, crate::db::store::LanceStore) {
+    ) -> (
+        TempDir,
+        std::path::PathBuf,
+        crate::db::store::LanceStore,
+        crate::workspace::WorkspaceLock,
+    ) {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
-        create_artifact_with_projection(&MutationContext::new(&ws, &store), &art(src_id, src_kind))
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
             .await
             .unwrap();
-        create_artifact_with_projection(&MutationContext::new(&ws, &store), &art(tgt_id, tgt_kind))
-            .await
-            .unwrap();
-        (tmp, ws, store)
+        create_artifact_with_projection(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            &art(src_id, src_kind),
+        )
+        .await
+        .unwrap();
+        create_artifact_with_projection(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            &art(tgt_id, tgt_kind),
+        )
+        .await
+        .unwrap();
+        (tmp, ws, store, lock)
     }
 
     /// On a fresh `(source, target)` pair `replace_link_with_projection`
     /// produces `Created` and the edge appears in the store.
     #[tokio::test]
     async fn replace_link_returns_created_on_fresh_pair() {
-        let (_tmp, ws, store) =
+        let (_tmp, ws, store, lock) =
             upsert_test_workspace("EVID-920", "PRD-920", "evidence", "prd").await;
 
         let outcome = replace_link_with_projection(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             "EVID-920",
             "PRD-920",
             "informs",
@@ -3135,7 +7339,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(outcome, LinkUpsertOutcome::Created);
-        let rels = store.get_relations("EVID-920").await.unwrap();
+        let rels = store.get_relations(&lock, "EVID-920").await.unwrap();
         assert_eq!(rels.len(), 1);
         assert_eq!(rels[0].1, "informs");
     }
@@ -3145,11 +7349,11 @@ mod tests {
     /// count stays at one (no parallel duplicate).
     #[tokio::test]
     async fn replace_link_returns_unchanged_on_identical_relation() {
-        let (_tmp, ws, store) =
+        let (_tmp, ws, store, lock) =
             upsert_test_workspace("EVID-921", "PRD-921", "evidence", "prd").await;
 
         add_link_with_projection(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             "EVID-921",
             "PRD-921",
             "informs",
@@ -3158,7 +7362,7 @@ mod tests {
         .unwrap();
 
         let outcome = replace_link_with_projection(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             "EVID-921",
             "PRD-921",
             "informs",
@@ -3167,7 +7371,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(outcome, LinkUpsertOutcome::Unchanged);
-        let rels = store.get_relations("EVID-921").await.unwrap();
+        let rels = store.get_relations(&lock, "EVID-921").await.unwrap();
         assert_eq!(
             rels.len(),
             1,
@@ -3181,12 +7385,12 @@ mod tests {
     /// and the final state contains exactly one `informs` edge.
     #[tokio::test]
     async fn replace_link_swaps_mistyped_based_on_to_informs() {
-        let (_tmp, ws, store) =
+        let (_tmp, ws, store, lock) =
             upsert_test_workspace("EVID-922", "PRD-922", "evidence", "prd").await;
 
         // Initial mistake: link with based_on.
         add_link_with_projection(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             "EVID-922",
             "PRD-922",
             "based_on",
@@ -3196,7 +7400,7 @@ mod tests {
 
         // Fix via upsert.
         let outcome = replace_link_with_projection(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             "EVID-922",
             "PRD-922",
             "informs",
@@ -3210,7 +7414,7 @@ mod tests {
             }
             other => panic!("expected Replaced {{ old_relation: based_on }}, got {other:?}"),
         }
-        let rels = store.get_relations("EVID-922").await.unwrap();
+        let rels = store.get_relations(&lock, "EVID-922").await.unwrap();
         assert_eq!(rels.len(), 1, "exactly one edge must remain: {rels:?}");
         assert_eq!(rels[0].0, "PRD-922");
         assert_eq!(rels[0].1, "informs");
@@ -3222,11 +7426,12 @@ mod tests {
     /// later promoted into a derivation chain.
     #[tokio::test]
     async fn replace_link_swaps_informs_to_based_on_reverse() {
-        let (_tmp, ws, store) = upsert_test_workspace("PRD-923", "PRD-924", "prd", "prd").await;
+        let (_tmp, ws, store, lock) =
+            upsert_test_workspace("PRD-923", "PRD-924", "prd", "prd").await;
 
         // Initial: PRD-923 informs PRD-924.
         add_link_with_projection(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             "PRD-923",
             "PRD-924",
             "informs",
@@ -3235,7 +7440,7 @@ mod tests {
         .unwrap();
 
         let outcome = replace_link_with_projection(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             "PRD-923",
             "PRD-924",
             "based_on",
@@ -3249,7 +7454,7 @@ mod tests {
             }
             other => panic!("expected Replaced {{ old_relation: informs }}, got {other:?}"),
         }
-        let rels = store.get_relations("PRD-923").await.unwrap();
+        let rels = store.get_relations(&lock, "PRD-923").await.unwrap();
         assert_eq!(
             rels.len(),
             1,
@@ -3264,10 +7469,11 @@ mod tests {
     /// the new code path.
     #[tokio::test]
     async fn replace_link_swaps_to_refines_relation() {
-        let (_tmp, ws, store) = upsert_test_workspace("RFC-925", "ADR-925", "rfc", "adr").await;
+        let (_tmp, ws, store, lock) =
+            upsert_test_workspace("RFC-925", "ADR-925", "rfc", "adr").await;
 
         add_link_with_projection(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             "RFC-925",
             "ADR-925",
             "informs",
@@ -3276,7 +7482,7 @@ mod tests {
         .unwrap();
 
         let outcome = replace_link_with_projection(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             "RFC-925",
             "ADR-925",
             "refines",
@@ -3288,7 +7494,7 @@ mod tests {
             matches!(outcome, LinkUpsertOutcome::Replaced { ref old_relation } if old_relation == "informs"),
             "expected Replaced{{informs}}, got {outcome:?}"
         );
-        let rels = store.get_relations("RFC-925").await.unwrap();
+        let rels = store.get_relations(&lock, "RFC-925").await.unwrap();
         assert_eq!(rels.len(), 1);
         assert_eq!(rels[0].1, "refines");
     }
@@ -3297,10 +7503,11 @@ mod tests {
     /// Same rationale as refines — exercises the full relation set.
     #[tokio::test]
     async fn replace_link_swaps_to_supersedes_relation() {
-        let (_tmp, ws, store) = upsert_test_workspace("PRD-926", "PRD-927", "prd", "prd").await;
+        let (_tmp, ws, store, lock) =
+            upsert_test_workspace("PRD-926", "PRD-927", "prd", "prd").await;
 
         add_link_with_projection(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             "PRD-926",
             "PRD-927",
             "informs",
@@ -3309,7 +7516,7 @@ mod tests {
         .unwrap();
 
         let outcome = replace_link_with_projection(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             "PRD-926",
             "PRD-927",
             "supersedes",
@@ -3329,14 +7536,17 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         let a = art("PRD-907", "prd");
         let b = art("EVID-907", "evidence");
-        create_artifact_with_projection(&MutationContext::new(&ws, &store), &a)
+        create_artifact_with_projection(&MutationContext::new(&ws, &lock, Some(&store)), &a)
             .await
             .unwrap();
-        create_artifact_with_projection(&MutationContext::new(&ws, &store), &b)
+        create_artifact_with_projection(&MutationContext::new(&ws, &lock, Some(&store)), &b)
             .await
             .unwrap();
 
@@ -3345,14 +7555,17 @@ mod tests {
             ("EVID-907".into(), "PRD-907".into(), "informs".into()),
             ("../../etc/evil".into(), "PRD-907".into(), "informs".into()),
         ];
-        let result =
-            add_links_batch_with_projection(&MutationContext::new(&ws, &store), &links).await;
+        let result = add_links_batch_with_projection(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            &links,
+        )
+        .await;
         assert!(
             result.is_err(),
             "must bail on bad id BEFORE any side effect"
         );
         // No relations applied — even the first (good) link.
-        let rels = store.get_relations("EVID-907").await.unwrap();
+        let rels = store.get_relations(&lock, "EVID-907").await.unwrap();
         assert!(
             rels.is_empty(),
             "no partial state — the good link must NOT have landed when batch validation failed",
@@ -3365,7 +7578,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         // 1 source, 3 distinct targets → 4 unique participants, 3 relations.
         for id in ["EVID-908", "PRD-908", "PRD-909", "PRD-910"] {
@@ -3374,9 +7590,12 @@ mod tests {
             } else {
                 "prd"
             };
-            create_artifact_with_projection(&MutationContext::new(&ws, &store), &art(id, kind))
-                .await
-                .unwrap();
+            create_artifact_with_projection(
+                &MutationContext::new(&ws, &lock, Some(&store)),
+                &art(id, kind),
+            )
+            .await
+            .unwrap();
         }
         let links = vec![
             ("EVID-908".into(), "PRD-908".into(), "informs".into()),
@@ -3384,11 +7603,14 @@ mod tests {
             ("EVID-908".into(), "PRD-910".into(), "informs".into()),
         ];
 
-        let applied = add_links_batch_with_projection(&MutationContext::new(&ws, &store), &links)
-            .await
-            .unwrap();
+        let applied = add_links_batch_with_projection(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            &links,
+        )
+        .await
+        .unwrap();
         assert_eq!(applied, 3, "all 3 links applied");
-        let rels = store.get_relations("EVID-908").await.unwrap();
+        let rels = store.get_relations(&lock, "EVID-908").await.unwrap();
         assert_eq!(rels.len(), 3, "all 3 outgoing edges in DB");
     }
 
@@ -3396,26 +7618,64 @@ mod tests {
     #[tokio::test]
     async fn delete_artifact_after_soft_delete_only_drops_db_row() {
         let tmp = TempDir::new().unwrap();
-        let ws = tmp.path().join(".forgeplan");
-        tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let ws = crate::workspace::init_workspace(tmp.path(), "soft-delete-intent").unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         let a = art("PRD-911", "prd");
-        create_artifact_with_projection(&MutationContext::new(&ws, &store), &a)
+        create_artifact_with_projection(&MutationContext::new(&ws, &lock, Some(&store)), &a)
             .await
             .unwrap();
-        let file = ws.join("prds").join("PRD-911-test-prd-911.md");
+        let file = document_file(&ws, "PRD-911", "prd", "Test PRD-911").await;
         assert!(file.exists());
+        let original = tokio::fs::read(&file).await.unwrap();
+        let ctx = MutationContext::new(&ws, &lock, Some(&store));
+        assert!(
+            delete_artifact_after_soft_delete(&ctx, "PRD-911")
+                .await
+                .is_err(),
+            "a derived row must not be removed without a durable delete intent"
+        );
+        assert!(store.get_record(&lock, "PRD-911").await.unwrap().is_some());
+        assert_eq!(tokio::fs::read(&file).await.unwrap(), original);
+        crate::db::migrate::begin_identity_delete_intent(&ws, &lock, "PRD-911", &file)
+            .await
+            .unwrap();
+        let trash = ws.join(".deleted");
+        tokio::fs::create_dir_all(&trash).await.unwrap();
+        let saved = trash.join("PRD-911.md");
+        tokio::fs::rename(&file, &saved).await.unwrap();
 
-        delete_artifact_after_soft_delete(&MutationContext::new(&ws, &store), "PRD-911")
+        delete_artifact_after_soft_delete(&ctx, "PRD-911")
             .await
             .unwrap();
 
-        assert!(store.get_record("PRD-911").await.unwrap().is_none());
-        assert!(
-            file.exists(),
-            "helper must NOT touch the file (caller already moved it to trash)",
+        assert!(store.get_record(&lock, "PRD-911").await.unwrap().is_none());
+        assert!(!file.exists());
+        assert_eq!(
+            tokio::fs::read(&saved).await.unwrap(),
+            original,
+            "the derived-only helper must not modify the already-trashed preimage"
         );
+        drop(store);
+        drop(lock);
+        crate::db::store::LanceStore::drain_identity_semantic_backlog(&ws)
+            .await
+            .unwrap();
+        let permit = crate::workspace::lock::acquire_workspace_read_lock(&ws)
+            .await
+            .unwrap();
+        let reopened = crate::db::store::LanceStore::open(&ws).await.unwrap();
+        assert!(
+            reopened
+                .get_record(&permit, "PRD-911")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(tokio::fs::read(&saved).await.unwrap(), original);
     }
 
     /// A1.9 — sync_metadata_from_file accepts (None, None) without bumping
@@ -3425,18 +7685,25 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         let a = art("PRD-912", "prd");
-        create_artifact_with_projection(&MutationContext::new(&ws, &store), &a)
+        create_artifact_with_projection(&MutationContext::new(&ws, &lock, Some(&store)), &a)
             .await
             .unwrap();
 
         // Calling with (None, None) should NOT error and should NOT mutate.
         // (Audit code-reviewer #3: catches the inconsistency vs update_metadata_with_projection.)
-        let result =
-            sync_metadata_from_file(&MutationContext::new(&ws, &store), "PRD-912", None, None)
-                .await;
+        let result = sync_metadata_from_file(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            "PRD-912",
+            None,
+            None,
+        )
+        .await;
         assert!(result.is_ok(), "no-op sync should succeed");
     }
 
@@ -3449,15 +7716,18 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         let a = art("PRD-913", "prd");
-        create_artifact_with_projection(&MutationContext::new(&ws, &store), &a)
+        create_artifact_with_projection(&MutationContext::new(&ws, &lock, Some(&store)), &a)
             .await
             .unwrap();
 
         let empty_status = sync_metadata_from_file(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             "PRD-913",
             Some(""),
             None,
@@ -3465,7 +7735,7 @@ mod tests {
         .await;
         assert!(empty_status.is_err(), "must reject empty status");
         let empty_title = sync_metadata_from_file(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             "PRD-913",
             None,
             Some("   "),
@@ -3486,10 +7756,13 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         let err = sync_metadata_from_file(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             "../../etc/passwd",
             Some("draft"),
             None,
@@ -3507,15 +7780,18 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         let a = art("PRD-921", "prd");
-        create_artifact_with_projection(&MutationContext::new(&ws, &store), &a)
+        create_artifact_with_projection(&MutationContext::new(&ws, &lock, Some(&store)), &a)
             .await
             .unwrap();
 
         let err = sync_metadata_from_file(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             "PRD-921",
             Some("   "),
             None,
@@ -3533,10 +7809,13 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         let err = sync_relation_from_file(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             "../bad",
             "PRD-001",
             "informs",
@@ -3554,11 +7833,17 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
-
-        let err = delete_orphan_artifact(&MutationContext::new(&ws, &store), "../../boom")
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
             .await
-            .expect_err("traversal id must be rejected");
+            .unwrap();
+
+        let err = delete_orphan_artifact(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            "../../boom",
+        )
+        .await
+        .expect_err("traversal id must be rejected");
         assert!(
             matches!(err, MutationError::InvalidId(ref s) if s == "../../boom"),
             "expected InvalidId, got {err:?}",
@@ -3570,10 +7855,13 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         let err = delete_orphan_relation(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             "PRD-001",
             "../bad-target",
             "informs",
@@ -3591,7 +7879,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         for id in ["PRD-922", "EVID-922"] {
             let kind = if id.starts_with("EVID") {
@@ -3599,23 +7890,29 @@ mod tests {
             } else {
                 "prd"
             };
-            create_artifact_with_projection(&MutationContext::new(&ws, &store), &art(id, kind))
-                .await
-                .unwrap();
+            create_artifact_with_projection(
+                &MutationContext::new(&ws, &lock, Some(&store)),
+                &art(id, kind),
+            )
+            .await
+            .unwrap();
         }
 
         let links = vec![
             ("EVID-922".into(), "PRD-922".into(), "informs".into()),
             ("../../evil".into(), "PRD-922".into(), "informs".into()),
         ];
-        let err = add_links_batch_with_projection(&MutationContext::new(&ws, &store), &links)
-            .await
-            .expect_err("traversal id must bail batch");
+        let err = add_links_batch_with_projection(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            &links,
+        )
+        .await
+        .expect_err("traversal id must bail batch");
         assert!(
             matches!(err, MutationError::InvalidId(ref s) if s == "../../evil"),
             "expected InvalidId, got {err:?}",
         );
-        let rels = store.get_relations("EVID-922").await.unwrap();
+        let rels = store.get_relations(&lock, "EVID-922").await.unwrap();
         assert!(
             rels.is_empty(),
             "no relations should land when validation fails up front",
@@ -3627,11 +7924,17 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
-
-        let err = delete_artifact_after_soft_delete(&MutationContext::new(&ws, &store), "..\\evil")
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
             .await
-            .expect_err("traversal id must be rejected");
+            .unwrap();
+
+        let err = delete_artifact_after_soft_delete(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            "..\\evil",
+        )
+        .await
+        .expect_err("traversal id must be rejected");
         assert!(
             matches!(err, MutationError::InvalidId(ref s) if s == "..\\evil"),
             "expected InvalidId, got {err:?}",
@@ -3648,10 +7951,13 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         let err = remove_tags_with_projection(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             "../../evil",
             &["x".to_string()],
         )
@@ -3671,10 +7977,13 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         let err = add_link_with_projection(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             "../bad",
             "PRD-001",
             "informs",
@@ -3687,7 +7996,7 @@ mod tests {
         );
 
         let err = add_link_with_projection(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             "PRD-001",
             "../bad",
             "informs",
@@ -3706,10 +8015,13 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         let err = delete_link_with_projection(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             "../bad",
             "PRD-001",
             "informs",
@@ -3719,7 +8031,7 @@ mod tests {
         assert!(matches!(err, MutationError::InvalidId(ref s) if s == "../bad"));
 
         let err = delete_link_with_projection(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             "PRD-001",
             "../bad",
             "informs",
@@ -3739,12 +8051,15 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         // Construct a NewArtifact with a valid id+kind+title but DON'T
         // write the projection on disk. Sync must refuse.
         let ghost = art("PRD-930", "prd");
-        let err = sync_artifact_from_file(&MutationContext::new(&ws, &store), &ghost)
+        let err = sync_artifact_from_file(&MutationContext::new(&ws, &lock, Some(&store)), &ghost)
             .await
             .expect_err("missing file must be rejected with FileNotFound");
         match err {
@@ -3760,7 +8075,7 @@ mod tests {
             other => panic!("expected FileNotFound, got {other:?}"),
         }
         assert!(
-            store.get_record("PRD-930").await.unwrap().is_none(),
+            store.get_record(&lock, "PRD-930").await.unwrap().is_none(),
             "no DB row should land when file is missing",
         );
     }
@@ -3774,20 +8089,23 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         // Create the artifact (so DB row exists) and then nuke the file
         // to simulate the TOCTOU race.
         let a = art("PRD-931", "prd");
-        create_artifact_with_projection(&MutationContext::new(&ws, &store), &a)
+        create_artifact_with_projection(&MutationContext::new(&ws, &lock, Some(&store)), &a)
             .await
             .unwrap();
-        let file = ws.join("prds").join("PRD-931-test-prd-931.md");
+        let file = document_file(&ws, "PRD-931", "prd", "Test PRD-931").await;
         assert!(file.exists(), "setup precondition: file must exist");
         tokio::fs::remove_file(&file).await.unwrap();
 
         let err = sync_body_from_file(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             "PRD-931",
             "prd",
             "Test PRD-931",
@@ -3796,7 +8114,7 @@ mod tests {
         .await
         .expect_err("missing file must be rejected with FileNotFound");
         // R1 audit H-8: path is now workspace-relative — strip prefix to compare.
-        let expected_rel = std::path::PathBuf::from("prds/PRD-931-test-prd-931.md");
+        let expected_rel = std::path::PathBuf::from("prds").join(file.file_name().unwrap());
         match err {
             MutationError::FileNotFound { id, path } => {
                 assert_eq!(id, "PRD-931");
@@ -3825,7 +8143,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         // R2 audit M-R2-2: replaced fragile premise check
         // `assert!(slugify(cyrillic_title).is_empty())` with a *behavioral*
@@ -3842,8 +8163,11 @@ mod tests {
         );
 
         let mut a = art("PRD-940", "prd");
+        // The fallback names the file after the title, which only happens for
+        // a document created without a canonical key.
+        a.canonical_key.clear();
         a.title = cyrillic_title.to_string();
-        create_artifact_with_projection(&MutationContext::new(&ws, &store), &a)
+        create_artifact_with_projection(&MutationContext::new(&ws, &lock, Some(&store)), &a)
             .await
             .expect("create with Cyrillic title must succeed");
 
@@ -3859,7 +8183,7 @@ mod tests {
         );
 
         // The DB row keeps the original Cyrillic title.
-        let rec = store.get_record("PRD-940").await.unwrap().unwrap();
+        let rec = store.get_record(&lock, "PRD-940").await.unwrap().unwrap();
         assert_eq!(
             rec.title, cyrillic_title,
             "DB title must preserve the user's original (only the on-disk slug is sanitised)",
@@ -3879,7 +8203,7 @@ mod tests {
         // sync_artifact_from_file — that is the bootstrap-from-file path and
         // would conflict with the row we just created via create_artifact.)
         sync_body_from_file(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             "PRD-940",
             "prd",
             cyrillic_title,
@@ -3909,7 +8233,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
         let prds_dir = ws.join("prds");
         tokio::fs::create_dir_all(&prds_dir).await.unwrap();
 
@@ -3922,7 +8249,8 @@ mod tests {
             .unwrap();
 
         let ghost = art("PRD-942", "prd");
-        let result = sync_artifact_from_file(&MutationContext::new(&ws, &store), &ghost).await;
+        let result =
+            sync_artifact_from_file(&MutationContext::new(&ws, &lock, Some(&store)), &ghost).await;
 
         // Restore perms before asserting so a panic doesn't leave an
         // unreadable temp dir behind.
@@ -3956,10 +8284,13 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         let ghost = art("PRD-941", "prd");
-        let err = sync_artifact_from_file(&MutationContext::new(&ws, &store), &ghost)
+        let err = sync_artifact_from_file(&MutationContext::new(&ws, &lock, Some(&store)), &ghost)
             .await
             .expect_err("missing file must be rejected with FileNotFound");
         assert!(
@@ -3980,14 +8311,18 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         let mut a = art("PRD-001", "prd");
         a.id = "../../etc/evil".to_string();
 
-        let err = create_artifact_with_projection(&MutationContext::new(&ws, &store), &a)
-            .await
-            .expect_err("path-traversal id must be rejected");
+        let err =
+            create_artifact_with_projection(&MutationContext::new(&ws, &lock, Some(&store)), &a)
+                .await
+                .expect_err("path-traversal id must be rejected");
         assert!(
             matches!(err, MutationError::InvalidId(ref s) if s == "../../etc/evil"),
             "expected MutationError::InvalidId, got: {err:?}"
@@ -3999,14 +8334,18 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         let mut a = art("PRD-700", "prd");
         a.kind = "bogus_kind".to_string();
 
-        let err = create_artifact_with_projection(&MutationContext::new(&ws, &store), &a)
-            .await
-            .expect_err("unknown kind must be rejected");
+        let err =
+            create_artifact_with_projection(&MutationContext::new(&ws, &lock, Some(&store)), &a)
+                .await
+                .expect_err("unknown kind must be rejected");
         assert!(
             matches!(err, MutationError::InvalidKind { ref id, ref kind, .. }
                 if id == "PRD-700" && kind == "bogus_kind"),
@@ -4022,21 +8361,28 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         let mut a = art("PRD-701", "prd");
+        // The `untitled` fallback only applies to a title-derived name; a
+        // keyed document is published under its key regardless of the title.
+        a.canonical_key.clear();
         a.title = "Задача".to_string();
 
-        let path = create_artifact_with_projection(&MutationContext::new(&ws, &store), &a)
-            .await
-            .expect("cyrillic title must not error");
+        let path =
+            create_artifact_with_projection(&MutationContext::new(&ws, &lock, Some(&store)), &a)
+                .await
+                .expect("cyrillic title must not error");
         let filename = path.file_name().unwrap().to_string_lossy().to_string();
         assert_eq!(
             filename, "PRD-701-untitled.md",
             "expected `untitled` fallback slug, got: {filename}"
         );
         // DB row keeps the original title — only the on-disk slug changes.
-        let row = store.get_record("PRD-701").await.unwrap().unwrap();
+        let row = store.get_record(&lock, "PRD-701").await.unwrap().unwrap();
         assert_eq!(row.title, "Задача");
     }
 
@@ -4045,11 +8391,17 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
-
-        let err = delete_artifact_with_projection(&MutationContext::new(&ws, &store), "../escape")
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
             .await
-            .expect_err("path-traversal id must be rejected");
+            .unwrap();
+
+        let err = delete_artifact_with_projection(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            "../escape",
+        )
+        .await
+        .expect_err("path-traversal id must be rejected");
         assert!(
             matches!(err, MutationError::InvalidId(ref s) if s == "../escape"),
             "expected MutationError::InvalidId, got: {err:?}"
@@ -4061,12 +8413,18 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
-        let err =
-            update_body_with_projection(&MutationContext::new(&ws, &store), "1bad-start", "body")
-                .await
-                .expect_err("id starting with digit must be rejected");
+        let err = update_body_with_projection(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            "1bad-start",
+            "body",
+        )
+        .await
+        .expect_err("id starting with digit must be rejected");
         assert!(
             matches!(err, MutationError::InvalidId(ref s) if s == "1bad-start"),
             "expected MutationError::InvalidId, got: {err:?}"
@@ -4083,12 +8441,18 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
-        let err =
-            update_body_with_projection(&MutationContext::new(&ws, &store), "PRD-9999", "body")
-                .await
-                .expect_err("missing artifact must surface an error");
+        let err = update_body_with_projection(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            "PRD-9999",
+            "body",
+        )
+        .await
+        .expect_err("missing artifact must surface an error");
         assert!(
             matches!(err, MutationError::RowNotFound { ref id } if id == "PRD-9999"),
             "expected MutationError::RowNotFound, got: {err:?}"
@@ -4106,24 +8470,51 @@ mod tests {
     /// store directly and missed whatever the projection layer does around it.
     /// This one drives `update_body_with_projection`, which is what
     /// `commands/update.rs:151` calls.
+    ///
+    /// Publish a real test-backend vector through the semantic backlog before
+    /// editing, so the assertion exercises the same provenance rules as a
+    /// production vector rather than injecting an unbound vector into a row.
+    #[cfg(feature = "semantic-search")]
     #[tokio::test]
     async fn update_body_with_projection_retires_the_previous_vector() {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
-
-        let a = art("PRD-943", "prd");
-        create_artifact_with_projection(&MutationContext::new(&ws, &store), &a)
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
             .await
             .unwrap();
-        store
-            .update_embedding("PRD-943", &vec![0.25f32; 1024])
+
+        let a = art("PRD-943", "prd");
+        create_artifact_with_projection(&MutationContext::new(&ws, &lock, Some(&store)), &a)
+            .await
+            .unwrap();
+
+        tokio::fs::write(
+            ws.join("config.yaml"),
+            "embedding:\n  model: forgeplan-test\n  chunk_size: 2000\n",
+        )
+        .await
+        .unwrap();
+        let _backend = crate::db::store::install_semantic_backend_for_test(
+            &ws,
+            std::sync::Arc::new(|_: &str| {
+                Ok(vec![0.25; crate::db::schema::EMBEDDING_DIM as usize])
+            }),
+        )
+        .unwrap();
+        drop(store);
+        drop(lock);
+        crate::db::store::LanceStore::drain_identity_semantic_backlog(&ws)
+            .await
+            .unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::open_for_write(&ws, &lock)
             .await
             .unwrap();
         assert!(
             store
-                .get_record("PRD-943")
+                .get_record(&lock, "PRD-943")
                 .await
                 .unwrap()
                 .unwrap()
@@ -4133,14 +8524,14 @@ mod tests {
         );
 
         update_body_with_projection(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             "PRD-943",
             "## Different\n\nEntirely unrelated subject matter.",
         )
         .await
         .unwrap();
 
-        let rec = store.get_record("PRD-943").await.unwrap().unwrap();
+        let rec = store.get_record(&lock, "PRD-943").await.unwrap().unwrap();
         assert!(
             rec.embedding.is_none(),
             "the vector of the previous body must not survive the CLI's own \
@@ -4159,20 +8550,27 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         let a = art("PRD-942", "prd");
-        create_artifact_with_projection(&MutationContext::new(&ws, &store), &a)
+        create_artifact_with_projection(&MutationContext::new(&ws, &lock, Some(&store)), &a)
             .await
             .unwrap();
 
         let new_body = "## Updated body\n\nfresh content for happy-path";
-        update_body_with_projection(&MutationContext::new(&ws, &store), "PRD-942", new_body)
-            .await
-            .expect("happy path must succeed");
+        update_body_with_projection(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            "PRD-942",
+            new_body,
+        )
+        .await
+        .expect("happy path must succeed");
 
         // DB row body is updated.
-        let rec = store.get_record("PRD-942").await.unwrap().unwrap();
+        let rec = store.get_record(&lock, "PRD-942").await.unwrap().unwrap();
         assert!(
             rec.body.contains("fresh content for happy-path"),
             "DB body must reflect the update, got: {}",
@@ -4180,7 +8578,7 @@ mod tests {
         );
 
         // File body is updated too (file-first invariant).
-        let path = ws.join("prds").join("PRD-942-test-prd-942.md");
+        let path = document_file(&ws, "PRD-942", "prd", "Test PRD-942").await;
         let on_disk = tokio::fs::read_to_string(&path).await.unwrap();
         assert!(
             on_disk.contains("fresh content for happy-path"),
@@ -4197,10 +8595,13 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         let err = sync_metadata_from_file(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             "PRD-943",
             Some(""),
             Some(""),
@@ -4218,10 +8619,13 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         let err = update_depth_with_projection(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             "bad/slash",
             "tactical",
         )
@@ -4238,10 +8642,13 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
 
         let err = add_tags_with_projection(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             "",
             &["tag-one".to_string()],
         )
@@ -4285,6 +8692,7 @@ mod replace_link_property_tests {
 
     fn art(id: &str, kind: &str) -> crate::db::store::NewArtifact {
         crate::db::store::NewArtifact {
+            canonical_key: id.to_string(),
             id: id.to_string(),
             kind: kind.to_string(),
             status: "draft".to_string(),
@@ -4307,17 +8715,26 @@ mod replace_link_property_tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join(".forgeplan");
         tokio::fs::create_dir_all(&ws).await.unwrap();
-        let store = crate::db::store::LanceStore::init(&ws).await.unwrap();
-        create_artifact_with_projection(&MutationContext::new(&ws, &store), &art(source_id, "prd"))
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
             .await
             .unwrap();
-        create_artifact_with_projection(&MutationContext::new(&ws, &store), &art(target_id, "prd"))
-            .await
-            .unwrap();
+        create_artifact_with_projection(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            &art(source_id, "prd"),
+        )
+        .await
+        .unwrap();
+        create_artifact_with_projection(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            &art(target_id, "prd"),
+        )
+        .await
+        .unwrap();
 
         if let Some(rel) = initial_relation {
             add_link_with_projection(
-                &MutationContext::new(&ws, &store),
+                &MutationContext::new(&ws, &lock, Some(&store)),
                 source_id,
                 target_id,
                 rel,
@@ -4327,7 +8744,7 @@ mod replace_link_property_tests {
         }
 
         let outcome = replace_link_with_projection(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             source_id,
             target_id,
             new_relation,
@@ -4351,7 +8768,7 @@ mod replace_link_property_tests {
         );
 
         // Invariant 1+2: exactly one edge with requested relation.
-        let rels = store.get_relations(source_id).await.unwrap();
+        let rels = store.get_relations(&lock, source_id).await.unwrap();
         let same_target: Vec<_> = rels
             .iter()
             .filter(|(t, _)| t.eq_ignore_ascii_case(target_id))
@@ -4361,7 +8778,7 @@ mod replace_link_property_tests {
 
         // Invariant 3: idempotency.
         let outcome2 = replace_link_with_projection(
-            &MutationContext::new(&ws, &store),
+            &MutationContext::new(&ws, &lock, Some(&store)),
             source_id,
             target_id,
             new_relation,
@@ -4370,7 +8787,7 @@ mod replace_link_property_tests {
         .unwrap();
         assert_eq!(outcome2, LinkUpsertOutcome::Unchanged);
 
-        let rels2 = store.get_relations(source_id).await.unwrap();
+        let rels2 = store.get_relations(&lock, source_id).await.unwrap();
         let same_target2: Vec<_> = rels2
             .iter()
             .filter(|(t, _)| t.eq_ignore_ascii_case(target_id))
@@ -4401,8 +8818,8 @@ mod replace_link_property_tests {
             runtime.block_on(run_replace_scenario(
                 None,
                 RELATIONS[new_rel_idx],
-                "PRD-A001",
-                "PRD-B001",
+                "PRD-901",
+                "PRD-902",
             ));
         }
 
@@ -4420,9 +8837,1130 @@ mod replace_link_property_tests {
             runtime.block_on(run_replace_scenario(
                 Some(RELATIONS[initial_idx]),
                 RELATIONS[new_idx],
-                "PRD-A002",
-                "PRD-B002",
+                "PRD-903",
+                "PRD-904",
             ));
         }
+    }
+}
+
+// =============================================================================
+// Constellation cutover — behaviour of `legacy_sink: None`
+// -----------------------------------------------------------------------------
+// These tests pin the two halves of the cutover contract that a signature
+// change alone cannot prove:
+//
+//   * `None` is NOT a refusal. Every helper whose job includes a canonical
+//     Markdown mutation still performs it, byte-for-byte, and returns Ok.
+//   * `None` is NOT a faked database. Nothing opens `artifacts.lance`, and
+//     the derived-index-ONLY helpers report `NoLegacySink` rather than
+//     claiming a row write they did not make.
+//
+// The `Some` halves of the same helpers are covered by the existing suites
+// above; each test here names the sink it is asserting about so a regression
+// that silently flips one branch is visible.
+// =============================================================================
+
+#[cfg(test)]
+mod file_first_sink_tests {
+    use super::*;
+    use crate::workspace::lock::WorkspaceLock;
+    use tempfile::TempDir;
+
+    fn art(id: &str, kind: &str, title: &str) -> crate::db::store::NewArtifact {
+        crate::db::store::NewArtifact {
+            canonical_key: id.to_string(),
+            id: id.to_string(),
+            kind: kind.to_string(),
+            status: "draft".to_string(),
+            title: title.to_string(),
+            body: "Original body.".to_string(),
+            depth: "standard".to_string(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: Vec::new(),
+        }
+    }
+
+    /// A constellation-managed workspace: markdown exists, there is NO
+    /// `artifacts.lance`, and `LanceStore::init` is deliberately never
+    /// called. That is the real shape of a migrated workspace — if a helper
+    /// tried to open a store here it would fail loudly rather than silently
+    /// resurrect a retired table.
+    async fn migrated_fixture() -> (TempDir, PathBuf, WorkspaceLock) {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let lock = crate::workspace::acquire_workspace_lock(&ws).await.unwrap();
+        (tmp, ws, lock)
+    }
+
+    /// Read an artifact file's projection frontmatter + body.
+    async fn read_doc(ws: &Path, id: &str) -> (crate::artifact::frontmatter::Frontmatter, String) {
+        let path = crate::artifact::store::resolve_artifact_path(ws, id)
+            .await
+            .unwrap_or_else(|| panic!("{id} must resolve to a markdown file"));
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        crate::artifact::frontmatter::parse_frontmatter(&content).unwrap()
+    }
+
+    fn fm_string(fm: &crate::artifact::frontmatter::Frontmatter, key: &str) -> Option<String> {
+        fm.get(key).and_then(|v| v.as_str()).map(String::from)
+    }
+
+    #[tokio::test]
+    async fn file_first_update_reports_ambiguous_alias_without_writing() {
+        let (_tmp, ws, guard) = migrated_fixture().await;
+        let dir = ws.join("notes");
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let alpha = dir.join("alpha.md");
+        let beta = dir.join("beta.md");
+        let first = "---\nid: NOTE-001\nkind: note\nstatus: draft\ntitle: Alpha\nslug: note-alpha\n---\n\nAlpha.\n";
+        let second = "---\nid: NOTE-001\nkind: note\nstatus: draft\ntitle: Beta\nslug: note-beta\n---\n\nBeta.\n";
+        tokio::fs::write(&alpha, first).await.unwrap();
+        tokio::fs::write(&beta, second).await.unwrap();
+        let ctx = MutationContext::new(&ws, &guard, None);
+        let error = update_metadata_with_projection(&ctx, "NOTE-001", None, Some("Changed"))
+            .await
+            .unwrap_err();
+        assert!(!matches!(error, MutationError::RowNotFound { .. }));
+        assert!(error.to_string().contains("matches 2 documents"));
+        assert_eq!(tokio::fs::read_to_string(&alpha).await.unwrap(), first);
+        assert_eq!(tokio::fs::read_to_string(&beta).await.unwrap(), second);
+        update_metadata_with_projection(&ctx, "note-alpha", None, Some("Changed"))
+            .await
+            .unwrap();
+        assert_eq!(tokio::fs::read_to_string(&beta).await.unwrap(), second);
+        let changed = tokio::fs::read_to_string(alpha).await.unwrap();
+        assert_eq!(
+            frontmatter::parse_frontmatter(&changed).unwrap().0["title"].as_str(),
+            Some("Changed")
+        );
+    }
+
+    // ── create ─────────────────────────────────────────────────────────────
+
+    /// `Some` writes markdown AND takes the derived row; `None` writes the
+    /// same markdown and opens no database. Same canonical bytes either way.
+    #[tokio::test]
+    async fn create_writes_the_same_markdown_with_and_without_a_sink() {
+        let (_tmp_a, ws_a, lock_a) = migrated_fixture().await;
+        let _tmp_b = TempDir::new().unwrap();
+        let ws_b = _tmp_b.path().join(".forgeplan");
+        tokio::fs::create_dir_all(&ws_b).await.unwrap();
+        let lock_b = crate::workspace::acquire_workspace_lock(&ws_b)
+            .await
+            .unwrap();
+        let store_b = crate::db::store::LanceStore::init_new(&ws_b, &lock_b)
+            .await
+            .unwrap();
+
+        let path_none = create_artifact_with_projection(
+            &MutationContext::new(&ws_a, &lock_a, None),
+            &art("PRD-100", "prd", "Auth"),
+        )
+        .await
+        .unwrap();
+
+        let path_some = create_artifact_with_projection(
+            &MutationContext::new(&ws_b, &lock_b, Some(&store_b)),
+            &art("PRD-100", "prd", "Auth"),
+        )
+        .await
+        .unwrap();
+
+        let bytes_none = tokio::fs::read(&path_none).await.unwrap();
+        let bytes_some = tokio::fs::read(&path_some).await.unwrap();
+        assert_eq!(
+            bytes_none, bytes_some,
+            "the canonical Markdown must be identical across both layouts"
+        );
+
+        // And the `None` workspace really has no legacy tables — the helper
+        // did not create one behind our back.
+        assert!(
+            !ws_a.join("lance/artifacts.lance").exists(),
+            "the file-first path must not materialise a legacy table"
+        );
+    }
+
+    // ── update metadata / body / depth ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn update_metadata_without_a_sink_writes_the_canonical_file() {
+        let (_tmp, ws, lock) = migrated_fixture().await;
+        create_artifact_with_projection(
+            &MutationContext::new(&ws, &lock, None),
+            &art("PRD-101", "prd", "Auth"),
+        )
+        .await
+        .unwrap();
+
+        update_metadata_with_projection(
+            &MutationContext::new(&ws, &lock, None),
+            "PRD-101",
+            Some("active"),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let (fm, _) = read_doc(&ws, "PRD-101").await;
+        assert_eq!(fm_string(&fm, "status").as_deref(), Some("active"));
+    }
+
+    /// A title change updates a historical projection in place.
+    #[tokio::test]
+    async fn a_title_change_preserves_the_historical_file_path() {
+        let (_tmp, ws, lock) = migrated_fixture().await;
+        let original = create_artifact_with_projection(
+            &MutationContext::new(&ws, &lock, None),
+            &art("PRD-102", "prd", "Old Title"),
+        )
+        .await
+        .unwrap();
+        let historical = ws.join("prds/PRD-102-old-title.md");
+        tokio::fs::rename(original, &historical).await.unwrap();
+
+        update_metadata_with_projection(
+            &MutationContext::new(&ws, &lock, None),
+            "PRD-102",
+            None,
+            Some("New Title"),
+        )
+        .await
+        .unwrap();
+
+        assert!(historical.exists(), "the historical path must remain");
+        assert!(!ws.join("prds/PRD-102-new-title.md").exists());
+        let path = crate::artifact::store::resolve_artifact_path(&ws, "PRD-102")
+            .await
+            .expect("artifact must still resolve at its existing path");
+        assert_eq!(path, historical);
+        let (fm, _) = read_doc(&ws, "PRD-102").await;
+        assert_eq!(fm_string(&fm, "title").as_deref(), Some("New Title"));
+    }
+    #[tokio::test]
+    async fn creation_preserves_supplied_body_bytes_without_a_final_newline() {
+        let (_tmp, ws, lock) = migrated_fixture().await;
+        let body = "\n\n## Summary\n\nexact bytes";
+        let artifact = crate::db::store::NewArtifact {
+            canonical_key: "prd-exact-k0123456789abcdef0123456789abcdef".into(),
+            id: "PRD-103".into(),
+            kind: "prd".into(),
+            status: "draft".into(),
+            title: "Exact body".into(),
+            body: body.into(),
+            depth: "standard".into(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: vec![],
+        };
+        let path =
+            create_artifact_with_canonical_key(&MutationContext::new(&ws, &lock, None), &artifact)
+                .await
+                .unwrap();
+        let content = tokio::fs::read_to_string(path).await.unwrap();
+        assert!(
+            content.ends_with(body),
+            "creation must retain body bytes exactly"
+        );
+    }
+
+    #[tokio::test]
+    async fn creation_refuses_key_already_owned_by_historical_path() {
+        let (_tmp, ws, lock) = migrated_fixture().await;
+        let key = "prd-owned-k0123456789abcdef0123456789abcdef";
+        let claimant = ws.join("prds/PRD-009-imported-name.md");
+        tokio::fs::create_dir_all(claimant.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(
+            &claimant,
+            format!("---\nid: PRD-009\nkind: prd\nslug: {key}\n---\nexisting\n"),
+        )
+        .await
+        .unwrap();
+        let original = tokio::fs::read(&claimant).await.unwrap();
+        let artifact = crate::db::store::NewArtifact {
+            canonical_key: key.into(),
+            id: "PRD-010".into(),
+            kind: "prd".into(),
+            status: "draft".into(),
+            title: "Duplicate key".into(),
+            body: "new document".into(),
+            depth: "standard".into(),
+            author: None,
+            parent_epic: None,
+            valid_until: None,
+            tags: vec![],
+        };
+
+        assert!(
+            create_artifact_with_canonical_key(&MutationContext::new(&ws, &lock, None), &artifact)
+                .await
+                .is_err()
+        );
+        assert_eq!(tokio::fs::read(claimant).await.unwrap(), original);
+        assert!(!ws.join("prds").join(format!("{key}.md")).exists());
+    }
+
+    /// The new body's own `status:` still propagates into the projection
+    /// block with no sink — the audit-r7 F1 rule the store path enforces.
+    #[tokio::test]
+    async fn a_status_declared_in_a_new_body_reaches_the_projection_block() {
+        let (_tmp, ws, lock) = migrated_fixture().await;
+        create_artifact_with_projection(
+            &MutationContext::new(&ws, &lock, None),
+            &art("PRD-103", "prd", "Auth"),
+        )
+        .await
+        .unwrap();
+
+        update_body_with_projection(
+            &MutationContext::new(&ws, &lock, None),
+            "PRD-103",
+            "---\nstatus: deprecated\n---\n\n## Body\n\ntext.",
+        )
+        .await
+        .unwrap();
+
+        let (fm, _) = read_doc(&ws, "PRD-103").await;
+        assert_eq!(fm_string(&fm, "status").as_deref(), Some("deprecated"));
+    }
+
+    /// A body replacement must not silently drop body-frontmatter fields the
+    /// projection does not own (`created`, `slug`, …) — `carry_identity_forward`.
+    #[tokio::test]
+    async fn a_body_replacement_carries_identity_fields_forward_without_a_sink() {
+        let (_tmp, ws, lock) = migrated_fixture().await;
+        let path = render_projection_with_body(
+            &ws,
+            "PRD-104",
+            None,
+            "prd",
+            "Auth",
+            "draft",
+            "standard",
+            None,
+            None,
+            None,
+            "---\ncreated: 2026-01-01\nslug: keep-me\n---\n\n## Original\n\nbody.",
+            &[],
+            &[],
+        )
+        .await
+        .unwrap();
+
+        update_body_with_projection(
+            &MutationContext::new(&ws, &lock, None),
+            "PRD-104",
+            "## Replacement\n\nnew body.",
+        )
+        .await
+        .unwrap();
+
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        assert!(
+            content.contains("keep-me"),
+            "body-frontmatter the projection does not own must survive: {content}"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_depth_without_a_sink_writes_the_canonical_file() {
+        let (_tmp, ws, lock) = migrated_fixture().await;
+        create_artifact_with_projection(
+            &MutationContext::new(&ws, &lock, None),
+            &art("PRD-105", "prd", "Auth"),
+        )
+        .await
+        .unwrap();
+
+        update_depth_with_projection(
+            &MutationContext::new(&ws, &lock, None),
+            "PRD-105",
+            "critical",
+        )
+        .await
+        .unwrap();
+
+        let (fm, _) = read_doc(&ws, "PRD-105").await;
+        assert_eq!(fm_string(&fm, "depth").as_deref(), Some("critical"));
+    }
+
+    // ── tags ───────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn tag_helpers_edit_the_canonical_frontmatter_without_a_sink() {
+        let (_tmp, ws, lock) = migrated_fixture().await;
+        create_artifact_with_projection(
+            &MutationContext::new(&ws, &lock, None),
+            &art("PRD-106", "prd", "Auth"),
+        )
+        .await
+        .unwrap();
+
+        add_tags_with_projection(
+            &MutationContext::new(&ws, &lock, None),
+            "PRD-106",
+            &["source=code".to_string(), "layer=domain".to_string()],
+        )
+        .await
+        .unwrap();
+
+        let (fm, _) = read_doc(&ws, "PRD-106").await;
+        let mut tags = crate::artifact::frontmatter::tags_from_frontmatter(&fm);
+        tags.sort();
+        assert_eq!(
+            tags,
+            vec!["layer=domain".to_string(), "source=code".to_string()]
+        );
+
+        // Re-adding an existing tag must not duplicate it.
+        add_tags_with_projection(
+            &MutationContext::new(&ws, &lock, None),
+            "PRD-106",
+            &["source=code".to_string()],
+        )
+        .await
+        .unwrap();
+        let (fm, _) = read_doc(&ws, "PRD-106").await;
+        assert_eq!(
+            crate::artifact::frontmatter::tags_from_frontmatter(&fm).len(),
+            2,
+            "adding an existing tag must be a no-op"
+        );
+
+        remove_tags_with_projection(
+            &MutationContext::new(&ws, &lock, None),
+            "PRD-106",
+            &["layer=domain".to_string()],
+        )
+        .await
+        .unwrap();
+        let (fm, _) = read_doc(&ws, "PRD-106").await;
+        assert_eq!(
+            crate::artifact::frontmatter::tags_from_frontmatter(&fm),
+            vec!["source=code".to_string()],
+            "remove must drop exactly the named tag"
+        );
+    }
+
+    /// Removing a tag that is not there is success, matching the store path —
+    /// not an error the caller has to special-case.
+    #[tokio::test]
+    async fn removing_an_absent_tag_without_a_sink_is_success() {
+        let (_tmp, ws, lock) = migrated_fixture().await;
+        create_artifact_with_projection(
+            &MutationContext::new(&ws, &lock, None),
+            &art("PRD-108", "prd", "Auth"),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            remove_tags_with_projection(
+                &MutationContext::new(&ws, &lock, None),
+                "PRD-108",
+                &["never-added".to_string()],
+            )
+            .await
+            .is_ok(),
+            "removing an absent tag must mirror store.remove_tags"
+        );
+    }
+
+    // ── links ──────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn a_link_lands_in_the_source_file_without_a_sink() {
+        let (_tmp, ws, lock) = migrated_fixture().await;
+        for id in ["PRD-109", "RFC-109"] {
+            create_artifact_with_projection(
+                &MutationContext::new(&ws, &lock, None),
+                &art(id, if id.starts_with("RFC") { "rfc" } else { "prd" }, id),
+            )
+            .await
+            .unwrap();
+        }
+
+        add_link_with_projection(
+            &MutationContext::new(&ws, &lock, None),
+            "PRD-109",
+            "RFC-109",
+            "informs",
+        )
+        .await
+        .unwrap();
+
+        let (fm, _) = read_doc(&ws, "PRD-109").await;
+        let links = crate::link::list_links(&fm);
+        assert_eq!(links, vec![("RFC-109".to_string(), "informs".to_string())]);
+
+        delete_link_with_projection(
+            &MutationContext::new(&ws, &lock, None),
+            "PRD-109",
+            "RFC-109",
+            "informs",
+        )
+        .await
+        .unwrap();
+        let (fm, _) = read_doc(&ws, "PRD-109").await;
+        assert!(
+            crate::link::list_links(&fm).is_empty(),
+            "the edge must be gone from the canonical file"
+        );
+    }
+
+    /// A qualified cross-source target must survive verbatim with no sink —
+    /// it is never resolved, opened, or rewritten.
+    #[tokio::test]
+    async fn a_qualified_link_target_is_stored_verbatim_without_a_sink() {
+        let (_tmp, ws, lock) = migrated_fixture().await;
+        create_artifact_with_projection(
+            &MutationContext::new(&ws, &lock, None),
+            &art("PRD-110", "prd", "Auth"),
+        )
+        .await
+        .unwrap();
+
+        add_link_with_projection(
+            &MutationContext::new(&ws, &lock, None),
+            "PRD-110",
+            "ADR-001@src:b7d6f0e1a2c3d4e5",
+            "based_on",
+        )
+        .await
+        .unwrap();
+
+        let (fm, _) = read_doc(&ws, "PRD-110").await;
+        assert_eq!(
+            crate::link::list_links(&fm),
+            vec![(
+                "ADR-001@src:b7d6f0e1a2c3d4e5".to_string(),
+                "based_on".to_string()
+            )],
+            "the qualified target must be stored exactly as given"
+        );
+    }
+
+    /// `replace_link` returns the SAME outcome taxonomy on both layouts, so a
+    /// CLI/MCP caller's printed result does not depend on which index owns
+    /// the workspace.
+    #[tokio::test]
+    async fn replace_link_outcomes_match_the_store_path_without_a_sink() {
+        let (_tmp, ws, lock) = migrated_fixture().await;
+        for id in ["PRD-111", "RFC-111"] {
+            create_artifact_with_projection(
+                &MutationContext::new(&ws, &lock, None),
+                &art(id, if id.starts_with("RFC") { "rfc" } else { "prd" }, id),
+            )
+            .await
+            .unwrap();
+        }
+
+        let outcome = replace_link_with_projection(
+            &MutationContext::new(&ws, &lock, None),
+            "PRD-111",
+            "RFC-111",
+            "informs",
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, LinkUpsertOutcome::Created);
+
+        let outcome = replace_link_with_projection(
+            &MutationContext::new(&ws, &lock, None),
+            "PRD-111",
+            "RFC-111",
+            "based_on",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            outcome,
+            LinkUpsertOutcome::Replaced {
+                old_relation: "informs".to_string()
+            }
+        );
+
+        let outcome = replace_link_with_projection(
+            &MutationContext::new(&ws, &lock, None),
+            "PRD-111",
+            "RFC-111",
+            "based_on",
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, LinkUpsertOutcome::Unchanged);
+    }
+
+    /// The batch helper returns the count of edges that actually landed and
+    /// never aborts the whole batch on one bad edge — same as the store path.
+    #[tokio::test]
+    async fn the_link_batch_reports_applied_edges_without_a_sink() {
+        let (_tmp, ws, lock) = migrated_fixture().await;
+        for id in ["PRD-112", "RFC-112", "ADR-112"] {
+            create_artifact_with_projection(
+                &MutationContext::new(&ws, &lock, None),
+                &art(id, if id.starts_with("RFC") { "rfc" } else { "prd" }, id),
+            )
+            .await
+            .unwrap();
+        }
+
+        let applied = add_links_batch_with_projection(
+            &MutationContext::new(&ws, &lock, None),
+            &[
+                ("PRD-112".into(), "RFC-112".into(), "informs".into()),
+                ("PRD-112".into(), "ADR-112".into(), "based_on".into()),
+            ],
+        )
+        .await
+        .unwrap();
+        assert_eq!(applied, 2);
+
+        let (fm, _) = read_doc(&ws, "PRD-112").await;
+        assert_eq!(crate::link::list_links(&fm).len(), 2);
+
+        // A duplicate (target, relation) in the same batch is refused by the
+        // file helper and not counted; a same-target with a different relation
+        // IS counted — `add_link_verbatim` is additive (a multi-edge to one
+        // target is legal), it does not collapse the older `based_on` away.
+        // The batch therefore lands exactly one edge here.
+        let applied = add_links_batch_with_projection(
+            &MutationContext::new(&ws, &lock, None),
+            &[
+                ("PRD-112".into(), "RFC-112".into(), "informs".into()),
+                ("PRD-112".into(), "ADR-112".into(), "informs".into()),
+            ],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            applied, 1,
+            "RFC-112 informs is an exact duplicate (not counted); \
+             ADR-112 informs is a new entry alongside the existing based_on"
+        );
+
+        let (fm, _) = read_doc(&ws, "PRD-112").await;
+        assert_eq!(
+            crate::link::list_links(&fm).len(),
+            3,
+            "RFC-112 informs + ADR-112 based_on + ADR-112 informs all survive"
+        );
+    }
+
+    /// Validation happens before any file is touched — a malformed target in
+    /// the batch rejects the whole call rather than half-applying it.
+    #[tokio::test]
+    async fn the_link_batch_rejects_a_traversal_target_before_writing() {
+        let (_tmp, ws, lock) = migrated_fixture().await;
+        create_artifact_with_projection(
+            &MutationContext::new(&ws, &lock, None),
+            &art("PRD-113", "prd", "Auth"),
+        )
+        .await
+        .unwrap();
+
+        let err = add_links_batch_with_projection(
+            &MutationContext::new(&ws, &lock, None),
+            &[
+                ("PRD-113".into(), "RFC-113".into(), "informs".into()),
+                ("../../evil".into(), "PRD-113".into(), "informs".into()),
+            ],
+        )
+        .await
+        .expect_err("a traversal source must reject the batch");
+        assert!(matches!(err, MutationError::InvalidId(_)));
+
+        let (fm, _) = read_doc(&ws, "PRD-113").await;
+        assert!(
+            crate::link::list_links(&fm).is_empty(),
+            "nothing may be written when validation rejects the batch"
+        );
+    }
+
+    // ── delete ─────────────────────────────────────────────────────────────
+
+    /// With no sink, delete resolves through the file-first resolver and
+    /// removes the canonical file. Missing artifact stays an idempotent
+    /// no-op, mirroring the missing-row policy of the store path.
+    #[tokio::test]
+    async fn delete_without_a_sink_removes_the_canonical_file() {
+        let (_tmp, ws, lock) = migrated_fixture().await;
+        create_artifact_with_projection(
+            &MutationContext::new(&ws, &lock, None),
+            &art("PRD-114", "prd", "Auth"),
+        )
+        .await
+        .unwrap();
+        assert!(
+            crate::artifact::store::resolve_artifact_path(&ws, "PRD-114")
+                .await
+                .is_some()
+        );
+
+        delete_artifact_with_projection(&MutationContext::new(&ws, &lock, None), "PRD-114")
+            .await
+            .unwrap();
+        assert!(
+            crate::artifact::store::resolve_artifact_path(&ws, "PRD-114")
+                .await
+                .is_none(),
+            "the markdown source of truth must be gone"
+        );
+
+        // Idempotent second delete.
+        assert!(
+            delete_artifact_with_projection(&MutationContext::new(&ws, &lock, None), "PRD-114")
+                .await
+                .is_ok(),
+            "delete must stay idempotent without a sink"
+        );
+    }
+
+    /// An unresolvable id with no sink is `RowNotFound`, NOT a silent success
+    /// — the caller must learn the mutation did not happen.
+    #[tokio::test]
+    async fn update_without_a_sink_reports_row_not_found_for_an_unknown_id() {
+        let (_tmp, ws, lock) = migrated_fixture().await;
+        for result in [
+            update_body_with_projection(&MutationContext::new(&ws, &lock, None), "PRD-999", "x")
+                .await,
+            update_metadata_with_projection(
+                &MutationContext::new(&ws, &lock, None),
+                "PRD-999",
+                Some("draft"),
+                None,
+            )
+            .await,
+            add_tags_with_projection(
+                &MutationContext::new(&ws, &lock, None),
+                "PRD-999",
+                &["x".to_string()],
+            )
+            .await,
+        ] {
+            assert!(
+                matches!(result, Err(MutationError::RowNotFound { .. })),
+                "an unknown id must surface RowNotFound, not a faked success"
+            );
+        }
+    }
+
+    /// The blank-field gates run before the file is opened, so an invalid
+    /// field is rejected identically on both layouts.
+    #[tokio::test]
+    async fn blank_field_gates_still_apply_without_a_sink() {
+        let (_tmp, ws, lock) = migrated_fixture().await;
+        create_artifact_with_projection(
+            &MutationContext::new(&ws, &lock, None),
+            &art("PRD-115", "prd", "Auth"),
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            update_metadata_with_projection(
+                &MutationContext::new(&ws, &lock, None),
+                "PRD-115",
+                Some("   "),
+                None,
+            )
+            .await,
+            Err(MutationError::EmptyField { field: "status" })
+        ));
+        assert!(matches!(
+            update_metadata_with_projection(
+                &MutationContext::new(&ws, &lock, None),
+                "PRD-115",
+                None,
+                Some(""),
+            )
+            .await,
+            Err(MutationError::EmptyField { field: "title" })
+        ));
+        let (fm, _) = read_doc(&ws, "PRD-115").await;
+        assert_eq!(fm_string(&fm, "status").as_deref(), Some("draft"));
+    }
+
+    // ── derived-index-only helpers report NoLegacySink ─────────────────────
+
+    /// These helpers have no canonical counterpart, so with no sink they must
+    /// say so rather than claim a row write they did not make.
+    #[tokio::test]
+    async fn derived_index_only_helpers_report_no_legacy_sink() {
+        let (_tmp, ws, lock) = migrated_fixture().await;
+        let ctx = MutationContext::new(&ws, &lock, None);
+
+        for err in [
+            delete_orphan_artifact(&ctx, "PRD-116").await,
+            delete_orphan_relation(&ctx, "PRD-116", "RFC-116", "informs").await,
+            delete_artifact_after_soft_delete(&ctx, "PRD-116").await,
+        ] {
+            let err = err.expect_err("a derived-only step must not report success");
+            assert!(
+                matches!(err, MutationError::NoLegacySink { .. }),
+                "expected NoLegacySink, got {err:?}"
+            );
+            assert!(
+                !err.is_recoverable(),
+                "retrying cannot conjure a legacy table"
+            );
+        }
+    }
+
+    /// Their input validation still runs first — a traversal id is rejected as
+    /// `InvalidId`, not as "no sink", so the security boundary is unchanged.
+    #[tokio::test]
+    async fn derived_index_only_helpers_validate_before_reporting_no_sink() {
+        let (_tmp, ws, lock) = migrated_fixture().await;
+        let ctx = MutationContext::new(&ws, &lock, None);
+
+        assert!(matches!(
+            delete_orphan_artifact(&ctx, "../../boom").await,
+            Err(MutationError::InvalidId(_))
+        ));
+        assert!(matches!(
+            delete_orphan_relation(&ctx, "PRD-001", "../bad", "informs").await,
+            Err(MutationError::InvalidId(_))
+        ));
+        assert!(matches!(
+            delete_artifact_after_soft_delete(&ctx, "..\\evil").await,
+            Err(MutationError::InvalidId(_))
+        ));
+    }
+
+    // ── file→index direction is a no-op, not a refusal ─────────────────────
+
+    /// `reindex` / `git-sync` / `watch` call these with no sink on a migrated
+    /// workspace. They must report the file as handled (Ok) rather than
+    /// failing a pipeline that has nothing to write.
+    #[tokio::test]
+    async fn sync_from_file_helpers_are_no_ops_without_a_sink() {
+        let (_tmp, ws, lock) = migrated_fixture().await;
+        let ctx = MutationContext::new(&ws, &lock, None);
+
+        assert!(
+            sync_artifact_from_file(&ctx, &art("PRD-117", "prd", "Auth"))
+                .await
+                .is_ok()
+        );
+        assert!(
+            sync_body_from_file(&ctx, "PRD-117", "prd", "Auth", "body")
+                .await
+                .is_ok()
+        );
+        assert!(
+            sync_metadata_from_file(&ctx, "PRD-117", Some("draft"), None)
+                .await
+                .is_ok()
+        );
+        assert!(
+            sync_relation_from_file(&ctx, "PRD-117", "RFC-117", "informs")
+                .await
+                .is_ok()
+        );
+    }
+
+    /// Their validation gates are unchanged — an invalid id is still refused
+    /// even when there is no sink to write to.
+    #[tokio::test]
+    async fn sync_from_file_helpers_keep_validating_without_a_sink() {
+        let (_tmp, ws, lock) = migrated_fixture().await;
+        let ctx = MutationContext::new(&ws, &lock, None);
+
+        let mut evil = art("PRD-118", "prd", "Auth");
+        evil.id = "../../etc/evil".to_string();
+        assert!(matches!(
+            sync_artifact_from_file(&ctx, &evil).await,
+            Err(MutationError::InvalidId(_))
+        ));
+        assert!(matches!(
+            sync_metadata_from_file(&ctx, "../../etc/passwd", Some("draft"), None).await,
+            Err(MutationError::InvalidId(_))
+        ));
+        assert!(matches!(
+            sync_relation_from_file(&ctx, "PRD-001", "../bad", "informs").await,
+            Err(MutationError::InvalidId(_))
+        ));
+    }
+
+    /// The `(None, None)` short-circuit and blank-field gates survive the
+    /// cutover, so `git_sync`'s "only call sync when something changed"
+    /// optimisation still behaves.
+    #[tokio::test]
+    async fn sync_metadata_keeps_its_gates_without_a_sink() {
+        let (_tmp, ws, lock) = migrated_fixture().await;
+        let ctx = MutationContext::new(&ws, &lock, None);
+
+        assert!(
+            sync_metadata_from_file(&ctx, "PRD-119", None, None)
+                .await
+                .is_ok()
+        );
+        assert!(matches!(
+            sync_metadata_from_file(&ctx, "PRD-119", Some(""), None).await,
+            Err(MutationError::EmptyField { field: "status" })
+        ));
+    }
+
+    // ── L02: a cleared body stays cleared ──────────────────────────────────
+
+    /// The pre-sync resurrection L02 forbids.
+    ///
+    /// A user replaces a non-empty body with an empty one; the very next
+    /// metadata-only mutation re-renders the file. Before this was fixed the
+    /// renderer read the empty file body as "no body yet" and wrote the row's
+    /// old text back — so the clear was undone by an unrelated command, and a
+    /// search kept answering with content that no longer existed on disk.
+    ///
+    /// Asserted on the **file the user reads**, not on a helper's return value.
+    #[tokio::test]
+    async fn a_cleared_body_is_not_restored_by_the_next_mutation() {
+        let (_tmp, ws, lock) = migrated_fixture().await;
+        let ctx = MutationContext::new(&ws, &lock, None);
+        create_artifact_with_projection(&ctx, &art("PRD-120", "prd", "Auth"))
+            .await
+            .unwrap();
+
+        let (_, before) = read_doc(&ws, "PRD-120").await;
+        assert!(
+            before.contains("Original body."),
+            "the fixture must start with a non-empty body"
+        );
+
+        // The clear: frontmatter survives, body is gone.
+        let path = crate::artifact::store::resolve_artifact_path(&ws, "PRD-120")
+            .await
+            .unwrap();
+        let cleared =
+            "---\nid: PRD-120\nkind: prd\nstatus: draft\ndepth: standard\ntitle: Auth\n---\n";
+        tokio::fs::write(&path, cleared).await.unwrap();
+
+        // An unrelated mutation on the same artifact.
+        update_metadata_with_projection(&ctx, "PRD-120", Some("active"), None)
+            .await
+            .unwrap();
+
+        let (fm, after) = read_doc(&ws, "PRD-120").await;
+        assert_eq!(
+            fm_string(&fm, "status").as_deref(),
+            Some("active"),
+            "the mutation's own effect must still land"
+        );
+        assert!(
+            !after.contains("Original body."),
+            "the pre-sync must not resurrect the cleared body, got {after:?}"
+        );
+        assert!(
+            after.trim().is_empty(),
+            "the body must still be empty after the mutation, got {after:?}"
+        );
+    }
+
+    /// The same rule on the row-driven renderer, which is what `tag`, `link`
+    /// and `activate` use after they reload the record. Both renderers must
+    /// agree about an empty body, or a caller that switched between them
+    /// would see the text come back.
+    #[tokio::test]
+    async fn the_record_renderer_also_treats_a_cleared_body_as_canonical() {
+        let (_tmp, ws, lock) = migrated_fixture().await;
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
+        create_artifact_with_projection(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            &art("PRD-121", "prd", "Auth"),
+        )
+        .await
+        .unwrap();
+
+        let path = crate::artifact::store::resolve_artifact_path(&ws, "PRD-121")
+            .await
+            .unwrap();
+        tokio::fs::write(
+            &path,
+            "---\nid: PRD-121\nkind: prd\nstatus: draft\ndepth: standard\ntitle: Auth\n---\n",
+        )
+        .await
+        .unwrap();
+
+        // A reload that still holds the pre-clear body — exactly the stale row
+        // a `link` handler passes after the user emptied the file.
+        let mut record = store.get_record(&lock, "PRD-121").await.unwrap().unwrap();
+        record.body = "Original body.".to_string();
+
+        render_projection_record(&ws, &record, &[]).await.unwrap();
+
+        let (_, after) = read_doc(&ws, "PRD-121").await;
+        assert!(
+            !after.contains("Original body."),
+            "the stale row body must not be written over an empty file body, got {after:?}"
+        );
+    }
+
+    /// The forcing variants keep working: a caller that *does* mean to write a
+    /// body — `update --body`, and the lifecycle sections appended by
+    /// `deprecate` / `renew` / `reopen` — must still land it. Without this the
+    /// L02 fix would silently break #478.
+    #[tokio::test]
+    async fn the_forcing_renderers_still_write_the_row_body_over_an_empty_file() {
+        let (_tmp, ws, lock) = migrated_fixture().await;
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
+        create_artifact_with_projection(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            &art("PRD-122", "prd", "Auth"),
+        )
+        .await
+        .unwrap();
+
+        let path = crate::artifact::store::resolve_artifact_path(&ws, "PRD-122")
+            .await
+            .unwrap();
+        tokio::fs::write(
+            &path,
+            "---\nid: PRD-122\nkind: prd\nstatus: draft\ndepth: standard\ntitle: Auth\n---\n",
+        )
+        .await
+        .unwrap();
+
+        let mut record = store.get_record(&lock, "PRD-122").await.unwrap().unwrap();
+        record.body = "## Deprecation\n\nsuperseded by PRD-001".to_string();
+
+        render_projection_record_with_body(&ws, &record, &[])
+            .await
+            .unwrap();
+        let (_, after) = read_doc(&ws, "PRD-122").await;
+        assert!(
+            after.contains("superseded by PRD-001"),
+            "the appended lifecycle section must still reach the file, got {after:?}"
+        );
+    }
+
+    /// The counterpart direction: a cleared body is a real change, so the
+    /// row follows the file rather than keeping the text. This is what makes
+    /// the two renderers consistent instead of merely both permissive.
+    #[tokio::test]
+    async fn a_cleared_body_is_synced_into_the_row_as_an_empty_one() {
+        let (_tmp, ws, lock) = migrated_fixture().await;
+        let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+            .await
+            .unwrap();
+        create_artifact_with_projection(
+            &MutationContext::new(&ws, &lock, Some(&store)),
+            &art("PRD-123", "prd", "Auth"),
+        )
+        .await
+        .unwrap();
+
+        let path = crate::artifact::store::resolve_artifact_path(&ws, "PRD-123")
+            .await
+            .unwrap();
+        tokio::fs::write(
+            &path,
+            "---\nid: PRD-123\nkind: prd\nstatus: draft\ndepth: standard\ntitle: Auth\n---\n",
+        )
+        .await
+        .unwrap();
+
+        let row = store.get_record(&lock, "PRD-123").await.unwrap().unwrap();
+        assert!(
+            sync_file_to_store(&lock, &store, &ws, &row).await.unwrap(),
+            "clearing the body is a change the row must observe"
+        );
+        let after = store.get_record(&lock, "PRD-123").await.unwrap().unwrap();
+        assert!(
+            after.body.trim().is_empty(),
+            "the row must carry the empty body, got {:?}",
+            after.body
+        );
+    }
+
+    #[tokio::test]
+    async fn a_legacy_title_change_preserves_path_edits_and_unrelated_siblings() {
+        for body in ["Edited canonical body.", ""] {
+            let (_tmp, ws, lock) = migrated_fixture().await;
+            let store = crate::db::store::LanceStore::init_new(&ws, &lock)
+                .await
+                .unwrap();
+            let ctx = MutationContext::new(&ws, &lock, Some(&store));
+            let original =
+                create_artifact_with_projection(&ctx, &art("mem-foo", "memory", "Old title"))
+                    .await
+                    .unwrap();
+            tokio::fs::write(
+                &original,
+                format!(
+                    "---\nid: mem-foo\nkind: memory\nstatus: draft\ntitle: Old title\ndepth: standard\nassigned_number: 42\ncustom_owner: preserved\n---\n\n{body}"
+                ),
+            )
+            .await
+            .unwrap();
+            let siblings = [
+                (
+                    "mem-foo-bar-foo-bar.md",
+                    "---\nid: mem-foo-bar\n---\n\nOther artifact.",
+                ),
+                (
+                    "mem-foo-manual.md",
+                    "---\nid: mem-other\n---\n\nManual document.",
+                ),
+                (
+                    "mem-foo-third.md",
+                    "---\nid: mem-third\nkind: memory\n---\n\nOther document.",
+                ),
+            ];
+            let dir = original.parent().unwrap();
+            for (name, contents) in siblings {
+                tokio::fs::write(dir.join(name), contents).await.unwrap();
+            }
+
+            update_metadata_with_projection(&ctx, "mem-foo", None, Some("New title"))
+                .await
+                .unwrap();
+
+            assert!(original.exists());
+            let text = tokio::fs::read_to_string(&original).await.unwrap();
+            let (fm, actual_body) = frontmatter::parse_frontmatter(&text).unwrap();
+            assert_eq!(actual_body, body);
+            assert_eq!(fm["title"].as_str(), Some("New title"));
+            assert_eq!(fm["assigned_number"].as_u64(), Some(42));
+            assert_eq!(fm["custom_owner"].as_str(), Some("preserved"));
+            for (name, contents) in siblings {
+                assert_eq!(
+                    tokio::fs::read_to_string(dir.join(name)).await.unwrap(),
+                    contents
+                );
+            }
+            let row = store.get_record(&lock, "mem-foo").await.unwrap().unwrap();
+            assert_eq!(row.title, "New title");
+            assert_eq!(row.body.trim_end(), body);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_title_change_leaves_an_unrelated_destination_untouched() {
+        let (_tmp, ws, lock) = migrated_fixture().await;
+        let ctx = MutationContext::new(&ws, &lock, None);
+        let original = create_artifact_with_projection(&ctx, &art("PRD-124", "prd", "Old title"))
+            .await
+            .unwrap();
+        let destination = original.parent().unwrap().join("PRD-124-new-title.md");
+        let other = "---\nid: PRD-999\n---\n\nDo not overwrite this artifact.";
+        tokio::fs::write(&destination, other).await.unwrap();
+        update_metadata_with_projection(&ctx, "PRD-124", None, Some("New title"))
+            .await
+            .unwrap();
+        let content = tokio::fs::read_to_string(&original).await.unwrap();
+        let (fm, _) = frontmatter::parse_frontmatter(&content).unwrap();
+        assert_eq!(fm["title"].as_str(), Some("New title"));
+        assert_eq!(tokio::fs::read_to_string(destination).await.unwrap(), other);
     }
 }

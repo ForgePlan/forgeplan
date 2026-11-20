@@ -29,7 +29,7 @@ const humanTitle = description.includes(' · ')
 const postsLabel = posts.length === 1 ? '1 post' : `${posts.length} posts`;
 const stripLang = (id: string) => id.replace(/^en\//, '').replace(/\.(md|mdx)$/, '');
 ---
-<Landing title={`${name} — Forgeplan Blog`} description={description}>
+<Landing title={`${humanTitle} — Forgeplan Blog`} description={description} slug={`blog/series/${name}`}>
   <Header />
   <article class="blog-index">
     <div class="blog-index-layout blog-index-layout--solo">

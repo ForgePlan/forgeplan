@@ -1,5 +1,6 @@
 pub mod bm25;
 pub mod filter;
+pub mod semantic;
 pub mod smart;
 
 use std::path::Path;
@@ -102,6 +103,9 @@ pub async fn search(
             if !matches.is_empty() {
                 hits.push(SearchHit {
                     artifact: ArtifactSummary {
+                        canonical_key: crate::artifact::canonical_key::canonical_key_from_document(
+                            &id, &body,
+                        ),
                         id,
                         title,
                         kind,

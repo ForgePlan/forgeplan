@@ -1126,6 +1126,7 @@ mod tests {
 
     fn hyp_record(id: &str, title: &str, state: &str) -> ArtifactRecord {
         ArtifactRecord {
+            canonical_key: id.to_string(),
             id: id.to_string(),
             kind: "hypothesis".to_string(),
             status: "draft".to_string(),
@@ -1139,6 +1140,7 @@ mod tests {
 
     fn dm_record(id: &str, composition: &str) -> ArtifactRecord {
         ArtifactRecord {
+            canonical_key: id.to_string(),
             id: id.to_string(),
             kind: "domain_model".to_string(),
             status: "draft".to_string(),
@@ -1152,6 +1154,7 @@ mod tests {
 
     fn simple_record(id: &str, kind: &str, title: &str, body: &str) -> ArtifactRecord {
         ArtifactRecord {
+            canonical_key: id.to_string(),
             id: id.to_string(),
             kind: kind.to_string(),
             status: "draft".to_string(),
@@ -1599,6 +1602,7 @@ mod tests {
              - {date_str}: inferred → verified (refs: EVID-007; rationale: boundary test)\n"
         );
         let rec = ArtifactRecord {
+            canonical_key: "HYP-007".to_string(),
             id: "HYP-007".to_string(),
             kind: "hypothesis".to_string(),
             status: "active".to_string(),

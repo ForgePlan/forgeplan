@@ -7,9 +7,15 @@ description: Structured reasoning with decompose, evaluate, and reason patterns
 
 The First Principles Framework (FPF) is an "Operating System for Thought" - a transdisciplinary architecture for reasoning. It turns raw intelligence (human or machine) into organisationally usable reasoning.
 
-FPF is built into Forgeplan via the `/fpf` command and the `forgeplan fpf` CLI.
+The CLI namespace is `forgeplan fpf`. The conversational `/fpf` command
+comes from a client plugin, not the binary.
 
-## Three Reasoning Modes
+## Reasoning Modes
+
+The plugin provides `decompose`, `evaluate`, `reason`, and `lookup`.
+`/fpf lookup "claim scope"` retrieves a concept from the installed corpus.
+These are prompted workflows; the lists below describe requested output,
+not deterministic results or product acceptance.
 
 ### /fpf decompose - Break it down
 
@@ -36,7 +42,7 @@ When you need to choose between alternatives with evidence scoring.
 
 Output:
 - Strengths, weaknesses, evidence, missing evidence per option
-- F-G-R scores: Formality (0-3), Granularity (0-3), Reliability (0-3)
+- The plugin's local 0–3 Formality/Granularity/Reliability rubric, not the current upstream FPF scales
 - Decision matrix with recommendation
 - ADI cycle: hypotheses → predictions → evidence check
 
@@ -61,7 +67,16 @@ Output:
 
 ## FPF Knowledge Base
 
-Forgeplan includes the full FPF specification as a searchable knowledge base:
+The FPF specification is a separate plugin/skill corpus, not bundled into
+the binary. Install the source, ingest it into your workspace, then search.
+Use `forgeplan fpf status` to distinguish source availability, ingested
+sections and staleness. Semantic retrieval additionally needs the build
+feature and model; a model cache is not an ingested FPF index.
+
+The commands below describe the legacy KB flow. In the local Constellation
+build, CLI `reason --fpf` does not reopen the retired legacy KB table; it can
+continue without FPF context. Do not treat model readiness or installing a
+plugin as proof of KB ingestion on a migrated workspace.
 
 ```bash
 # Ingest FPF spec sections
@@ -80,7 +95,7 @@ forgeplan reason PRD-001 --fpf
 |---------|--------------|
 | **Bounded Context** | A part of the system with clear boundaries and its own vocabulary |
 | **Trust Calculus** | Scoring confidence: how much can you trust a claim? |
-| **F-G-R** | Formality × Granularity × Reliability - quality dimensions |
+| **F-G-R** | Upstream FPF: Formality, ClaimScope (G), and claim-specific Reliability. The plugin's Granularity rubric and Forgeplan's 0–1 product scoring are separate adaptations, not the upstream algorithm. |
 | **ADI Cycle** | Abduction → Deduction → Induction - structured reasoning loop |
 | **Category Error** | Confusing role vs function, method vs work |
 | **Gamma Algebra** | How parts compose into wholes preserving properties |
@@ -92,9 +107,14 @@ forgeplan reason PRD-001 --fpf
 /plugin marketplace add ForgePlan/marketplace
 /plugin install fpf@ForgePlan-marketplace
 
-# Or use built-in CLI
+# Then in your shell: ingest the installed corpus before searching
+forgeplan fpf ingest
+forgeplan fpf status
 forgeplan fpf search "trust"
 ```
+
+These are setup commands, not evidence that a particular corpus or provider
+has been exercised. `reason --fpf` also needs an explicitly configured LLM.
 
 See the [Marketplace Overview](/docs/marketplace/overview/) for the full plugin catalog and install instructions.
 

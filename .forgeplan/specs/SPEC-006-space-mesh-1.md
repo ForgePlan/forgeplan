@@ -2,8 +2,8 @@
 depth: standard
 id: SPEC-006
 kind: spec
-last_modified_at: 2026-07-25T08:31:35.279200+00:00
-last_modified_by: claude-code/2.1.219
+last_modified_at: 2026-10-16T17:49:52.609997+00:00
+last_modified_by: omp-coding-agent/1.0.0
 links:
 - target: PRD-081
   relation: based_on
@@ -557,4 +557,26 @@ codes, замеры wall-clock, содержимое stderr) в EvidencePack с�
 - **ADR-003** — markdown source of truth; журнал и зеркало space остаются derived.
 - **Источник:** `~/Work/forgeplan-space-mesh-handoff.md` — §10 (срез + 6 шагов),
   §7.4 (точные швы в коде), §2 (платформенные константы), §12 (открытые вопросы).
+
+## Constellation — граница поставки
+
+**Обновлено 2026-10-16.** Этот SPEC остаётся **draft** и сохраняет прежний
+**событийный** срез: SpaceEvent, журнал, `space_subscribe` и replay. Он не является
+спецификацией локальной актуальности.
+
+Спецификация локальной актуальной проекции — **SPEC-008**.
+
+### Разграничение
+
+| Аспект | Этот SPEC (SPEC-006) | SPEC-008 |
+|---|---|---|
+| Что описывает | доставку и replay межпроектных событий | актуальность одного workspace и безопасные embeddings |
+| Единица контракта | SpaceEvent, offset, журнал | source view, digest, embedding profile |
+| Статус сейчас | draft, отложенное направление | draft, первая история S1 |
+| Триггер возврата | явный запрос пользователя на доставку или восстановление событий | — |
+
+Существующие `SpaceEvent`, журнал, `space_subscribe` и их отдельный триггер
+возврата **сохранены**. Ни один раздел этого SPEC не удалён. Событийная работа не
+считается выполненной и не поглощается историями S1–S4.
+
 

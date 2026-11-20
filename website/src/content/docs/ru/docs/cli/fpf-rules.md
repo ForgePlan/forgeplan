@@ -5,7 +5,7 @@ description: "Список активных правил FPF, сгруппиро
 
 `forgeplan fpf rules` выводит каждое активное правило в движке правил **First Principles Framework**, сгруппированное по рекомендуемой категории действий: **EXPLORE** (генерировать больше гипотез), **INVESTIGATE** (собирать больше доказательств для существующих гипотез) или **EXPLOIT** (придерживаться проверенного пути).
 
-Правила кодируют Trust Calculus FPF в машиноисполняемой форме. Именно их [`fpf check`](/docs/cli/fpf-check/) использует для оценки отдельных артефактов, а [`fpf dashboard`](/docs/cli/fpf-dashboard/) агрегирует в рекомендации на уровне проекта.
+Это исполняемые правила методологии ForgePlan, не полная реализация upstream FPF. [`fpf check`](/ru/docs/cli/fpf-check/) проверяет их для артефакта, [`fpf dashboard`](/ru/docs/cli/fpf-dashboard/) показывает рекомендации по проекту. Непустой `fpf.rules` заменяет встроенный набор.
 
 ## Когда использовать
 
@@ -16,8 +16,8 @@ description: "Список активных правил FPF, сгруппиро
 
 ## Когда НЕ использовать
 
-- Для совпадений по отдельным артефактам - используйте [`fpf check <id>`](/docs/cli/fpf-check/).
-- Для рекомендаций по действиям в масштабе проекта - используйте [`fpf dashboard`](/docs/cli/fpf-dashboard/).
+- Для артефакта используйте [`fpf check <id>`](/ru/docs/cli/fpf-check/).
+- Для проекта используйте [`fpf dashboard`](/ru/docs/cli/fpf-dashboard/).
 
 ## Использование
 
@@ -58,24 +58,42 @@ forgeplan fpf dashboard
 
 Правила соответствуют оси explore→investigate→exploit из части B FPF:
 
--   **EXPLORE** - артефакт или контекст имеет слишком мало гипотез. Правило предлагает генерировать альтернативы (например, "Менее 3 гипотез на Deep глубине - запустите `forgeplan reason`").
--   **INVESTIGATE** - гипотезы существуют, но доказательства слабые или имеют низкий уровень конгруэнтности. Правило предлагает собрать больше (например, "R_eff ниже порога - прикрепите EvidencePack с измерениями").
--   **EXPLOIT** - доверие достаточно сильно, чтобы принять обязательства. Правило разрешает активацию или замещение артефакта.
+- **EXPLORE** - встроенные правила отмечают draft с R_eff < 0.01 или active без связей.
+- **INVESTIGATE** - встроенные правила отмечают слабые доказательства или среднюю надёжность.
+- **EXPLOIT** - встроенная рекомендация требует R_eff ≥ 0.7 и общей оценки ≥ 0.6, но сама не разрешает активацию или замещение.
 
-Каждое правило содержит условие (предикат для метаданных артефакта), метку действия и удобочитаемое обоснование, привязанное к разделу FPF (например, `ref: B.3`).
+Правило содержит имя, приоритет, условие, действие и необязательное сообщение. Встроенный набор не считает гипотезы и не загружает актуальные цитаты KB.
 
 ## Как это работает
 
-Движок правил был представлен в **PRD-041** и расширен в **PRD-043** (целостность методологии). Он считывает состояние артефактов из LanceDB и обращается к базе знаний FPF за текстом обоснования. Вывод поступает в:
+`rules` читает конфигурацию workspace и перечисляет правила без оценки артефакта и загрузки тел разделов KB. Проверка правил и жизненного цикла - отдельные операции:
 
--   `fpf check <id>` - представление по отдельным артефактам
--   `fpf dashboard` - агрегированное представление по контекстам
--   `forgeplan validate` / `activate` гейты (для правил целостности)
+- `fpf check <id>` - совпадения для артефакта
+- `fpf dashboard` - рекомендации по проекту
+- `forgeplan validate` / `activate` - отдельные проверки валидации и жизненного цикла
 
 ## См. также
 
--   [`forgeplan fpf`](/docs/cli/fpf/) - родительская команда
--   [`forgeplan fpf check`](/docs/cli/fpf-check/) - применяет правила к одному артефакту
--   [`forgeplan fpf dashboard`](/docs/cli/fpf-dashboard/) - правила, агрегированные по контекстам
--   [`forgeplan validate`](/docs/cli/validate/) - гейт валидации, который обращается к правилам целостности
--   [Руководство по методологии](/docs/methodology/overview/)
+- [`forgeplan fpf`](/ru/docs/cli/fpf/) - родительская команда
+- [`forgeplan fpf check`](/ru/docs/cli/fpf-check/) - проверка артефакта
+- [`forgeplan fpf dashboard`](/ru/docs/cli/fpf-dashboard/) - рекомендации по проекту
+- [`forgeplan validate`](/ru/docs/cli/validate/) - структурная валидация
+- [Методология](/ru/docs/methodology/overview/)
+
+<!-- forgeplan-runtime:start -->
+## Снимок CLI help
+
+Источник: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan fpf rules --help`.
+
+```text
+List active FPF rules grouped by action (EXPLORE/INVESTIGATE/EXPLOIT)
+
+Usage: forgeplan fpf rules [OPTIONS]
+
+Options:
+      --flat     Flat priority-linear table instead of action-grouped tree
+      --json     Output full rule dump as JSON
+  -h, --help     Print help
+  -V, --version  Print version
+```
+<!-- forgeplan-runtime:end -->

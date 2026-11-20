@@ -22,8 +22,8 @@ forgeplan mcp install --client cursor
 forgeplan mcp install --client windsurf
 ```
 
-Перезапустите клиента. Готово - все 47 `forgeplan_*` MCP-инструментов
-доступны агенту.
+Перезапустите клиент и проверьте список инструментов. Интерфейс зависит от
+версии и профиля; см. [актуальный обзор MCP](/ru/docs/mcp/).
 
 ## Что делает команда
 
@@ -34,18 +34,51 @@ forgeplan mcp install --client windsurf
   "mcpServers": {
     "forgeplan": {
       "command": "/opt/homebrew/bin/forgeplan",
-      "args": ["serve"],
-      "transport": "stdio"
+      "args": ["serve"]
     }
   }
 }
 ```
 
 Это **smart-merge**:
-- Заменяет `command` / `args` / `transport` (чтобы `forgeplan upgrade` работал чисто)
+- Обновляет `command` / `args` при повторном запуске после обновления Forgeplan
 - **Сохраняет ваш `env`** (API-ключи, `RUST_LOG`, кастомные пути)
 - Не трогает другие MCP-серверы в файле
-- Идемпотентна - безопасно перезапускать
+- Идемпотентна для генерируемых defaults, но собственные `args` всё равно заменяются. Перед переподключением настроенного Constellation-сервера проверьте `--profile`, `--workspace` и `--auto-index`.
+
+Captured `mcp install --help` всё ещё говорит «command/args/transport»;
+текущий writer не пишет `transport` и удаляет старые `transport: "stdio"`
+и `type: "stdio"`. Прочие неизвестные поля сохраняются. Проверьте собственные
+HTTP/SSE-настройки, не считайте их автоматически корректным stdio config.
+
+### Профили, workspace и обслуживание
+
+В локальной `0.39.0+constellation.s1.1` (не опубликованной 0.38.0) `serve`
+по умолчанию использует `--profile full`, включая запись.
+`--profile constellation-read` - отдельный registry/handle интерфейс чтения,
+не полное пространство имён с отключённой записью. `forgeplan mcp serve`
+и отдельный `forgeplan-mcp` принимают `--auto-index` и `--workspace`,
+но не `--profile`.
+
+Для явной full-profile цели используйте такой пример списка аргументов
+в записи сервера клиента:
+
+```json
+["serve", "--profile", "full", "--workspace", "/path/to/project", "--auto-index"]
+```
+
+`--workspace` задаёт default сервера. На старте full-сервера цель обслуживания:
+`FORGEPLAN_WORKSPACE` → default сервера → поиск от CWD. Задайте тот же проект
+в окружении клиента либо явно `FORGEPLAN_WORKSPACE=""`: при `unset` CLI может
+восстановить значение из родительского `.env`.
+Явный `workspace` инструмента приоритетен для конкретного запроса; далее идут
+окружение → default сервера → CWD. Другой запрос не перемещает обслуживание.
+CWD агента не становится CWD сервера автоматически.
+
+Одного `--auto-index` недостаточно для эмбеддингов. Auto-drain нужны явный
+`embedding:` config, сборка с semantic-search, BGE-M3 и полный снапшот в кэше.
+См. [настройку Constellation](/ru/docs/guides/constellation/) и
+[контракты чтения](/ru/docs/reference/constellation/).
 
 ## Опции
 
@@ -74,10 +107,10 @@ forgeplan mcp install --client claude --use-name forgeplan # запишет "for
 ```
 
 :::caution
-**GUI-приложения macOS** (Claude Code Mac app, Cursor app) получают только
-системный `$PATH` по умолчанию - `/opt/homebrew/bin` в нём **нет**. Короткие
-имена молча не сработают в этих клиентах. Используйте абсолютный путь
-(default), если не настроили `launchctl setenv PATH ...` системно.
+GUI-приложения macOS могут не наследовать shell `$PATH`: короткое имя
+бинарника не найдётся, если его каталога там нет. Предпочитайте
+сгенерированный абсолютный путь; перед использованием короткого имени
+проверьте фактическое окружение клиента.
 :::
 
 ### Кастомный binary
@@ -113,7 +146,9 @@ forgeplan init -y
 #    Спросите агента: "use forgeplan_health to check the project"
 ```
 
-Если агент вернёт "healthy project status" - MCP работает.
+Успешный ответ `forgeplan_health` от нужного workspace показывает, что
+этот вызов дошёл до сервера. Сообщение о проблемах health тоже может быть
+корректным MCP-ответом; один вызов не проверяет все tools или semantic readiness.
 
 ## Пути конфигов по клиентам
 
@@ -155,8 +190,11 @@ Error: refusing to write to symlink: ~/.claude.json - remove the symlink and re-
 Workspace not initialized. Call forgeplan_init first.
 ```
 
-Запустите `forgeplan init -y` в директории проекта, или попросите агента
-вызвать `forgeplan_init` через MCP - он использует свою текущую директорию.
+Инициализируйте из корня нужного проекта и проверьте выведенный путь.
+`init -y` может найти workspace у родителя и завершиться без изменений.
+Для существующего workspace см. [конфигурацию](/ru/docs/getting-started/configuration/).
+Передавайте явный `workspace` в инструментах, которые его принимают:
+каталог агента не определяет автоматически каталог сервера.
 
 ### Перезапуск после `brew upgrade`
 
@@ -179,5 +217,4 @@ Workspace not initialized. Call forgeplan_init first.
 }
 ```
 
-Поле `transport: "stdio"` опционально (большинство клиентов используют
-stdio по умолчанию).
+В этой stdio-записи не указывайте `transport`: генератор его не пишет.

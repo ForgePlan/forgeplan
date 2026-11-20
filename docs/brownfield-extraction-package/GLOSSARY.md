@@ -56,7 +56,9 @@ A structured markdown document with clustered unresolved questions, context, and
 FPF reasoning cycle: **A**bduction (generate hypotheses) → **D**eduction (predict evidence) → **I**nduction (check).
 
 ### F-G-R
-FPF scoring: **F**ormality (0-3), **G**ranularity (0-3), **R**eliability (0-3). Used for confidence assessment.
+Forgeplan computes **F**ormality, **G**ranularity and **R**eliability as normalized `0..1` values (`crates/forgeplan-core/src/scoring/fgr.rs`). These implementation names/scales must not be substituted for FPF's own F–G–R definitions; they are not a `0..3` probability scale.
+
+In current upstream FPF (revision `34a1ae7145309f8c18b4c8864513e3456d43de71`, B.3/C.2.2/C.2.3), F is ordinal expression rigor (default anchors F0–F9), G is set-like **ClaimScope**, and R is claim-specific warrant requiring a justified numerical model. The older plugin's 0–3 Formality/Granularity/Reliability rubric is a separate local adaptation, not that upstream definition.
 
 ### R_eff
 Forgeplan's effective reliability score. Weakest-link aggregation from evidence.
@@ -82,13 +84,13 @@ User-invocable command like `/autoresearch:learn`. Lives in `.claude/commands/<n
 A document in forgeplan's workspace with frontmatter + body. Has kind, status, id.
 
 ### artifact kind
-A category of artifact with specific schema and validation. Current: `prd, epic, spec, rfc, adr, problem, solution, evidence, note, refresh`. New in this package: `glossary, use-case, invariant, scenario, hypothesis, domain-model`.
+A category of artifact with specific schema and validation. The original design proposed adding `glossary, use-case, invariant, scenario, hypothesis, domain-model` to the older decision kinds. These six kinds are now registered; the richer schemas in this package remain proposals. See [implementation status](README.md#implementation-status-2026-10-23).
 
 ### projection
 The rendered markdown view of an artifact (in forgeplan's `<kind>s/` directory).
 
 ### drift
-When documentation no longer matches current code (checked by `forgeplan_drift`).
+A signal that affected files changed after a decision was recorded (`forgeplan_drift`); not proof that a business assertion is false, nor automatic semantic DDL/SDL verification.
 
 ### blind spot
 An active decision without linked evidence (checked by `forgeplan_blindspots`).
@@ -124,6 +126,8 @@ Kind of node in the KG: glossary-term, use-case, invariant, scenario, hypothesis
 ### Relation type
 Edge kind in the KG: `defines, triggers, verifies, infers_from, resolved_by, parked_in, catalogs, emitted_by, causes, informs, refines, supersedes, contradicts, based_on`.
 
+These are the proposed extended KG relations. The current general link interface lists `informs`, `based_on`, `supersedes`, `contradicts`, and `refines`; do not assume the entire proposed vocabulary is accepted by it.
+
 ### Contradiction
 Pair of artifacts making mutually-exclusive claims. Flagged by C9.
 
@@ -158,6 +162,8 @@ Short names for the 12 skills:
 - `rag-packager` (C12)
 
 ## Meta-commands
+
+The entries below are proposed integration commands, not promises that core Forgeplan installs or executes them.
 
 - `/extract-business-logic` — main orchestrator.
 - `/interview <domain>` — shortcut for C7.

@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Multi-agent work · dispatch · claim · release - ForgePlan</title>
+<link rel="preconnect" href="https://rsms.me/">
+<link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@2.304/web/web.css">
+<style>
+  :root {
+    --bg: #050505; --bg-1: #0b0b0b; --bg-2: #141414; --bg-3: #1a1a1a;
+    --text: #f5f5f5; --text-1: #e5e5e5; --text-2: #a3a3a3; --text-3: #737373; --text-4: #525252;
+    --line: rgba(255, 255, 255, 0.06); --line-2: rgba(255, 255, 255, 0.14);
+    --accent: #ff5a1f; --accent-soft: #ff8a5b; --accent-bg: rgba(255, 90, 31, 0.18);
+    --ok: #22c55e; --err: #ef4444; --warn: #f59e0b; --info: #60a5fa;
+    --font-sans: "Inter", "Geist", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    --font-mono: "JetBrains Mono", "Geist Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    /* Agent colors (categorical) */
+    --a1: #60a5fa;
+    --a2: #22c55e;
+    --a3: #f59e0b;
+    --a4: #c084fc;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text-1); font-family: var(--font-sans); }
+  body { line-height: 1.55; -webkit-font-smoothing: antialiased; background-image: radial-gradient(rgba(255, 255, 255, 0.10) 0.9px, transparent 1.4px); background-size: 24px 24px; }
+  main { max-width: 1080px; margin: 0 auto; padding: 64px 32px 96px; }
+
+  .eyebrow { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin: 0 0 14px; }
+  h1 { font-family: var(--font-sans); font-size: clamp(40px, 5.4vw, 60px); line-height: 1.05; letter-spacing: -0.02em; font-weight: 500; color: var(--text); margin: 0 0 18px; }
+  h2 { font-family: var(--font-sans); font-size: 28px; line-height: 1.25; letter-spacing: -0.015em; font-weight: 500; color: var(--text); margin: 64px 0 14px; }
+  h3 { font-family: var(--font-sans); font-size: 16px; line-height: 1.3; font-weight: 500; color: var(--text); margin: 0; }
+  p { margin: 0 0 16px; color: var(--text-2); font-size: 17px; line-height: 1.65; max-width: 760px; }
+  p.lead { font-size: 19.5px; color: var(--text-1); line-height: 1.6; max-width: 820px; }
+  code { font-family: var(--font-mono); font-size: 13px; color: var(--accent-soft); background: var(--accent-bg); padding: 1px 6px; border-radius: 0; }
+  b.k { color: var(--text); font-weight: 500; }
+
+  /* Pipeline */
+  .pipeline { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; gap: 4px; align-items: stretch; margin: 24px 0 0; }
+  .pipe-box { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 16px 18px; }
+  .pipe-box .step-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); margin-bottom: 4px; }
+  .pipe-box .step-title { font-size: 14px; color: var(--text); font-weight: 500; line-height: 1.3; }
+  .pipe-box .step-desc { font-size: 12.5px; color: var(--text-2); margin-top: 6px; line-height: 1.5; }
+  .pipe-arrow { display: flex; align-items: center; justify-content: center; color: var(--accent); font-family: var(--font-mono); font-size: 18px; letter-spacing: -0.05em; }
+
+  /* Concept */
+  .concept { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 28px 32px 30px; margin: 18px 0 0; }
+  .concept .concept-tag { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; }
+  .concept h3.concept-h { font-size: 22px; line-height: 1.25; letter-spacing: -0.01em; margin-bottom: 14px; }
+  .concept .analogy { color: var(--text-1); font-size: 15.5px; line-height: 1.6; max-width: 760px; }
+  .concept .analogy + .analogy { margin-top: 12px; }
+
+  .insight { background: var(--bg-2); border: 1px solid var(--line-2); border-left: 3px solid var(--accent); border-radius: 0; padding: 14px 18px; margin: 18px 0 0; }
+  .insight .insight-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
+  .insight p { margin: 0; color: var(--text-1); font-size: 14.5px; line-height: 1.55; max-width: 760px; }
+
+  /* Solo vs orchestra split */
+  .solo-vs { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 22px 0 0; }
+  .sv-col { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 18px 20px 18px; }
+  .sv-col.solo { border-top: 2px solid var(--err); }
+  .sv-col.team { border-top: 2px solid var(--ok); }
+  .sv-col .sv-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; margin-bottom: 4px; }
+  .sv-col.solo .sv-tag { color: var(--err); }
+  .sv-col.team .sv-tag { color: var(--ok); }
+  .sv-col .sv-title { font-size: 14px; color: var(--text); font-weight: 500; margin-bottom: 12px; line-height: 1.35; }
+  .sv-list { margin: 0; padding-left: 18px; color: var(--text-1); font-size: 13.5px; line-height: 1.7; }
+  .sv-list li { margin: 4px 0; }
+  .sv-foot { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+  .sv-col.solo .sv-foot { color: var(--err); }
+  .sv-col.team .sv-foot { color: var(--ok); }
+
+  /* Primitives cards */
+  .prim-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 22px 0 0; }
+  .prim-card { background: var(--bg-2); border: 1px solid var(--line-2); border-top: 2px solid var(--accent); border-radius: 0; padding: 16px 18px 18px; }
+  .prim-card .pc-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin-bottom: 4px; }
+  .prim-card .pc-cmd { font-family: var(--font-mono); font-size: 13px; color: var(--text); font-weight: 500; margin-bottom: 10px; letter-spacing: 0.02em; }
+  .prim-card .pc-desc { font-size: 13px; color: var(--text-2); line-height: 1.55; margin-bottom: 12px; }
+  .prim-card .pc-when { font-family: var(--font-mono); font-size: 11px; color: var(--text-3); letter-spacing: 0.04em; padding-top: 10px; border-top: 1px solid var(--line); }
+
+  /* Claims table */
+  .claims-wrap { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; overflow: hidden; margin: 22px 0 0; }
+  .cl-head { padding: 14px 20px; background: var(--bg-3); border-bottom: 1px solid var(--line-2); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .cl-head .ch-tag { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text); }
+  .cl-head .ch-cmd { font-family: var(--font-mono); font-size: 11px; color: var(--accent); }
+  table.claims { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.claims th, table.claims td { padding: 11px 14px; text-align: left; border-bottom: 1px solid var(--line); }
+  table.claims th { color: var(--text-3); font-weight: 500; font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; background: var(--bg-2); border-bottom: 1px solid var(--line-2); }
+  table.claims tr:last-child td { border-bottom: none; }
+  table.claims td.id { font-family: var(--font-mono); color: var(--text); }
+  table.claims td.agent { font-family: var(--font-mono); font-size: 11.5px; padding: 3px 9px; border-radius: 0; letter-spacing: 0.02em; }
+  table.claims td.task { color: var(--text-1); font-size: 13px; }
+  table.claims td.ttl { font-family: var(--font-mono); text-align: right; color: var(--text-2); font-size: 12px; }
+  table.claims td.ttl.warn { color: var(--warn); }
+
+  .agent-pill { font-family: var(--font-mono); font-size: 11px; padding: 2px 8px; border-radius: 0; display: inline-flex; align-items: center; gap: 6px; letter-spacing: 0.02em; }
+  .agent-pill .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+  .agent-pill.a1 { background: rgba(96, 165, 250, 0.12); color: #93c5fd; }
+  .agent-pill.a1 .dot { background: var(--a1); }
+  .agent-pill.a2 { background: rgba(34, 197, 94, 0.12); color: #86efac; }
+  .agent-pill.a2 .dot { background: var(--a2); }
+  .agent-pill.a3 { background: rgba(245, 158, 11, 0.12); color: #fcd34d; }
+  .agent-pill.a3 .dot { background: var(--a3); }
+  .agent-pill.a4 { background: rgba(192, 132, 252, 0.12); color: #d8b4fe; }
+  .agent-pill.a4 .dot { background: var(--a4); }
+
+  /* Dispatch visualization (buckets) */
+  .buckets-wrap { background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 0; padding: 20px 22px 18px; margin: 22px 0 0; }
+  .bw-head { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+  .buckets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .bucket { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 12px 14px 14px; }
+  .bucket.a1 { border-top: 2px solid var(--a1); }
+  .bucket.a2 { border-top: 2px solid var(--a2); }
+  .bucket.a3 { border-top: 2px solid var(--a3); }
+  .bucket .bk-head { display: flex; justify-content: space-between; margin-bottom: 8px; }
+  .bucket .bk-tag { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); }
+  .bucket .bk-count { font-family: var(--font-mono); font-size: 10px; color: var(--text-3); }
+  .bucket .bk-items { display: flex; flex-direction: column; gap: 4px; }
+  .bucket .bk-item { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-1); background: var(--bg-2); padding: 6px 9px; border-radius: 0; border-left: 2px solid var(--line-2); }
+  .bucket.a1 .bk-tag { color: var(--a1); }
+  .bucket.a2 .bk-tag { color: var(--a2); }
+  .bucket.a3 .bk-tag { color: var(--a3); }
+  .bucket.a1 .bk-item { border-left-color: var(--a1); }
+  .bucket.a2 .bk-item { border-left-color: var(--a2); }
+  .bucket.a3 .bk-item { border-left-color: var(--a3); }
+  .bw-note { font-family: var(--font-mono); font-size: 11px; color: var(--text-3); letter-spacing: 0.04em; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+
+  /* Code block */
+  .code-block { background: var(--bg-3); border: 1px solid var(--line-2); border-radius: 0; padding: 16px 20px; margin: 16px 0 0; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.6; color: var(--text-1); white-space: pre-wrap; overflow-x: auto; }
+  .code-block .cb-tag { display: block; font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; font-weight: 500; font-family: var(--font-mono); }
+  .code-block .cb-prompt { color: var(--accent-soft); }
+  .code-block .cb-comment { color: var(--text-3); }
+  .code-block .cb-ok { color: var(--ok); }
+  .code-block .cb-emph { color: var(--accent); }
+
+  /* Worked example */
+  .worked { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 22px 26px 24px; margin: 22px 0 0; }
+  .worked-step { display: grid; grid-template-columns: 100px 1fr; gap: 18px; padding: 16px 0; border-top: 1px solid var(--line); }
+  .worked-step:first-of-type { border-top: none; padding-top: 4px; }
+  .worked-step .step-num { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); padding-top: 2px; }
+  .worked-step.crit .step-num { color: var(--accent); }
+  .worked-step .step-content h4 { margin: 0 0 6px; font-size: 15px; color: var(--text); font-weight: 500; line-height: 1.35; }
+  .worked-step .step-content p { margin: 0; font-size: 13.5px; color: var(--text-2); line-height: 1.55; }
+  .worked-step .step-content code { font-size: 12px; }
+
+  /* Cross-links */
+  .cross-links { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 22px 0 0; }
+  .next-step { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 20px 22px; position: relative; }
+  .next-step::before { content: ""; position: absolute; left: 22px; bottom: 16px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+  .next-step .ns-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .next-step .ns-badge { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; padding: 3px 8px; background: var(--accent-bg); color: var(--accent); border-radius: 0; }
+  .next-step h3 { font-size: 15.5px; line-height: 1.3; }
+  .next-step p { margin: 6px 0 14px; font-size: 13px; color: var(--text-2); line-height: 1.5; }
+  .next-step a.ns-link { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--accent); border-radius: 0; transition: background .2s; }
+  .next-step a.ns-link:hover { background: var(--accent-bg); }
+
+  .teaching { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 0; padding: 22px 26px; margin: 18px 0 0; }
+  .teaching ol { margin: 8px 0 0 18px; padding: 0; color: var(--text-2); counter-reset: step; list-style: none; }
+  .teaching ol li { margin: 12px 0; font-size: 14.5px; line-height: 1.55; position: relative; padding-left: 24px; }
+  .teaching ol li::before { counter-increment: step; content: "0" counter(step); position: absolute; left: -8px; top: 1px; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em; color: var(--text-3); }
+  .teaching ol li b { color: var(--text); font-weight: 500; }
+
+  .footer { color: var(--text-3); font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; margin-top: 64px; border-top: 1px solid var(--line); padding-top: 18px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+  .footer .arrow { color: var(--accent); }
+
+  @media (max-width: 800px) {
+    .pipeline { grid-template-columns: 1fr; } .pipe-arrow { display: none; }
+    .solo-vs, .cross-links { grid-template-columns: 1fr; }
+    .prim-grid, .buckets { grid-template-columns: 1fr; }
+    h1 { font-size: 32px; } .concept { padding: 22px 20px 24px; }
+  }
+</style>
+</head>
+<body>
+<main>
+
+  <!-- HERO -->
+  <p class="eyebrow">Multi-agent work · coordination</p>
+  <h1>Multi-agent · dispatch · claim · release</h1>
+  <p class="lead">
+    When five PRDs, three ADR reviews, and two evidence investigations need attention,
+    independent work can be split across agents. Planning, claiming work,
+    and releasing it help coordinate that split. Forgeplan’s <b class="k">dispatch</b>,
+    <b class="k">claim</b>, and <b class="k">release</b> are one implementation.
+    They neither launch the agents nor guarantee conflict-free edits.
+  </p>
+  <p>CLI notes refer to the inspected <code>0.39.0+constellation.s1.1</code> source snapshot, not the public <code>0.38.0</code> release. Captured help supplies syntax, not evidence that a proposed wave ran. Names are coordination identities, not access permissions.</p>
+
+  <!-- MINI-PIPELINE -->
+  <div class="pipeline">
+    <div class="pipe-box">
+      <div class="step-tag">01 · dispatch</div>
+      <div class="step-title">A planner divides work</div>
+      <div class="step-desc">Suggested buckets · inspect overlaps</div>
+    </div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-box">
+      <div class="step-tag">02 · claim</div>
+      <div class="step-title">An agent signals intent</div>
+      <div class="step-desc">TTL · advisory marker, not an access lock</div>
+    </div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-box">
+      <div class="step-tag">03 · release</div>
+      <div class="step-title">Release the marker</div>
+      <div class="step-desc">The matching holder hands work back</div>
+    </div>
+  </div>
+
+  <!-- CONCEPT 01 · SOLO BOTTLENECK -->
+  <h2>01 · Where sequential work becomes a bottleneck</h2>
+  <div class="concept">
+    <div class="concept-tag">Concept 01 · a surgical-team analogy</div>
+    <h3 class="concept-h">A surgeon, anesthetist, assistant, and nurse have distinct responsibilities</h3>
+    <p class="analogy">
+      Picture a surgical team: the surgeon operates, the anesthetist monitors
+      vital signs, the assistant helps with instruments, and the nurse manages
+      the sterile field. This is an analogy for explicit responsibilities,
+      not a claim that software agents provide clinical safeguards.
+    </p>
+    <p class="analogy">
+      In repository work, separate writing and critical review can help expose
+      assumptions. A fresh review session has not authored the draft,
+      but that does <b class="k">not eliminate bias</b>.
+      It still needs the relevant context and inspectable evidence.
+    </p>
+
+    <div class="solo-vs">
+      <div class="sv-col solo">
+        <div class="sv-tag">Solo · sequential</div>
+        <div class="sv-title">One agent handles five activities in turn</div>
+        <ul class="sv-list">
+          <li>Draft PRD-001</li>
+          <li>Draft PRD-002</li>
+          <li>Review PRD-001 in the same context; inspect anchoring risk</li>
+          <li>Collect evidence</li>
+          <li>Inspect the score and activation requirements</li>
+        </ul>
+        <div class="sv-foot">Illustrative schedule · no measured duration</div>
+      </div>
+      <div class="sv-col team">
+        <div class="sv-tag">Multi · independent work in parallel</div>
+        <div class="sv-title">Three agents and a separate coordinator</div>
+        <ul class="sv-list">
+          <li><b>worker-1</b> drafts PRD-001</li>
+          <li><b>worker-2</b> drafts PRD-002 in a separate bucket</li>
+          <li><b>reviewer</b> critically reviews a completed draft in a fresh session</li>
+          <li>Each worker follows the team’s WIP=1 convention</li>
+          <li>The coordinator assembles evidence and checks readiness</li>
+        </ul>
+        <div class="sv-foot">Illustrative roles · no speedup or bias-free guarantee</div>
+      </div>
+    </div>
+
+    <div class="insight">
+      <div class="insight-tag">Parallel work needs coordination</div>
+      <p>
+        Agents can collide on files or act on stale assumptions.
+        Planning, claims, and releases make intentions visible; they do not
+        replace explicit file ownership, isolated worktrees, integration review,
+        or serialized access to shared build and runtime resources.
+      </p>
+    </div>
+  </div>
+
+  <!-- CONCEPT 02 · PRIMITIVES -->
+  <h2>02 · Three coordination primitives</h2>
+  <div class="concept">
+    <div class="concept-tag">Concept 02 · dispatch / claim / release</div>
+    <h3 class="concept-h">Each primitive handles one part of the handoff</h3>
+    <p class="analogy">
+      Treat them as <b class="k">three phases of a coordination cycle</b>:
+      a planner proposes buckets, a worker records intent with an expiry,
+      and the same holder releases the marker when handing work back.
+    </p>
+
+    <div class="prim-grid">
+      <div class="prim-card">
+        <div class="pc-tag">01 · planner</div>
+        <div class="pc-cmd">forgeplan dispatch --agents N</div>
+        <div class="pc-desc">Suggests buckets and a serial queue for N agents. Declared-file overlap and graph heuristics help identify conflicts; they do not prove safe execution. The core supports 1–64 agents. The help phrase “parallel-safe” describes intent, not a conflict-free guarantee.</div>
+        <div class="pc-when">When: before a parallel work wave</div>
+      </div>
+      <div class="prim-card">
+        <div class="pc-tag">02 · worker</div>
+        <div class="pc-cmd">forgeplan claim &lt;id&gt; --agent &lt;name&gt; --ttl-minutes 30</div>
+        <div class="pc-desc">Records advisory intent for an artifact. TTL defaults to 30 minutes and accepts 1–1440. Another live holder is refused; the same holder can renew. Expired files remain on disk but are omitted from ordinary claim reads. File edits are not locked.</div>
+        <div class="pc-when">When: before starting the assigned work</div>
+      </div>
+      <div class="prim-card">
+        <div class="pc-tag">03 · worker</div>
+        <div class="pc-cmd">forgeplan release &lt;id&gt; --agent &lt;name&gt;</div>
+        <div class="pc-desc">Releases a marker held by the matching identity. If work continues near expiry, renew using claim with the same holder. Do not release another worker’s live marker; force is an explicit recovery capability, not the normal workflow.</div>
+        <div class="pc-when">When: work is complete or explicitly handed back</div>
+      </div>
+    </div>
+
+    <!-- Dispatch buckets visualization -->
+    <div class="buckets-wrap">
+      <div class="bw-head">Authored allocation illustration · <code>forgeplan dispatch --agents 3 --json</code></div>
+      <div class="buckets">
+        <div class="bucket a1">
+          <div class="bk-head">
+            <span class="bk-tag">worker-1</span>
+            <span class="bk-count">4 tasks</span>
+          </div>
+          <div class="bk-items">
+            <div class="bk-item">PRD-054 · OAuth login</div>
+            <div class="bk-item">EVID-018 · benchmark JWT</div>
+            <div class="bk-item">ADR-007 · auth strategy</div>
+            <div class="bk-item">RFC-012 · token rotation</div>
+          </div>
+        </div>
+        <div class="bucket a2">
+          <div class="bk-head">
+            <span class="bk-tag">worker-2</span>
+            <span class="bk-count">3 tasks</span>
+          </div>
+          <div class="bk-items">
+            <div class="bk-item">PRD-055 · Email digest</div>
+            <div class="bk-item">SPEC-009 · template engine</div>
+            <div class="bk-item">EVID-019 · render perf</div>
+          </div>
+        </div>
+        <div class="bucket a3">
+          <div class="bk-head">
+            <span class="bk-tag">worker-3</span>
+            <span class="bk-count">3 tasks</span>
+          </div>
+          <div class="bk-items">
+            <div class="bk-item">PRD-056 · Search v2</div>
+            <div class="bk-item">RFC-013 · BM25 vs vec</div>
+            <div class="bk-item">EVID-020 · index size</div>
+          </div>
+        </div>
+      </div>
+      <div class="bw-note">
+        These authored buckets assign each listed artifact once. That does not establish
+        disjoint files or safe execution. Inspect declared files, dependencies, shared
+        resources, and the serial queue before assigning an actual wave.
+      </div>
+    </div>
+
+    <div class="code-block">
+      <span class="cb-tag">Authored command example · not a captured transcript</span>
+<span class="cb-prompt">$</span> forgeplan dispatch --agents 3 --json
+<span class="cb-comment"># Inspect the proposed buckets and serial queue.</span>
+
+<span class="cb-comment"># Worker-1 in its assigned isolated session/worktree</span>
+<span class="cb-prompt">$</span> forgeplan claim PRD-054 --agent worker-1 --ttl-minutes 30
+<span class="cb-comment"># Inspect the actual holder and expiry in the result.</span>
+
+<span class="cb-comment"># Work on PRD-054 within the assigned file scope, then hand back.</span>
+
+<span class="cb-prompt">$</span> forgeplan release PRD-054 --agent worker-1
+<span class="cb-comment"># Confirm release before claiming the next assigned artifact.</span>
+<span class="cb-emph">Next:</span> forgeplan claim EVID-018 --agent worker-1 --ttl-minutes 30
+
+<span class="cb-comment"># The coordinator inspects current markers.</span>
+<span class="cb-prompt">$</span> forgeplan claims
+<span class="cb-comment"># Read actual claims; the table below is a separate illustration, not this result.</span>
+    </div>
+  </div>
+
+  <!-- CONCEPT 03 · WIP=1 + ADVERSARIAL PATTERN -->
+  <h2>03 · WIP=1 as a team convention and independent review</h2>
+  <div class="concept">
+    <div class="concept-tag">Concept 03 · rules and failure modes</div>
+    <h3 class="concept-h">Agree on one work item per worker; give reviewers fresh sessions</h3>
+    <p class="analogy">
+      WIP=1 means limiting a worker to one current work item.
+      This is a suggested <b class="k">team convention</b>, not an enforced
+      one-claim-per-agent product limit. Claims are keyed by artifact:
+      one agent can hold markers for several artifacts.
+    </p>
+
+    <h3 style="margin: 24px 0 12px; font-size: 16px;">Illustrative claims table</h3>
+    <div class="claims-wrap">
+      <div class="cl-head">
+        <span class="ch-tag">$ forgeplan claims</span>
+        <span class="ch-cmd">Authored HTML · not live or auto-updating</span>
+      </div>
+      <table class="claims">
+        <thead>
+          <tr>
+            <th>Artifact</th>
+            <th>Agent</th>
+            <th>Task</th>
+            <th style="text-align: right">TTL left</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="id">PRD-054</td>
+            <td><span class="agent-pill a1"><span class="dot"></span>worker-1</span></td>
+            <td class="task">draft OAuth login PRD</td>
+            <td class="ttl">25m</td>
+          </tr>
+          <tr>
+            <td class="id">PRD-055</td>
+            <td><span class="agent-pill a2"><span class="dot"></span>worker-2</span></td>
+            <td class="task">draft email digest PRD</td>
+            <td class="ttl warn">12m</td>
+          </tr>
+          <tr>
+            <td class="id">PRD-056</td>
+            <td><span class="agent-pill a3"><span class="dot"></span>worker-3</span></td>
+            <td class="task">draft search v2 PRD</td>
+            <td class="ttl">28m</td>
+          </tr>
+          <tr>
+            <td class="id">ADR-007</td>
+            <td><span class="agent-pill a4"><span class="dot"></span>reviewer</span></td>
+            <td class="task">adversarial review (clean session)</td>
+            <td class="ttl">15m</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p style="margin-top: 18px;">
+      If PRD-056 has a live claim held by <code>worker-3</code>,
+      a claim from <code>worker-2</code> is refused. That protects the advisory marker,
+      not file access: either process could still edit a file outside this protocol.
+      Read actual hints rather than assuming every refusal has a particular Or/Wait response.
+    </p>
+
+    <div class="insight">
+      <div class="insight-tag">Use a separate review session by team agreement</div>
+      <p>
+        After <code>worker-1</code> hands PRD-054 back and releases its claim,
+        <code>reviewer</code> can claim it in a <b class="k">fresh session</b>.
+        Supply the draft, requirements, and evidence, but not a demand to defend the author.
+        This is the review convention proposed here, not an enforced claim rule or
+        a guarantee of unbiased BMAD review.
+      </p>
+    </div>
+  </div>
+
+  <!-- WORKED EXAMPLE -->
+  <h2>One illustrative wave · 3 workers + a reviewer</h2>
+  <p>OAuth, email digest, and search v2 provide three example work streams. A coordinator proposes assignments, workers draft PRDs, and a reviewer checks completed drafts. The allocation and TTL values are authored examples, not current project observations.</p>
+  <div class="worked">
+    <div class="worked-step">
+      <div class="step-num">01 · dispatch</div>
+      <div class="step-content">
+        <h4><code>forgeplan dispatch --agents 3 --json</code></h4>
+        <p>In this illustration, worker-1 has OAuth (4 artifacts), worker-2 digest (3), and worker-3 search (3). Review file ownership, dependencies, shared resources, and serial work before starting. A dispatch result does not prove that the buckets are conflict-free.</p>
+      </div>
+    </div>
+    <div class="worked-step">
+      <div class="step-num">02 · claim ×3</div>
+      <div class="step-content">
+        <h4>Each worker records intent in its own session</h4>
+        <p>For example: <code>forgeplan claim PRD-054 --agent worker-1 --ttl-minutes 30</code>. worker-2 uses PRD-055 and worker-3 PRD-056 with their own identities. Inspect <code>forgeplan claims</code>. WIP=1 is the team’s agreement, not a product-enforced agent limit.</p>
+      </div>
+    </div>
+    <div class="worked-step">
+      <div class="step-num">03 · work</div>
+      <div class="step-content">
+        <h4>Draft, collect evidence, and validate within assigned boundaries</h4>
+        <p>To renew, the same holder repeats <code>forgeplan claim PRD-054 --agent worker-1 --ttl-minutes 30</code>; there is no --extend flag. If done sooner, release with <code>forgeplan release PRD-054 --agent worker-1</code>, then take the next assigned artifact.</p>
+      </div>
+    </div>
+    <div class="worked-step crit">
+      <div class="step-num">04 · adversarial</div>
+      <div class="step-content">
+        <h4>A completed draft is handed to the reviewer</h4>
+        <p>After the author releases the marker, reviewer claims the record in a fresh session and checks specific assertions. Report substantiated findings and return revisions to the author. There is no promised number of findings or “real defects.” Release the review claim before the author reacquires it.</p>
+      </div>
+    </div>
+    <div class="worked-step">
+      <div class="step-num">05 · release</div>
+      <div class="step-content">
+        <h4>Finish the assignment and release its marker</h4>
+        <p>The current holder releases when its assigned work ends, whether that assignment was drafting, review, or implementation. Release is not activation. The coordinator checks actual readiness and integration results before starting another wave or closing the work.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- CROSS-LINKS -->
+
+  <div class="footer">
+    <span>multi-agent-cycle · explainer · v1</span>
+    <span><span class="arrow">→</span> forgeplan · forgeplan.dev/docs/cli/dispatch</span>
+  </div>
+
+</main>
+</body>
+</html>

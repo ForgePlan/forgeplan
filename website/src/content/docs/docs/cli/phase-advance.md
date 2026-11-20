@@ -1,9 +1,9 @@
 ---
 title: forgeplan phase-advance
-description: "Manually advance (or set) the advisory phase marker for an artifact and record an immutable transition entry. Out-of-order jumps allowed."
+description: "Set an advisory phase marker and append a transition, including out-of-order moves."
 ---
 
-`forgeplan phase-advance` moves an artifact to the next methodology phase (Shape, Validate, Adi, Code, Test, Audit, Evidence, Done) and records the transition in `.forgeplan/state/<id>.yaml` with a timestamp and optional reason. The history is append-only - once written, it cannot be edited or deleted, only appended to.
+`forgeplan phase-advance` sets the requested phase and appends a timestamped transition to `.forgeplan/state/<id>.yaml`. This is an API convention, not a tamper-proof log: filesystem access can alter the file, and history is bounded to 1024 entries.
 
 This is the **advisory** layer: it does not check whether the jump makes sense (you can go straight from Shape to Done if you want), so out-of-order moves are allowed by design - useful for trivial fixes or backfilling old artifacts. Strict ordering enforcement is planned for a later PRD under EPIC-005.
 
@@ -19,7 +19,7 @@ Mirrors [`forgeplan_phase_advance`](/docs/mcp/forgeplan_phase_advance/) on the M
 ## When NOT to use
 
 - As a structural gate (something that blocks other commands) - phase-advance only writes the marker. For real gating, use [`forgeplan validate`](/docs/cli/validate/).
-- To rename a phase or rewrite the history - entries are immutable. Add a new entry with a corrective `--reason` instead.
+- To rewrite recorded events - append a corrective reason instead; this is not immutable storage.
 - Without a `--reason` when the jump is not obvious - six months from now during an audit, you will not remember why.
 
 ## Usage
@@ -52,7 +52,7 @@ forgeplan phase-advance [OPTIONS] --to <TO> <ID>
 forgeplan phase-advance PRD-057 --to test --reason "FR tests green"
 ```
 
-Records the transition with a short justification. The reason is preserved forever - future audits can replay exactly why the artifact moved.
+Records the transition and reason. History is bounded; keep independent evidence when long-term retention matters.
 
 ### Example 2: Skip ahead for a trivial fix
 
@@ -70,7 +70,7 @@ forgeplan phase-advance PRD-001 --to validate
 forgeplan phase-advance PRD-001 --to code --reason "backfilled from git history"
 ```
 
-Walks an artifact created before phase tracking existed through the phases so it appears correctly in current reports. Reason on the final transition explains where the data came from.
+Records these transitions at the current time, not historical event dates. Mark reconstructed transitions explicitly in their reasons.
 
 ## How it fits the workflow
 
@@ -82,3 +82,25 @@ Phase tracking sits alongside the methodology pipeline (Shape → Validate → C
 - [`forgeplan phase`](/docs/cli/phase/) - read current state + history
 - [`forgeplan activate`](/docs/cli/activate/) - the methodology activation gate
 - [Methodology guide](/docs/methodology/overview/) - Shape → Validate → Code → Evidence → Activate
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan phase-advance --help`.
+
+```text
+Manually advance (or set) the advisory phase marker for an artifact. Appends a transition to the history. Does NOT validate phase ordering -- advisory layer allows out-of-order jumps (e.g. direct `done` override). Full phase enforcement lands in a later PRD under EPIC-005. Use when auto-advancement missed a transition or when reclassifying workflow state
+
+Usage: forgeplan phase-advance [OPTIONS] --to <TO> <ID>
+
+Arguments:
+  <ID>  Artifact ID to advance
+
+Options:
+      --to <TO>          Target phase: shape, validate, adi, code, test, audit, evidence, done [possible values: shape, validate, adi, code, test, audit, evidence, done]
+      --reason <REASON>  Optional reason / justification (recorded in history)
+      --json             Output as JSON for machine consumption
+  -h, --help             Print help
+  -V, --version          Print version
+```
+<!-- forgeplan-runtime:end -->

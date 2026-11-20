@@ -19,7 +19,7 @@ use std::process::Stdio;
 use forgeplan_core::db::store::{LanceStore, NewArtifact};
 use forgeplan_core::workspace;
 use rmcp::ServiceExt;
-use rmcp::model::{CallToolRequestParams, CallToolResult, RawContent};
+use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock};
 use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
 use tempfile::TempDir;
 use tokio::process::Command;
@@ -29,6 +29,7 @@ const TEMPLATE: &str = "## Summary\n\nORIGINAL template body (pre-update).";
 
 fn seed_artifact(id: &str) -> NewArtifact {
     NewArtifact {
+        canonical_key: id.to_string(),
         id: id.to_string(),
         kind: "prd".to_string(),
         status: "draft".to_string(),
@@ -54,7 +55,7 @@ fn obj(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
 fn text_of(r: &CallToolResult) -> String {
     let mut s = String::new();
     for c in &r.content {
-        if let RawContent::Text(t) = &c.raw {
+        if let ContentBlock::Text(t) = c {
             s.push_str(&t.text);
         }
     }
@@ -69,11 +70,29 @@ async fn drive(pass_ws_param: bool) {
     // passing in-process variant 1. The MCP server (a DIFFERENT OS process)
     // will open the store fresh and must observe its own subsequent update.
     {
-        let store = LanceStore::init(&ws).await.expect("init store");
+        let lock = workspace::acquire_workspace_lock(&ws)
+            .await
+            .expect("workspace lock");
+        let store = LanceStore::init_new(&ws, &lock).await.expect("init store");
         store
-            .create_artifact_for_test(&seed_artifact("PRD-700"))
+            .create_artifact_for_test(&lock, &seed_artifact("PRD-700"))
             .await
             .expect("seed PRD-700");
+        forgeplan_core::projection::render_projection(
+            &ws,
+            "PRD-700",
+            "prd",
+            "Seed PRD-700",
+            "draft",
+            "standard",
+            Some("prob078-subproc"),
+            None,
+            None,
+            TEMPLATE,
+            &[],
+        )
+        .await
+        .expect("seed canonical document");
     }
 
     let root = tempdir.path().to_path_buf();
@@ -195,22 +214,34 @@ async fn real_binary_cli_create_then_mcp_update_get() {
         String::from_utf8_lossy(&newout.stderr)
     );
 
-    // Recover the created id robustly from the projection filename
-    // (`.forgeplan/notes/NOTE-NNN-*.md`) rather than parsing stdout format.
-    let notes_dir = root.join(".forgeplan").join("notes");
-    let id = std::fs::read_dir(&notes_dir)
-        .expect("notes dir exists")
-        .filter_map(Result::ok)
-        .find_map(|e| {
-            let name = e.file_name().to_string_lossy().to_string();
-            if !name.to_uppercase().starts_with("NOTE-") {
-                return None;
-            }
-            let stem = name.strip_suffix(".md")?;
-            // `NOTE-001-some-slug` → `NOTE-001`
-            Some(stem.split('-').take(2).collect::<Vec<_>>().join("-"))
-        })
-        .expect("a NOTE-NNN artifact file was created by the CLI");
+    // Resolve the CLI-created document through the public JSON list surface;
+    // its display id is an alias, while canonical_key is the update selector.
+    let listed = Command::new(&cli_bin)
+        .current_dir(&root)
+        .args(["list", "--json"])
+        .output()
+        .await
+        .expect("list CLI-created note");
+    assert!(
+        listed.status.success(),
+        "forgeplan list failed: {}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+    let artifacts: Vec<serde_json::Value> =
+        serde_json::from_slice(&listed.stdout).expect("parse public list JSON");
+    let notes: Vec<_> = artifacts
+        .iter()
+        .filter(|artifact| artifact["kind"] == "note")
+        .collect();
+    assert_eq!(
+        notes.len(),
+        1,
+        "the CLI-created note appears in public list"
+    );
+    let display_id = notes[0]["id"].as_str().expect("listed display id");
+    let id = notes[0]["canonical_key"]
+        .as_str()
+        .expect("listed canonical key");
 
     // ── MCP: real binary subprocess, reliable client, update → get ──────────
     let transport = TokioChildProcess::new(Command::new(&mcp_bin).configure(|cmd| {
@@ -250,10 +281,10 @@ async fn real_binary_cli_create_then_mcp_update_get() {
         .await
         .expect("forgeplan_get rpc");
     let raw = text_of(&get_res);
-    let body = serde_json::from_str::<serde_json::Value>(&raw)
-        .ok()
-        .and_then(|v| v["body"].as_str().map(str::to_string))
-        .unwrap_or_default();
+    let payload = serde_json::from_str::<serde_json::Value>(&raw).expect("parse MCP get response");
+    assert_eq!(payload["canonical_key"], id);
+    assert_eq!(payload["id"], display_id);
+    let body = payload["body"].as_str().unwrap_or_default();
 
     assert!(
         body.contains(MARKER),

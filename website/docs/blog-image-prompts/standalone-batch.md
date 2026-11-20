@@ -1,6 +1,11 @@
 # Standalone blog posts — image brief batch
 
-Готовые промпты для 11 постов, у которых сейчас нет обложки. Все — standalone (вне серии Decision-cycle).
+Исторический бриф для 11 standalone-постов (вне серии Decision-cycle).
+Фраза «нет обложки» относилась к подготовке брифа, а не к текущему сайту.
+Это предложения для макетов, не журнал генерации или доказательство замеров:
+цифры, статусы и подписи ID ниже — иллюстрации без отдельного первичного
+источника. Числовые макеты помечать «Illustrative example» / «Учебный пример»
+на самой картинке. Для текста на EN/RU-обложках нужны отдельные версии.
 
 После генерации:
 1. Сохрани файл как `<filename-указанный-в-блоке>.png` в `website/public/blog-covers/`.
@@ -61,7 +66,7 @@ Editorial line-art, NOT 3D. Black background with dot grid.
 ```
 [brand wrapper]
 
-Subject: Split-screen terminal-style layout. Left side: a stylized file tree showing `.forgeplan/` directory with subfolders `prds/`, `adrs/`, `evidence/`, each containing one or two .md files. Right side: a code snippet in JetBrains Mono showing a Rust function signature `pub fn sync_file_to_store(path: &Path) -> Result<Artifact>`.
+Subject: Split-screen terminal-style layout. Left side: a stylized file tree showing `.forgeplan/` directory with subfolders `prds/`, `adrs/`, `evidence/`, each containing one or two .md files. Right side: a pseudocode flow in JetBrains Mono, explicitly labeled "ILLUSTRATIVE PROJECTION": `Markdown → captured index`. Do not present an invented Rust signature as a public API.
 
 Top eyebrow in mono uppercase orange: "RUST · LOCAL-FIRST · MCP".
 
@@ -108,7 +113,7 @@ Editorial style. Black background with dot grid.
 
 ### 6. `markdown-source-of-truth.png`
 
-> Markdown as source of truth, LanceDB as derived index. 32 violations, 4 audit rounds, compile-time enforcement.
+> Markdown as source of truth, LanceDB as derived index. Исторический сюжет об аудите; «32 нарушения / 4 раунда» без приложенного первичного отчёта не считается подтверждённым замером.
 
 ```
 [brand wrapper]
@@ -121,7 +126,7 @@ Below it a thin downward arrow labeled "projection".
 
 Bottom bar (shorter, more faded): label "LANCEDB · DERIVED INDEX" in gray mono uppercase. Contains abstract vector-grid pattern.
 
-Top-right corner: small badge "32 violations → 0" with orange checkmark.
+Top-right corner: small badge "ILLUSTRATIVE AUDIT · 32 → 0" in orange; this is not a current zero-violations attestation.
 
 Black background with dot grid.
 ```
@@ -135,13 +140,13 @@ Black background with dot grid.
 ```
 [brand wrapper]
 
-Subject: Vertical bar chart with five bars representing evidence scores. Heights from left to right: 7, 8, 2, 8, 9. The third bar (height 2) is highlighted in orange #ff5a1f, all others are white-outlined.
+Subject: Vertical bar chart with five illustrative scores on a 0–1 scale. Heights from left to right: 0.7, 0.8, 0.2, 0.8, 0.9. The third bar (height 0.2) is highlighted in orange #ff5a1f, all others are white-outlined. Add the visible caption "ILLUSTRATIVE EVIDENCE POPULATION · NOT A MEASUREMENT".
 
 Above the chart: formula in JetBrains Mono — "R_eff = min(...)" with the min function emphasized.
 
 Below the chart: two text labels side by side:
-- "average: 6.8" — gray, struck through with horizontal line
-- "weakest: 2.0" — white, with orange arrow pointing at it
+- "average: 0.68" — gray, struck through with horizontal line
+- "weakest: 0.20" — white, with orange arrow pointing at it
 
 Right side: small annotation "trust ≠ average".
 
@@ -230,7 +235,7 @@ Editorial flat illustration. Black background with dot grid.
 
 Когда положишь файл `<filename>.png` в `public/blog-covers/`, скажи мне «положил X». Я выполню:
 
-1. `cwebp -q 82 -m 6 <X>.png -o <X>.webp` (94-97% компрессия)
+1. `cwebp -q 82 -m 6 <X>.png -o <X>.webp` (размер зависит от изображения; 94–97% не гарантируется)
 2. Добавлю поле во frontmatter поста:
    ```yaml
    cover: '/blog-covers/<X>.webp'

@@ -97,12 +97,12 @@ export default function HeroSection() {
         <div className="flex items-end p-6 md:p-8 border-r border-forge-line">
           <h1 className="font-heading text-4xl md:text-[58px] font-normal leading-[1.15]">
             From Raw Idea<br />
-            To Proven Decision <span className="text-forge-ember" aria-hidden="true">&gt;&gt;&gt;</span>
+            To Evidence-Backed Decisions <span className="text-forge-ember" aria-hidden="true">&gt;&gt;&gt;</span>
           </h1>
         </div>
         <div className="flex flex-col justify-between p-6 md:p-8">
           <p className="text-sm leading-relaxed text-forge-fg">
-            Forgeplan turns unstructured thinking into structured artifacts you can trust, test, and ship — with quality scoring, evidence tracking, and semantic search built in.
+            Forgeplan organizes decisions into structured artifacts with quality scoring, evidence tracking, and semantic search. The animation illustrates the idea; its counts are decorative.
           </p>
           <p className="text-sm font-bold text-forge-ember mt-4">
             Shape. Validate. Reason. Build. Prove.

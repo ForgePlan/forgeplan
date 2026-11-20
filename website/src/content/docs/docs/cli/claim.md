@@ -5,12 +5,12 @@ description: "Claim an artifact for exclusive work - TTL-based advisory lock for
 
 `forgeplan claim` reserves an artifact for a specific agent, so other agents know not to touch it. It writes a small file at `.forgeplan/claims/<id>.yaml` containing the agent identity and an expiry time (TTL - time-to-live, after which the claim is considered abandoned and another agent can pick up the work). The expiry defaults to 30 minutes and caps at 24 hours.
 
-This is an **advisory lock**, not a hard lock - no other Forgeplan command refuses to run because something is claimed. The convention is that agents check [`forgeplan claims`](/docs/cli/claims/) before starting work and respect what they see. The dispatcher ([`forgeplan dispatch`](/docs/cli/dispatch/)) does honour claims and excludes already-claimed artifacts from its plans.
+This is an **advisory lock** for artifact work: it does not prevent artifact mutations. `claim` and `release` do enforce holder checks. Agents should check [`forgeplan claims`](/docs/cli/claims/) before work; [`forgeplan dispatch`](/docs/cli/dispatch/) excludes live claims.
 
 Two safety properties:
 
 - **No double-claim** - if a different agent already holds a live claim for this artifact, the call fails with a clear error message.
-- **Renewal is idempotent** - the same agent calling `claim` again refreshes the expiry without changing the holder. Use this on long-running work to keep the claim alive.
+- **Same-holder renewal** - calling `claim` again keeps the holder but rewrites `claimed_at`, expiry, and note. Pass `--note` again if you want to retain it.
 
 Mirrors [`forgeplan_claim`](/docs/mcp/forgeplan_claim/) on the MCP side.
 
@@ -41,7 +41,7 @@ forgeplan claim [OPTIONS] <ID>
 ## Options
 
 ```text
-      --agent <AGENT>              Agent identity ("name/version"). Defaults to `cli/<version>`
+      --agent <AGENT>              Explicit printable non-path identity, e.g. worker-1; default cli-<version>
       --ttl-minutes <TTL_MINUTES>  Time-to-live in minutes (default 30, max 1440 = 24h, min 1) [default: 30]
       --note <NOTE>                Optional free-form note surfaced by `forgeplan claims`
       --json                       Output as JSON for machine consumption
@@ -57,7 +57,7 @@ forgeplan claim [OPTIONS] <ID>
 forgeplan claim PRD-057 --note "implementing FR-003"
 ```
 
-Reserves `PRD-057` for 30 minutes under the default `cli/<version>` identity. The note appears in [`forgeplan claims`](/docs/cli/claims/) so the orchestrator can see what each agent is doing.
+Reserves `PRD-057` for 30 minutes under `cli-<version>`. The captured help below incorrectly says `cli/<version>`; explicit CLI agent names cannot contain `/`. In this build `release` has a different default, so inspect `claims` and pass the exact holder through `release --agent` rather than using `--force`.
 
 ### Example 2: Orchestrator claims on behalf of a worker
 
@@ -73,7 +73,7 @@ Useful when the orchestrator is a shell script driving sub-agents that do not sp
 forgeplan claim PRD-057 --ttl-minutes 30
 ```
 
-The same agent calling `claim` again on its own artifact extends the expiry without changing anything else. Use this on long-running refactors before the TTL runs out.
+The same holder can refresh the claim. The timestamp and note are rewritten as well as the expiry, so repeat `--note` when needed.
 
 ## How it fits the workflow
 
@@ -85,3 +85,26 @@ This is step 2 of the multi-agent loop: `dispatch` → **`claim`** → work → 
 - [`forgeplan release`](/docs/cli/release/) - drop an active claim
 - [`forgeplan claims`](/docs/cli/claims/) - list active claims
 - [`forgeplan dispatch`](/docs/cli/dispatch/) - produces the work plan claims protect
+
+<!-- forgeplan-runtime:start -->
+## Captured CLI help
+
+Source: `forgeplan 0.39.0+constellation.s1.1`, `forgeplan claim --help`.
+
+```text
+Claim an artifact (PRD-057 multi-agent coordination — soft signal "I'm working on this")
+
+Usage: forgeplan claim [OPTIONS] <ID>
+
+Arguments:
+  <ID>  Artifact ID to claim (e.g. PRD-057)
+
+Options:
+      --agent <AGENT>              Agent identity ("name/version"). Defaults to `cli/<version>`
+      --ttl-minutes <TTL_MINUTES>  Time-to-live in minutes (default 30, max 1440 = 24h, min 1) [default: 30]
+      --note <NOTE>                Optional free-form note surfaced by `forgeplan claims`
+      --json                       Output as JSON for machine consumption
+  -h, --help                       Print help
+  -V, --version                    Print version
+```
+<!-- forgeplan-runtime:end -->

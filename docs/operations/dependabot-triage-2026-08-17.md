@@ -1,5 +1,14 @@
 # Dependabot triage — 2026-08-17 (v0.34.0 release window)
 
+> Historical release-window decision, not a renewed acceptance for the scoped
+> October build. [GHSA-rhfx-m35p-ff5j](https://github.com/advisories/GHSA-rhfx-m35p-ff5j)
+> describes an `IterMut` soundness defect in `>=0.9.0,<0.16.3`, fixed `0.16.3`.
+> Miri detection does not establish the “optimized builds unaffected” claim
+> below. Preserve the old CVSS/decisions as dated data; the advisory currently
+> displays 2.7. Website build dependencies are separate from the Rust binary,
+> not exempt from supply-chain/build-machine risk. Pending fixes and zero-change
+> statements below were not revalidated or executed in this documentation audit.
+
 Per RED-LINE #10 (CLAUDE.md): each release tags every open Dependabot alert as
 **addressed** / **scheduled** / **accepted-with-justification**. Follows the
 `docs/operations/RELEASE-PROTOCOL.md` step-4 contract.

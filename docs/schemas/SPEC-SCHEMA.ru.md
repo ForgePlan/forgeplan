@@ -12,13 +12,20 @@
 
 **Правило**: Spec нужен когда есть **контракт** между двумя системами или командами.
 
-## Обязательные секции
+## Checklist авторинга
 
-| # | Секция | Обязательно? | Валидация |
+Таблица описывает конвенции содержания, не полный контракт валидатора.
+Реализованная проверка принимает структурные секции (API Contracts,
+Data Models, Interfaces) **или** Requirements / Behavioral Contract.
+Для Scenarios есть SHOULD-проверка. Корректность примеров, ограничений полей
+и поведения всё равно требует ручного review; отсутствие MUST findings не
+означает готовность к активации (есть отдельные length/evidence/stub gates).
+
+| # | Секция | Ожидание к документу | Рекомендация по содержимому |
 |---|--------|-------------|-----------|
 | 1 | **Meta Header** | ✅ MUST | Status, Author, PRD link, Type |
 | 2 | **Summary** | ✅ MUST | Что специфицируется |
-| 3 | **API Contracts** или **Data Models** | ✅ MUST (≥1) | Endpoints/schemas с examples |
+| 3 | **API Contracts**, **Data Models**, **Interfaces**, **Requirements** или **Behavioral Contract** | Включить хотя бы одну форму контракта | Структурный или поведенческий контракт с примерами |
 | 4 | **Validation Rules** | SHOULD | Field constraints |
 | 5 | **Events / Side Effects** | SHOULD | What happens on create/update/delete |
 | 6 | **Versioning** | SHOULD | Version history |
@@ -39,7 +46,7 @@
 |--------|---------|
 | ID | `SPEC-NNN` |
 | File | `SPEC-{NNN}-{kebab-case}.md` |
-| Path | `docs/specs/SPEC-015-oauth2-api.md` |
+| Path | `.forgeplan/specs/SPEC-015-oauth2-api.md` |
 
 ## Связанные документы
 

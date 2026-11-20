@@ -27,14 +27,22 @@ pub fn validate_transition(current: &str, target: &str) -> anyhow::Result<()> {
     if allowed {
         Ok(())
     } else {
-        let hint = match (current, target) {
-            ("deprecated", "active") => {
-                "\nHint: deprecated is terminal. Use `forgeplan reopen <id>` to create a new artifact."
-            }
-            ("superseded", _) => {
+        // Any departure from a terminal status names the rule, not just the
+        // one target that reads naturally. `deprecated → deprecated` is as
+        // refused as `deprecated → active`, and an operator who is told only
+        // "invalid transition" has to guess which rule stopped them. The
+        // superseded arm names the replacement instead, because there the
+        // actionable next step is different.
+        let hint = if is_terminal(current) {
+            if current == "superseded" {
                 "\nHint: superseded is terminal. The replacement artifact should be used instead."
+            } else if target == "active" {
+                "\nHint: deprecated is terminal. Use `forgeplan reopen <id>` to create a new artifact."
+            } else {
+                "\nHint: deprecated is terminal. A deprecated artifact cannot change state again."
             }
-            _ => "",
+        } else {
+            ""
         };
         anyhow::bail!(
             "Invalid transition: {} → {} (allowed: draft→active, active→superseded/deprecated/stale, stale→active/deprecated){}",

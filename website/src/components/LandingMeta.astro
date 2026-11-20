@@ -16,15 +16,15 @@ const {
 } = Astro.props;
 
 const site = Astro.site ?? new URL('https://forgeplan.dev');
-const canonical = new URL(slug ? `/${slug}` : '/', site).href;
-const ruPath = slug ? `/ru/${slug}` : '/ru/';
-const enPath = slug ? `/${slug}` : '/';
+const canonical = new URL(slug ? `/${slug}` : Astro.url.pathname, site).href;
+const enPath = new URL(canonical).pathname.replace(/^\/ru(?=\/|$)/, '') || '/';
+const ruPath = enPath === '/' ? null : `/ru${enPath}`;
 const ogImageUrl = new URL(ogImage, site).href;
 ---
 
 <link rel="canonical" href={canonical} />
 <link rel="alternate" hreflang="en" href={new URL(enPath, site).href} />
-<link rel="alternate" hreflang="ru" href={new URL(ruPath, site).href} />
+{ruPath && <link rel="alternate" hreflang="ru" href={new URL(ruPath, site).href} />}
 <link rel="alternate" hreflang="x-default" href={new URL(enPath, site).href} />
 
 <meta property="og:type" content="website" />
