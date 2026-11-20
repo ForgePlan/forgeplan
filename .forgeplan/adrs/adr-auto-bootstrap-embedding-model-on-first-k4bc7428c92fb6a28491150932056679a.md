@@ -6,6 +6,7 @@ kind: adr
 links:
 - target: PRD-092
   relation: based_on
+assigned_number: 32
 parent_epic: null
 predicted_number: 32
 slug: adr-auto-bootstrap-embedding-model-on-first-k4bc7428c92fb6a28491150932056679a
