@@ -16,6 +16,10 @@ updated: 2026-11-18
 
 # SPEC-013: Self-maintaining index behavioral contracts
 
+## Summary
+
+Behavioral contract for RFC-021: the derived index maintains itself — read paths reconcile `.forgeplan/` markdown before the read lock, the embedding queue survives process kill via durable `pending_jobs`, and only permitted obtainers (`embed`, `index --embed-profile`) may bootstrap the model on a cold cache. Frozen scenarios below are the TDD oracle for CLI and MCP surfaces.
+
 ## Requirements
 
 Behavioral contract for the derived-index maintenance surface. Frozen scenarios for TDD; each `#### Scenario` is a failing test until GREEN.
