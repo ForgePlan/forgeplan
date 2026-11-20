@@ -1,0 +1,23 @@
+{
+  "_next_action": "forgeplan renew EVID-085 --reason \"<why still relevant>\" --until 2027-12-31",
+  "stale": [
+    {
+      "days_expired": 24,
+      "id": "EVID-085",
+      "title": "ADR-008 + EPIC-006 Phase 0 Shape complete — scope narrowed via EPIC-007/008 supersession",
+      "valid_until": "2026-10-27"
+    },
+    {
+      "days_expired": 24,
+      "id": "EVID-086",
+      "title": "PRD-071 hint contract — 100% CLI coverage (70/70 GOOD), 36 contract tests pass, bw-compat restored",
+      "valid_until": "2026-10-27"
+    },
+    {
+      "days_expired": 23,
+      "id": "EVID-087",
+      "title": "Marketplace plugin forgeplan-workflow v1.5.0 published — distribution gap closed for PRD-071 hint contract",
+      "valid_until": "2026-10-28"
+    }
+  ]
+}

@@ -1,0 +1,117 @@
+{
+  "_next_action": "forgeplan new evidence \"<verification>\" && forgeplan link EVID-XXX REF-001 --relation informs",
+  "adi_output": {
+    "confidence": "High — the planning-only recommendation follows explicit, repeated boundaries in REF-001 and its stated relationship to EVID-232 and RFC-023. Confidence does not extend to receipt authenticity, live tracker state, technical enforcement or production readiness, none of which was independently verified.",
+    "deductions": [
+      {
+        "consequence": "Retain REF-001 as a draft documentary record based_on EVID-232 and informing RFC-023. Any publication should use the existing Rust CLI/MCP workflow with authoritative .forgeplan files and derived LanceDB synchronization; no new mechanism or ADR is justified by this refresh.",
+        "feasibility": "High — this disposition follows the existing artifact model and the expressly permitted preparation scope without requiring architecture changes.",
+        "hypothesis_id": "H1",
+        "risks": [
+          "Documentary PASS could be misread as architecture acceptance or runtime authorization.",
+          "The Critical-versus-Deep validator discrepancy and unverified linked-body inclusion limit assurance.",
+          "Three specialist contexts across two rounds could be incorrectly counted as six independent judges."
+        ]
+      },
+      {
+        "consequence": "Preserve the stated sequence: D-GATE acceptance requires EXT:OWNER; D-INVENTORY follows admitted D-GATE; D-CONTRACT freeze requires D-INVENTORY AND EXT:TRUST. Execution remains blocked until its actual prerequisites and separate authorizations hold.",
+        "feasibility": "Medium — documentary sequencing is represented, but enforcing or confirming admission requires current owner decisions and behavioral evidence that the supplied snapshot does not provide.",
+        "hypothesis_id": "H2",
+        "risks": [
+          "Stored dependency edges may describe prerequisites without enforcing them.",
+          "Historical Backlog states may differ from current tracker states.",
+          "Task-only bot handshake could be mistaken for shell or runtime verification."
+        ]
+      },
+      {
+        "consequence": "Keep HYP-001 through HYP-008 open and retain EVID-226 and EVID-227 as distinct reviews. Treat the 112 resolved edges and scoped acyclicity as structural observations, while leaving semantic trust, drift and experimental validity unconfirmed.",
+        "feasibility": "High — preserving unresolved findings matches the recorded NOT_RUN heal disposition and requires no speculative repairs.",
+        "hypothesis_id": "H3",
+        "risks": [
+          "Exit code 0 or empty selector results could be reported as a scoped health PASS.",
+          "Automated similarity suggestions could cause unjustified supersession.",
+          "Adding documentary links to satisfy evidence counts could conceal missing experiments.",
+          "Unsampled external outgoing edges may contain relationships outside the audited acyclicity boundary."
+        ]
+      },
+      {
+        "consequence": "Treat R_eff 1.00 as uninterpreted contextual metadata until its provenance is established. Neither that value nor cluster cohesion establishes independent evidence, architecture acceptance or execution eligibility.",
+        "feasibility": "Medium — interpretation can remain bounded immediately, but resolving the discrepancy requires the score definition, producer and consumer behavior.",
+        "hypothesis_id": "H4",
+        "risks": [
+          "A downstream display or admission rule could privilege the numeric value over the narrative limits.",
+          "Changing the score without understanding its ownership and calculation could introduce a new unsupported assertion."
+        ]
+      }
+    ],
+    "evidence_needed": [
+      {
+        "effort": "Medium",
+        "for_hypothesis": "H1",
+        "test": "Inspect the complete canonical EVID-232 and reviewed RFC-023 bodies, verify their cited hashes, and confirm the guardian's exact scope, independence and retained caveats. Inspect final publication receipts separately to establish whether the claimed preservation and publication checks completed."
+      },
+      {
+        "effort": "High",
+        "for_hypothesis": "H2",
+        "test": "When current tracker status is needed, obtain a timestamped readback and compare prerequisites and task states with the frozen projection. Separately inspect existing admission behavior and, under appropriate authorization, test rejection when each required AND prerequisite or authorization is absent."
+      },
+      {
+        "effort": "High",
+        "for_hypothesis": "H3",
+        "test": "Inspect the qualifying-reference selector to explain why observed incoming hypothesis edges yield zero qualifying evidence references. Establish actual drift coverage for the 29 records; prepare E0 owners, independent oracles, baselines, thresholds and stopping rules before separately authorized experiments."
+      },
+      {
+        "effort": "Medium",
+        "for_hypothesis": "H4",
+        "test": "Trace the definition and provenance of contextual R_eff 1.00 and inspect whether any display or admission consumer treats it as readiness. Record the interpretation without changing lifecycle, trust or scores without supporting evidence."
+      }
+    ],
+    "hypotheses": [
+      {
+        "assumptions": [
+          "EVID-232 contains the planning-only permission attributed to it.",
+          "The cited RFC and evidence hashes identify the reviewed versions.",
+          "Documentary completion does not change draft/Critical lifecycle status or authorize execution."
+        ],
+        "confidence": "High — the supplied artifact consistently limits its disposition to planning and explicitly bases it on EVID-232. This confidence concerns the interpretation of the supplied text; the complete linked evidence and receipts have not been independently inspected.",
+        "description": "REF-001 supports a bounded documentary planning disposition for RFC-023, permitting only D-E0 preregistration preparation and D-GATE owner-reconciliation preparation.",
+        "id": "H1"
+      },
+      {
+        "assumptions": [
+          "The supplied readback accurately records 28 Backlog children and 52 directed dependencies at its observation time.",
+          "Dependency semantics require all applicable prerequisites and separate authorization conditions.",
+          "Conformance receipts compare the frozen projection with the same historical readback."
+        ],
+        "confidence": "Medium — the reported graph and task states support documentary consistency. Shell verification is NOT_RUN, no second live query is claimed, and no enforcement tests establish that blocked work cannot start.",
+        "description": "The frozen tracker projection represents the intended prerequisite structure, but its operational enforcement and current state remain unproven.",
+        "id": "H2"
+      },
+      {
+        "assumptions": [
+          "The selector and link-audit outputs are accurately reproduced.",
+          "Zero scoped drift matches resulted from records not being assessed, as REF-001 states.",
+          "Qualifying evidence references require semantic relevance and cannot be inferred from incoming graph edges alone."
+        ],
+        "confidence": "High — the supplied receipts explicitly distinguish successful command exits from substantive coverage and report zero qualifying evidence references for HYP-001 through HYP-008. The observed evidence/informs/hypothesis edges therefore cannot independently establish triangulation.",
+        "description": "The reconciliation establishes limited structural integrity while leaving drift coverage and hypothesis validation unresolved.",
+        "id": "H3"
+      },
+      {
+        "assumptions": [
+          "The context score may be visible to consumers independently of REF-001's caveats.",
+          "Its calculation, provenance and intended semantics are not supplied.",
+          "REF-001's explicit refusal to compute or assert R_eff governs this analysis."
+        ],
+        "confidence": "Medium — the context displays 1.00 while the artifact explicitly disclaims an asserted R_eff value. This establishes ambiguity, but no supplied evidence shows that a consumer actually uses the field to grant readiness.",
+        "description": "The contextual R_eff value of 1.00 creates an unresolved interpretation risk if downstream consumers treat it as validated confidence or readiness.",
+        "id": "H4"
+      }
+    ],
+    "recommendation": "Ranked by supplied evidential support: H1, H3, H2, H4. Reaffirm only the documentary planning disposition based_on EVID-232 and informing RFC-023; retain draft/Critical status and NO implementation/execution readiness. Proceed only with D-E0 and D-GATE preparation. Keep HYP-001 through HYP-008 open, preserve distinct EVID-226/EVID-227 reviews, and make no mechanism choice or trust upgrade. Next, verify the complete guardian and publication evidence, obtain owner reconciliation for ADR-001/FR-41/#589 and applicable programme gates, and prepare independent E0 protocols. Current tracker state, prerequisite enforcement, qualifying-evidence semantics, drift coverage, trust admission and R_eff provenance remain unknown. This analysis is author reasoning over supplied material, not independent acceptance evidence."
+  },
+  "artifact_id": "REF-001",
+  "artifact_kind": "refresh",
+  "depth": "critical",
+  "r_eff_score": 1.0
+}

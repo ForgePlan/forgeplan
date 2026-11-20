@@ -1,0 +1,1107 @@
+{
+  "subjects": [
+    {
+      "id": "ADR-033",
+      "canonical_key": "adr-own-cross-domain-rust-analytics-keep-kf1722a1f4ac7e2bfa083f25edf92c62e",
+      "kind": "adr",
+      "depth": "critical",
+      "status": "draft"
+    },
+    {
+      "id": "ADR-034",
+      "canonical_key": "adr-bind-typed-analytical-facts-to-qualified-k60330dc7a76a8131b913e97303806321",
+      "kind": "adr",
+      "depth": "critical",
+      "status": "draft"
+    },
+    {
+      "id": "ADR-035",
+      "canonical_key": "adr-preserve-versioned-authority-and-durable-k0c75d791cf683ce6ce085df9affa0dd1",
+      "kind": "adr",
+      "depth": "critical",
+      "status": "draft"
+    },
+    {
+      "id": "ADR-036",
+      "canonical_key": "adr-expose-bounded-semantic-capabilities-and-k3314829d0ecfe5f986c14f0e41a5103f",
+      "kind": "adr",
+      "depth": "critical",
+      "status": "draft"
+    },
+    {
+      "id": "ADR-037",
+      "canonical_key": "adr-federate-authorized-captured-contracts-k8f01e6d9cba774418cb3feb0c15ac5d2",
+      "kind": "adr",
+      "depth": "critical",
+      "status": "draft"
+    },
+    {
+      "id": "ADR-038",
+      "canonical_key": "adr-separate-evidence-eligibility-from-kbae526aed0144c49e4e5401aea631938",
+      "kind": "adr",
+      "depth": "critical",
+      "status": "draft"
+    },
+    {
+      "id": "EVID-224",
+      "canonical_key": "evidence-discovery-scope-corrected-content-k5735e96538177597e34f173738104601",
+      "kind": "evidence",
+      "depth": "critical",
+      "status": "draft"
+    },
+    {
+      "id": "EVID-225",
+      "canonical_key": "evidence-discovery-hypothesis-corrected-kb3c6ceba61b14328b59f15588db011ca",
+      "kind": "evidence",
+      "depth": "critical",
+      "status": "draft"
+    },
+    {
+      "id": "EVID-226",
+      "canonical_key": "evidence-product-prd-scope-corrected-k95c1fced16f0ea0272741124a8000472",
+      "kind": "evidence",
+      "depth": "critical",
+      "status": "draft"
+    },
+    {
+      "id": "EVID-227",
+      "canonical_key": "evidence-product-prd-acceptance-corrected-k5b214e66a20d76b6d96b164ce933aaac",
+      "kind": "evidence",
+      "depth": "critical",
+      "status": "draft"
+    },
+    {
+      "id": "EVID-228",
+      "canonical_key": "evidence-product-prd-sol-guardian-planning-ke9a31f552b00cc968b3b1f84991f2366",
+      "kind": "evidence",
+      "depth": "critical",
+      "status": "draft"
+    },
+    {
+      "id": "EVID-229",
+      "canonical_key": "evidence-solution-proposed-input-independent-kcbb00a779e0884c3458714ae3e2df403",
+      "kind": "evidence",
+      "depth": "critical",
+      "status": "draft"
+    },
+    {
+      "id": "EVID-230",
+      "canonical_key": "evidence-rfc023-round-one-historical-design-k71664bda037570185b90673fff7a1b76",
+      "kind": "evidence",
+      "depth": "critical",
+      "status": "draft"
+    },
+    {
+      "id": "EVID-231",
+      "canonical_key": "evidence-rfc023-round-two-corrected-k433ab5b1f0d31b9438dfc8abb62bbb7b",
+      "kind": "evidence",
+      "depth": "critical",
+      "status": "draft"
+    },
+    {
+      "id": "EVID-232",
+      "canonical_key": "evidence-rfc023-final-planning-guardian-k592d3fb86097c5ccc75139ea80872a2c",
+      "kind": "evidence",
+      "depth": "critical",
+      "status": "draft"
+    },
+    {
+      "id": "HYP-001",
+      "canonical_key": "hyp-integrated-traceability-improves-complete-k4a105d2bef910728a27bd97e53ab62dd",
+      "kind": "hypothesis",
+      "depth": "critical",
+      "status": "draft"
+    },
+    {
+      "id": "HYP-002",
+      "canonical_key": "hyp-configuration-aware-semantic-facts-remain-kd6116d8df145e37aae2d82fd47825589",
+      "kind": "hypothesis",
+      "depth": "critical",
+      "status": "draft"
+    },
+    {
+      "id": "HYP-003",
+      "canonical_key": "hyp-pinned-cross-repository-contracts-can-k8afe3a348d93315c9e233dbc689a623b",
+      "kind": "hypothesis",
+      "depth": "critical",
+      "status": "draft"
+    },
+    {
+      "id": "HYP-004",
+      "canonical_key": "hyp-revision-bound-test-evidence-can-support-k246a4d18955838d13fd19c9fcc1e1d36",
+      "kind": "hypothesis",
+      "depth": "critical",
+      "status": "draft"
+    },
+    {
+      "id": "HYP-005",
+      "canonical_key": "hyp-a-frozen-independent-oracle-can-expose-k9fef2f8356bc50be55a1f0055af33a37",
+      "kind": "hypothesis",
+      "depth": "critical",
+      "status": "draft"
+    },
+    {
+      "id": "HYP-006",
+      "canonical_key": "hyp-sqlite-can-reduce-delivery-cost-while-k1b935932d0d098ef732e330d91e77872",
+      "kind": "hypothesis",
+      "depth": "critical",
+      "status": "draft"
+    },
+    {
+      "id": "HYP-007",
+      "canonical_key": "hyp-explainable-triage-and-linked-2d-3d-views-ke517e0d7400d2dbee1ca7e98973610c7",
+      "kind": "hypothesis",
+      "depth": "critical",
+      "status": "draft"
+    },
+    {
+      "id": "HYP-008",
+      "canonical_key": "hyp-target-users-prefer-an-integrated-decision-kb9a06cdf4b8513a2e5e3da335c631ae3",
+      "kind": "hypothesis",
+      "depth": "critical",
+      "status": "draft"
+    },
+    {
+      "id": "NOTE-067",
+      "canonical_key": "note-discovery-revision-bound-engineering-k3f805772fe7840b79cb018dbdca6389f",
+      "kind": "note",
+      "depth": "critical",
+      "status": "draft"
+    },
+    {
+      "id": "PRD-093",
+      "canonical_key": "prd-document-k6a638805c55b95a65262c2e83492a6fe",
+      "kind": "prd",
+      "depth": "critical",
+      "status": "draft"
+    },
+    {
+      "id": "PROB-107",
+      "canonical_key": "problem-multi-repository-change-owners-lack-a-kb79d376fabdd5d0b87be1857f2336389",
+      "kind": "problem",
+      "depth": "critical",
+      "status": "draft"
+    },
+    {
+      "id": "RFC-023",
+      "canonical_key": "rfc-rust-analytics-captures-kbe91e3dbf1920005719327653381b2fe",
+      "kind": "rfc",
+      "depth": "critical",
+      "status": "draft"
+    },
+    {
+      "id": "SOL-001",
+      "canonical_key": "solution-rust-k510d4bfe9ce8b00c10cca1094f17db7d",
+      "kind": "solution",
+      "depth": "critical",
+      "status": "draft"
+    },
+    {
+      "id": "SPEC-015",
+      "canonical_key": "spec-forgeplan-k1248a0e4a3027e78fbb3c943a15f0249",
+      "kind": "spec",
+      "depth": "critical",
+      "status": "draft"
+    }
+  ],
+  "missing_subjects": [],
+  "outgoing": [
+    {
+      "relation": "based_on",
+      "source": "ADR-034",
+      "source_key": "adr-bind-typed-analytical-facts-to-qualified-k60330dc7a76a8131b913e97303806321",
+      "target": "ADR-033",
+      "target_key": "adr-own-cross-domain-rust-analytics-keep-kf1722a1f4ac7e2bfa083f25edf92c62e",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "ADR-034",
+      "source_key": "adr-bind-typed-analytical-facts-to-qualified-k60330dc7a76a8131b913e97303806321",
+      "target": "EVID-229",
+      "target_key": "evidence-solution-proposed-input-independent-kcbb00a779e0884c3458714ae3e2df403",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "ADR-034",
+      "source_key": "adr-bind-typed-analytical-facts-to-qualified-k60330dc7a76a8131b913e97303806321",
+      "target": "PRD-093",
+      "target_key": "prd-document-k6a638805c55b95a65262c2e83492a6fe",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "ADR-034",
+      "source_key": "adr-bind-typed-analytical-facts-to-qualified-k60330dc7a76a8131b913e97303806321",
+      "target": "SOL-001",
+      "target_key": "solution-rust-k510d4bfe9ce8b00c10cca1094f17db7d",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "ADR-036",
+      "source_key": "adr-expose-bounded-semantic-capabilities-and-k3314829d0ecfe5f986c14f0e41a5103f",
+      "target": "ADR-034",
+      "target_key": "adr-bind-typed-analytical-facts-to-qualified-k60330dc7a76a8131b913e97303806321",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "ADR-036",
+      "source_key": "adr-expose-bounded-semantic-capabilities-and-k3314829d0ecfe5f986c14f0e41a5103f",
+      "target": "ADR-035",
+      "target_key": "adr-preserve-versioned-authority-and-durable-k0c75d791cf683ce6ce085df9affa0dd1",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "ADR-036",
+      "source_key": "adr-expose-bounded-semantic-capabilities-and-k3314829d0ecfe5f986c14f0e41a5103f",
+      "target": "EVID-229",
+      "target_key": "evidence-solution-proposed-input-independent-kcbb00a779e0884c3458714ae3e2df403",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "ADR-036",
+      "source_key": "adr-expose-bounded-semantic-capabilities-and-k3314829d0ecfe5f986c14f0e41a5103f",
+      "target": "HYP-002",
+      "target_key": "hyp-configuration-aware-semantic-facts-remain-kd6116d8df145e37aae2d82fd47825589",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "ADR-036",
+      "source_key": "adr-expose-bounded-semantic-capabilities-and-k3314829d0ecfe5f986c14f0e41a5103f",
+      "target": "HYP-007",
+      "target_key": "hyp-explainable-triage-and-linked-2d-3d-views-ke517e0d7400d2dbee1ca7e98973610c7",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "ADR-036",
+      "source_key": "adr-expose-bounded-semantic-capabilities-and-k3314829d0ecfe5f986c14f0e41a5103f",
+      "target": "PRD-093",
+      "target_key": "prd-document-k6a638805c55b95a65262c2e83492a6fe",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "ADR-036",
+      "source_key": "adr-expose-bounded-semantic-capabilities-and-k3314829d0ecfe5f986c14f0e41a5103f",
+      "target": "SOL-001",
+      "target_key": "solution-rust-k510d4bfe9ce8b00c10cca1094f17db7d",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "ADR-037",
+      "source_key": "adr-federate-authorized-captured-contracts-k8f01e6d9cba774418cb3feb0c15ac5d2",
+      "target": "ADR-034",
+      "target_key": "adr-bind-typed-analytical-facts-to-qualified-k60330dc7a76a8131b913e97303806321",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "ADR-037",
+      "source_key": "adr-federate-authorized-captured-contracts-k8f01e6d9cba774418cb3feb0c15ac5d2",
+      "target": "ADR-036",
+      "target_key": "adr-expose-bounded-semantic-capabilities-and-k3314829d0ecfe5f986c14f0e41a5103f",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "ADR-037",
+      "source_key": "adr-federate-authorized-captured-contracts-k8f01e6d9cba774418cb3feb0c15ac5d2",
+      "target": "ADR-035",
+      "target_key": "adr-preserve-versioned-authority-and-durable-k0c75d791cf683ce6ce085df9affa0dd1",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "ADR-037",
+      "source_key": "adr-federate-authorized-captured-contracts-k8f01e6d9cba774418cb3feb0c15ac5d2",
+      "target": "EVID-229",
+      "target_key": "evidence-solution-proposed-input-independent-kcbb00a779e0884c3458714ae3e2df403",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "ADR-037",
+      "source_key": "adr-federate-authorized-captured-contracts-k8f01e6d9cba774418cb3feb0c15ac5d2",
+      "target": "HYP-003",
+      "target_key": "hyp-pinned-cross-repository-contracts-can-k8afe3a348d93315c9e233dbc689a623b",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "ADR-037",
+      "source_key": "adr-federate-authorized-captured-contracts-k8f01e6d9cba774418cb3feb0c15ac5d2",
+      "target": "PRD-093",
+      "target_key": "prd-document-k6a638805c55b95a65262c2e83492a6fe",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "ADR-037",
+      "source_key": "adr-federate-authorized-captured-contracts-k8f01e6d9cba774418cb3feb0c15ac5d2",
+      "target": "SOL-001",
+      "target_key": "solution-rust-k510d4bfe9ce8b00c10cca1094f17db7d",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "ADR-033",
+      "source_key": "adr-own-cross-domain-rust-analytics-keep-kf1722a1f4ac7e2bfa083f25edf92c62e",
+      "target": "ADR-001",
+      "target_key": "ADR-001",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "ADR-033",
+      "source_key": "adr-own-cross-domain-rust-analytics-keep-kf1722a1f4ac7e2bfa083f25edf92c62e",
+      "target": "ADR-025",
+      "target_key": "adr-orchestration-sits-above-forgeplan-the-core-is-the-contract-layer",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "ADR-033",
+      "source_key": "adr-own-cross-domain-rust-analytics-keep-kf1722a1f4ac7e2bfa083f25edf92c62e",
+      "target": "EVID-229",
+      "target_key": "evidence-solution-proposed-input-independent-kcbb00a779e0884c3458714ae3e2df403",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "ADR-033",
+      "source_key": "adr-own-cross-domain-rust-analytics-keep-kf1722a1f4ac7e2bfa083f25edf92c62e",
+      "target": "HYP-001",
+      "target_key": "hyp-integrated-traceability-improves-complete-k4a105d2bef910728a27bd97e53ab62dd",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "ADR-033",
+      "source_key": "adr-own-cross-domain-rust-analytics-keep-kf1722a1f4ac7e2bfa083f25edf92c62e",
+      "target": "HYP-008",
+      "target_key": "hyp-target-users-prefer-an-integrated-decision-kb9a06cdf4b8513a2e5e3da335c631ae3",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "ADR-033",
+      "source_key": "adr-own-cross-domain-rust-analytics-keep-kf1722a1f4ac7e2bfa083f25edf92c62e",
+      "target": "PRD-093",
+      "target_key": "prd-document-k6a638805c55b95a65262c2e83492a6fe",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "ADR-033",
+      "source_key": "adr-own-cross-domain-rust-analytics-keep-kf1722a1f4ac7e2bfa083f25edf92c62e",
+      "target": "SOL-001",
+      "target_key": "solution-rust-k510d4bfe9ce8b00c10cca1094f17db7d",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "ADR-035",
+      "source_key": "adr-preserve-versioned-authority-and-durable-k0c75d791cf683ce6ce085df9affa0dd1",
+      "target": "ADR-003",
+      "target_key": "ADR-003",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "ADR-035",
+      "source_key": "adr-preserve-versioned-authority-and-durable-k0c75d791cf683ce6ce085df9affa0dd1",
+      "target": "ADR-034",
+      "target_key": "adr-bind-typed-analytical-facts-to-qualified-k60330dc7a76a8131b913e97303806321",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "ADR-035",
+      "source_key": "adr-preserve-versioned-authority-and-durable-k0c75d791cf683ce6ce085df9affa0dd1",
+      "target": "ADR-026",
+      "target_key": "adr-storage-classes-for-machine-written-records",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "ADR-035",
+      "source_key": "adr-preserve-versioned-authority-and-durable-k0c75d791cf683ce6ce085df9affa0dd1",
+      "target": "EVID-229",
+      "target_key": "evidence-solution-proposed-input-independent-kcbb00a779e0884c3458714ae3e2df403",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "ADR-035",
+      "source_key": "adr-preserve-versioned-authority-and-durable-k0c75d791cf683ce6ce085df9affa0dd1",
+      "target": "HYP-006",
+      "target_key": "hyp-sqlite-can-reduce-delivery-cost-while-k1b935932d0d098ef732e330d91e77872",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "ADR-035",
+      "source_key": "adr-preserve-versioned-authority-and-durable-k0c75d791cf683ce6ce085df9affa0dd1",
+      "target": "PRD-093",
+      "target_key": "prd-document-k6a638805c55b95a65262c2e83492a6fe",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "ADR-035",
+      "source_key": "adr-preserve-versioned-authority-and-durable-k0c75d791cf683ce6ce085df9affa0dd1",
+      "target": "SOL-001",
+      "target_key": "solution-rust-k510d4bfe9ce8b00c10cca1094f17db7d",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "ADR-038",
+      "source_key": "adr-separate-evidence-eligibility-from-kbae526aed0144c49e4e5401aea631938",
+      "target": "ADR-034",
+      "target_key": "adr-bind-typed-analytical-facts-to-qualified-k60330dc7a76a8131b913e97303806321",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "ADR-038",
+      "source_key": "adr-separate-evidence-eligibility-from-kbae526aed0144c49e4e5401aea631938",
+      "target": "ADR-036",
+      "target_key": "adr-expose-bounded-semantic-capabilities-and-k3314829d0ecfe5f986c14f0e41a5103f",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "ADR-038",
+      "source_key": "adr-separate-evidence-eligibility-from-kbae526aed0144c49e4e5401aea631938",
+      "target": "ADR-025",
+      "target_key": "adr-orchestration-sits-above-forgeplan-the-core-is-the-contract-layer",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "ADR-038",
+      "source_key": "adr-separate-evidence-eligibility-from-kbae526aed0144c49e4e5401aea631938",
+      "target": "ADR-035",
+      "target_key": "adr-preserve-versioned-authority-and-durable-k0c75d791cf683ce6ce085df9affa0dd1",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "ADR-038",
+      "source_key": "adr-separate-evidence-eligibility-from-kbae526aed0144c49e4e5401aea631938",
+      "target": "EVID-229",
+      "target_key": "evidence-solution-proposed-input-independent-kcbb00a779e0884c3458714ae3e2df403",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "ADR-038",
+      "source_key": "adr-separate-evidence-eligibility-from-kbae526aed0144c49e4e5401aea631938",
+      "target": "HYP-005",
+      "target_key": "hyp-a-frozen-independent-oracle-can-expose-k9fef2f8356bc50be55a1f0055af33a37",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "ADR-038",
+      "source_key": "adr-separate-evidence-eligibility-from-kbae526aed0144c49e4e5401aea631938",
+      "target": "HYP-004",
+      "target_key": "hyp-revision-bound-test-evidence-can-support-k246a4d18955838d13fd19c9fcc1e1d36",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "ADR-038",
+      "source_key": "adr-separate-evidence-eligibility-from-kbae526aed0144c49e4e5401aea631938",
+      "target": "PRD-093",
+      "target_key": "prd-document-k6a638805c55b95a65262c2e83492a6fe",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "ADR-038",
+      "source_key": "adr-separate-evidence-eligibility-from-kbae526aed0144c49e4e5401aea631938",
+      "target": "SOL-001",
+      "target_key": "solution-rust-k510d4bfe9ce8b00c10cca1094f17db7d",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "EVID-225",
+      "source_key": "evidence-discovery-hypothesis-corrected-kb3c6ceba61b14328b59f15588db011ca",
+      "target": "HYP-005",
+      "target_key": "hyp-a-frozen-independent-oracle-can-expose-k9fef2f8356bc50be55a1f0055af33a37",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "EVID-225",
+      "source_key": "evidence-discovery-hypothesis-corrected-kb3c6ceba61b14328b59f15588db011ca",
+      "target": "HYP-002",
+      "target_key": "hyp-configuration-aware-semantic-facts-remain-kd6116d8df145e37aae2d82fd47825589",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "EVID-225",
+      "source_key": "evidence-discovery-hypothesis-corrected-kb3c6ceba61b14328b59f15588db011ca",
+      "target": "HYP-007",
+      "target_key": "hyp-explainable-triage-and-linked-2d-3d-views-ke517e0d7400d2dbee1ca7e98973610c7",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "EVID-225",
+      "source_key": "evidence-discovery-hypothesis-corrected-kb3c6ceba61b14328b59f15588db011ca",
+      "target": "HYP-001",
+      "target_key": "hyp-integrated-traceability-improves-complete-k4a105d2bef910728a27bd97e53ab62dd",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "EVID-225",
+      "source_key": "evidence-discovery-hypothesis-corrected-kb3c6ceba61b14328b59f15588db011ca",
+      "target": "HYP-003",
+      "target_key": "hyp-pinned-cross-repository-contracts-can-k8afe3a348d93315c9e233dbc689a623b",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "EVID-225",
+      "source_key": "evidence-discovery-hypothesis-corrected-kb3c6ceba61b14328b59f15588db011ca",
+      "target": "HYP-004",
+      "target_key": "hyp-revision-bound-test-evidence-can-support-k246a4d18955838d13fd19c9fcc1e1d36",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "EVID-225",
+      "source_key": "evidence-discovery-hypothesis-corrected-kb3c6ceba61b14328b59f15588db011ca",
+      "target": "HYP-006",
+      "target_key": "hyp-sqlite-can-reduce-delivery-cost-while-k1b935932d0d098ef732e330d91e77872",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "EVID-225",
+      "source_key": "evidence-discovery-hypothesis-corrected-kb3c6ceba61b14328b59f15588db011ca",
+      "target": "HYP-008",
+      "target_key": "hyp-target-users-prefer-an-integrated-decision-kb9a06cdf4b8513a2e5e3da335c631ae3",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "EVID-225",
+      "source_key": "evidence-discovery-hypothesis-corrected-kb3c6ceba61b14328b59f15588db011ca",
+      "target": "NOTE-067",
+      "target_key": "note-discovery-revision-bound-engineering-k3f805772fe7840b79cb018dbdca6389f",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "EVID-225",
+      "source_key": "evidence-discovery-hypothesis-corrected-kb3c6ceba61b14328b59f15588db011ca",
+      "target": "PROB-107",
+      "target_key": "problem-multi-repository-change-owners-lack-a-kb79d376fabdd5d0b87be1857f2336389",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "EVID-224",
+      "source_key": "evidence-discovery-scope-corrected-content-k5735e96538177597e34f173738104601",
+      "target": "NOTE-067",
+      "target_key": "note-discovery-revision-bound-engineering-k3f805772fe7840b79cb018dbdca6389f",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "EVID-224",
+      "source_key": "evidence-discovery-scope-corrected-content-k5735e96538177597e34f173738104601",
+      "target": "PROB-107",
+      "target_key": "problem-multi-repository-change-owners-lack-a-kb79d376fabdd5d0b87be1857f2336389",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "EVID-227",
+      "source_key": "evidence-product-prd-acceptance-corrected-k5b214e66a20d76b6d96b164ce933aaac",
+      "target": "PRD-093",
+      "target_key": "prd-document-k6a638805c55b95a65262c2e83492a6fe",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "EVID-226",
+      "source_key": "evidence-product-prd-scope-corrected-k95c1fced16f0ea0272741124a8000472",
+      "target": "PRD-093",
+      "target_key": "prd-document-k6a638805c55b95a65262c2e83492a6fe",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "EVID-228",
+      "source_key": "evidence-product-prd-sol-guardian-planning-ke9a31f552b00cc968b3b1f84991f2366",
+      "target": "PRD-093",
+      "target_key": "prd-document-k6a638805c55b95a65262c2e83492a6fe",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "EVID-232",
+      "source_key": "evidence-rfc023-final-planning-guardian-k592d3fb86097c5ccc75139ea80872a2c",
+      "target": "RFC-023",
+      "target_key": "rfc-rust-analytics-captures-kbe91e3dbf1920005719327653381b2fe",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "EVID-230",
+      "source_key": "evidence-rfc023-round-one-historical-design-k71664bda037570185b90673fff7a1b76",
+      "target": "RFC-023",
+      "target_key": "rfc-rust-analytics-captures-kbe91e3dbf1920005719327653381b2fe",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "EVID-231",
+      "source_key": "evidence-rfc023-round-two-corrected-k433ab5b1f0d31b9438dfc8abb62bbb7b",
+      "target": "RFC-023",
+      "target_key": "rfc-rust-analytics-captures-kbe91e3dbf1920005719327653381b2fe",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "EVID-229",
+      "source_key": "evidence-solution-proposed-input-independent-kcbb00a779e0884c3458714ae3e2df403",
+      "target": "SOL-001",
+      "target_key": "solution-rust-k510d4bfe9ce8b00c10cca1094f17db7d",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "HYP-005",
+      "source_key": "hyp-a-frozen-independent-oracle-can-expose-k9fef2f8356bc50be55a1f0055af33a37",
+      "target": "PROB-107",
+      "target_key": "problem-multi-repository-change-owners-lack-a-kb79d376fabdd5d0b87be1857f2336389",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "HYP-002",
+      "source_key": "hyp-configuration-aware-semantic-facts-remain-kd6116d8df145e37aae2d82fd47825589",
+      "target": "PROB-107",
+      "target_key": "problem-multi-repository-change-owners-lack-a-kb79d376fabdd5d0b87be1857f2336389",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "HYP-007",
+      "source_key": "hyp-explainable-triage-and-linked-2d-3d-views-ke517e0d7400d2dbee1ca7e98973610c7",
+      "target": "PROB-107",
+      "target_key": "problem-multi-repository-change-owners-lack-a-kb79d376fabdd5d0b87be1857f2336389",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "HYP-001",
+      "source_key": "hyp-integrated-traceability-improves-complete-k4a105d2bef910728a27bd97e53ab62dd",
+      "target": "PROB-107",
+      "target_key": "problem-multi-repository-change-owners-lack-a-kb79d376fabdd5d0b87be1857f2336389",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "HYP-003",
+      "source_key": "hyp-pinned-cross-repository-contracts-can-k8afe3a348d93315c9e233dbc689a623b",
+      "target": "PROB-107",
+      "target_key": "problem-multi-repository-change-owners-lack-a-kb79d376fabdd5d0b87be1857f2336389",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "HYP-004",
+      "source_key": "hyp-revision-bound-test-evidence-can-support-k246a4d18955838d13fd19c9fcc1e1d36",
+      "target": "PROB-107",
+      "target_key": "problem-multi-repository-change-owners-lack-a-kb79d376fabdd5d0b87be1857f2336389",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "HYP-006",
+      "source_key": "hyp-sqlite-can-reduce-delivery-cost-while-k1b935932d0d098ef732e330d91e77872",
+      "target": "PROB-107",
+      "target_key": "problem-multi-repository-change-owners-lack-a-kb79d376fabdd5d0b87be1857f2336389",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "HYP-008",
+      "source_key": "hyp-target-users-prefer-an-integrated-decision-kb9a06cdf4b8513a2e5e3da335c631ae3",
+      "target": "PROB-107",
+      "target_key": "problem-multi-repository-change-owners-lack-a-kb79d376fabdd5d0b87be1857f2336389",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "NOTE-067",
+      "source_key": "note-discovery-revision-bound-engineering-k3f805772fe7840b79cb018dbdca6389f",
+      "target": "EPIC-009",
+      "target_key": "EPIC-009",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "NOTE-067",
+      "source_key": "note-discovery-revision-bound-engineering-k3f805772fe7840b79cb018dbdca6389f",
+      "target": "PROB-082",
+      "target_key": "PROB-082",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "NOTE-067",
+      "source_key": "note-discovery-revision-bound-engineering-k3f805772fe7840b79cb018dbdca6389f",
+      "target": "ADR-025",
+      "target_key": "adr-orchestration-sits-above-forgeplan-the-core-is-the-contract-layer",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "NOTE-067",
+      "source_key": "note-discovery-revision-bound-engineering-k3f805772fe7840b79cb018dbdca6389f",
+      "target": "ADR-026",
+      "target_key": "adr-storage-classes-for-machine-written-records",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "PRD-093",
+      "source_key": "prd-document-k6a638805c55b95a65262c2e83492a6fe",
+      "target": "EPIC-009",
+      "target_key": "EPIC-009",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "PRD-093",
+      "source_key": "prd-document-k6a638805c55b95a65262c2e83492a6fe",
+      "target": "PROB-082",
+      "target_key": "PROB-082",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "PRD-093",
+      "source_key": "prd-document-k6a638805c55b95a65262c2e83492a6fe",
+      "target": "ADR-025",
+      "target_key": "adr-orchestration-sits-above-forgeplan-the-core-is-the-contract-layer",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "PRD-093",
+      "source_key": "prd-document-k6a638805c55b95a65262c2e83492a6fe",
+      "target": "ADR-026",
+      "target_key": "adr-storage-classes-for-machine-written-records",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "PRD-093",
+      "source_key": "prd-document-k6a638805c55b95a65262c2e83492a6fe",
+      "target": "EVID-225",
+      "target_key": "evidence-discovery-hypothesis-corrected-kb3c6ceba61b14328b59f15588db011ca",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "PRD-093",
+      "source_key": "prd-document-k6a638805c55b95a65262c2e83492a6fe",
+      "target": "EVID-224",
+      "target_key": "evidence-discovery-scope-corrected-content-k5735e96538177597e34f173738104601",
+      "target_resolves": true
+    },
+    {
+      "relation": "refines",
+      "source": "PRD-093",
+      "source_key": "prd-document-k6a638805c55b95a65262c2e83492a6fe",
+      "target": "NOTE-067",
+      "target_key": "note-discovery-revision-bound-engineering-k3f805772fe7840b79cb018dbdca6389f",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "PRD-093",
+      "source_key": "prd-document-k6a638805c55b95a65262c2e83492a6fe",
+      "target": "PROB-107",
+      "target_key": "problem-multi-repository-change-owners-lack-a-kb79d376fabdd5d0b87be1857f2336389",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "PROB-107",
+      "source_key": "problem-multi-repository-change-owners-lack-a-kb79d376fabdd5d0b87be1857f2336389",
+      "target": "NOTE-067",
+      "target_key": "note-discovery-revision-bound-engineering-k3f805772fe7840b79cb018dbdca6389f",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "RFC-023",
+      "source_key": "rfc-rust-analytics-captures-kbe91e3dbf1920005719327653381b2fe",
+      "target": "ADR-001",
+      "target_key": "ADR-001",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "RFC-023",
+      "source_key": "rfc-rust-analytics-captures-kbe91e3dbf1920005719327653381b2fe",
+      "target": "ADR-003",
+      "target_key": "ADR-003",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "RFC-023",
+      "source_key": "rfc-rust-analytics-captures-kbe91e3dbf1920005719327653381b2fe",
+      "target": "ADR-034",
+      "target_key": "adr-bind-typed-analytical-facts-to-qualified-k60330dc7a76a8131b913e97303806321",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "RFC-023",
+      "source_key": "rfc-rust-analytics-captures-kbe91e3dbf1920005719327653381b2fe",
+      "target": "ADR-036",
+      "target_key": "adr-expose-bounded-semantic-capabilities-and-k3314829d0ecfe5f986c14f0e41a5103f",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "RFC-023",
+      "source_key": "rfc-rust-analytics-captures-kbe91e3dbf1920005719327653381b2fe",
+      "target": "ADR-037",
+      "target_key": "adr-federate-authorized-captured-contracts-k8f01e6d9cba774418cb3feb0c15ac5d2",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "RFC-023",
+      "source_key": "rfc-rust-analytics-captures-kbe91e3dbf1920005719327653381b2fe",
+      "target": "ADR-025",
+      "target_key": "adr-orchestration-sits-above-forgeplan-the-core-is-the-contract-layer",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "RFC-023",
+      "source_key": "rfc-rust-analytics-captures-kbe91e3dbf1920005719327653381b2fe",
+      "target": "ADR-033",
+      "target_key": "adr-own-cross-domain-rust-analytics-keep-kf1722a1f4ac7e2bfa083f25edf92c62e",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "RFC-023",
+      "source_key": "rfc-rust-analytics-captures-kbe91e3dbf1920005719327653381b2fe",
+      "target": "ADR-035",
+      "target_key": "adr-preserve-versioned-authority-and-durable-k0c75d791cf683ce6ce085df9affa0dd1",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "RFC-023",
+      "source_key": "rfc-rust-analytics-captures-kbe91e3dbf1920005719327653381b2fe",
+      "target": "ADR-038",
+      "target_key": "adr-separate-evidence-eligibility-from-kbae526aed0144c49e4e5401aea631938",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "RFC-023",
+      "source_key": "rfc-rust-analytics-captures-kbe91e3dbf1920005719327653381b2fe",
+      "target": "ADR-026",
+      "target_key": "adr-storage-classes-for-machine-written-records",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "RFC-023",
+      "source_key": "rfc-rust-analytics-captures-kbe91e3dbf1920005719327653381b2fe",
+      "target": "EVID-229",
+      "target_key": "evidence-solution-proposed-input-independent-kcbb00a779e0884c3458714ae3e2df403",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "RFC-023",
+      "source_key": "rfc-rust-analytics-captures-kbe91e3dbf1920005719327653381b2fe",
+      "target": "PRD-093",
+      "target_key": "prd-document-k6a638805c55b95a65262c2e83492a6fe",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "RFC-023",
+      "source_key": "rfc-rust-analytics-captures-kbe91e3dbf1920005719327653381b2fe",
+      "target": "SOL-001",
+      "target_key": "solution-rust-k510d4bfe9ce8b00c10cca1094f17db7d",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "RFC-023",
+      "source_key": "rfc-rust-analytics-captures-kbe91e3dbf1920005719327653381b2fe",
+      "target": "SPEC-015",
+      "target_key": "spec-forgeplan-k1248a0e4a3027e78fbb3c943a15f0249",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "SOL-001",
+      "source_key": "solution-rust-k510d4bfe9ce8b00c10cca1094f17db7d",
+      "target": "ADR-025",
+      "target_key": "adr-orchestration-sits-above-forgeplan-the-core-is-the-contract-layer",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "SOL-001",
+      "source_key": "solution-rust-k510d4bfe9ce8b00c10cca1094f17db7d",
+      "target": "ADR-026",
+      "target_key": "adr-storage-classes-for-machine-written-records",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "SOL-001",
+      "source_key": "solution-rust-k510d4bfe9ce8b00c10cca1094f17db7d",
+      "target": "EVID-228",
+      "target_key": "evidence-product-prd-sol-guardian-planning-ke9a31f552b00cc968b3b1f84991f2366",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "SOL-001",
+      "source_key": "solution-rust-k510d4bfe9ce8b00c10cca1094f17db7d",
+      "target": "HYP-005",
+      "target_key": "hyp-a-frozen-independent-oracle-can-expose-k9fef2f8356bc50be55a1f0055af33a37",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "SOL-001",
+      "source_key": "solution-rust-k510d4bfe9ce8b00c10cca1094f17db7d",
+      "target": "HYP-002",
+      "target_key": "hyp-configuration-aware-semantic-facts-remain-kd6116d8df145e37aae2d82fd47825589",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "SOL-001",
+      "source_key": "solution-rust-k510d4bfe9ce8b00c10cca1094f17db7d",
+      "target": "HYP-007",
+      "target_key": "hyp-explainable-triage-and-linked-2d-3d-views-ke517e0d7400d2dbee1ca7e98973610c7",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "SOL-001",
+      "source_key": "solution-rust-k510d4bfe9ce8b00c10cca1094f17db7d",
+      "target": "HYP-001",
+      "target_key": "hyp-integrated-traceability-improves-complete-k4a105d2bef910728a27bd97e53ab62dd",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "SOL-001",
+      "source_key": "solution-rust-k510d4bfe9ce8b00c10cca1094f17db7d",
+      "target": "HYP-003",
+      "target_key": "hyp-pinned-cross-repository-contracts-can-k8afe3a348d93315c9e233dbc689a623b",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "SOL-001",
+      "source_key": "solution-rust-k510d4bfe9ce8b00c10cca1094f17db7d",
+      "target": "HYP-004",
+      "target_key": "hyp-revision-bound-test-evidence-can-support-k246a4d18955838d13fd19c9fcc1e1d36",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "SOL-001",
+      "source_key": "solution-rust-k510d4bfe9ce8b00c10cca1094f17db7d",
+      "target": "HYP-006",
+      "target_key": "hyp-sqlite-can-reduce-delivery-cost-while-k1b935932d0d098ef732e330d91e77872",
+      "target_resolves": true
+    },
+    {
+      "relation": "informs",
+      "source": "SOL-001",
+      "source_key": "solution-rust-k510d4bfe9ce8b00c10cca1094f17db7d",
+      "target": "HYP-008",
+      "target_key": "hyp-target-users-prefer-an-integrated-decision-kb9a06cdf4b8513a2e5e3da335c631ae3",
+      "target_resolves": true
+    },
+    {
+      "relation": "refines",
+      "source": "SOL-001",
+      "source_key": "solution-rust-k510d4bfe9ce8b00c10cca1094f17db7d",
+      "target": "NOTE-067",
+      "target_key": "note-discovery-revision-bound-engineering-k3f805772fe7840b79cb018dbdca6389f",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "SOL-001",
+      "source_key": "solution-rust-k510d4bfe9ce8b00c10cca1094f17db7d",
+      "target": "PRD-093",
+      "target_key": "prd-document-k6a638805c55b95a65262c2e83492a6fe",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "SOL-001",
+      "source_key": "solution-rust-k510d4bfe9ce8b00c10cca1094f17db7d",
+      "target": "PROB-107",
+      "target_key": "problem-multi-repository-change-owners-lack-a-kb79d376fabdd5d0b87be1857f2336389",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "SPEC-015",
+      "source_key": "spec-forgeplan-k1248a0e4a3027e78fbb3c943a15f0249",
+      "target": "EVID-229",
+      "target_key": "evidence-solution-proposed-input-independent-kcbb00a779e0884c3458714ae3e2df403",
+      "target_resolves": true
+    },
+    {
+      "relation": "refines",
+      "source": "SPEC-015",
+      "source_key": "spec-forgeplan-k1248a0e4a3027e78fbb3c943a15f0249",
+      "target": "PRD-093",
+      "target_key": "prd-document-k6a638805c55b95a65262c2e83492a6fe",
+      "target_resolves": true
+    },
+    {
+      "relation": "based_on",
+      "source": "SPEC-015",
+      "source_key": "spec-forgeplan-k1248a0e4a3027e78fbb3c943a15f0249",
+      "target": "SOL-001",
+      "target_key": "solution-rust-k510d4bfe9ce8b00c10cca1094f17db7d",
+      "target_resolves": true
+    }
+  ],
+  "incoming_from_outside": []
+}

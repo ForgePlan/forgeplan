@@ -1,0 +1,23 @@
+{
+  "key": "refresh-analytical-product-documentary-design-k4cda2159904c847307e8b9f9a2bd1a45",
+  "exit": 0,
+  "attempts_this_route": 1,
+  "provider": "codex-cli",
+  "model": "gpt-6.1-sol",
+  "depth_reported": "critical",
+  "effective_effort": "UNVERIFIED; not surfaced in output",
+  "generation": "UNVERIFIED; no generation or input manifest in returned payload",
+  "input_file_sha256_before": "16a50e1a9a715db71697d5b28fde72bffe231b53c8e4620b057f0d6fd8d526db",
+  "input_file_sha256_after": "16a50e1a9a715db71697d5b28fde72bffe231b53c8e4620b057f0d6fd8d526db",
+  "input_unchanged": true,
+  "old_publication_packet_fingerprints_unchanged": true,
+  "parsed": true,
+  "hypotheses": 4,
+  "deductions": 4,
+  "evidence_obligations": 4,
+  "recommendation": "Ranked by supplied evidential support: H1, H3, H2, H4. Reaffirm only the documentary planning disposition based_on EVID-232 and informing RFC-023; retain draft/Critical status and NO implementation/execution readiness. Proceed only with D-E0 and D-GATE preparation. Keep HYP-001 through HYP-008 open, preserve distinct EVID-226/EVID-227 reviews, and make no mechanism choice or trust upgrade. Next, verify the complete guardian and publication evidence, obtain owner reconciliation for ADR-001/FR-41/#589 and applicable programme gates, and prepare independent E0 protocols. Current tracker state, prerequisite enforcement, qualifying-evidence semantics, drift coverage, trust admission and R_eff provenance remain unknown. This analysis is author reasoning over supplied material, not independent acceptance evidence.",
+  "scope_limit": "Author ADI only, not independent evidence. NO implementation/execution readiness remains. The model itself says complete linked evidence and raw receipts were not independently inspected; complete linked-body inclusion is unverified. Returned r_eff_score 1.0 is contextual metadata, not a correctness probability, trust upgrade or readiness verdict.",
+  "stderr_limit": "Inherited EVID-215/EVID-136 verdict and EVID-205 CL warnings retained; local subscription notice retained.",
+  "original_attempt": "Original MiniMax HTTP 402 attempt and all original handoff bytes preserved untouched.",
+  "mutations": "No --save, validation/export rerun, config/global/artifact/tracker mutation or activation."
+}

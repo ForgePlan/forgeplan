@@ -1,0 +1,25 @@
+{
+  "task_uid": "c63Z6t6YfAnx01GVnvCL",
+  "identity": "Forge Agent (7eea6f7ad3fc4b3196385e9d3e3cb856)",
+  "workspace_uid": "kgYnhWodYw7kNbJMAK5q",
+  "handshake": "shell verifier MATCH; mounted context/workspaces/root access confirmed",
+  "readback": {
+    "status": "Done",
+    "phase": "Done",
+    "completed_at": null,
+    "rust_checks": "NOT_APPLICABLE",
+    "branch": "plan/analytical-product-20261120",
+    "artifact": "rfc-rust-analytics-captures-kbe91e3dbf1920005719327653381b2fe",
+    "checklist_checked": 7,
+    "checklist_total": 7,
+    "review_criterion": "Провести независимые проверки — PRD: Astra, архитектура: Sol; доступны результаты проверок и разрешение существенных замечаний"
+  },
+  "warning": "Status Done and Phase Done read back, but completed_at remains null; system completion is not confirmed. Do not infer it.",
+  "evidence": {
+    "evid232": "evidence-rfc023-final-planning-guardian-k592d3fb86097c5ccc75139ea80872a2c",
+    "ref001": "refresh-analytical-product-documentary-design-k4cda2159904c847307e8b9f9a2bd1a45",
+    "ref001_sha256": "16a50e1a9a715db71697d5b28fde72bffe231b53c8e4620b057f0d6fd8d526db",
+    "prior_graph_receipt_sha256": "9be707fa2313204ca96f3cfdd5c66e0040a8c2ee67c4bafe097a9bb8b3f0061c"
+  },
+  "limits": "Documentary planning only. Execution, experiments, activation, production and runtime acceptance are not authorized. Children were not written in this closure."
+}

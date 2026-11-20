@@ -1,0 +1,265 @@
+{
+  "_next_action": "forgeplan new refresh \"Re-evaluate ADR-005\"",
+  "hints": [
+    {
+      "action": "forgeplan new refresh \"Re-evaluate ADR-005\"",
+      "level": "warning",
+      "message": "Refresh stale ADR-005"
+    }
+  ],
+  "reports": [
+    {
+      "changed_files": [],
+      "created_at": "",
+      "id": "ADR-001",
+      "is_stale": false,
+      "title": "No adapter traits — AI agent is the orchestrator, not Forgeplan"
+    },
+    {
+      "changed_files": [],
+      "created_at": "",
+      "id": "ADR-002",
+      "is_stale": false,
+      "title": "R_eff skips non-active dependencies (draft, deprecated, superseded)"
+    },
+    {
+      "changed_files": [],
+      "created_at": "",
+      "id": "ADR-003",
+      "is_stale": false,
+      "title": "Markdown files as source of truth — LanceDB as index layer"
+    },
+    {
+      "changed_files": [
+        {
+          "last_modified": "2026-11-18 13:46:44 +0300",
+          "path": "crates/forgeplan-core/src/lifecycle/transitions.rs"
+        },
+        {
+          "last_modified": "2026-11-18 13:46:44 +0300",
+          "path": "crates/forgeplan-core/src/lifecycle/mod.rs"
+        },
+        {
+          "last_modified": "2026-11-18 13:46:44 +0300",
+          "path": "crates/forgeplan-core/src/stale/mod.rs"
+        },
+        {
+          "last_modified": "2026-11-18 13:46:44 +0300",
+          "path": "crates/forgeplan-cli/src/commands/renew.rs"
+        },
+        {
+          "last_modified": "2026-11-18 13:46:44 +0300",
+          "path": "crates/forgeplan-cli/src/commands/reopen.rs"
+        },
+        {
+          "last_modified": "2026-11-20 01:39:08 +0300",
+          "path": "crates/forgeplan-cli/src/main.rs"
+        },
+        {
+          "last_modified": "2026-11-20 01:39:08 +0300",
+          "path": "crates/forgeplan-mcp/src/server.rs"
+        },
+        {
+          "last_modified": "2026-11-18 13:46:44 +0300",
+          "path": "crates/forgeplan-core/src/health/mod.rs"
+        }
+      ],
+      "created_at": "2026-04-02",
+      "id": "ADR-005",
+      "is_stale": true,
+      "title": "Lifecycle v2 — stale status, renew, reopen, terminal deprecated"
+    },
+    {
+      "changed_files": [],
+      "created_at": "",
+      "id": "ADR-006",
+      "is_stale": false,
+      "title": "FPF Engine v2 — Layered Architecture (Core + Extensions)"
+    },
+    {
+      "changed_files": [
+        {
+          "last_modified": "2026-11-18 13:46:44 +0300",
+          "path": "crates/forgeplan-cli/src/commands/init.rs"
+        },
+        {
+          "last_modified": "2026-11-18 13:46:44 +0300",
+          "path": "crates/forgeplan-cli/src/commands/mod.rs"
+        },
+        {
+          "last_modified": "2026-11-20 01:39:08 +0300",
+          "path": "crates/forgeplan-mcp/src/server.rs"
+        },
+        {
+          "last_modified": "2026-11-18 13:46:44 +0300",
+          "path": "crates/forgeplan-core/src/lifecycle/mod.rs"
+        }
+      ],
+      "created_at": "2026-04-19",
+      "id": "ADR-008",
+      "is_stale": true,
+      "title": "Self-describing tools + agent-skills standard + brownfield-aware init"
+    },
+    {
+      "changed_files": [
+        {
+          "last_modified": "2026-11-18 13:46:44 +0300",
+          "path": "crates/forgeplan-core/src/playbook/"
+        },
+        {
+          "last_modified": "2026-11-18 13:46:44 +0300",
+          "path": "crates/forgeplan-core/src/ingest/"
+        },
+        {
+          "last_modified": "2026-09-04 13:08:43 +0300",
+          "path": "crates/forgeplan-core/src/plugins/"
+        },
+        {
+          "last_modified": "2026-11-18 13:46:44 +0300",
+          "path": "crates/forgeplan-cli/src/commands/playbook.rs"
+        },
+        {
+          "last_modified": "2026-11-18 13:46:44 +0300",
+          "path": "crates/forgeplan-cli/src/commands/ingest.rs"
+        },
+        {
+          "last_modified": "2026-11-18 13:46:44 +0300",
+          "path": "docs/operations/PLAYBOOK-AUTHORING.ru.md"
+        },
+        {
+          "last_modified": "2026-11-18 13:46:44 +0300",
+          "path": "marketplace/"
+        }
+      ],
+      "created_at": "2026-04-20",
+      "id": "ADR-009",
+      "is_stale": true,
+      "title": "Forgeplan as orchestrator — Playbook Skill Agent Mapping Pack marketplace model"
+    },
+    {
+      "changed_files": [],
+      "created_at": "",
+      "id": "ADR-011",
+      "is_stale": false,
+      "title": "Plugin/Agent dispatchers invoke claude --print directly"
+    },
+    {
+      "changed_files": [
+        {
+          "last_modified": "2026-11-18 13:46:44 +0300",
+          "path": "crates/forgeplan-core/src/artifact/store.rs"
+        },
+        {
+          "last_modified": "2026-11-18 13:46:44 +0300",
+          "path": "crates/forgeplan-core/src/artifact/frontmatter.rs"
+        },
+        {
+          "last_modified": "2026-11-18 13:46:44 +0300",
+          "path": "crates/forgeplan-core/src/artifact/types.rs"
+        },
+        {
+          "last_modified": "2026-11-18 13:46:44 +0300",
+          "path": "crates/forgeplan-cli/src/commands/new.rs"
+        },
+        {
+          "last_modified": "2026-09-08 20:18:22 +0300",
+          "path": ".github/workflows/assign-id.yml"
+        },
+        {
+          "last_modified": "2026-11-18 13:46:44 +0300",
+          "path": "docs/methodology/ID-ASSIGNMENT.ru.md"
+        },
+        {
+          "last_modified": "2026-11-18 13:46:44 +0300",
+          "path": "CLAUDE.md"
+        }
+      ],
+      "created_at": "2026-05-06",
+      "id": "ADR-012",
+      "is_stale": true,
+      "title": "Slug-canonical identity with display number assigned at merge"
+    },
+    {
+      "changed_files": [],
+      "created_at": "",
+      "id": "ADR-015",
+      "is_stale": false,
+      "title": "MCP workspace resolution — error on multi-worktree detect"
+    },
+    {
+      "changed_files": [],
+      "created_at": "",
+      "id": "ADR-020",
+      "is_stale": false,
+      "title": "R_eff excludes terminal-status evidence from the weakest-link min"
+    },
+    {
+      "changed_files": [],
+      "created_at": "",
+      "id": "ADR-021",
+      "is_stale": false,
+      "title": "Evidence is scored as evidence, never as a dependency"
+    },
+    {
+      "changed_files": [],
+      "created_at": "",
+      "id": "ADR-023",
+      "is_stale": false,
+      "title": "Pure-Rust embedding engine — semantic search ships in the binaries"
+    },
+    {
+      "changed_files": [],
+      "created_at": "2026-10-16",
+      "id": "ADR-031",
+      "is_stale": false,
+      "title": "Finite evidence-backed independent review without a defect quota"
+    },
+    {
+      "changed_files": [
+        {
+          "last_modified": "2026-04-01 23:45:48 +0300",
+          "path": "crates/forgeplan-core/src/estimate/mod.rs"
+        },
+        {
+          "last_modified": "2026-04-04 00:39:20 +0300",
+          "path": "crates/forgeplan-core/src/estimate/types.rs"
+        },
+        {
+          "last_modified": "2026-04-06 02:11:01 +0300",
+          "path": "crates/forgeplan-core/src/estimate/extractor.rs"
+        },
+        {
+          "last_modified": "2026-04-06 02:11:01 +0300",
+          "path": "crates/forgeplan-core/src/estimate/scorer.rs"
+        },
+        {
+          "last_modified": "2026-04-04 00:39:20 +0300",
+          "path": "crates/forgeplan-core/src/estimate/calculator.rs"
+        },
+        {
+          "last_modified": "2026-04-01 21:58:20 +0300",
+          "path": "crates/forgeplan-core/src/estimate/confidence.rs"
+        },
+        {
+          "last_modified": "2026-04-04 00:39:20 +0300",
+          "path": "crates/forgeplan-core/src/estimate/display.rs"
+        },
+        {
+          "last_modified": "2026-11-18 13:46:44 +0300",
+          "path": "crates/forgeplan-cli/src/commands/estimate.rs"
+        }
+      ],
+      "created_at": "2026-03-31",
+      "id": "RFC-005",
+      "is_stale": true,
+      "title": "Estimate Engine — Multi-Grade Scoring Architecture"
+    },
+    {
+      "changed_files": [],
+      "created_at": "",
+      "id": "RFC-009",
+      "is_stale": false,
+      "title": "Migration rollout plan for lazy ID assignment (PROB-060)"
+    }
+  ]
+}

@@ -1,0 +1,365 @@
+{
+  "_next_action": "17 anomaly(ies) detected — 7 require user input. Run `forgeplan_get <id>` on affected artifacts to review.",
+  "anomalies": [
+    {
+      "affected": [
+        "adr-canonical-key-as-authoritative-artifact-identity-display-id-as-alias",
+        "prd-collision-safe-artifact-identity-across-projects-and-git-workspaces"
+      ],
+      "description": "Cycle: adr-canonical-key-as-authoritative-artifact-identity-display-id-as-alias based_on prd-collision-safe-artifact-identity-across-projects-and-git-workspaces AND prd-collision-safe-artifact-identity-across-projects-and-git-workspaces based_on adr-canonical-key-as-authoritative-artifact-identity-display-id-as-alias",
+      "evidence": {
+        "cycle": [
+          "adr-canonical-key-as-authoritative-artifact-identity-display-id-as-alias",
+          "prd-collision-safe-artifact-identity-across-projects-and-git-workspaces"
+        ]
+      },
+      "id": "anom-circular-adr-canonical-key-as-authoritative-artifact-identity-display-id-as-alias-prd-collision-safe-artifact-identity-across-projects-and-git-workspaces",
+      "kind": "circular_dependency",
+      "observed_at": "2026-11-20T17:51:57.277166+00:00",
+      "severity": "high",
+      "suggested_resolution": null,
+      "tier": "user"
+    },
+    {
+      "affected": [
+        "adr-canonical-key-as-authoritative-artifact-identity-display-id-as-alias",
+        "spec-canonical-artifact-identity-key-minting-resolution-storage-and-repair"
+      ],
+      "description": "Cycle: adr-canonical-key-as-authoritative-artifact-identity-display-id-as-alias based_on spec-canonical-artifact-identity-key-minting-resolution-storage-and-repair AND spec-canonical-artifact-identity-key-minting-resolution-storage-and-repair based_on adr-canonical-key-as-authoritative-artifact-identity-display-id-as-alias",
+      "evidence": {
+        "cycle": [
+          "adr-canonical-key-as-authoritative-artifact-identity-display-id-as-alias",
+          "spec-canonical-artifact-identity-key-minting-resolution-storage-and-repair"
+        ]
+      },
+      "id": "anom-circular-adr-canonical-key-as-authoritative-artifact-identity-display-id-as-alias-spec-canonical-artifact-identity-key-minting-resolution-storage-and-repair",
+      "kind": "circular_dependency",
+      "observed_at": "2026-11-20T17:51:57.277166+00:00",
+      "severity": "high",
+      "suggested_resolution": null,
+      "tier": "user"
+    },
+    {
+      "affected": [
+        "prd-collision-safe-artifact-identity-across-projects-and-git-workspaces",
+        "rfc-implementation-of-canonical-key-artifact-identity"
+      ],
+      "description": "Cycle: prd-collision-safe-artifact-identity-across-projects-and-git-workspaces based_on rfc-implementation-of-canonical-key-artifact-identity AND rfc-implementation-of-canonical-key-artifact-identity based_on prd-collision-safe-artifact-identity-across-projects-and-git-workspaces",
+      "evidence": {
+        "cycle": [
+          "prd-collision-safe-artifact-identity-across-projects-and-git-workspaces",
+          "rfc-implementation-of-canonical-key-artifact-identity"
+        ]
+      },
+      "id": "anom-circular-prd-collision-safe-artifact-identity-across-projects-and-git-workspaces-rfc-implementation-of-canonical-key-artifact-identity",
+      "kind": "circular_dependency",
+      "observed_at": "2026-11-20T17:51:57.277166+00:00",
+      "severity": "high",
+      "suggested_resolution": null,
+      "tier": "user"
+    },
+    {
+      "affected": [
+        "prd-collision-safe-artifact-identity-across-projects-and-git-workspaces",
+        "spec-canonical-artifact-identity-key-minting-resolution-storage-and-repair"
+      ],
+      "description": "Cycle: prd-collision-safe-artifact-identity-across-projects-and-git-workspaces based_on spec-canonical-artifact-identity-key-minting-resolution-storage-and-repair AND spec-canonical-artifact-identity-key-minting-resolution-storage-and-repair based_on prd-collision-safe-artifact-identity-across-projects-and-git-workspaces",
+      "evidence": {
+        "cycle": [
+          "prd-collision-safe-artifact-identity-across-projects-and-git-workspaces",
+          "spec-canonical-artifact-identity-key-minting-resolution-storage-and-repair"
+        ]
+      },
+      "id": "anom-circular-prd-collision-safe-artifact-identity-across-projects-and-git-workspaces-spec-canonical-artifact-identity-key-minting-resolution-storage-and-repair",
+      "kind": "circular_dependency",
+      "observed_at": "2026-11-20T17:51:57.277166+00:00",
+      "severity": "high",
+      "suggested_resolution": null,
+      "tier": "user"
+    },
+    {
+      "affected": [
+        "EVID-208",
+        "EVID-218"
+      ],
+      "description": "EVID-208 and EVID-218: similar titles (similarity=1.00)",
+      "evidence": {
+        "other_id": "EVID-218",
+        "similarity_score": 1.0
+      },
+      "id": "anom-duplicate-EVID-208-EVID-218",
+      "kind": "duplicate_artifact",
+      "observed_at": "2026-11-20T17:51:57.277166+00:00",
+      "severity": "medium",
+      "suggested_resolution": {
+        "action": "forgeplan_supersede",
+        "rationale": "Supersede the older/redundant artifact in favour of the canonical one",
+        "target": "EVID-208",
+        "tier": "adi"
+      },
+      "tier": "adi"
+    },
+    {
+      "affected": [
+        "EVID-226",
+        "EVID-227"
+      ],
+      "description": "EVID-226 and EVID-227: similar titles (similarity=0.71)",
+      "evidence": {
+        "other_id": "EVID-227",
+        "similarity_score": 0.7142857142857143
+      },
+      "id": "anom-duplicate-EVID-226-EVID-227",
+      "kind": "duplicate_artifact",
+      "observed_at": "2026-11-20T17:51:57.277166+00:00",
+      "severity": "medium",
+      "suggested_resolution": {
+        "action": "forgeplan_supersede",
+        "rationale": "Supersede the older/redundant artifact in favour of the canonical one",
+        "target": "EVID-226",
+        "tier": "adi"
+      },
+      "tier": "adi"
+    },
+    {
+      "affected": [
+        "EVID-085",
+        "ADR-008",
+        "EPIC-006"
+      ],
+      "description": "EVID-085: valid_until=2026-10-27 expired; still linked to 2 active parent(s)",
+      "evidence": {
+        "parents": [
+          "ADR-008",
+          "EPIC-006"
+        ],
+        "valid_until": "2026-10-27"
+      },
+      "id": "anom-expired-evidence-EVID-085",
+      "kind": "expired_evidence",
+      "observed_at": "2026-11-20T17:51:57.277166+00:00",
+      "severity": "medium",
+      "suggested_resolution": null,
+      "tier": "user"
+    },
+    {
+      "affected": [
+        "EVID-086",
+        "PRD-071",
+        "PROB-046"
+      ],
+      "description": "EVID-086: valid_until=2026-10-27 expired; still linked to 2 active parent(s)",
+      "evidence": {
+        "parents": [
+          "PRD-071",
+          "PROB-046"
+        ],
+        "valid_until": "2026-10-27"
+      },
+      "id": "anom-expired-evidence-EVID-086",
+      "kind": "expired_evidence",
+      "observed_at": "2026-11-20T17:51:57.277166+00:00",
+      "severity": "medium",
+      "suggested_resolution": null,
+      "tier": "user"
+    },
+    {
+      "affected": [
+        "EVID-087",
+        "PRD-071"
+      ],
+      "description": "EVID-087: valid_until=2026-10-28 expired; still linked to 1 active parent(s)",
+      "evidence": {
+        "parents": [
+          "PRD-071"
+        ],
+        "valid_until": "2026-10-28"
+      },
+      "id": "anom-expired-evidence-EVID-087",
+      "kind": "expired_evidence",
+      "observed_at": "2026-11-20T17:51:57.277166+00:00",
+      "severity": "medium",
+      "suggested_resolution": null,
+      "tier": "user"
+    },
+    {
+      "affected": [
+        "HYP-001"
+      ],
+      "description": "Hypothesis HYP-001 has fewer than 2 distinct evidence references (0 found)",
+      "evidence": {
+        "evidence_count": 0,
+        "id": "HYP-001"
+      },
+      "id": "anom-hyp-untriangulated-hyp-001",
+      "kind": "untriangulated_hypothesis",
+      "observed_at": "2026-11-20T17:51:57.277166+00:00",
+      "severity": "medium",
+      "suggested_resolution": {
+        "action": "forgeplan_link",
+        "rationale": "Add at least one additional EVID- supporting (or refuting) the claim, then re-link via `informs`.",
+        "target": "HYP-001",
+        "tier": "adi"
+      },
+      "tier": "adi"
+    },
+    {
+      "affected": [
+        "HYP-002"
+      ],
+      "description": "Hypothesis HYP-002 has fewer than 2 distinct evidence references (0 found)",
+      "evidence": {
+        "evidence_count": 0,
+        "id": "HYP-002"
+      },
+      "id": "anom-hyp-untriangulated-hyp-002",
+      "kind": "untriangulated_hypothesis",
+      "observed_at": "2026-11-20T17:51:57.277166+00:00",
+      "severity": "medium",
+      "suggested_resolution": {
+        "action": "forgeplan_link",
+        "rationale": "Add at least one additional EVID- supporting (or refuting) the claim, then re-link via `informs`.",
+        "target": "HYP-002",
+        "tier": "adi"
+      },
+      "tier": "adi"
+    },
+    {
+      "affected": [
+        "HYP-003"
+      ],
+      "description": "Hypothesis HYP-003 has fewer than 2 distinct evidence references (0 found)",
+      "evidence": {
+        "evidence_count": 0,
+        "id": "HYP-003"
+      },
+      "id": "anom-hyp-untriangulated-hyp-003",
+      "kind": "untriangulated_hypothesis",
+      "observed_at": "2026-11-20T17:51:57.277166+00:00",
+      "severity": "medium",
+      "suggested_resolution": {
+        "action": "forgeplan_link",
+        "rationale": "Add at least one additional EVID- supporting (or refuting) the claim, then re-link via `informs`.",
+        "target": "HYP-003",
+        "tier": "adi"
+      },
+      "tier": "adi"
+    },
+    {
+      "affected": [
+        "HYP-004"
+      ],
+      "description": "Hypothesis HYP-004 has fewer than 2 distinct evidence references (0 found)",
+      "evidence": {
+        "evidence_count": 0,
+        "id": "HYP-004"
+      },
+      "id": "anom-hyp-untriangulated-hyp-004",
+      "kind": "untriangulated_hypothesis",
+      "observed_at": "2026-11-20T17:51:57.277166+00:00",
+      "severity": "medium",
+      "suggested_resolution": {
+        "action": "forgeplan_link",
+        "rationale": "Add at least one additional EVID- supporting (or refuting) the claim, then re-link via `informs`.",
+        "target": "HYP-004",
+        "tier": "adi"
+      },
+      "tier": "adi"
+    },
+    {
+      "affected": [
+        "HYP-005"
+      ],
+      "description": "Hypothesis HYP-005 has fewer than 2 distinct evidence references (0 found)",
+      "evidence": {
+        "evidence_count": 0,
+        "id": "HYP-005"
+      },
+      "id": "anom-hyp-untriangulated-hyp-005",
+      "kind": "untriangulated_hypothesis",
+      "observed_at": "2026-11-20T17:51:57.277166+00:00",
+      "severity": "medium",
+      "suggested_resolution": {
+        "action": "forgeplan_link",
+        "rationale": "Add at least one additional EVID- supporting (or refuting) the claim, then re-link via `informs`.",
+        "target": "HYP-005",
+        "tier": "adi"
+      },
+      "tier": "adi"
+    },
+    {
+      "affected": [
+        "HYP-006"
+      ],
+      "description": "Hypothesis HYP-006 has fewer than 2 distinct evidence references (0 found)",
+      "evidence": {
+        "evidence_count": 0,
+        "id": "HYP-006"
+      },
+      "id": "anom-hyp-untriangulated-hyp-006",
+      "kind": "untriangulated_hypothesis",
+      "observed_at": "2026-11-20T17:51:57.277166+00:00",
+      "severity": "medium",
+      "suggested_resolution": {
+        "action": "forgeplan_link",
+        "rationale": "Add at least one additional EVID- supporting (or refuting) the claim, then re-link via `informs`.",
+        "target": "HYP-006",
+        "tier": "adi"
+      },
+      "tier": "adi"
+    },
+    {
+      "affected": [
+        "HYP-007"
+      ],
+      "description": "Hypothesis HYP-007 has fewer than 2 distinct evidence references (0 found)",
+      "evidence": {
+        "evidence_count": 0,
+        "id": "HYP-007"
+      },
+      "id": "anom-hyp-untriangulated-hyp-007",
+      "kind": "untriangulated_hypothesis",
+      "observed_at": "2026-11-20T17:51:57.277166+00:00",
+      "severity": "medium",
+      "suggested_resolution": {
+        "action": "forgeplan_link",
+        "rationale": "Add at least one additional EVID- supporting (or refuting) the claim, then re-link via `informs`.",
+        "target": "HYP-007",
+        "tier": "adi"
+      },
+      "tier": "adi"
+    },
+    {
+      "affected": [
+        "HYP-008"
+      ],
+      "description": "Hypothesis HYP-008 has fewer than 2 distinct evidence references (0 found)",
+      "evidence": {
+        "evidence_count": 0,
+        "id": "HYP-008"
+      },
+      "id": "anom-hyp-untriangulated-hyp-008",
+      "kind": "untriangulated_hypothesis",
+      "observed_at": "2026-11-20T17:51:57.277166+00:00",
+      "severity": "medium",
+      "suggested_resolution": {
+        "action": "forgeplan_link",
+        "rationale": "Add at least one additional EVID- supporting (or refuting) the claim, then re-link via `informs`.",
+        "target": "HYP-008",
+        "tier": "adi"
+      },
+      "tier": "adi"
+    }
+  ],
+  "by_severity": {
+    "high": 4,
+    "low": 0,
+    "medium": 13
+  },
+  "by_tier": {
+    "adi": 10,
+    "auto": 0,
+    "user": 7
+  },
+  "total": 17
+}

@@ -1,0 +1,45 @@
+{
+  "findings": [
+    {
+      "id": "F1",
+      "reviewer": "RfcFitnessRoundOneSol",
+      "reviewed_file_sha256": "fdd53ac34a1268e10ed77c09f6e40e04793b32d60cc65325df61ef81904160de",
+      "author_disposition": "ADDRESSED_IN_DOCUMENT_PENDING_REVIEW",
+      "changes": [
+        "Seven-family actual closure matrix P3→P5",
+        "P3-QUERY scopes actual introduced family paths, no P4 output dependency",
+        "P5-EST actual calibrated extension route/calibrate + estimate positive/negative with ADR025 migration/window/standalone compatibility",
+        "P5-SEVEN full actual seven-family closure and explicit P5-REC dependency",
+        "P6-EST later legacy/optional-bin integration only; all affected FR04/FR29/theme/NFR09/AC3 mappings/checklists updated"
+      ],
+      "upstream_change_required": false
+    },
+    {
+      "id": "F2 / SYS-01",
+      "reviewers": [
+        "RfcFitnessRoundOneSol",
+        "RfcSystemRoundOneSol"
+      ],
+      "reviewed_file_sha256": "fdd53ac34a1268e10ed77c09f6e40e04793b32d60cc65325df61ef81904160de",
+      "author_disposition": "ADDRESSED_IN_DOCUMENT_PENDING_REVIEW",
+      "changes": [
+        "Explicit separately authorized isolated candidate/fault-test actual P1 publication scope",
+        "No production pointer/traffic/cutover permission before independent P1-REC/AC5 plus separate production authorization",
+        "P1-FOUND/P1-REC/AC5 mappings and historical ADI caveat clarified",
+        "Actual foundation interfaces, held-reader/crash/restore/durableACK/FC1 mismatches and security grants preserved"
+      ],
+      "upstream_change_required": false
+    }
+  ],
+  "trust_review": {
+    "reviewer": "RfcTrustRoundOneSol",
+    "old_candidate_verdict": "PASS documentary only",
+    "old_fingerprint_only": true,
+    "security_gate_changes": 0,
+    "new_independent_security_acceptance": "NOT_RUN"
+  },
+  "scope": "Author correction closure mapping, not independent finding closure or acceptance",
+  "final_submitted_body_sha256": "b8deffe754803e8d5d9d837d8f0cb5ca76d9bdfe35634dfccb85d17860a001ae",
+  "additional_F2_mapping": "FR05 actual production callers are exercised through real interfaces in authorized isolated validation; production cutover only after P1-REC/AC5 plus separate authorization",
+  "first_correction_ADI": "04-reason exit0/parsed Critical identified remaining FR05 cutover wording; corrected before final 08-reason. Prior successful call retained as changed-input history."
+}

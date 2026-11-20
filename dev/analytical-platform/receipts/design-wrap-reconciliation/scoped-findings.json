@@ -1,0 +1,227 @@
+{
+  "observed_scope": {
+    "records": 29,
+    "unique_display_ids": 29
+  },
+  "drift": [],
+  "stale": [],
+  "health": {
+    "workspace_verdict": "unhealthy",
+    "workspace_total": 550,
+    "scoped": []
+  },
+  "anomalies": {
+    "workspace_total": 17,
+    "scoped": [
+      {
+        "affected": [
+          "EVID-226",
+          "EVID-227"
+        ],
+        "description": "EVID-226 and EVID-227: similar titles (similarity=0.71)",
+        "evidence": {
+          "other_id": "EVID-227",
+          "similarity_score": 0.7142857142857143
+        },
+        "id": "anom-duplicate-EVID-226-EVID-227",
+        "kind": "duplicate_artifact",
+        "observed_at": "2026-11-20T17:51:57.277166+00:00",
+        "severity": "medium",
+        "suggested_resolution": {
+          "action": "forgeplan_supersede",
+          "rationale": "Supersede the older/redundant artifact in favour of the canonical one",
+          "target": "EVID-226",
+          "tier": "adi"
+        },
+        "tier": "adi"
+      },
+      {
+        "affected": [
+          "HYP-001"
+        ],
+        "description": "Hypothesis HYP-001 has fewer than 2 distinct evidence references (0 found)",
+        "evidence": {
+          "evidence_count": 0,
+          "id": "HYP-001"
+        },
+        "id": "anom-hyp-untriangulated-hyp-001",
+        "kind": "untriangulated_hypothesis",
+        "observed_at": "2026-11-20T17:51:57.277166+00:00",
+        "severity": "medium",
+        "suggested_resolution": {
+          "action": "forgeplan_link",
+          "rationale": "Add at least one additional EVID- supporting (or refuting) the claim, then re-link via `informs`.",
+          "target": "HYP-001",
+          "tier": "adi"
+        },
+        "tier": "adi"
+      },
+      {
+        "affected": [
+          "HYP-002"
+        ],
+        "description": "Hypothesis HYP-002 has fewer than 2 distinct evidence references (0 found)",
+        "evidence": {
+          "evidence_count": 0,
+          "id": "HYP-002"
+        },
+        "id": "anom-hyp-untriangulated-hyp-002",
+        "kind": "untriangulated_hypothesis",
+        "observed_at": "2026-11-20T17:51:57.277166+00:00",
+        "severity": "medium",
+        "suggested_resolution": {
+          "action": "forgeplan_link",
+          "rationale": "Add at least one additional EVID- supporting (or refuting) the claim, then re-link via `informs`.",
+          "target": "HYP-002",
+          "tier": "adi"
+        },
+        "tier": "adi"
+      },
+      {
+        "affected": [
+          "HYP-003"
+        ],
+        "description": "Hypothesis HYP-003 has fewer than 2 distinct evidence references (0 found)",
+        "evidence": {
+          "evidence_count": 0,
+          "id": "HYP-003"
+        },
+        "id": "anom-hyp-untriangulated-hyp-003",
+        "kind": "untriangulated_hypothesis",
+        "observed_at": "2026-11-20T17:51:57.277166+00:00",
+        "severity": "medium",
+        "suggested_resolution": {
+          "action": "forgeplan_link",
+          "rationale": "Add at least one additional EVID- supporting (or refuting) the claim, then re-link via `informs`.",
+          "target": "HYP-003",
+          "tier": "adi"
+        },
+        "tier": "adi"
+      },
+      {
+        "affected": [
+          "HYP-004"
+        ],
+        "description": "Hypothesis HYP-004 has fewer than 2 distinct evidence references (0 found)",
+        "evidence": {
+          "evidence_count": 0,
+          "id": "HYP-004"
+        },
+        "id": "anom-hyp-untriangulated-hyp-004",
+        "kind": "untriangulated_hypothesis",
+        "observed_at": "2026-11-20T17:51:57.277166+00:00",
+        "severity": "medium",
+        "suggested_resolution": {
+          "action": "forgeplan_link",
+          "rationale": "Add at least one additional EVID- supporting (or refuting) the claim, then re-link via `informs`.",
+          "target": "HYP-004",
+          "tier": "adi"
+        },
+        "tier": "adi"
+      },
+      {
+        "affected": [
+          "HYP-005"
+        ],
+        "description": "Hypothesis HYP-005 has fewer than 2 distinct evidence references (0 found)",
+        "evidence": {
+          "evidence_count": 0,
+          "id": "HYP-005"
+        },
+        "id": "anom-hyp-untriangulated-hyp-005",
+        "kind": "untriangulated_hypothesis",
+        "observed_at": "2026-11-20T17:51:57.277166+00:00",
+        "severity": "medium",
+        "suggested_resolution": {
+          "action": "forgeplan_link",
+          "rationale": "Add at least one additional EVID- supporting (or refuting) the claim, then re-link via `informs`.",
+          "target": "HYP-005",
+          "tier": "adi"
+        },
+        "tier": "adi"
+      },
+      {
+        "affected": [
+          "HYP-006"
+        ],
+        "description": "Hypothesis HYP-006 has fewer than 2 distinct evidence references (0 found)",
+        "evidence": {
+          "evidence_count": 0,
+          "id": "HYP-006"
+        },
+        "id": "anom-hyp-untriangulated-hyp-006",
+        "kind": "untriangulated_hypothesis",
+        "observed_at": "2026-11-20T17:51:57.277166+00:00",
+        "severity": "medium",
+        "suggested_resolution": {
+          "action": "forgeplan_link",
+          "rationale": "Add at least one additional EVID- supporting (or refuting) the claim, then re-link via `informs`.",
+          "target": "HYP-006",
+          "tier": "adi"
+        },
+        "tier": "adi"
+      },
+      {
+        "affected": [
+          "HYP-007"
+        ],
+        "description": "Hypothesis HYP-007 has fewer than 2 distinct evidence references (0 found)",
+        "evidence": {
+          "evidence_count": 0,
+          "id": "HYP-007"
+        },
+        "id": "anom-hyp-untriangulated-hyp-007",
+        "kind": "untriangulated_hypothesis",
+        "observed_at": "2026-11-20T17:51:57.277166+00:00",
+        "severity": "medium",
+        "suggested_resolution": {
+          "action": "forgeplan_link",
+          "rationale": "Add at least one additional EVID- supporting (or refuting) the claim, then re-link via `informs`.",
+          "target": "HYP-007",
+          "tier": "adi"
+        },
+        "tier": "adi"
+      },
+      {
+        "affected": [
+          "HYP-008"
+        ],
+        "description": "Hypothesis HYP-008 has fewer than 2 distinct evidence references (0 found)",
+        "evidence": {
+          "evidence_count": 0,
+          "id": "HYP-008"
+        },
+        "id": "anom-hyp-untriangulated-hyp-008",
+        "kind": "untriangulated_hypothesis",
+        "observed_at": "2026-11-20T17:51:57.277166+00:00",
+        "severity": "medium",
+        "suggested_resolution": {
+          "action": "forgeplan_link",
+          "rationale": "Add at least one additional EVID- supporting (or refuting) the claim, then re-link via `informs`.",
+          "target": "HYP-008",
+          "tier": "adi"
+        },
+        "tier": "adi"
+      }
+    ]
+  },
+  "links": {
+    "outgoing_count": 112,
+    "relation_counts": [
+      {
+        "relation": "based_on",
+        "count": 70
+      },
+      {
+        "relation": "informs",
+        "count": 39
+      },
+      {
+        "relation": "refines",
+        "count": 3
+      }
+    ],
+    "unresolved": [],
+    "missing_subjects": []
+  }
+}

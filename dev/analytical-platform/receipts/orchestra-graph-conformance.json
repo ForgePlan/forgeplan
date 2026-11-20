@@ -1,0 +1,295 @@
+{
+  "result": "Matched frozen RFC projection against task-runner read-back. Not a second live tracker query.",
+  "children": 28,
+  "edges": 52,
+  "externalGates": 7,
+  "externalReferences": 48,
+  "exactUncheckedChildChecks": 28,
+  "childCompleted": 0,
+  "rustChecks": {
+    "NOT_APPLICABLE": 5,
+    "NOT_RUN": 23
+  },
+  "projectionSha256": "767e86395210e19f6dae234909779ad9990c197147366b6e6c8f76fa6e60c689",
+  "readbackSha256": "9be707fa2313204ca96f3cfdd5c66e0040a8c2ee67c4bafe097a9bb8b3f0061c",
+  "parent": {
+    "fields": [
+      {
+        "uid": "dbuusmef17qfs2mtob10",
+        "name": "Wave",
+        "value": null,
+        "dataType": "option"
+      },
+      {
+        "uid": "db95gbi28nfs0d79he5g",
+        "name": "Rust checks",
+        "value": {
+          "value": "db95gbi28nfs0d79i280",
+          "displayValue": "NOT_APPLICABLE"
+        },
+        "dataType": "option",
+        "optionName": "NOT_APPLICABLE"
+      },
+      {
+        "uid": "dalqlcolmb9v4psqnat0",
+        "name": "Role",
+        "value": {
+          "value": "dalqljglmb9v4psqq78g",
+          "displayValue": "C-Research"
+        },
+        "dataType": "option",
+        "optionName": "C-Research"
+      },
+      {
+        "uid": "dalqlcolmb9v4psqn6sg",
+        "name": "Area",
+        "value": null,
+        "dataType": "option"
+      },
+      {
+        "uid": "dalqlcolmb9v4psqn2s0",
+        "name": "Blocked by",
+        "value": [],
+        "dataType": "chat"
+      },
+      {
+        "uid": "dalqlcglmb9v4psqmurg",
+        "name": "Model",
+        "value": {
+          "value": "dalqliolmb9v4psqor30",
+          "displayValue": "GPT"
+        },
+        "dataType": "option",
+        "optionName": "GPT"
+      },
+      {
+        "uid": "dalqlcglmb9v4psqmqr0",
+        "name": "Executor",
+        "value": {
+          "value": "dalqli0lmb9v4psqnqv0",
+          "displayValue": "OMP"
+        },
+        "dataType": "option",
+        "optionName": "OMP"
+      },
+      {
+        "uid": "d77p4de2gko17gdbuvrg",
+        "name": "Branch",
+        "value": "plan/analytical-solution-20261120",
+        "dataType": "text"
+      },
+      {
+        "uid": "d77p4c62gko17gdburr0",
+        "name": "Sprint",
+        "value": "",
+        "dataType": "text"
+      },
+      {
+        "uid": "d77p4762gko17gdbu3o0",
+        "name": "Phase",
+        "value": {
+          "value": "d77p47e2gko17gdbu7og",
+          "displayValue": "Shape"
+        },
+        "dataType": "option",
+        "optionName": "Shape"
+      },
+      {
+        "uid": "d77p4262gko17gdbtflg",
+        "name": "Depth",
+        "value": {
+          "value": "d77p44u2gko17gdbtvng",
+          "displayValue": "Critical"
+        },
+        "dataType": "option",
+        "optionName": "Critical"
+      },
+      {
+        "uid": "d77p3iu2gko17gdbrvfg",
+        "name": "Type",
+        "value": null,
+        "dataType": "option"
+      },
+      {
+        "uid": "d77p3eu2gko17gdbrrf0",
+        "name": "Artifact",
+        "value": "",
+        "dataType": "text"
+      },
+      {
+        "uid": "project_uid",
+        "name": "Project",
+        "value": {
+          "value": "ZB8WYUpwNskvAZdRK8Jh",
+          "displayValue": "Development"
+        },
+        "dataType": "chat"
+      },
+      {
+        "uid": "parent_uid",
+        "name": "Parent",
+        "value": null,
+        "dataType": "chat"
+      },
+      {
+        "uid": "assignee_uuid",
+        "name": "Assignee",
+        "value": null,
+        "dataType": "member"
+      },
+      {
+        "uid": "members",
+        "name": "Members",
+        "value": {
+          "value": [
+            "7eea6f7ad3fc4b3196385e9d3e3cb856"
+          ],
+          "displayValue": "Forge Agent"
+        },
+        "dataType": "member"
+      },
+      {
+        "uid": "due_date",
+        "name": "Due date",
+        "value": null,
+        "dataType": "date"
+      },
+      {
+        "uid": "owner_uuid",
+        "name": "Owner",
+        "value": {
+          "value": "7eea6f7ad3fc4b3196385e9d3e3cb856",
+          "displayValue": "Forge Agent"
+        },
+        "dataType": "member"
+      },
+      {
+        "uid": "messages_count",
+        "name": "Messages",
+        "value": 4,
+        "dataType": "number"
+      },
+      {
+        "uid": "completed_at",
+        "name": "Completed at",
+        "value": null,
+        "dataType": "date"
+      },
+      {
+        "uid": "last_activity",
+        "name": "Last activity",
+        "value": "2026-11-20T17:54:40.003Z",
+        "dataType": "date"
+      },
+      {
+        "uid": "last_message_time",
+        "name": "Last message",
+        "value": "2026-11-20T12:54:19.638Z",
+        "dataType": "date"
+      },
+      {
+        "uid": "ai_agent_state",
+        "name": "Agent state",
+        "value": null,
+        "dataType": "option"
+      },
+      {
+        "uid": "created_at",
+        "name": "Created at",
+        "value": "2026-11-20T12:25:34.710Z",
+        "dataType": "date"
+      },
+      {
+        "uid": "d77ocsjcugeknpnc74sg",
+        "name": "Status",
+        "value": {
+          "value": "doing",
+          "displayValue": "Doing"
+        },
+        "dataType": "status",
+        "optionName": "Doing"
+      },
+      {
+        "uid": "d77ocsjcugeknpnc78t0",
+        "name": "Priority",
+        "value": null,
+        "dataType": "option"
+      },
+      {
+        "uid": "d77ocsjcugeknpnc7ctg",
+        "name": "Tags",
+        "value": [],
+        "dataType": "option",
+        "optionName": ""
+      },
+      {
+        "uid": "ai_agents",
+        "name": "Agents",
+        "value": {
+          "value": [
+            "7eea6f7ad3fc4b3196385e9d3e3cb856"
+          ],
+          "displayValue": "Forge Agent"
+        },
+        "dataType": "member"
+      }
+    ],
+    "checklists": [
+      {
+        "uid": "dc03piqqr8hp8d5bqja0",
+        "name": "Продуктовое исследование и архитектура — gates",
+        "items": [
+          {
+            "uid": "dc03piqqr8hp8d5bqnag",
+            "text": "Сопоставить источники и существующие решения — опубликована сверка происхождения, ограничений и конфликтов",
+            "isChecked": false,
+            "assigneeUid": null,
+            "fromMessage": null
+          },
+          {
+            "uid": "dc03piqqr8hp8d5bqrb0",
+            "text": "Оформить discovery и проблему — доступны артефакты и независимый review с выводами",
+            "isChecked": true,
+            "assigneeUid": null,
+            "fromMessage": null
+          },
+          {
+            "uid": "dc03piqqr8hp8d5bqvbg",
+            "text": "Оформить полные продуктовые требования — F-01–F-34 и новые требования прослежены до проверки и этапа",
+            "isChecked": true,
+            "assigneeUid": null,
+            "fromMessage": null
+          },
+          {
+            "uid": "dc03piqqr8hp8d5br3c0",
+            "text": "Сравнить варианты архитектуры и описать контракты и фазы — доступны связанные архитектурные решения и зависимости",
+            "isChecked": false,
+            "assigneeUid": null,
+            "fromMessage": null
+          },
+          {
+            "uid": "dc03piqqr8hp8d5br7cg",
+            "text": "Провести независимые проверки Astra — доступны результаты проверок и разрешение существенных замечаний",
+            "isChecked": false,
+            "assigneeUid": null,
+            "fromMessage": null
+          },
+          {
+            "uid": "dc03piqqr8hp8d5brbd0",
+            "text": "Зарегистрировать задачи реализации и зависимости после появления ключей — доступны ссылки на фактические артефакты и задачи",
+            "isChecked": true,
+            "assigneeUid": null,
+            "fromMessage": null
+          },
+          {
+            "uid": "dc03piqqr8hp8d5brfdg",
+            "text": "Провести итоговый gate — доступны доказательства, незавершённое и явное разграничение документации и runtime-приёмки",
+            "isChecked": false,
+            "assigneeUid": null,
+            "fromMessage": null
+          }
+        ]
+      }
+    ]
+  }
+}

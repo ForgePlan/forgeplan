@@ -1,0 +1,572 @@
+{
+  "mode": "PREPARED READ-ONLY; no tracker writes or authorization",
+  "rfc": {
+    "canonicalKey": "rfc-rust-analytics-captures-kbe91e3dbf1920005719327653381b2fe",
+    "fileSha256": "d59c9acb2637d42ff7aadaa5a635c2bd0f121f0fc2e9ec00ed3fe8ea496040c6"
+  },
+  "counts": {
+    "slices": 28,
+    "internalEdges": 52,
+    "externalGates": 7,
+    "externalReferences": 48
+  },
+  "externalGates": [
+    {
+      "id": "EXT:CHAIN",
+      "condition": "Два независимых действительных whole-chain architecture/system/security rounds на frozen PRD/SOL/SPEC/ADR/RFC; canonical Profile B Evidence; planning guardian; independent author/verifier roles",
+      "line": 362
+    },
+    {
+      "id": "EXT:OWNER",
+      "condition": "Current protected Core/Constellation/ADR-001 и Web/Marketplace owners, current claims и source revisions; уточнение #589/A1/read-upkeep/producer boundary или approved amendment; не предположение этого RFC",
+      "line": 363
+    },
+    {
+      "id": "EXT:EXEC",
+      "condition": "Отдельная авторизация source/experiment execution, точное file ownership/worktree/build owner/sandbox/capability scope; не planning guardian",
+      "line": 364
+    },
+    {
+      "id": "EXT:E0",
+      "condition": "Named experiment owner + независимый verifier + actual fixed corpus/oracle/baseline/threshold/sample/horizon/stopping/license/access matrix; missing values BLOCK confirmation",
+      "line": 365
+    },
+    {
+      "id": "EXT:TRUST",
+      "condition": "Security/CI/privacy owners поставляют principal/runner/report/signer trust/revocation, protected policy/exception/retention/jurisdiction/export и local host-policy admission",
+      "line": 366
+    },
+    {
+      "id": "EXT:DEPLOY",
+      "condition": "Migration/deployment/state/effect owner отдельно разрешает real writes/cutover/compensation и irreversible boundary",
+      "line": 367
+    },
+    {
+      "id": "EXT:TEAM",
+      "condition": "Opt-in team/source/service owner и actual need/topology/access/scale/operations/retention approval",
+      "line": 368
+    }
+  ],
+  "topologicalOrder": [
+    "D-GATE",
+    "D-INVENTORY",
+    "D-CONTRACT",
+    "D-E0",
+    "D-MIGRATION",
+    "X-AB",
+    "X-STORAGE",
+    "P1-FOUND",
+    "P1-REC",
+    "P2-PROD",
+    "P2-PROOF",
+    "P3-QUERY",
+    "P3-DOCS",
+    "P3-EVAL",
+    "P4-EVID",
+    "P4-PROOF",
+    "P5-FED",
+    "P5-EST",
+    "P5-SEVEN",
+    "P5-REC",
+    "P6-BEH",
+    "P6-LOCAL",
+    "P6-CROSS",
+    "P6-EST",
+    "P7-SURF",
+    "P7-PROOF",
+    "P7-TEAM",
+    "X-ADOPT"
+  ],
+  "slices": [
+    {
+      "id": "D-GATE",
+      "phase": "до P1",
+      "kind": "document",
+      "role": "Coordinator + independent architecture; Core, Web, Marketplace",
+      "deliverable": "Exact FR-41 disposition, B1–4/current-owner reconciliation, admitted scope",
+      "dependencies": [],
+      "external": [
+        "EXT:CHAIN",
+        "EXT:OWNER"
+      ],
+      "preconditions": "Frozen chain; no protected edits by implication",
+      "acceptance": "Reviewed 16-FPV + active-ADR + consumer delta ledger, signed/scoped admission record; no EPIC009/PROB082 auto-closure",
+      "line": 374
+    },
+    {
+      "id": "D-INVENTORY",
+      "phase": "до P1",
+      "kind": "document",
+      "role": "Core architecture + actual consumer owners",
+      "deliverable": "Current writer/read/maintain/class/caller census, version and rollback matrix",
+      "dependencies": [
+        "D-GATE"
+      ],
+      "external": [],
+      "preconditions": "Owner snapshots/claims",
+      "acceptance": "Every adopted operation has actual source path/caller/authority/class/observables; caller audit + immutable fingerprint manifest; unused ports rejected",
+      "line": 375
+    },
+    {
+      "id": "D-CONTRACT",
+      "phase": "до P1",
+      "kind": "document",
+      "role": "Core contract/security + language/Web/Marketplace owners",
+      "deliverable": "Logical binding/relation/capability/result/evidence contract freeze, map/TaskLink/trust deltas",
+      "dependencies": [
+        "D-INVENTORY"
+      ],
+      "external": [
+        "EXT:TRUST"
+      ],
+      "preconditions": "Schema semantics separated from physical backend; required independently supplied security/local-policy inputs received before freeze; no runtime implementation required",
+      "acceptance": "Independent interface review + schema/delta specification + supported consumer matrix; bootstrap policy separately supplied, no compiler↔evaluator cycle",
+      "line": 376
+    },
+    {
+      "id": "D-E0",
+      "phase": "до опытов",
+      "kind": "E0-design",
+      "role": "Product experiment owner role + independent research/verifier roles",
+      "deliverable": "Eight preregistration plans with actual owner requests and missing-parameter ledger",
+      "dependencies": [],
+      "external": [
+        "EXT:CHAIN"
+      ],
+      "preconditions": "No outputs viewed as confirmation",
+      "acceptance": "Preregistration review record with named-owner/verifier/corpus/threshold/sample/horizon status; unfilled mandatory cells remain BLOCKED, not experiment PASS",
+      "line": 377
+    },
+    {
+      "id": "D-MIGRATION",
+      "phase": "independent document",
+      "role": "Marketplace migration owner + Core",
+      "deliverable": "ADR025 estimate/calibrate/runtime/memory transition RFCs/windows and affected consumers",
+      "dependencies": [
+        "D-GATE",
+        "D-INVENTORY"
+      ],
+      "external": [],
+      "preconditions": "Existing active decisions and NOTE/export preservation",
+      "acceptance": "Owner-reviewed migration/deprecation/compatibility/rollback plan; no delivered-migration claim; B4 remains unproved",
+      "line": 378
+    },
+    {
+      "id": "X-AB",
+      "phase": "experiment",
+      "role": "Core/language experiment owner + independent verifier",
+      "deliverable": "A normalized vs B native-partition empirical comparison on same target",
+      "dependencies": [
+        "D-CONTRACT",
+        "D-E0"
+      ],
+      "external": [
+        "EXT:E0",
+        "EXT:EXEC",
+        "EXT:TRUST"
+      ],
+      "preconditions": "Real profiles/engines/independent missing facts; capture/offline/license",
+      "acceptance": "Semantic/completeness/config corpus conformance, upgrade/capture/offline receipts + comparative full-cost distributions; scoped recommendation, not automatic implementation",
+      "line": 379
+    },
+    {
+      "id": "X-STORAGE",
+      "phase": "experiment",
+      "role": "Core storage owner + independent verifier",
+      "deliverable": "Lance improvements / storage-only SQLite / justified alternative comparison; ranking isolated",
+      "dependencies": [
+        "D-CONTRACT",
+        "D-E0"
+      ],
+      "external": [
+        "EXT:E0",
+        "EXT:EXEC"
+      ],
+      "preconditions": "Class/caller/relevance/full-horizon inventory",
+      "acceptance": "Comparative benchmark + crash/live-reader/restore/scale audit, relevance judgements/vector provenance, full migration/parallel/maintenance ledger; not prerequisite P1 keep-Lance",
+      "line": 380
+    },
+    {
+      "id": "P1-FOUND",
+      "phase": "P1",
+      "kind": "implementation",
+      "role": "Core foundation/storage",
+      "deliverable": "Authority/subject/config/classes + actual isolated validation canonical/reference→build/publish→read→snapshot/export foundation",
+      "dependencies": [
+        "D-CONTRACT"
+      ],
+      "external": [
+        "EXT:EXEC",
+        "EXT:TRUST"
+      ],
+      "preconditions": "Separately authorized isolated candidate/fault-test scope, current admitted read/upkeep contract; no production pointer/traffic/cutover; no backend change required",
+      "acceptance": "EP-1 real validation publication, per-field mismatch + class/history/expiry census + operation/replay/dry-run receipts; not a fixture and not production admission",
+      "line": 381
+    },
+    {
+      "id": "P1-REC",
+      "phase": "P1",
+      "kind": "verification",
+      "role": "Independent recovery verifier + Core build owner",
+      "deliverable": "Foundation failure/upgrade/held-reader/restore AC-5 acceptance from actual authorized validation publications",
+      "dependencies": [
+        "P1-FOUND"
+      ],
+      "external": [
+        "EXT:E0"
+      ],
+      "preconditions": "Frozen failure/retention/platform matrix and isolated fault-test grants; production admission still blocked",
+      "acceptance": "AC-5 actual crash/schema/restore/live-reader/per-field receipts, visibility vs durable ACK separate; only after independent PASS and separate production authorization may production migration/cutover/publication be admitted",
+      "line": 382
+    },
+    {
+      "id": "P2-PROD",
+      "phase": "P2",
+      "kind": "implementation",
+      "role": "Core index + language/framework extension owners",
+      "deliverable": "Declared syntax/semantic profiles Rust/TS/JS/Python and wider/on-demand profile delivery",
+      "dependencies": [
+        "P1-REC",
+        "D-CONTRACT"
+      ],
+      "external": [
+        "EXT:EXEC",
+        "EXT:TRUST"
+      ],
+      "preconditions": "A/B admitted choice for affected mechanism after X-AB or separately reviewed bounded choice; independent corpus",
+      "acceptance": "Actual scoped producer→projection→captured read EP-2; semantic/framework config/dirty/partial/invalidation/unknown + license/upgrade conformance",
+      "line": 383
+    },
+    {
+      "id": "P2-PROOF",
+      "phase": "P2",
+      "kind": "verification",
+      "role": "Independent semantic verifier",
+      "deliverable": "Expected-fact completeness and actual incremental/full mismatch ledger",
+      "dependencies": [
+        "P2-PROD"
+      ],
+      "external": [
+        "EXT:E0"
+      ],
+      "preconditions": "Independent positives/negatives/missing facts",
+      "acceptance": "Corpus conformance + compiler/LSP/SCIP comparison + source-bound receipts; shared omission failure, not equality PASS",
+      "line": 384
+    },
+    {
+      "id": "P3-QUERY",
+      "phase": "P3",
+      "kind": "implementation",
+      "role": "Core link/query owner",
+      "deliverable": "Authoritative resolver, lineage, typed impact/compare/placement/alignment/read routes/context; seven contracts with scoped P3 actual family paths",
+      "dependencies": [
+        "P1-REC",
+        "P2-PROOF"
+      ],
+      "external": [
+        "EXT:EXEC"
+      ],
+      "preconditions": "Accepted rules; no future P4 outputs required; calibration/estimate extension positive allocated P5-EST",
+      "acceptance": "EP-3 actual CLI/MCP facts/links/task/placement/constraint receipts and P3 family positives/negatives per seven-family matrix; not full B04 closure or evidence/calibration proof",
+      "line": 385
+    },
+    {
+      "id": "P3-DOCS",
+      "phase": "P3",
+      "kind": "implementation",
+      "role": "Core reports + documentation/export owner; Marketplace client owner",
+      "deliverable": "Factual section deltas, manual/normative preservation, standalone permitted report, workflow packs/chips",
+      "dependencies": [
+        "P3-QUERY"
+      ],
+      "external": [
+        "EXT:EXEC",
+        "EXT:TRUST"
+      ],
+      "preconditions": "Actual introduced report/pack consumers, allowed assets",
+      "acceptance": "Actual docs golden/negative/preservation audit + actual offline viewing/privacy audit + resolver/navigation and agent task receipts EP-3",
+      "line": 386
+    },
+    {
+      "id": "P3-EVAL",
+      "phase": "P3",
+      "kind": "experiment",
+      "role": "Product task owner + independent verifier",
+      "deliverable": "Unfamiliar-task E-A/B/C usable-vertical comparison of actual P3 paths",
+      "dependencies": [
+        "P3-DOCS",
+        "D-E0"
+      ],
+      "external": [
+        "EXT:E0",
+        "EXT:EXEC"
+      ],
+      "preconditions": "Equal access/training/model/task limits; independent solved-task rubric; future guard/calibrated-estimate paths not claimed as delivered",
+      "acceptance": "AC-3 introduced P3 path study + all-run/provider/cache/retry/review costs; required constraints/unknown retained; full seven-family completion remains P5-SEVEN",
+      "line": 387
+    },
+    {
+      "id": "P4-EVID",
+      "phase": "P4",
+      "kind": "implementation",
+      "role": "Core evidence/policy + external runner/report/CI owners",
+      "deliverable": "L1…6 contracts, protected checks, Class B→A promotion/bundle, trust eligibility/assurance reader",
+      "dependencies": [
+        "P3-QUERY",
+        "P1-REC",
+        "D-CONTRACT"
+      ],
+      "external": [
+        "EXT:EXEC",
+        "EXT:TRUST"
+      ],
+      "preconditions": "Actual authorized collection/report production; local policy successor admission where needed",
+      "acceptance": "EP-4 real production-chain receipts, stable test/discovery/run/coverage/mutation/scenario facets; job/tests/completeness/policy distinct",
+      "line": 388
+    },
+    {
+      "id": "P4-PROOF",
+      "phase": "P4",
+      "kind": "verification",
+      "role": "Independent security/evidence verifier",
+      "deliverable": "Adversarial evidence/required-check acceptance",
+      "dependencies": [
+        "P4-EVID"
+      ],
+      "external": [
+        "EXT:E0"
+      ],
+      "preconditions": "Protected base and certified principal/independence matrix",
+      "acceptance": "AC-4 production-chain adversarial ledger + attestation/replay/offline receipt audits; attacker wrapper/substitution/replay/zero/expiry non-passing",
+      "line": 389
+    },
+    {
+      "id": "P5-FED",
+      "phase": "P5",
+      "kind": "implementation",
+      "role": "Core federation/contracts + external CI + actual three repo owners",
+      "deliverable": "Authorized delivery/capture, independent consumer matrix, compatibility/review plan/rollout checks",
+      "dependencies": [
+        "P1-REC",
+        "P3-DOCS",
+        "P4-PROOF"
+      ],
+      "external": [
+        "EXT:EXEC",
+        "EXT:TRUST"
+      ],
+      "preconditions": "Portable identity/delivery delta admitted; actual 3+ repos/config/contracts; no arbitrary ATTACH assumption",
+      "acceptance": "EP-5 delivered sources→federated query→compatibility/review plan/CI actual receipts + independent consumer inventory; required/default/same-schema breaks vs harmless edits",
+      "line": 390
+    },
+    {
+      "id": "P5-EST",
+      "phase": "P3→P5",
+      "kind": "extension implementation + verification",
+      "role": "Marketplace estimation/calibration owner + independent calibration verifier; Core facts owner",
+      "deliverable": "Actual public calibrated extension route/calibrate and estimate/uncertainty path for FR-04",
+      "dependencies": [
+        "D-MIGRATION",
+        "P3-QUERY",
+        "D-E0"
+      ],
+      "external": [
+        "EXT:E0",
+        "EXT:EXEC",
+        "EXT:TRUST"
+      ],
+      "preconditions": "Owner-approved ADR025 migration RFC/deprecation window; actual observed-effort baseline/held-out segments; standalone compatibility matrix; no Core ownership transfer",
+      "acceptance": "By P5 actual facts→calibration→extension public estimate positive/negative receipts + independent calibration study, uncertainty/rationale, real old/new standalone entrypoint compatibility/migration/rollback audit; uncalibrated negative alone insufficient",
+      "line": 391
+    },
+    {
+      "id": "P5-SEVEN",
+      "phase": "P5",
+      "kind": "independent verification",
+      "role": "Independent query/evidence/calibration/federation verifier with Core and Marketplace owners",
+      "deliverable": "Full FR04/B04 actual seven-family positive-negative closure across public queries/extension contracts",
+      "dependencies": [
+        "P3-QUERY",
+        "P4-PROOF",
+        "P5-EST",
+        "P5-FED"
+      ],
+      "external": [],
+      "preconditions": "Seven-family matrix actual receipts, independent expected outcomes; all scoped producer/consumer/config/policy bindings",
+      "acceptance": "Before P5 exit seven distinct useful-result ledgers pass actual positive/negative paths, including authenticated guard and calibrated extension estimate/uncertainty; no P3 contracts/fixtures or future P6 delivery substitution",
+      "line": 392
+    },
+    {
+      "id": "P5-REC",
+      "phase": "P5",
+      "kind": "verification",
+      "role": "Independent federation/system verifier + deployment owner",
+      "deliverable": "Old/new consumer rollout mismatch/recovery, policy compatibility and full seven-family gate",
+      "dependencies": [
+        "P5-FED",
+        "P5-SEVEN"
+      ],
+      "external": [
+        "EXT:E0",
+        "EXT:DEPLOY"
+      ],
+      "preconditions": "Actual supported version/config/order matrix; seven-family positive/negative actual closure available",
+      "acceptance": "AC-1 contract/differential/rollout-negative + recovery receipts; missing expected consumer and denied/mixed non-passing; introduced map/task/protocol consumers; FR04 closure no later than P5",
+      "line": 393
+    },
+    {
+      "id": "P6-BEH",
+      "phase": "P6",
+      "kind": "implementation",
+      "role": "Core behavior/dossier + language/framework owners",
+      "deliverable": "Deep bounded model and real seam/dossier ledger",
+      "dependencies": [
+        "P2-PROOF",
+        "P3-QUERY",
+        "P4-PROOF"
+      ],
+      "external": [
+        "EXT:EXEC",
+        "EXT:TRUST"
+      ],
+      "preconditions": "Local component independent boundary/oracle ownership, not P7",
+      "acceptance": "EP-6 source behavior/oracle/run→dossier receipts, independent behavior-table audit, contextual anti-stub false-positive corpus, exact unknowns",
+      "line": 394
+    },
+    {
+      "id": "P6-LOCAL",
+      "phase": "P6",
+      "kind": "experiment + recovery",
+      "role": "External harness/migration owner + independent oracle/verifier; Marketplace methodology",
+      "deliverable": "Frozen real-component parity, isolated pilot, post-write recovery, then separately admitted refactor",
+      "dependencies": [
+        "P6-BEH",
+        "D-E0"
+      ],
+      "external": [
+        "EXT:E0",
+        "EXT:EXEC",
+        "EXT:DEPLOY"
+      ],
+      "preconditions": "Oracle before outputs, held-out/injected corpus; pinned PORTING/CONSTRAINTS; granted writes",
+      "acceptance": "AC-2 old/new/harness raw differential receipts + post-write state/effect/old-reader/duplicate audit + independent parity/recovery verdict; no UI prerequisite",
+      "line": 395
+    },
+    {
+      "id": "P6-CROSS",
+      "phase": "P6",
+      "kind": "conditional integration",
+      "role": "External migration owner + Core federation/dossier",
+      "deliverable": "Cross-repo legacy seam consuming actual compatibility evidence",
+      "dependencies": [
+        "P6-LOCAL",
+        "P5-REC"
+      ],
+      "external": [
+        "EXT:EXEC",
+        "EXT:DEPLOY"
+      ],
+      "preconditions": "Only required when actual seam crosses repos; local gate cannot certify cross seam",
+      "acceptance": "Integrated EP-5/6 consumer/effect/cutover/recovery receipts; independent missing-consumer check and rollback after actual new writes",
+      "line": 396
+    },
+    {
+      "id": "P6-EST",
+      "phase": "P6→P7",
+      "kind": "extension integration + verification",
+      "role": "Marketplace estimation/calibration owner",
+      "deliverable": "Later legacy-segment calibration/uncertainty and optional Day/Week/Month, reusing actual P5 extension",
+      "dependencies": [
+        "P5-EST",
+        "P6-BEH",
+        "D-E0"
+      ],
+      "external": [
+        "EXT:E0",
+        "EXT:EXEC",
+        "EXT:TRUST"
+      ],
+      "preconditions": "Earlier FR04 calibrated positive already proved by P5; real legacy effort segments and approved migration/window",
+      "acceptance": "FR29 legacy/optional-bin calibration study + actual later consumer/ownership/compatibility audit; out-of-segment remains unknown, not deadline; not the first seven-family estimate delivery",
+      "line": 397
+    },
+    {
+      "id": "P7-SURF",
+      "phase": "P7",
+      "kind": "implementation",
+      "role": "Web/Desktop/shared-query + CLI/MCP/Marketplace adapter owners",
+      "deliverable": "Mature text/list/diff/2D/3D/Web/Tauri/editor/role/triage/offline consuming surfaces",
+      "dependencies": [
+        "P3-DOCS",
+        "P4-PROOF",
+        "D-CONTRACT"
+      ],
+      "external": [
+        "EXT:EXEC",
+        "EXT:TRUST"
+      ],
+      "preconditions": "Owner-approved map/HTTP/IPC/navigation deltas; basic surfaces need no P6 claim; evidence/legacy lenses only after respective proofs",
+      "acceptance": "EP-7 actual each-consumer positive/per-field mismatch/permission/update/offline receipts; source-bound first-pass explanations/examples or unavailable",
+      "line": 398
+    },
+    {
+      "id": "P7-PROOF",
+      "phase": "P7",
+      "kind": "verification + study",
+      "role": "Independent UX/accessibility/security verifier + product task owner",
+      "deliverable": "Surface comprehension/correct-decision/access/privacy/scale acceptance",
+      "dependencies": [
+        "P7-SURF",
+        "D-E0"
+      ],
+      "external": [
+        "EXT:E0"
+      ],
+      "preconditions": "Standard/version, platforms, load, sustained arrivals, H_visible/H_escalate frozen",
+      "acceptance": "AC-6 real reviewer/developer task study + keyboard/screen-reader audit + whole payload/export privacy and transport fault receipts; no speed-as-comprehension",
+      "line": 399
+    },
+    {
+      "id": "P7-TEAM",
+      "phase": "P7",
+      "kind": "opt-in implementation",
+      "role": "Separate service/extension/deployment owners",
+      "deliverable": "Optional Hub/team/source/Gitea/Forgejo delivery/access/update/recovery",
+      "dependencies": [
+        "P5-REC",
+        "P7-SURF"
+      ],
+      "external": [
+        "EXT:TEAM",
+        "EXT:EXEC",
+        "EXT:TRUST"
+      ],
+      "preconditions": "Actual need/topology/security/operating-cost admission; no local prerequisite",
+      "acceptance": "Actual opted-in distribution EP-7 deployment/access/revoke/restart/replay/recovery receipts + no-Hub local/offline task proof",
+      "line": 400
+    },
+    {
+      "id": "X-ADOPT",
+      "phase": "P1…P7",
+      "kind": "research",
+      "role": "Product research + independent longitudinal verifier",
+      "deliverable": "Demand/repeat-use/roles/adoption evidence separately from utility/UI/backend",
+      "dependencies": [
+        "D-E0"
+      ],
+      "external": [
+        "EXT:E0",
+        "EXT:EXEC"
+      ],
+      "preconditions": "Actual recruitment/consent and independently approved work-cycle/denominators",
+      "acceptance": "Problem interviews + longitudinal comparative study + de-identified raw all-run/attrition/refusal/onboarding/privacy/maintenance cost ledger; HYP008 remains unvalidated until verdict",
+      "line": 401
+    }
+  ],
+  "implementationAndExperimentStatus": "BLOCKED as backlog; no execution authorized; checklist items unchecked",
+  "conditionalNotes": [
+    "P6-CROSS only when actual seam crosses repos",
+    "P7 lens-specific enablement prerequisites per RFC §Implementation Phases, not unconditional DAG edges",
+    "X-AB and X-STORAGE are not universal prerequisites; mechanism-specific admission per RFC"
+  ]
+}

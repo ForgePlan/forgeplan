@@ -1,0 +1,194 @@
+{
+  "_next_action": "forgeplan validate PROB-106",
+  "active_stubs": [],
+  "advisory_phase_mismatches": [],
+  "at_risk": [
+    {
+      "id": "ADR-008",
+      "reason": "R_eff = 0.10 below 0.3 threshold",
+      "title": "Self-describing tools + agent-skills standard + brownfield-aware init"
+    },
+    {
+      "id": "EPIC-006",
+      "reason": "R_eff = 0.10 below 0.3 threshold",
+      "title": "Brownfield Migration Pipeline + Self-description Platform"
+    },
+    {
+      "id": "EPIC-010",
+      "reason": "R_eff = 0.00 below 0.3 threshold",
+      "title": "Constellation — актуальный индекс, федеративное чтение и ContextPack"
+    },
+    {
+      "id": "PRD-071",
+      "reason": "R_eff = 0.10 below 0.3 threshold",
+      "title": "Unified hint contract — Hint trait + 5-rule contract + multi-agent enforcement a"
+    },
+    {
+      "id": "PRD-079",
+      "reason": "R_eff = 0.10 below 0.3 threshold",
+      "title": "Bilingual blog as third mode in forgeplan.dev website"
+    },
+    {
+      "id": "PRD-081",
+      "reason": "R_eff = 0.10 below 0.3 threshold",
+      "title": "ForgePlan Space-Mesh: кросс-проектная видимость и события"
+    },
+    {
+      "id": "RFC-011",
+      "reason": "R_eff = 0.10 below 0.3 threshold",
+      "title": "Blog scaffold architecture: Content Collection + mirror routes + scoped theme"
+    },
+    {
+      "id": "RFC-015",
+      "reason": "R_eff = 0.00 below 0.3 threshold",
+      "title": "Constellation 0А/0Б — одна крупная история и последовательная приёмка"
+    },
+    {
+      "id": "RFC-016",
+      "reason": "R_eff = 0.10 below 0.3 threshold",
+      "title": "Constellation documentation contract and audit"
+    },
+    {
+      "id": "RFC-018",
+      "reason": "R_eff = 0.10 below 0.3 threshold",
+      "title": "Plan: прежние CLI/MCP через WorkspaceRead и auxiliary history"
+    },
+    {
+      "id": "SPEC-010",
+      "reason": "R_eff = 0.10 below 0.3 threshold",
+      "title": "ContextPack bounded federated evidence and continuation"
+    }
+  ],
+  "blind_spots": [
+    {
+      "id": "PROB-106",
+      "issue": "No linked evidence — decision without proof",
+      "title": "Reasoning effort exists only for codex-cli Devin/Gemini/Cursor have no equivalen"
+    }
+  ],
+  "by_derived_status": [
+    {
+      "count": 3,
+      "status": "SHAPED"
+    },
+    {
+      "count": 66,
+      "status": "VALIDATED"
+    },
+    {
+      "count": 69,
+      "status": "EVIDENCED"
+    },
+    {
+      "count": 187,
+      "status": "ACTIVATED"
+    }
+  ],
+  "by_kind": [
+    {
+      "count": 3,
+      "kind": ""
+    },
+    {
+      "count": 38,
+      "kind": "adr"
+    },
+    {
+      "count": 10,
+      "kind": "epic"
+    },
+    {
+      "count": 223,
+      "kind": "evidence"
+    },
+    {
+      "count": 8,
+      "kind": "hypothesis"
+    },
+    {
+      "count": 2,
+      "kind": "memory"
+    },
+    {
+      "count": 56,
+      "kind": "note"
+    },
+    {
+      "count": 74,
+      "kind": "prd"
+    },
+    {
+      "count": 103,
+      "kind": "problem"
+    },
+    {
+      "count": 21,
+      "kind": "rfc"
+    },
+    {
+      "count": 1,
+      "kind": "solution"
+    },
+    {
+      "count": 11,
+      "kind": "spec"
+    }
+  ],
+  "by_status": [
+    {
+      "count": 3,
+      "status": "Draft"
+    },
+    {
+      "count": 293,
+      "status": "active"
+    },
+    {
+      "count": 68,
+      "status": "deprecated"
+    },
+    {
+      "count": 180,
+      "status": "draft"
+    },
+    {
+      "count": 6,
+      "status": "superseded"
+    }
+  ],
+  "gitignore_drift": [],
+  "next_actions": [
+    "Deprecate duplicate pair: `forgeplan deprecate EVID-218 --reason \"superseded by EVID-208\"` (2 pair(s))",
+    "Create evidence for 1 artifact(s) without proof — start with `forgeplan new evidence \"<title>\" --link PROB-106`",
+    "Refresh 3 stale evidence (expired valid_until) — run `forgeplan stale` to list"
+  ],
+  "orphans": [
+    "SESSION-2026-04-06"
+  ],
+  "phase_mismatches": [],
+  "phase_read_errors": 0,
+  "possible_duplicates": [
+    {
+      "id_a": "EVID-208",
+      "id_b": "EVID-218",
+      "kind": "evidence",
+      "similarity": 1.0,
+      "title_a": "Constellation — аудит регистрации и пакета подготовки",
+      "title_b": "Constellation — аудит регистрации и пакета подготовки"
+    },
+    {
+      "id_a": "EVID-226",
+      "id_b": "EVID-227",
+      "kind": "evidence",
+      "similarity": 0.7142857142857143,
+      "title_a": "Product PRD scope corrected documentary review",
+      "title_b": "Product PRD acceptance corrected documentary review"
+    }
+  ],
+  "project": "ForgePlan",
+  "stale_count": 3,
+  "stale_drafts": [],
+  "total": 550,
+  "verdict": "unhealthy",
+  "verdict_summary": "Project is unhealthy — multiple critical signals."
+}
