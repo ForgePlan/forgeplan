@@ -1,0 +1,62 @@
+[
+  {
+    "case": "pinned_probe",
+    "accepted": true,
+    "expected": true,
+    "unchanged": true,
+    "checks": [
+      "[WARN] GC-5: changes under .forgeplan/ outside map/ (likely pre-existing repo dirt, NOT a pipeline write -- the hook + denylist prevent pipeline writes here): .forgeplan/",
+      "[PASS] GC-6: determinism holds across 4 sampled node id(s)",
+      "[PASS] XC-1: all 1 typed-link edge(s) independently confirmed in the scan",
+      "[PASS] XC-2: all 1 verified_by grep pattern(s) still match"
+    ]
+  },
+  {
+    "case": "foreign_probe",
+    "accepted": true,
+    "expected": true,
+    "unchanged": true,
+    "checks": [
+      "[WARN] GC-5: changes under .forgeplan/ outside map/ (likely pre-existing repo dirt, NOT a pipeline write -- the hook + denylist prevent pipeline writes here): .forgeplan/",
+      "[PASS] GC-6: determinism holds across 4 sampled node id(s)",
+      "[PASS] XC-1: all 1 typed-link edge(s) independently confirmed in the scan",
+      "[PASS] XC-2: all 1 verified_by grep pattern(s) still match"
+    ]
+  },
+  {
+    "case": "different_code_relation",
+    "accepted": true,
+    "expected": true,
+    "unchanged": true,
+    "checks": [
+      "[WARN] GC-5: changes under .forgeplan/ outside map/ (likely pre-existing repo dirt, NOT a pipeline write -- the hook + denylist prevent pipeline writes here): .forgeplan/",
+      "[PASS] GC-6: determinism holds across 4 sampled node id(s)",
+      "[PASS] XC-1: all 1 typed-link edge(s) independently confirmed in the scan",
+      "[PASS] XC-2: all 1 verified_by grep pattern(s) still match"
+    ]
+  },
+  {
+    "case": "absent_grep_anchor",
+    "accepted": false,
+    "expected": false,
+    "unchanged": true,
+    "checks": [
+      "[WARN] GC-5: changes under .forgeplan/ outside map/ (likely pre-existing repo dirt, NOT a pipeline write -- the hook + denylist prevent pipeline writes here): .forgeplan/",
+      "[PASS] GC-6: determinism holds across 4 sampled node id(s)",
+      "[PASS] XC-1: all 1 typed-link edge(s) independently confirmed in the scan",
+      "[BLOCKER] XC-2: code-dep edge 600f943ccf27->26c1aff6a316 verified_by pattern is now stale (no re-grep match): nonexistent_fixture_anchor"
+    ]
+  },
+  {
+    "case": "different_typed_relation",
+    "accepted": false,
+    "expected": false,
+    "unchanged": true,
+    "checks": [
+      "[WARN] GC-5: changes under .forgeplan/ outside map/ (likely pre-existing repo dirt, NOT a pipeline write -- the hook + denylist prevent pipeline writes here): .forgeplan/",
+      "[PASS] GC-6: determinism holds across 4 sampled node id(s)",
+      "[BLOCKER] XC-1: typed-link edge 5d11a81803c0->e58f0b3dface (based_on) not found in .scan.fpl.json / forgeplan_graph (compared in content-hash id space)",
+      "[PASS] XC-2: all 1 verified_by grep pattern(s) still match"
+    ]
+  }
+]

@@ -1,0 +1,117 @@
+{
+  "mode": "pinned scripts; smoke and validator only; synthetic fixture",
+  "results": [
+    {
+      "case": "baseline",
+      "schema_expected": true,
+      "marketplace": {
+        "expected": true,
+        "accepted": true,
+        "exit": 0,
+        "blockers": []
+      },
+      "web": {
+        "expected": true,
+        "accepted": true,
+        "errors": [],
+        "kept_capture_revision": null,
+        "kept_edge_relation": "imports"
+      }
+    },
+    {
+      "case": "add_capture_metadata",
+      "schema_expected": true,
+      "marketplace": {
+        "expected": true,
+        "accepted": true,
+        "exit": 0,
+        "blockers": []
+      },
+      "web": {
+        "expected": true,
+        "accepted": true,
+        "errors": [],
+        "kept_capture_revision": "b0c9259dc04d0c6d119844895c7a629fde6bea80",
+        "kept_edge_relation": "imports"
+      }
+    },
+    {
+      "case": "foreign_capture_revision",
+      "schema_expected": true,
+      "marketplace": {
+        "expected": true,
+        "accepted": true,
+        "exit": 0,
+        "blockers": []
+      },
+      "web": {
+        "expected": true,
+        "accepted": true,
+        "errors": [],
+        "kept_capture_revision": "0000000000000000000000000000000000000000",
+        "kept_edge_relation": "imports"
+      }
+    },
+    {
+      "case": "same_shape_relation_change",
+      "schema_expected": true,
+      "marketplace": {
+        "expected": true,
+        "accepted": true,
+        "exit": 0,
+        "blockers": []
+      },
+      "web": {
+        "expected": true,
+        "accepted": true,
+        "errors": [],
+        "kept_capture_revision": null,
+        "kept_edge_relation": "calls"
+      }
+    },
+    {
+      "case": "unknown_explicit_typed_relation",
+      "schema_expected": true,
+      "marketplace": {
+        "expected": false,
+        "accepted": false,
+        "exit": 1,
+        "blockers": [
+          "[BLOCKER] GC-4: edges[0] typed-link relation 'future-relation' not in the 11 VALID_RELATIONS"
+        ]
+      },
+      "web": {
+        "expected": true,
+        "accepted": true,
+        "errors": [],
+        "kept_capture_revision": null,
+        "kept_edge_relation": "future-relation"
+      }
+    },
+    {
+      "case": "wrong_schema",
+      "schema_expected": false,
+      "marketplace": {
+        "expected": false,
+        "accepted": false,
+        "exit": 1,
+        "blockers": [
+          "[BLOCKER] GC-1: schema must be exactly 'forgeplan.map/v1', got \"forgeplan.map/v2\""
+        ]
+      },
+      "web": {
+        "expected": false,
+        "accepted": false,
+        "errors": [
+          {
+            "path": "schema",
+            "message": "expected 'forgeplan.map/v1', got \"forgeplan.map/v2\"",
+            "severity": "error"
+          }
+        ],
+        "kept_capture_revision": null,
+        "kept_edge_relation": null
+      }
+    }
+  ]
+}

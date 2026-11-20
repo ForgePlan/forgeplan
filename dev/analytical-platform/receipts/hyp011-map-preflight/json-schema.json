@@ -1,0 +1,40 @@
+[
+  {
+    "case": "baseline",
+    "expected": true,
+    "accepted": true,
+    "errors": []
+  },
+  {
+    "case": "add_capture_metadata",
+    "expected": true,
+    "accepted": true,
+    "errors": []
+  },
+  {
+    "case": "foreign_capture_revision",
+    "expected": true,
+    "accepted": true,
+    "errors": []
+  },
+  {
+    "case": "same_shape_relation_change",
+    "expected": true,
+    "accepted": true,
+    "errors": []
+  },
+  {
+    "case": "unknown_explicit_typed_relation",
+    "expected": true,
+    "accepted": true,
+    "errors": []
+  },
+  {
+    "case": "wrong_schema",
+    "expected": false,
+    "accepted": false,
+    "errors": [
+      "['schema']: 'forgeplan.map/v1' was expected"
+    ]
+  }
+]
