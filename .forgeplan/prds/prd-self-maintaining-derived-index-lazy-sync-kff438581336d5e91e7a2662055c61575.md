@@ -13,7 +13,7 @@ predicted_number: 92
 priority: P1
 projectType: cli_tool
 slug: prd-self-maintaining-derived-index-lazy-sync-kff438581336d5e91e7a2662055c61575
-status: Draft
+status: active
 stepsCompleted: []
 title: Self-maintaining derived index — lazy sync, embedding queue, and model bootstrap
 updated: 2026-11-18

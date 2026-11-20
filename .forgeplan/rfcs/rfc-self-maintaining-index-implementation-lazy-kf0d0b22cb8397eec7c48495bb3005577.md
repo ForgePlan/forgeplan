@@ -13,7 +13,7 @@ links:
   relation: based_on
 predicted_number: 21
 slug: rfc-self-maintaining-index-implementation-lazy-kf0d0b22cb8397eec7c48495bb3005577
-status: Draft
+status: active
 title: Self-maintaining index implementation — lazy sync, durable embedding queue, model bootstrap
 updated: 2026-11-18
 ---

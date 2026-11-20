@@ -92,12 +92,23 @@ semantic search via BGE-M3, typed links, lifecycle with validation gates.
 
 ## Current status
 
-Текущий source snapshot — `0.39.0+constellation.s1.1` (не опубликованный
-релиз 0.38.0). Записи релизов ниже — датированная история, не новый прогон.
+Текущий source snapshot — `0.39.0` (опубликованный релиз,
+ранее `0.39.0+constellation.s1.1` на dev). Записи релизов ниже — датированная история, не новый прогон.
 В captured interface этого среза: 120 CLI command paths без root help,
 76 full MCP tools и отдельные 9 constellation-read tools.
 Регистрация не доказывает поддержку каждого handler: совместимость нужно
 проверять реальными сценариями на обоих форматах хранения.
+- **v0.39.0** (2026-11-20) — **Constellation доведён до S1 и индекс теперь
+  поддерживает себя сам**. Constellation S1: artifact identity, F11 adapter,
+  S14 fault proofs, RU corpus. RFC-021: read-команды сами reconcile'ят
+  `.forgeplan/` markdown перед read-lock (`reconciled: N file(s)` на stderr
+  только при реальных изменениях), embedding-очередь в `pending_jobs`
+  переживает SIGKILL, `embed` и `index --embed-profile` сами качают модель
+  на холодном кэше (запросные пути по-прежнему никогда не качают), `--json`
+  ошибки отдают `{ok:false,error}`-envelope. Reporting-поверхность получила
+  `--json` во всех read-only командах — те же payloads, что у MCP-twins
+  (#571). R_eff-семантика разведена явно: `score` — effective-значение,
+  `score_raw` + `type_modifier` позволяют восстановить арифметику.
 
 - **v0.38.0** (2026-10-12) — **используем уже оплаченную AI-подписку, не
   превращая ForgePlan в лазейку для произвольных команд**. `codex-cli`,

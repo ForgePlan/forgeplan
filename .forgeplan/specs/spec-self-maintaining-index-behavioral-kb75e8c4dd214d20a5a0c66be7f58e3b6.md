@@ -9,12 +9,16 @@ links:
   relation: refines
 predicted_number: 13
 slug: spec-self-maintaining-index-behavioral-kb75e8c4dd214d20a5a0c66be7f58e3b6
-status: Draft
+status: active
 title: Self-maintaining index behavioral contracts
 updated: 2026-11-18
 ---
 
 # SPEC-013: Self-maintaining index behavioral contracts
+
+## Summary
+
+Behavioral contract for RFC-021: the derived index maintains itself — read paths reconcile `.forgeplan/` markdown before the read lock, the embedding queue survives process kill via durable `pending_jobs`, and only permitted obtainers (`embed`, `index --embed-profile`) may bootstrap the model on a cold cache. Frozen scenarios below are the TDD oracle for CLI and MCP surfaces.
 
 ## Requirements
 

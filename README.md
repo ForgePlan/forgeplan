@@ -132,7 +132,7 @@ plugins add agent-driving commands; they are not prerequisites for direct
 CLI use.
 
 Interface availability also depends on workspace layout. In the scoped
-`0.39.0+constellation.s1.1` build, CLI `validate` gives a named legacy-store
+`0.39.0` build, CLI `validate` gives a named legacy-store
 refusal on migrated workspaces; full MCP `forgeplan_validate` was exercised
 successfully there. This does not establish parity for all tools (issue #538).
 
@@ -232,7 +232,7 @@ Three entry points — pick the one that matches what you need right now.
 
 The website is the task-oriented user documentation; `docs/` holds contributor
 methodology, architecture and operational contracts. Constellation pages describe
-the scoped `0.39.0+constellation.s1.1` build, not the published `0.38.0` release.
+the published `0.39.0` release.
 
 ## Dogfood
 

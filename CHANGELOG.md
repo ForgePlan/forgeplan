@@ -11,6 +11,26 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-11-20
+
+Sprint headline: **Constellation reaches S1 and the index maintains itself.**
+
+Two arcs land together: the Constellation multi-source read surface
+finishes its S1 readiness program (artifact identity, F11 adapter, S14
+fault proofs, RU corpus), and RFC-021 makes `.forgeplan/` markdown
+self-maintaining — read paths reconcile before the lock, the embedding
+queue survives SIGKILL, `embed` bootstraps the model on first use, and
+`--json` errors carry a parseable envelope. The reporting surface closes
+the loop: `status`/`coverage`/`blindspots`/`orphans`/`decay`/`journal`/
+`session`/`gaps`/`export` emit the same JSON as their MCP twins.
+
+
+### Security
+
+- **RustSec sweep closed clean** — `rustls` 0.23.45 → 0.23.46 fixes four advisories (Brotli certificate decompression memory amplification, poisoned key-exchange records on unauthenticated ServerHello, TLS master secrets in `Session` Debug output, ECH rejection leaking buffered application data). `rmcp` 1.7.0 → 3.9.0 plus `pulldown-cmark`, `rustls-webpki`, `webpki-roots`, `tokio`, `zstd`/`zstd-safe`/`zstd-sys` bumps bring `cargo deny check advisories` back to **exit 0** (triage log SHA-256 `799fc05e…31b`, `docs/operations/dependabot-triage-2026-11-11.md`).
+- **`lru` (transitive via `tantivy` 0.24.x)** remains *accepted with justification* — no direct dependency, upstream pins the vulnerable line; revisit when `tantivy` admits the fixed line.
+- **npm/website alerts** remain *scheduled* under #485 / PR #442 — website dependencies ship no CLI/MCP or cargo-dist artifacts; the Astro migration is a separate tracked effort, not part of this cut.
+
 ### Added
 
 - **`score_raw` and `type_modifier` on every evidence item** returned by `forgeplan score --json` and by the MCP `forgeplan_score` tool (`EvidenceDto`). They expose the own-merit score and the evidence-source deduction that separate it from the effective `score`, so a caller can reconcile an artifact's R_eff against the packs listed beneath it without reading the source. Both are `#[serde(default)]`, so a consumer that ignores them is unaffected.
@@ -41,6 +61,7 @@ corresponding sprint evidence under `.forgeplan/evidence/`.
 ### Internal
 
 - **PROB-086 / PROB-087 / ADR-021** record the dependency-vs-evidence double-count class (an outgoing edge into an evidence pack is harvested as evidence AND walked as a dependency), its rejected alternatives, and the measured blast radius. Eight E2E regressions land in `crates/forgeplan-cli/tests/cli_score_evidence_semantics.rs`.
+- **PRD-092 / RFC-021 / SPEC-013 / ADR-032 / EVID-219** — self-maintaining index arc: PRD defines the goal, RFC-021 the implementation contract (lazy sync + durable queue + model bootstrap), SPEC-013 the behavioral oracle, ADR-032 the first-use bootstrap policy, EVID-219 the verification record (cold-cache + SIGKILL).
 
 ### Added
 

@@ -29,6 +29,10 @@ yanked = "deny"
 ignore = [
     # RUSTSEC-XXXX-YYYY — track via PROB-XXX, dismiss when upstream fix lands.
     # Format: "RUSTSEC-2024-0000" or { crate = "name@1.2", reason = "..." }
+    # INFO-level unmaintained, not a vulnerability. chrono 0.4 still receives
+    # occasional patches; migration to jiff tracked in issue #575. Remove once
+    # the workspace no longer links chrono.
+    { id = "RUSTSEC-2026-0543", reason = "INFO unmaintained; jiff migration scheduled in #575" },
 ]
 
 [licenses]
