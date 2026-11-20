@@ -55,3 +55,10 @@ features = ["semantic-search"]
 bin-aliases = { "forgeplan" = ["fpl"] }
 # Allow dirty CI files (we patched action versions v6→v4)
 allow-dirty = ["ci"]
+
+# GitHub retired the macos-14 runner image on 2026-11-02; dist's default
+# runner for aarch64-apple-darwin still resolves to macos-14, so the job is
+# cancelled instantly with no runner assigned. Pin Apple Silicon to macos-15
+# (same arm64 platform as the retired macos-14 label).
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
