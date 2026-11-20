@@ -6,6 +6,7 @@ kind: evidence
 links:
 - target: adr-auto-bootstrap-embedding-model-on-first-k4bc7428c92fb6a28491150932056679a
   relation: informs
+assigned_number: 219
 parent_epic: null
 predicted_number: 219
 slug: evidence-adr-032-verified-cold-cache-embed-k1312c2d9a9b70616d343e1fa87b3d197
